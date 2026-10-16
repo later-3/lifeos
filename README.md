@@ -79,11 +79,12 @@ ls -l node_modules/@earendil-works    # 三个包指向 pi/packages/*
 **开发模式**
 
 ```bash
-pnpm dev
+pnpm dev        # 后端（默认 43120，改代码自动重启）
+pnpm dev:web    # 前端（Vite 开发服务，/api 代理到后端）
 ```
 
-- 后端默认监听 `43120`，前端由 Vite 提供开发服务，均支持热更新
-- 验证：`curl http://127.0.0.1:43120/api/health`
+- 前端由 Vite 提供开发服务并代理 `/api`；后端改代码自动重启
+- 验证：浏览器打开前端地址即可对话；接口可用 `curl http://127.0.0.1:43120/api/agents`
 
 **发布模式**
 
