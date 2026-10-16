@@ -18,7 +18,8 @@
     "start": "node dist/server.mjs",
     "test": "node --experimental-strip-types --test test/*.test.mjs",
     "dev:all": "concurrently -k -n api,web -c blue,magenta \"pnpm dev\" \"pnpm dev:web\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit",
+    "stop": "node scripts/stop.mjs"
   },
   "type": "module",
   "devDependencies": {

@@ -134,6 +134,18 @@ pnpm home:install
 
 验证：浏览器里能连续对话；接口可用 `curl http://127.0.0.1:43120/api/agents` 检查。
 
+#### 停止
+
+- 在启动它的终端里按 **Ctrl+C**（开发和发布都一样）
+- 或在另一个终端执行：
+
+```bash
+pnpm stop              # 结束后端（43120）与前端（5173）
+pnpm stop --port=43121 # 结束自定义端口的后端
+```
+
+（用 VS Code 调试时，点调试面板的停止按钮即可。）
+
 ## 更新 Pi SDK
 
 `pi/` 是指向 `github.com/later-3/pi` 的 git 子模块，跟踪其 `lifeos` 分支。
