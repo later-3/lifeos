@@ -1,99 +1,115 @@
 # Life OS
 
 life os 是一套 agent 与用户之间长期协作的系统，主要包含两个模块：
-1、交互 harness 协议
-2、agent 工具，基于交互 harness 协议，提供 agent 与用户之间的协作功能。
+
+1. **交互 harness 协议**：agent 与用户长期协作时共同遵守的规则与资产
+2. **agent 工具**：基于交互 harness 协议，提供 agent 与用户之间的协作功能
 
 ## 项目结构
 
 ```
 lifeos/
 ├─ src/        后端（Node + TypeScript）：HTTP 接口、Agent 会话、Prompt 装配
-├─ frontend/   前端（Vite + React）：浏览器界面，纯静态产物
-├─ pi/         Pi SDK 源码（git 子模块，直接用它，不另外装 npm 包）
+├─ frontend/   前端（Vite + React）：浏览器界面，构建为纯静态产物
+├─ pi/         Pi SDK 源码（git 子模块，直接以源码方式使用）
 ├─ assets/     随包资产（交互 harness 协议正文等）
 ├─ docs/       设计文档
 └─ test/       后端测试
 ```
 
-- 代码只读仓库；**数据只写家目录 `/Users/xulater/.lifeos`**
-- 前后端分离：后端提供 HTTP + 事件流，前端是纯静态页面
-- 详细设计见 `docs/architecture/`（结构：`directory-structure.md`；底座：`foundation.md`）
+- 前后端分离：后端提供 HTTP 与事件流，前端是纯静态页面
+- 运行时数据默认写入家目录 `~/.lifeos`；仓库内只有代码与文档
+- 设计文档入口：`docs/architecture/`（目录结构见 `directory-structure.md`，技术底座见 `foundation.md`）
 
-## 一、安装依赖（第一次 / 换电脑 / 依赖变了，才需要）
+## 快速开始
 
-背景：JS 项目的依赖写在 `package.json` 里，由"包管理器"（我们用 `npm` 和 `pnpm`）下载到 `node_modules/`。
-我们这里有两块要分别装：`pi/`（Pi SDK 源码）和项目本身。
+### 环境要求
 
-**所有命令都在项目根目录执行：**
+- Node.js `>=22.19.0`
+- pnpm（用于安装本项目依赖；`npm install -g pnpm` 或 `corepack enable pnpm` 均可）
+
+### 1. 获取代码
 
 ```bash
-cd ~/Code/lifeos
+git clone --recurse-submodules <仓库地址>
+cd lifeos
+```
 
-# 1) 装 Pi SDK 自己的依赖（读 pi/package.json，装到 pi/node_modules，不是全局安装）
+如果克隆时忘了 `--recurse-submodules`：
+
+```bash
+git submodule update --init
+```
+
+### 2. 安装依赖
+
+项目有两部分依赖要装：`pi/`（Pi SDK 源码）和项目本身。
+
+```bash
+# ① 安装 Pi SDK 自己的依赖（读 pi/package.json，装到 pi/node_modules）
 npm --prefix pi ci --ignore-scripts
 
-# 2) 构建 Pi SDK（读 pi/package.json 的 build:offline 脚本，产出 pi/packages/*/dist）
+# ② 构建 Pi SDK（产出 pi/packages/*/dist，后端 import 的就是它）
 npm --prefix pi run build:offline
 
-# 3) 装本项目的依赖（读根 package.json 与 pnpm-workspace.yaml 里的 frontend）
+# ③ 安装本项目依赖（根 package.json 与 frontend/）
 pnpm install
 ```
 
-**怎么确认装好了：**
+确认安装成功：
 
 ```bash
-ls pi/packages/coding-agent/dist      # 应看到 index.js 等文件
-ls -l node_modules/@earendil-works    # 三个包应是指向 pi/packages/... 的符号链接
+ls pi/packages/coding-agent/dist      # 应包含 index.js 等文件
+ls -l node_modules/@earendil-works    # 三个包指向 pi/packages/*
 ```
 
-- 需要的 Node 版本：>=22.19.0
-- 这三条**只在第一次或依赖/Pi 变化时**跑，不是每次改代码都跑
-- 网络慢或失败就先开代理：
-  ```bash
-  git config --global http.proxy http://127.0.0.1:7897
-  npm config set proxy http://127.0.0.1:7897
-  ```
+这三条命令只在**首次安装、切换分支或依赖变化**时需要执行，日常开发无需重复。
 
-## 二、编译 & 运行
+> 网络受限时可通过代理安装，例如：
+> ```bash
+> git config --global http.proxy http://127.0.0.1:<端口>
+> npm config set proxy http://127.0.0.1:<端口>
+> ```
 
-### 开发（debug）
+### 3. 运行
+
+**开发模式**
 
 ```bash
 pnpm dev
 ```
-- 后端跑在 **43120**（改后端代码自动重启）
-- 前端跑在 Vite 的端口（改页面即时刷新）
-- 验证：浏览器打开前端地址；或 `curl http://127.0.0.1:43120/api/health`
 
-> 现状：`pnpm dev` 要等 Hello World 落地（`src/main.ts`、`src/server.ts`、`frontend/` 有真实代码）后才有效果；现在这些文件还是占位。
+- 后端默认监听 `43120`，前端由 Vite 提供开发服务，均支持热更新
+- 验证：`curl http://127.0.0.1:43120/api/health`
 
-### 发布（release）
+**发布模式**
 
 ```bash
-pnpm build     # 后端 → dist/server.mjs；前端 → frontend/dist
-pnpm start     # node dist/server.mjs（同时托管前端静态文件）
+pnpm install --frozen-lockfile   # 按锁文件安装，保证可复现
+pnpm build                       # 后端 → dist/server.mjs；前端 → frontend/dist
+pnpm start                       # node dist/server.mjs（同时托管前端静态资源）
 ```
-- 发布安装依赖时用：`pnpm install --frozen-lockfile`
-- **debug 与 release 的区别只是"跑哪条命令"**，不用环境变量切换；两边数据都在 `~/.lifeos`
 
-## 三、更新 Pi SDK（子模块）
+开发与发布使用同一份代码与同一份家目录，区别只在执行哪条命令。
 
-`pi/` 是 git 子模块，指向 `github.com/later-3/pi` 的 **`lifeos`** 分支（等于上游 `earendil-works/pi` 的最新 `main`）。
+## 更新 Pi SDK
+
+`pi/` 是指向 `github.com/later-3/pi` 的 git 子模块，跟踪其 `lifeos` 分支。
 
 ```bash
-cd pi
-git fetch origin && git reset --hard origin/lifeos    # 取最新
-cd ..
-git add pi && git commit -m "更新 pi 到 <sha>"         # 这一步才算把版本钉住
-npm --prefix pi ci --ignore-scripts && npm --prefix pi run build:offline   # 重新构建
+git -C pi fetch origin
+git -C pi reset --hard origin/lifeos        # 取该分支最新
+git add pi && git commit -m "chore: bump pi"  # 父仓库记录新的提交
+npm --prefix pi ci --ignore-scripts && npm --prefix pi run build:offline
 ```
 
-## 四、常见问题
+父仓库里记录的提交号即为构建与部署使用的事实版本。
+
+## 常见问题
 
 | 现象 | 处理 |
 |---|---|
-| `import` 报找不到 `@earendil-works/...` | 第一节三条命令没跑完，或 Pi 未构建 |
-| 拉取/安装慢或失败 | 先开代理（第一节最后那两条命令），再重试 |
-| 端口占用 | 开发默认 43120；线上旧架构用 43110 |
-| 想清掉重来 | 删 `node_modules/`、`pi/node_modules/`、`pi/packages/*/dist`，再重跑第一节 |
+| `import` 报找不到 `@earendil-works/...` | 依赖未安装或 Pi SDK 未构建，重跑"安装依赖"三步 |
+| 拉取或安装缓慢、失败 | 配置代理后重试（见上） |
+| 开发端口被占用 | 修改后端默认端口或结束占用进程 |
+| 想从零重建依赖 | 删除 `node_modules/`、`pi/node_modules/`、`pi/packages/*/dist` 后重跑安装三步 |
