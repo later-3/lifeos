@@ -7,5 +7,9 @@
     "@earendil-works/pi-agent-core": "link:./pi/packages/agent",
     "@earendil-works/pi-ai": "link:./pi/packages/ai",
     "@earendil-works/pi-coding-agent": "link:./pi/packages/coding-agent"
-  }
+  },
+  "scripts": {
+    "home:install": "node --experimental-strip-types src/home.ts"
+  },
+  "type": "module"
 }
