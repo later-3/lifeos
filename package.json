@@ -1,0 +1,11 @@
+{
+  "name": "lifeos",
+  "private": true,
+  "version": "0.0.0",
+  "description": "占位：命令与依赖在第一步实现时再填（见 docs/architecture/directory-structure.md）",
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "link:./pi/packages/agent",
+    "@earendil-works/pi-ai": "link:./pi/packages/ai",
+    "@earendil-works/pi-coding-agent": "link:./pi/packages/coding-agent"
+  }
+}

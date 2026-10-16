@@ -1,0 +1,9 @@
+node_modules/
+.output/
+frontend/dist/
+.vite/
+.env
+.env.*
+*.log
+.DS_Store
+Snipaste_*.png
