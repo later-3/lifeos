@@ -1,5 +1,6 @@
 // HTTP 接口：只读 Agent + 会话/消息/事件流。id 全部来自我们定义的 Agent id 与 Pi 生成的会话 id。
 import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { streamSSE } from "hono/streaming";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -78,6 +79,10 @@ export function createApp(cwd = process.cwd()) {
       });
     });
   });
+
+  // 前端静态产物（pnpm build 之后存在）；API 路由优先。
+  app.use("/*", serveStatic({ root: "./frontend/dist" }));
+  app.get("/*", serveStatic({ path: "./frontend/dist/index.html" }));
 
   return app;
 }

@@ -59,68 +59,81 @@ npm --prefix pi run build:offline
 pnpm install
 ```
 
-确认安装成功：
+这四条命令只在**首次安装、切换分支或依赖变化**时需要执行，日常开发无需重复。
 
-```bash
-ls pi/packages/coding-agent/dist      # 应包含 index.js 等文件
-ls -l node_modules/@earendil-works    # 三个包指向 pi/packages/*
-```
-
-这四条命令只在**首次安装、切换分支或依赖变化**时需要执行，日常开发无需重复；其中 ② 仅在模型数据缺失或过期时需要重跑（也可用 `npm --prefix pi run build` 让它自动刷新后构建，但会联网）。
-
-> 网络受限时可通过代理安装，例如：
+> 网络受限时可通过代理安装：
 > ```bash
 > git config --global http.proxy http://127.0.0.1:<端口>
 > npm config set proxy http://127.0.0.1:<端口>
 > ```
 
-### 3. 运行
+### 3. 搭建家目录（骨架）
 
-**开发模式**
-
-```bash
-pnpm dev        # 后端（默认 43120，改代码自动重启）
-pnpm dev:web    # 前端（Vite 开发服务，/api 代理到后端）
-```
-
-- 前端由 Vite 提供开发服务并代理 `/api`；后端改代码自动重启
-- 验证：浏览器打开前端地址即可对话；接口可用 `curl http://127.0.0.1:43120/api/agents`
-
-**发布模式**
+运行时数据都放在家目录，安装命令会把骨架和随包资产放好（幂等，可重复执行）：
 
 ```bash
-pnpm install --frozen-lockfile   # 按锁文件安装，保证可复现
-pnpm build                       # 后端 → dist/server.mjs；前端 → frontend/dist
-pnpm start                       # node dist/server.mjs（同时托管前端静态资源）
+pnpm home:install
 ```
 
-开发与发布使用同一份代码与同一份家目录，区别只在执行哪条命令。
-
-## 默认 Agent
-
-安装后家目录里自带一个默认 Agent（任何一份克隆都会有）：
+执行后家目录结构如下（默认 `~/.lifeos`）：
 
 ```
-~/.lifeos/agents/lifeosagent/
-├─ agent.json     身份定义（id / name / description）
-└─ identity.md    身份与人格
+~/.lifeos/
+├─ config/                  模型配置（下一步由你填写）
+├─ interaction-harness/     交互 harness：协议正文、指引、飞轮、概念空间、任务模板
+├─ agents/lifeosagent/      默认 Agent（agent.json + identity.md）
+├─ projects/  workspaces/  runtime/  logs/
+└─ install-receipt.json     安装收据（装了哪些文件）
 ```
 
-### 使用你自己的 Agent
+> 家目录也可以用 `LIFEOS_HOME` 指定到别处；服务启动时同样会执行一次这个安装。
 
-当前版本还没有"在界面上创建 Agent"的功能，先手工创建：
+### 4. 配置模型
+
+模型配置是**用户自己的配置**，放在家目录，格式与 Pi Agent 一致（上游：`https://github.com/earendil-works/pi`，说明在 `packages/coding-agent/docs/models.md`；本仓库内的同一份在 `pi/packages/coding-agent/docs/models.md`）。
+
+```
+~/.lifeos/config/models.json      provider 与模型清单（含 baseUrl 与密钥）
+~/.lifeos/config/settings.json    默认 provider / 模型 / 思考级别
+```
+
+示例（默认即使用 `settings.json` 里指定的 provider 与模型）：
+
+```json
+// models.json
+{
+  "providers": {
+    "my-provider": {
+      "baseUrl": "https://<你的服务>/v1",
+      "apiKey": "<你的密钥>",
+      "models": [{ "id": "<模型 id>", "name": "<显示名>" }]
+    }
+  }
+}
+```
+
+```json
+// settings.json
+{ "defaultProvider": "my-provider", "defaultModel": "<模型 id>", "defaultThinkingLevel": "medium" }
+```
+
+### 5. 启动
+
+**开发模式**（改代码自动重启，前端由 Vite 提供并代理 `/api`）：
 
 ```bash
-cd ~/.lifeos/agents
-cp -r lifeosagent myagent        # 复制一份作为你的 Agent
+pnpm dev        # 后端，默认 43120
+pnpm dev:web    # 前端，浏览器打开它给出的地址
 ```
 
-然后改两处：
+**发布模式**（构建后一次启动，后端同时托管前端静态文件）：
 
-- `myagent/agent.json`：`id`（小写字母、数字、连字符，不能与已有重复）、`name`、`description`
-- `myagent/identity.md`：写你自己的身份与人格
+```bash
+pnpm build      # 后端 → dist/server.mjs；前端 → frontend/dist
+pnpm start      # 启动，浏览器打开 http://127.0.0.1:43120
+```
 
-> `id` 一旦确定就不要再改：接口路径、会话归属都按它来。
+验证：浏览器打开后应看到聊天界面，可连续对话；接口也可用 `curl http://127.0.0.1:43120/api/agents` 检查。
 
 ## 更新 Pi SDK
 
