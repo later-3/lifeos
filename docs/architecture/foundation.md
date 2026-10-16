@@ -98,3 +98,16 @@ install-receipt.json    安装收据
 - 不做登录、不多用户（本机个人系统）。
 - 不在后端做页面渲染。
 - 不复用旧前端组件与旧设计数值；界面参考项目见 `docs/design/references.md`。
+
+## 11 事件流与运行（2026-10-16 定）
+
+- **一条流承载一个 Agent 的所有会话**：`GET /api/agents/:id/events?since=<seq>`；事件形状
+  `{ seq, sessionId, type: "delta" | "done" | "error", text?, message? }`，`seq` 单调递增。
+- **接上先给快照**（`snapshot`：当前 `seq` + 正在运行的会话列表）→ 刷新/断线可用 `since` 续传，
+  多标签页/多端也可各自带 `since` 订阅同一条流。
+- **发消息是命令，不是订阅**：`POST …/sessions/:sid/messages` 返回 `202 { accepted: true }`，
+  输出只走事件流；这样"运行"与"传输"解耦，将来换传输（或加多路复用）不动业务。
+- **运行注册表**在服务端按 `sessionId` 记录运行状态（running/done/error），供快照与列表使用。
+- **并发上限与队列**（做定时/长期任务时落地）：模型调用并发有配额，运行要在调度层排队，
+  不允许无限并发。
+- 运行队列、会话列表 UI、多端续看都在这个形状上扩展，**不需要改协议**。

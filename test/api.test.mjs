@@ -41,6 +41,15 @@ test("GET /api/agents/:id 返回定义，未知 id 返回 404 错误结构", asy
   } finally { server.close(); }
 });
 
+test("GET /api/agents/:id/sessions 返回会话列表", async () => {
+  const { server, base } = await start();
+  try {
+    const response = await fetch(`${base}/api/agents/lifeosagent/sessions`);
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray((await response.json()).items));
+  } finally { server.close(); }
+});
+
 test("POST messages 校验输入", async () => {
   const { server, base } = await start();
   try {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 type Message = { role: "user" | "assistant"; text: string };
+type AgentEvent = { seq: number; sessionId: string; type: "delta" | "done" | "error"; text?: string; message?: string };
 
 export default function App() {
   const [agentId, setAgentId] = useState<string>();
@@ -8,7 +9,47 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [streamSeq, setStreamSeq] = useState(0);
+  const current = useRef<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { current.current = sessionId; }, [sessionId]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // 一条流承载该 Agent 的所有会话：快照 + 带序号的事件。
+  useEffect(() => {
+    if (agentId === undefined) return;
+    const stream = new EventSource(`/api/agents/${agentId}/events?since=${streamSeq}`);
+    stream.addEventListener("snapshot", (event) => {
+      const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
+      setStreamSeq(snapshot.seq);
+      setBusy(snapshot.running.some((run) => run.sessionId === current.current));
+    });
+    stream.addEventListener("delta", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as AgentEvent;
+      setStreamSeq(payload.seq);
+      if (payload.sessionId !== current.current) return;
+      setMessages((list) => {
+        const next = [...list];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") next[next.length - 1] = { role: "assistant", text: last.text + (payload.text ?? "") };
+        return next;
+      });
+    });
+    const finish = (event: MessageEvent) => {
+      setStreamSeq((JSON.parse(event.data) as AgentEvent).seq);
+      setBusy(false);
+      if (agentId !== undefined && current.current !== undefined) void loadMessages(agentId, current.current);
+    };
+    stream.addEventListener("done", finish);
+    stream.addEventListener("error", finish);
+    return () => stream.close();
+  }, [agentId, streamSeq === 0]);
+
+  async function loadMessages(id: string, sid: string) {
+    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as { messages: Message[] };
+    setMessages(data.messages);
+  }
 
   useEffect(() => {
     void (async () => {
@@ -16,38 +57,25 @@ export default function App() {
       const id = agents.items[0]?.id;
       if (id === undefined) return;
       setAgentId(id);
-      const created = await (await fetch(`/api/agents/${id}/sessions`, { method: "POST" })).json() as { sessionId: string };
-      setSessionId(created.sessionId);
+      const list = await (await fetch(`/api/agents/${id}/sessions`)).json() as { items: { sessionId: string }[] };
+      const sid = list.items[0]?.sessionId ?? (await (await fetch(`/api/agents/${id}/sessions`, { method: "POST" })).json() as { sessionId: string }).sessionId;
+      setSessionId(sid);
+      await loadMessages(id, sid);
     })();
   }, []);
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-
-  const appendDelta = (delta: string) => setMessages((current) => {
-    const next = [...current];
-    const last = next[next.length - 1];
-    if (last !== undefined && last.role === "assistant") next[next.length - 1] = { role: "assistant", text: last.text + delta };
-    return next;
-  });
 
   async function send() {
     const text = input.trim();
     if (text === "" || agentId === undefined || sessionId === undefined || busy) return;
     setInput("");
     setBusy(true);
-    setMessages((current) => [...current, { role: "user", text }, { role: "assistant", text: "" }]);
-    try {
-      const response = await fetch(`/api/agents/${agentId}/sessions/${sessionId}/messages`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
-      });
-      if (!response.ok) throw new Error((await response.json()).error?.message ?? "请求失败");
-      const stream = new EventSource(`/api/agents/${agentId}/sessions/${sessionId}/events`);
-      const finish = () => { stream.close(); setBusy(false); };
-      stream.addEventListener("delta", (event) => appendDelta((JSON.parse((event as MessageEvent).data) as { text: string }).text));
-      stream.addEventListener("done", finish);
-      stream.addEventListener("error", finish);
-    } catch (error) {
-      appendDelta(`\n[出错] ${error instanceof Error ? error.message : String(error)}`);
+    setMessages((list) => [...list, { role: "user", text }, { role: "assistant", text: "" }]);
+    const response = await fetch(`/api/agents/${agentId}/sessions/${sessionId}/messages`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
+    });
+    if (!response.ok) {
+      const error = await response.json() as { error?: { message?: string } };
+      setMessages((list) => [...list, { role: "assistant", text: `[出错] ${error.error?.message ?? "请求失败"}` }]);
       setBusy(false);
     }
   }

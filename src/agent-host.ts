@@ -1,71 +1,103 @@
-// 进程内的 Agent 宿主：会话 id 一律用 Pi 生成的 id；内存没有就从磁盘恢复。
+// 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进"按 Agent 的事件流"（带序号，可续传）。
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
-export type TurnEvent = { type: "delta"; text: string } | { type: "done" } | { type: "error"; message: string };
+export type AgentEvent =
+  | { seq: number; sessionId: string; type: "delta"; text: string }
+  | { seq: number; sessionId: string; type: "done" }
+  | { seq: number; sessionId: string; type: "error"; message: string };
 
-type SessionState = {
-  session: Awaited<ReturnType<typeof createAgentSession>>["session"];
-  listeners: Set<(event: TurnEvent) => void>;
+export type RunSnapshot = { sessionId: string; startedAt: string };
+
+type SessionState = { session: Awaited<ReturnType<typeof createAgentSession>>["session"] };
+type AgentState = {
+  seq: number;
+  recent: AgentEvent[];                       // 环形缓冲，供 since 续传
+  listeners: Set<(event: AgentEvent) => void>;
+  sessions: Map<string, SessionState>;
+  running: Map<string, RunSnapshot>;
 };
 
-const sessions = new Map<string, SessionState>();
+const agents = new Map<string, AgentState>();
 
-/** 某个 Agent 的会话目录：家目录下 agents/<id>/sessions。 */
+function stateOf(agentId: string): AgentState {
+  const existing = agents.get(agentId);
+  if (existing !== undefined) return existing;
+  const created: AgentState = { seq: 0, recent: [], listeners: new Set(), sessions: new Map(), running: new Map() };
+  agents.set(agentId, created);
+  return created;
+}
+
+/** 发布一条事件：分配序号、进缓冲、推给订阅者。 */
+function publish(agentId: string, event: Omit<AgentEvent, "seq">): AgentEvent {
+  const state = stateOf(agentId);
+  const full = { ...event, seq: ++state.seq } as AgentEvent;
+  state.recent.push(full);
+  if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
+  for (const listener of state.listeners) listener(full);
+  return full;
+}
+
+/** 订阅某 Agent 的事件流：先回放 seq > since 的事件，再持续推新的。 */
+export function subscribeAgent(agentId: string, since: number, listener: (event: AgentEvent) => void): () => void {
+  const state = stateOf(agentId);
+  for (const event of state.recent) if (event.seq > since) listener(event);
+  state.listeners.add(listener);
+  return () => state.listeners.delete(listener);
+}
+
+/** 快照：当前序号 + 正在跑的会话（订阅时先给，保证不丢状态）。 */
+export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot[] } {
+  const state = stateOf(agentId);
+  return { seq: state.seq, running: [...state.running.values()] };
+}
+
 export function sessionDir(agentId: string): string {
   return join(resolveHome(), "agents", agentId, "sessions");
 }
-
-const keyOf = (agentId: string, sessionId: string) => `${agentId}\0${sessionId}`;
 
 /** 新建一个 Pi 会话，返回 Pi 生成的会话 id。 */
 export async function createSession(agentId: string, cwd: string): Promise<string> {
   const manager = SessionManager.create(cwd, sessionDir(agentId));
   const { session } = await createAgentSession({ sessionManager: manager });
   const sessionId = manager.getSessionId();
-  sessions.set(keyOf(agentId, sessionId), { session, listeners: new Set() });
+  stateOf(agentId).sessions.set(sessionId, { session });
   return sessionId;
 }
 
-/** 取会话：内存里没有就用 Pi 的会话文件恢复（重启后也能续接）。 */
+/** 取会话：内存没有就从 Pi 的会话文件恢复（重启后也能续接）。 */
 export async function getSession(agentId: string, sessionId: string, cwd: string) {
-  const key = keyOf(agentId, sessionId);
-  const existing = sessions.get(key);
+  const state = stateOf(agentId);
+  const existing = state.sessions.get(sessionId);
   if (existing !== undefined) return existing;
   const found = SessionManager.findById(cwd, sessionId, sessionDir(agentId));
   if (found === undefined) return undefined;
   const { session } = await createAgentSession({ sessionManager: SessionManager.open(found, sessionDir(agentId)) });
-  const state: SessionState = { session, listeners: new Set() };
-  sessions.set(key, state);
-  return state;
+  const restored: SessionState = { session };
+  state.sessions.set(sessionId, restored);
+  return restored;
 }
 
-/** 订阅某个会话的输出（只推当前与后续的增量）。 */
-export function subscribeSession(agentId: string, sessionId: string, listener: (event: TurnEvent) => void): () => void {
-  const state = sessions.get(keyOf(agentId, sessionId));
-  if (state === undefined) return () => {};
-  state.listeners.add(listener);
-  return () => state.listeners.delete(listener);
-}
-
-/** 跑一轮：把 Pi 的文本增量转成事件推给订阅者。 */
+/** 跑一轮：把 Pi 的文本增量发布成事件。 */
 export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
-  const state = sessions.get(keyOf(agentId, sessionId));
-  if (state === undefined) return;
-  const emit = (event: TurnEvent) => { for (const listener of state.listeners) listener(event); };
-  const unsubscribe = state.session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
+  const state = stateOf(agentId);
+  const target = state.sessions.get(sessionId);
+  if (target === undefined) return;
+  state.running.set(sessionId, { sessionId, startedAt: new Date().toISOString() });
+  const unsubscribe = target.session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      emit({ type: "delta", text: event.assistantMessageEvent.delta ?? "" });
+      publish(agentId, { sessionId, type: "delta", text: event.assistantMessageEvent.delta ?? "" });
     }
   });
   try {
-    await state.session.prompt(text);
-    emit({ type: "done" });
+    await target.session.prompt(text);
+    publish(agentId, { sessionId, type: "done" });
   } catch (error) {
-    emit({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    publish(agentId, { sessionId, type: "error", message: error instanceof Error ? error.message : String(error) });
   } finally {
     unsubscribe();
+    state.running.delete(sessionId);
   }
 }
 
