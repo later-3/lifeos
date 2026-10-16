@@ -49,10 +49,13 @@ git submodule update --init
 # ① 安装 Pi SDK 自己的依赖（读 pi/package.json，装到 pi/node_modules）
 npm --prefix pi ci --ignore-scripts
 
-# ② 构建 Pi SDK（产出 pi/packages/*/dist，后端 import 的就是它）
+# ② 首次需要联网准备模型数据（Pi 的构建会校验它）
+npm --prefix pi run hydrate:model-data
+
+# ③ 构建 Pi SDK（产出 pi/packages/*/dist，后端 import 的就是它）
 npm --prefix pi run build:offline
 
-# ③ 安装本项目依赖（根 package.json 与 frontend/）
+# ④ 安装本项目依赖（根 package.json 与 frontend/）
 pnpm install
 ```
 
@@ -63,7 +66,7 @@ ls pi/packages/coding-agent/dist      # 应包含 index.js 等文件
 ls -l node_modules/@earendil-works    # 三个包指向 pi/packages/*
 ```
 
-这三条命令只在**首次安装、切换分支或依赖变化**时需要执行，日常开发无需重复。
+这四条命令只在**首次安装、切换分支或依赖变化**时需要执行，日常开发无需重复；其中 ② 仅在模型数据缺失或过期时需要重跑（也可用 `npm --prefix pi run build` 让它自动刷新后构建，但会联网）。
 
 > 网络受限时可通过代理安装，例如：
 > ```bash
