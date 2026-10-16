@@ -119,21 +119,20 @@ pnpm home:install
 
 ### 5. 启动
 
-**开发模式**（改代码自动重启，前端由 Vite 提供并代理 `/api`）：
+有两种模式，**做不同的事用不同的模式**：
 
-```bash
-pnpm dev        # 后端，默认 43120
-pnpm dev:web    # 前端，浏览器打开它给出的地址
-```
+| 模式 | 什么时候用 | 命令 |
+|---|---|---|
+| **开发（debug）** | 你在改代码：后端改完自动重启、前端页面热更新 | `pnpm dev:all`（一条命令同时起前后端）<br>也可以分开：`pnpm dev`（后端）+ `pnpm dev:web`（前端） |
+| **使用 / 发布（release）** | 你只是想用它：构建一次，之后随时启动 | `pnpm build` → `pnpm start` |
 
-**发布模式**（构建后一次启动，后端同时托管前端静态文件）：
+- 开发模式：浏览器打开前端地址（Vite 默认 `http://localhost:5173`），它会把 `/api` 代理到后端
+- 发布模式：浏览器打开 `http://127.0.0.1:43120`，后端同时托管前端静态文件
+- `pnpm build` 只在**代码变化后**需要重跑；`pnpm start` 随时可用
 
-```bash
-pnpm build      # 后端 → dist/server.mjs；前端 → frontend/dist
-pnpm start      # 启动，浏览器打开 http://127.0.0.1:43120
-```
+> 和 C++ 项目的类比：`pnpm build` 相当于 Release 构建（产出可执行产物 `dist/server.mjs` + `frontend/dist`），`pnpm start` 相当于运行它；`pnpm dev:all` 相当于 Debug 下边改边跑、不用手动重新构建。
 
-验证：浏览器打开后应看到聊天界面，可连续对话；接口也可用 `curl http://127.0.0.1:43120/api/agents` 检查。
+验证：浏览器里能连续对话；接口可用 `curl http://127.0.0.1:43120/api/agents` 检查。
 
 ## 更新 Pi SDK
 

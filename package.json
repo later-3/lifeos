@@ -16,10 +16,12 @@
     "dev:web": "pnpm --dir frontend dev",
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs && pnpm --dir frontend build",
     "start": "node dist/server.mjs",
-    "test": "node --experimental-strip-types --test test/*.test.mjs"
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "dev:all": "concurrently -k -n api,web -c blue,magenta \"pnpm dev\" \"pnpm dev:web\""
   },
   "type": "module",
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "concurrently": "^9.2.0"
   }
 }
