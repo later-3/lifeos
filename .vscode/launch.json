@@ -1,6 +1,7 @@
 {
   "version": "0.2.0",
   "configurations": [
+    // 日常用这一个：和 pnpm dev / pnpm start 同端口
     {
       "name": "后端：调试（43120）",
       "type": "node",
@@ -13,8 +14,10 @@
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**"]
     },
+    // 备用：当 43120 已经被占用（比如你正在跑 pnpm dev / pnpm start）时，用这个端口单独调后端；
+    // 想让浏览器也接到它：VITE_DEV_API=http://127.0.0.1:43121 pnpm dev:web
     {
-      "name": "后端：调试（43121，不影响 43120）",
+      "name": "后端：调试（43121，备用端口）",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "node",
