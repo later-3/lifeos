@@ -95,6 +95,32 @@ pnpm start                       # node dist/server.mjs（同时托管前端静�
 
 开发与发布使用同一份代码与同一份家目录，区别只在执行哪条命令。
 
+## 默认 Agent
+
+安装后家目录里自带一个默认 Agent（任何一份克隆都会有）：
+
+```
+~/.lifeos/agents/lifeosagent/
+├─ agent.json     身份定义（id / name / description）
+└─ identity.md    身份与人格
+```
+
+### 使用你自己的 Agent
+
+当前版本还没有"在界面上创建 Agent"的功能，先手工创建：
+
+```bash
+cd ~/.lifeos/agents
+cp -r lifeosagent myagent        # 复制一份作为你的 Agent
+```
+
+然后改两处：
+
+- `myagent/agent.json`：`id`（小写字母、数字、连字符，不能与已有重复）、`name`、`description`
+- `myagent/identity.md`：写你自己的身份与人格
+
+> `id` 一旦确定就不要再改：接口路径、会话归属都按它来。
+
 ## 更新 Pi SDK
 
 `pi/` 是指向 `github.com/later-3/pi` 的 git 子模块，跟踪其 `lifeos` 分支。

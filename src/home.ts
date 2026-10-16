@@ -11,7 +11,10 @@ export function resolveHome(): string {
 }
 
 const DIRS = ["config", "interaction-harness", "agents", "projects", "workspaces", "runtime", "logs"] as const;
-const ASSETS = [{ id: "interaction-harness", from: "assets/interaction-harness", to: "interaction-harness" }] as const;
+const ASSETS = [
+  { id: "interaction-harness", from: "assets/interaction-harness", to: "interaction-harness" },
+  { id: "agents", from: "assets/agents", to: "agents" },
+] as const;
 
 type Item = { id: string; kind: "dir" | "asset" | "file"; path: string; action: "created" | "kept" | "updated" };
 
