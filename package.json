@@ -17,11 +17,14 @@
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs && pnpm --dir frontend build",
     "start": "node dist/server.mjs",
     "test": "node --experimental-strip-types --test test/*.test.mjs",
-    "dev:all": "concurrently -k -n api,web -c blue,magenta \"pnpm dev\" \"pnpm dev:web\""
+    "dev:all": "concurrently -k -n api,web -c blue,magenta \"pnpm dev\" \"pnpm dev:web\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit"
   },
   "type": "module",
   "devDependencies": {
     "esbuild": "^0.25.0",
-    "concurrently": "^9.2.0"
+    "concurrently": "^9.2.0",
+    "typescript": "^5.9.3",
+    "@types/node": "^24.0.0"
   }
 }

@@ -3,10 +3,12 @@ import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-ag
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
-export type AgentEvent =
-  | { seq: number; sessionId: string; type: "delta"; text: string }
-  | { seq: number; sessionId: string; type: "done" }
-  | { seq: number; sessionId: string; type: "error"; message: string };
+type AgentEventPayload =
+  | { sessionId: string; type: "delta"; text: string }
+  | { sessionId: string; type: "done" }
+  | { sessionId: string; type: "error"; message: string };
+
+export type AgentEvent = AgentEventPayload & { seq: number };
 
 export type RunSnapshot = { sessionId: string; startedAt: string };
 
@@ -30,9 +32,9 @@ function stateOf(agentId: string): AgentState {
 }
 
 /** 发布一条事件：分配序号、进缓冲、推给订阅者。 */
-function publish(agentId: string, event: Omit<AgentEvent, "seq">): AgentEvent {
+function publish(agentId: string, event: AgentEventPayload): AgentEvent {
   const state = stateOf(agentId);
-  const full = { ...event, seq: ++state.seq } as AgentEvent;
+  const full: AgentEvent = { ...event, seq: ++state.seq };
   state.recent.push(full);
   if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
   for (const listener of state.listeners) listener(full);

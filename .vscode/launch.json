@@ -1,0 +1,42 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "后端：调试（43120）",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--experimental-strip-types"],
+      "program": "${workspaceFolder}/src/main.ts",
+      "args": ["--port=43120"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "后端：调试（43121，不影响 43120）",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--experimental-strip-types"],
+      "program": "${workspaceFolder}/src/main.ts",
+      "args": ["--port=43121"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "前端：Chrome（需先跑 pnpm dev:web）",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/frontend"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "前后端一起调试",
+      "configurations": ["后端：调试（43120）", "前端：Chrome（需先跑 pnpm dev:web）"]
+    }
+  ]
+}
