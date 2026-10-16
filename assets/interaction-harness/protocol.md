@@ -277,7 +277,7 @@
 
 | 方案 | 做法 | 代价 |
 |---|---|---|
-| **A（起步）** | 把协议正文作为**运行时资产**放进 `~/.lifeos/interaction-harness/protocol/harness-protocol.md`——loader 已经在读 `protocol/*.md`，**零代码改动** | 协议与文档两处正文 → 用"文档是源、运行时是产物"的同步规则约束（§3.3 的源与产物原则） |
+| **A（起步）** | 把协议正文作为**运行时资产**放进 `~/.lifeos/interaction-harness/protocol.md`——loader 已经在读 `protocol/*.md`，**零代码改动** | 协议与文档两处正文 → 用"文档是源、运行时是产物"的同步规则约束（§3.3 的源与产物原则） |
 | B（后续优化） | 按"组成部分"拆成多份资产，分别注入到对应位置（例如：思想/规范/任务类型各自一节），实现按需加载 | 需要定义"协议部分 → 区域"的映射，改 loader；等占用变高再做 |
 | C（不推荐） | 把协议正文硬编码进 Life OS 源码常量 | 内容型资产不该进代码，改一次要发版 |
 
@@ -324,7 +324,7 @@ prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
 
 | 应有 | 现状 | 补法 |
 |---|---|---|
-| 协议正文在请求里 | 只在 Life OS 仓库文档 | 方案 A：放进 `~/.lifeos/interaction-harness/protocol/harness-protocol.md`（loader 已支持，零代码） |
+| 协议正文在请求里 | 只在 Life OS 仓库文档 | 方案 A：放进 `~/.lifeos/interaction-harness/protocol.md`（loader 已支持，零代码） |
 | 工具自描述（不要自己建目录） | 已补（本轮 `tool.json` 描述） | 完成 |
 | 模型先定类型/类别、不确定就问 | 协议里写了，但协议不在 prompt | 同第一行 |
 | 可验证 | 单点测试已覆盖工具与装配 | 可选再加"协议正文出现在请求里"的断言 |
@@ -392,7 +392,7 @@ prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
 
 - 仓库只存**代码与模板**；运行时数据在 `~/.lifeos`；
 - **协议正文应作为产品资产随发布**，首次运行（或升级）时安装到
-  `~/.lifeos/interaction-harness/protocol/harness-protocol.md`；**文档是源、运行时是产物**（沿用既有"源与产物"规则）；
+  `~/.lifeos/interaction-harness/protocol.md`；**文档是源、运行时是产物**（沿用既有"源与产物"规则）；
 - 安装/初始化已有入口：`ensureLife OSHome()` / `ensureLongAgentResourceDirs()` 等，加一处写入即可。
 
 ### 12.5 双向闭环（校验点）
@@ -452,7 +452,7 @@ prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
 §12（怎么进 prompt）、§13（常驻清单与动作→工具映射）。
 
 **随定稿已落地**：
-- 协议正文随产品发布并安装到 `~/.lifeos/interaction-harness/protocol/harness-protocol.md`（源与产物分离 + 同步脚本 + 初始化写入）；
+- 协议正文随产品发布并安装到 `~/.lifeos/interaction-harness/protocol.md`（源与产物分离 + 同步脚本 + 初始化写入）；
 - 任务类型机制（声明、按类型加载、任务带类型、创建任务自动建目录与 `task.md`、按项目列任务）；
 - 来源声明表的**机制与第一行**（`<project>/.lifeos/harness/*.md` → `lifeos_interaction_harness` 区域）。
 
