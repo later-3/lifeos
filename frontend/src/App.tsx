@@ -41,8 +41,7 @@ export default function App() {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
       });
       if (!response.ok) throw new Error((await response.json()).error?.message ?? "请求失败");
-      const { turnId } = await response.json() as { turnId: string };
-      const stream = new EventSource(`/api/agents/${agentId}/turns/${turnId}/events`);
+      const stream = new EventSource(`/api/agents/${agentId}/sessions/${sessionId}/events`);
       const finish = () => { stream.close(); setBusy(false); };
       stream.addEventListener("delta", (event) => appendDelta((JSON.parse((event as MessageEvent).data) as { text: string }).text));
       stream.addEventListener("done", finish);

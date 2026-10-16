@@ -1,67 +1,82 @@
-// 进程内的 Agent 宿主：把 Pi 的 AgentSession 按 (agentId, sessionId) 复用，并把一轮输出变成事件流。
+// 进程内的 Agent 宿主：会话 id 一律用 Pi 生成的 id；内存没有就从磁盘恢复。
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
 export type TurnEvent = { type: "delta"; text: string } | { type: "done" } | { type: "error"; message: string };
 
-type Turn = { events: TurnEvent[]; listeners: Set<(event: TurnEvent) => void>; finished: boolean };
+type SessionState = {
+  session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  listeners: Set<(event: TurnEvent) => void>;
+};
 
-const sessions = new Map<string, Awaited<ReturnType<typeof createAgentSession>>["session"]>();
-const turns = new Map<string, Turn>();
+const sessions = new Map<string, SessionState>();
 
 /** 某个 Agent 的会话目录：家目录下 agents/<id>/sessions。 */
 export function sessionDir(agentId: string): string {
   return join(resolveHome(), "agents", agentId, "sessions");
 }
 
-/** 取（或建立）一个 Pi 会话；同一 (agentId, sessionId) 复用，保证连续对话。 */
-export async function getSession(agentId: string, sessionId: string, cwd: string) {
-  const key = `${agentId}\0${sessionId}`;
-  const existing = sessions.get(key);
-  if (existing !== undefined) return existing;
+const keyOf = (agentId: string, sessionId: string) => `${agentId}\0${sessionId}`;
+
+/** 新建一个 Pi 会话，返回 Pi 生成的会话 id。 */
+export async function createSession(agentId: string, cwd: string): Promise<string> {
   const manager = SessionManager.create(cwd, sessionDir(agentId));
   const { session } = await createAgentSession({ sessionManager: manager });
-  sessions.set(key, session);
-  return session;
+  const sessionId = manager.getSessionId();
+  sessions.set(keyOf(agentId, sessionId), { session, listeners: new Set() });
+  return sessionId;
 }
 
-export function createTurn(): string {
-  const turnId = crypto.randomUUID();
-  turns.set(turnId, { events: [], listeners: new Set(), finished: false });
-  return turnId;
+/** 取会话：内存里没有就用 Pi 的会话文件恢复（重启后也能续接）。 */
+export async function getSession(agentId: string, sessionId: string, cwd: string) {
+  const key = keyOf(agentId, sessionId);
+  const existing = sessions.get(key);
+  if (existing !== undefined) return existing;
+  const found = SessionManager.findById(cwd, sessionId, sessionDir(agentId));
+  if (found === undefined) return undefined;
+  const { session } = await createAgentSession({ sessionManager: SessionManager.open(found, sessionDir(agentId)) });
+  const state: SessionState = { session, listeners: new Set() };
+  sessions.set(key, state);
+  return state;
 }
 
-/** 订阅一轮的事件；已产生的事件会立即回放。返回取消订阅函数。 */
-export function subscribe(turnId: string, listener: (event: TurnEvent) => void): () => void {
-  const turn = turns.get(turnId);
-  if (turn === undefined) return () => {};
-  for (const event of turn.events) listener(event);
-  if (turn.finished) return () => {};
-  turn.listeners.add(listener);
-  return () => turn.listeners.delete(listener);
+/** 订阅某个会话的输出（只推当前与后续的增量）。 */
+export function subscribeSession(agentId: string, sessionId: string, listener: (event: TurnEvent) => void): () => void {
+  const state = sessions.get(keyOf(agentId, sessionId));
+  if (state === undefined) return () => {};
+  state.listeners.add(listener);
+  return () => state.listeners.delete(listener);
 }
 
 /** 跑一轮：把 Pi 的文本增量转成事件推给订阅者。 */
-export async function runTurn(turnId: string, session: Awaited<ReturnType<typeof getSession>>, text: string): Promise<void> {
-  const turn = turns.get(turnId);
-  if (turn === undefined) return;
-  const emit = (event: TurnEvent) => {
-    turn.events.push(event);
-    for (const listener of turn.listeners) listener(event);
-  };
-  const unsubscribe = session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
+export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
+  const state = sessions.get(keyOf(agentId, sessionId));
+  if (state === undefined) return;
+  const emit = (event: TurnEvent) => { for (const listener of state.listeners) listener(event); };
+  const unsubscribe = state.session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
     if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
       emit({ type: "delta", text: event.assistantMessageEvent.delta ?? "" });
     }
   });
   try {
-    await session.prompt(text);
+    await state.session.prompt(text);
     emit({ type: "done" });
   } catch (error) {
     emit({ type: "error", message: error instanceof Error ? error.message : String(error) });
   } finally {
     unsubscribe();
-    turn.finished = true;
   }
+}
+
+export function messagesOf(state: SessionState) {
+  return state.session.messages.flatMap((message) =>
+    message.role === "user" || message.role === "assistant" ? [{ role: message.role, text: textOf(message) }] : []);
+}
+
+function textOf(message: unknown): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part) => (part as { type?: string; text?: string }).type === "text" ? [part.text ?? ""] : []).join("");
 }
