@@ -1,9 +1,29 @@
 {
   "version": "2.0.0",
   "tasks": [
-    { "label": "dev: 前后端一起起", "type": "shell", "command": "pnpm dev:all", "isBackground": true, "problemMatcher": [] },
+    {
+      "label": "dev: 前后端一起起",
+      "type": "shell",
+      "command": "pnpm dev:all",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "lifeos-dev",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": { "activeOnStart": true, "beginsPattern": "^\\[api\\]|^\\[web\\]", "endsPattern": "ready in .*ms|后端已启动" }
+      }
+    },
+    {
+      "label": "dev: 只起前端（后台）",
+      "type": "shell",
+      "command": "pnpm dev:web",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": { "activeOnStart": true, "beginsPattern": "VITE v", "endsPattern": "ready in .*ms" }
+      }
+    },
     { "label": "dev: 只起后端", "type": "shell", "command": "pnpm dev", "isBackground": true, "problemMatcher": [] },
-    { "label": "dev: 只起前端", "type": "shell", "command": "pnpm dev:web", "isBackground": true, "problemMatcher": [] },
     { "label": "test: 跑测试", "type": "shell", "command": "pnpm test", "problemMatcher": [] },
     { "label": "build: 构建", "type": "shell", "command": "pnpm build", "problemMatcher": [] },
     { "label": "typecheck: 类型检查", "type": "shell", "command": "pnpm typecheck", "problemMatcher": ["$tsc"] },
