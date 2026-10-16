@@ -12,6 +12,7 @@ export default function App() {
   const [streamSeq, setStreamSeq] = useState(0);
   const current = useRef<string | undefined>(undefined);
   const snapshotSeq = useRef(0);
+  const streaming = useRef(false);          // 当前会话是否正在流式追加（用于多窗口：被动窗口也能正确新建一条）
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { current.current = sessionId; }, [sessionId]);
@@ -32,15 +33,22 @@ export default function App() {
       setStreamSeq(payload.seq);
       if (payload.seq <= snapshotSeq.current) return;   // 快照之前的旧事件只用于补状态，不重复渲染
       if (payload.sessionId !== current.current) return;
+      setBusy(true);
       setMessages((list) => {
+        if (!streaming.current) {
+          streaming.current = true;
+          return [...list, { role: "assistant", text: payload.text ?? "" }];
+        }
         const next = [...list];
         const last = next[next.length - 1];
         if (last?.role === "assistant") next[next.length - 1] = { role: "assistant", text: last.text + (payload.text ?? "") };
+        else next.push({ role: "assistant", text: payload.text ?? "" });
         return next;
       });
     });
     const finish = (event: MessageEvent) => {
       setStreamSeq((JSON.parse(event.data) as AgentEvent).seq);
+      streaming.current = false;
       setBusy(false);
       if (agentId !== undefined && current.current !== undefined) void loadMessages(agentId, current.current);
     };
@@ -72,6 +80,7 @@ export default function App() {
     if (text === "" || agentId === undefined || sessionId === undefined || busy) return;
     setInput("");
     setBusy(true);
+    streaming.current = true;
     setMessages((list) => [...list, { role: "user", text }, { role: "assistant", text: "" }]);
     const response = await fetch(`/api/agents/${agentId}/sessions/${sessionId}/messages`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
