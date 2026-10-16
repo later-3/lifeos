@@ -11,6 +11,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [streamSeq, setStreamSeq] = useState(0);
   const current = useRef<string | undefined>(undefined);
+  const snapshotSeq = useRef(0);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { current.current = sessionId; }, [sessionId]);
@@ -22,12 +23,14 @@ export default function App() {
     const stream = new EventSource(`/api/agents/${agentId}/events?since=${streamSeq}`);
     stream.addEventListener("snapshot", (event) => {
       const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
+      snapshotSeq.current = snapshot.seq;
       setStreamSeq(snapshot.seq);
       setBusy(snapshot.running.some((run) => run.sessionId === current.current));
     });
     stream.addEventListener("delta", (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as AgentEvent;
       setStreamSeq(payload.seq);
+      if (payload.seq <= snapshotSeq.current) return;   // 快照之前的旧事件只用于补状态，不重复渲染
       if (payload.sessionId !== current.current) return;
       setMessages((list) => {
         const next = [...list];
