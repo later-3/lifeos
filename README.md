@@ -12,7 +12,7 @@ lifeos/
 ├─ src/        后端（Node + TypeScript）：HTTP 接口、Agent 会话、Prompt 装配
 ├─ frontend/   前端（Vite + React）：浏览器界面，构建为纯静态产物
 ├─ pi/         Pi SDK 源码（git 子模块，直接以源码方式使用）
-├─ assets/     随包资产（交互 harness 协议正文等）
+├─ .lifeos/   家目录模板（交互 harness 协议正文等；install = 整树复制到 ~/.lifeos）
 ├─ docs/       设计文档
 └─ test/       后端测试
 ```
@@ -69,24 +69,28 @@ pnpm install
 
 ### 3. 搭建家目录（骨架）
 
-运行时数据都放在家目录，安装命令会把骨架和随包资产放好（幂等，可重复执行）：
+运行时数据都放在家目录。骨架的**唯一事实源是仓库根的 `.lifeos/` 模板**，安装 = 把模板整树复制过去：
 
 ```bash
 pnpm home:install
 ```
 
-执行后家目录结构如下（默认 `~/.lifeos`）：
+- 家目录**不存在（或为空）** → 整树复制 + 写 `install-receipt.json`；
+- 家目录**已有内容** → 只提醒并退出，**一个字节都不改**（要重装请自行确认并清理后重试）；
+- 服务**启动时不执行安装**：只校验家目录存在，不存在就报错并提示先运行 `pnpm home:install`。
+
+执行后家目录结构如下（默认 `~/.lifeos`；结构摘录自 `docs/architecture/foundation.md` §4，以 `.lifeos/` 模板为准）：
 
 ```
 ~/.lifeos/
-├─ config/                  模型配置（下一步由你填写）
+├─ config/                  模型配置（下一步由你填写；含密钥，永不进 Git）
 ├─ interaction-harness/     交互 harness：协议正文、指引、飞轮、概念空间、任务模板
-├─ agents/lifeosagent/      默认 Agent（agent.json + identity.md）
-├─ projects/  workspaces/  runtime/  logs/
-└─ install-receipt.json     安装收据（装了哪些文件）
+├─ agents/lifeosagent/      默认 Agent（agent.json + identity.md + projects/workspace/…，含出厂默认会话）
+├─ projects/  runtime/  logs/
+└─ install-receipt.json     安装收据
 ```
 
-> 家目录也可以用 `LIFEOS_HOME` 指定到别处；服务启动时同样会执行一次这个安装。
+> 家目录也可以用 `LIFEOS_HOME` 指定到别处。
 
 ### 4. 配置模型
 

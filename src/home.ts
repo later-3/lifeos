@@ -1,8 +1,9 @@
-// 家目录安装：创建目录结构、安装随包资产、写安装收据。幂等：内容相同则跳过。
-import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+// 家目录安装：模板 = 仓库根 .lifeos/，安装 = 一次性整树复制。
+// 语义（2026-10-17 定）：家目录已有内容 → 只提醒并停止，一个字节都不改；不存在/为空 → 复制 + 写收据。
+// 服务启动不执行安装（见 main.ts），只校验家目录存在。
+import { chmod, cp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 
 /** 家目录：默认 ~/.lifeos，可用 LIFEOS_HOME 覆盖（引导/测试用）。 */
 export function resolveHome(): string {
@@ -10,13 +11,16 @@ export function resolveHome(): string {
   return fromEnv === undefined || fromEnv === "" ? join(homedir(), ".lifeos") : fromEnv;
 }
 
-const DIRS = ["config", "interaction-harness", "agents", "projects", "workspaces", "runtime", "logs"] as const;
-const ASSETS = [
-  { id: "interaction-harness", from: "assets/interaction-harness", to: "interaction-harness" },
-  { id: "agents", from: "assets/agents", to: "agents" },
-] as const;
+/** 家目录模板（仓库根）：骨架与内容的唯一事实源，代码里不再另写目录清单。 */
+export const TEMPLATE_DIR = ".lifeos";
 
-type Item = { id: string; kind: "dir" | "asset" | "file"; path: string; action: "created" | "kept" | "updated" };
+export async function pathExists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
+}
+
+type Item = { kind: "dir" | "file"; path: string; action: "created" };
+
+export type InstallResult = { status: "installed" | "exists"; items: ReadonlyArray<Item> };
 
 async function listFiles(root: string): Promise<string[]> {
   const out: string[] = [];
@@ -28,44 +32,50 @@ async function listFiles(root: string): Promise<string[]> {
   return out.sort();
 }
 
-async function sha256(file: string): Promise<string> {
-  return createHash("sha256").update(await readFile(file)).digest("hex");
+/** 去掉模板占位文件（.gitkeep 是 Git 跟踪空目录的手段，不进家目录）。 */
+async function stripGitkeep(root: string): Promise<void> {
+  for (const path of await listFiles(root)) {
+    if (path.endsWith("/.gitkeep") || path.endsWith("\\.gitkeep")) await rm(path, { force: true });
+  }
 }
 
-/** 执行安装，返回收据条目。 */
-export async function installHome(repoRoot: string, home = resolveHome()): Promise<ReadonlyArray<Item>> {
+/** 隐私收敛：家目录目录 0700、文件 0600。 */
+async function tightenPermissions(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true });
+  await chmod(root, 0o700);
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) await tightenPermissions(path);
+    else if (entry.isFile()) await chmod(path, 0o600);
+  }
+}
+
+/**
+ * 执行安装。
+ * - 家目录已有内容 → 不动任何东西，返回 { status: "exists" }（调用方负责提醒并停止）；
+ * - 家目录不存在或为空 → 从模板整树复制、清理占位文件、收敛权限、写安装收据。
+ */
+export async function installHome(repoRoot: string, home = resolveHome()): Promise<InstallResult> {
+  const template = join(repoRoot, TEMPLATE_DIR);
+  if (!await pathExists(template)) {
+    throw new Error(`找不到家目录模板：${template}（仓库不完整？）`);
+  }
+  const existing = await readdir(home).then((entries) => entries.length > 0, () => false);
+  if (existing) return { status: "exists", items: [] };
+
+  const sources = await listFiles(template);
+  await cp(template, home, { recursive: true, force: true });
+  await stripGitkeep(home);
+  await tightenPermissions(home);
+
   const items: Item[] = [];
-  for (const dir of DIRS) {
-    const path = join(home, dir);
-    const existed = await stat(path).then(() => true, () => false);
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    items.push({ id: `dir.${dir}`, kind: "dir", path: dir, action: existed ? "kept" : "created" });
+  for (const source of sources) {
+    const rel = source.slice(template.length + 1);
+    if (rel.endsWith(".gitkeep")) continue;
+    items.push({ kind: "file", path: rel, action: "created" });
   }
-  for (const asset of ASSETS) {
-    const from = join(repoRoot, asset.from);
-    const to = join(home, asset.to);
-    for (const source of await listFiles(from)) {
-      const rel = relative(from, source);
-      const target = join(to, rel);
-      await mkdir(join(target, ".."), { recursive: true, mode: 0o700 });
-      const same = await stat(target).then(() => true, () => false)
-        && await sha256(source) === await sha256(target);
-      if (!same) await cp(source, target, { force: true });
-      items.push({ id: `${asset.id}:${rel}`, kind: "asset", path: join(asset.to, rel), action: same ? "kept" : "updated" });
-    }
-  }
-  const receipt = { schemaVersion: 1, installedAt: new Date().toISOString(), home, items };
-  const receiptPath = join(home, "install-receipt.json");
-  await writeFile(receiptPath, JSON.stringify(receipt, null, 2) + "\n", "utf8");
-  items.push({ id: "install-receipt", kind: "file", path: "install-receipt.json", action: "updated" });
-  return items;
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const home = resolveHome();
-  const items = await installHome(process.cwd(), home);
-  const count = (action: Item["action"]) => items.filter(item => item.action === action).length;
-  console.log(`家目录: ${home}`);
-  console.log(`created ${count("created")} / updated ${count("updated")} / kept ${count("kept")}`);
-  for (const item of items) console.log(`  ${item.action.padEnd(7)} ${item.path}`);
+  const receipt = { schemaVersion: 1, installedAt: new Date().toISOString(), home, template: TEMPLATE_DIR, items };
+  await writeFile(join(home, "install-receipt.json"), JSON.stringify(receipt, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  items.push({ kind: "file", path: "install-receipt.json", action: "created" });
+  return { status: "installed", items };
 }

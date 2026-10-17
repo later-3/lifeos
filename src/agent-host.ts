@@ -1,5 +1,7 @@
-// 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进"按 Agent 的事件流"（带序号，可续传）。
+// 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进“按 Agent 的事件流”（带序号，可续传）。
+// 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §15.2），这里只负责加载。
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
@@ -21,13 +23,16 @@ type AgentState = {
   running: Map<string, RunSnapshot>;
 };
 
+// 状态以「家 + agentId」为键：测试/引导切换 LIFEOS_HOME 后不串状态（同 id 会话可能存在于不同家）。
 const agents = new Map<string, AgentState>();
+const stateKey = (agentId: string) => `${resolveHome()}\u0000${agentId}`;
 
 function stateOf(agentId: string): AgentState {
-  const existing = agents.get(agentId);
+  const key = stateKey(agentId);
+  const existing = agents.get(key);
   if (existing !== undefined) return existing;
   const created: AgentState = { seq: 0, recent: [], listeners: new Set(), sessions: new Map(), running: new Map() };
-  agents.set(agentId, created);
+  agents.set(key, created);
   return created;
 }
 
@@ -55,12 +60,18 @@ export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot
   return { seq: state.seq, running: [...state.running.values()] };
 }
 
+/** 会话物理落在默认 project（workspace）下——结构即事实（协议 §15.1 终态，无“迁移”）。 */
 export function sessionDir(agentId: string): string {
-  return join(resolveHome(), "agents", agentId, "sessions");
+  return join(resolveHome(), "agents", agentId, "projects", "workspace", "sessions");
 }
 
-/** 新建一个 Pi 会话，返回 Pi 生成的会话 id。 */
+/** 新建会话：先确保默认 workspace 已注册（每个 Agent 天然有默认 project，agent.md §5.6），再建会话。 */
 export async function createSession(agentId: string, cwd: string): Promise<string> {
+  const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(join(projectDir, "project.json"),
+    JSON.stringify({ schemaVersion: 1, id: "workspace", name: "工作区" }) + "\n",
+    { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // 已存在则不覆盖（create-only）
   const manager = SessionManager.create(cwd, sessionDir(agentId));
   const { session } = await createAgentSession({ sessionManager: manager });
   const sessionId = manager.getSessionId();
@@ -68,14 +79,18 @@ export async function createSession(agentId: string, cwd: string): Promise<strin
   return sessionId;
 }
 
-/** 取会话：内存没有就从 Pi 的会话文件恢复（重启后也能续接）。 */
+/** 取会话：内存没有就从会话文件恢复（重启后也能续接；出厂默认会话也走这条路）。
+ * 按文件名 `<ts>_<id>.jsonl` 匹配而不是 findById：出厂文件 header 的 cwd 为空，
+ * findById 的 cwd 过滤会把它拒掉（换机器/换目录就 404）；open() 带 cwdOverride 即可绕开。 */
 export async function getSession(agentId: string, sessionId: string, cwd: string) {
   const state = stateOf(agentId);
   const existing = state.sessions.get(sessionId);
   if (existing !== undefined) return existing;
-  const found = SessionManager.findById(cwd, sessionId, sessionDir(agentId));
-  if (found === undefined) return undefined;
-  const { session } = await createAgentSession({ sessionManager: SessionManager.open(found, sessionDir(agentId)) });
+  const dir = sessionDir(agentId);
+  const file = (await readdir(dir).catch(() => [] as string[]))
+    .find((name) => name.endsWith(`_${sessionId}.jsonl`));
+  if (file === undefined) return undefined;
+  const { session } = await createAgentSession({ sessionManager: SessionManager.open(join(dir, file), dir, cwd) });
   const restored: SessionState = { session };
   state.sessions.set(sessionId, restored);
   return restored;
@@ -103,9 +118,66 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   }
 }
 
+/** 删除会话：移除文件与内存态；正在运行的拒绝。 */
+export async function deleteSession(agentId: string, sessionId: string): Promise<"deleted" | "not_found" | "running"> {
+  const state = stateOf(agentId);
+  if (state.running.has(sessionId)) return "running";
+  const dir = sessionDir(agentId);
+  const file = (await readdir(dir).catch(() => [] as string[])).find((name) => name.endsWith(`_${sessionId}.jsonl`));
+  if (file === undefined && !state.sessions.has(sessionId)) return "not_found";
+  if (file !== undefined) await rm(join(dir, file), { force: true });
+  state.sessions.delete(sessionId);
+  return "deleted";
+}
+
+/** 重命名会话：写 Pi 的 `session_info` 展示名（列表标题优先用它，否则回退首句）。 */
+export async function renameSession(agentId: string, sessionId: string, name: string, cwd: string): Promise<boolean> {
+  const loaded = stateOf(agentId).sessions.get(sessionId);
+  if (loaded !== undefined) { loaded.session.sessionManager.appendSessionInfo(name); return true; }
+  const dir = sessionDir(agentId);
+  const file = (await readdir(dir).catch(() => [] as string[])).find((n) => n.endsWith(`_${sessionId}.jsonl`));
+  if (file === undefined) return false;
+  SessionManager.open(join(dir, file), dir, cwd).appendSessionInfo(name);
+  return true;
+}
+
+type TextBlock = { type: "text"; text: string };
+type ThinkingBlock = { type: "thinking"; text: string };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean };
+type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock;
+
+/** 消息（含结构化块）：text/thinking/toolCall 按 Pi 真实内容块返回，toolResult 挂回对应调用
+ * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
-  return state.session.messages.flatMap((message) =>
-    message.role === "user" || message.role === "assistant" ? [{ role: message.role, text: textOf(message) }] : []);
+  const out: Array<{ role: string; text: string; blocks: MessageBlock[] }> = [];
+  for (const message of state.session.sessionManager.buildSessionProjection().messages) {
+    if (message.role === "user") {
+      const text = textOf(message);
+      out.push({ role: "user", text, blocks: [{ type: "text", text }] });
+    } else if (message.role === "assistant") {
+      const blocks: MessageBlock[] = [];
+      for (const part of message.content) {
+        if (part.type === "text") blocks.push({ type: "text", text: part.text });
+        else if (part.type === "thinking") blocks.push({ type: "thinking", text: part.thinking });
+        else if (part.type === "toolCall") blocks.push({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments });
+      }
+      const text = blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
+      out.push({ role: "assistant", text, blocks });
+    } else if (message.role === "toolResult") {
+      const result = textOf(message);
+      for (let i = out.length - 1; i >= 0; i--) {
+        const item = out[i];
+        if (item === undefined || item.role !== "assistant") continue;
+        const call = [...item.blocks].reverse().find((block): block is ToolCallBlock => block.type === "toolCall");
+        if (call !== undefined && (call.id === message.toolCallId || call.result === undefined)) {
+          call.result = result;
+          call.isError = message.isError;
+        }
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 function textOf(message: unknown): string {

@@ -84,11 +84,15 @@ Life OS 里存在**两种生命周期**的 Agent（定义见 [`lifeos-agent-firs
 ├─ identity.md       身份与职责 + 人格与性格（人/模型可读正文；装骨架，之后归 Agent）
 ├─ avatar/           头像图片（`avatar-<revision>.<ext>`）
 ├─ capability.json   能力（工具/资源）——先占位，内容待讨论
-├─ projects/         各项目数据（sessions / tasks / daily / cases / project-guidance.md）
-├─ workspace/        工作区文件
+├─ projects/         各项目数据（一项目一目录；内置 workspace/ 见 §5.6）
+│  └─ workspace/     默认第一个 project（= Agent 的工作区：AGENTS.md / sessions / tasks / daily / cases / todo / concept-space.md）
 ├─ prompt-resources/ 规则与资源
 ├─ memory/           Agent 私有记忆
 ```
+
+**workspace 归属（2026-10-17 定）**：每个 Agent 天然有一个默认 workspace，它是**该 Agent 的第一个 project**，落在 `agents/<id>/projects/workspace/`——Agent 打开就在这个 project 下面会话与工作。
+原先平级的 `agents/<id>/workspace/` 与家目录顶层 `workspaces/` **取消**（顶层 `workspaces/` 已从 foundation §4 与家目录模板中删除）。
+出厂时 `workspace/sessions/` 已带一条**默认会话**（预置 JSONL，第一句 = Agent 打招呼与说明书；文件驱动、只随 Life OS Agent，见协议 §15.2）。
 
 **运行产物的归属（2026-10-15 定）**：
 
@@ -107,6 +111,8 @@ Agent 的全部信息放在 `agents/<id>/agent.json`；**列举 = 扫描 `agents
 主体是 **Agent**；**Project 在它的工作范围内**（记录落在 Agent 目录内部）。
 **落地（我们的设计）**：`agents/<id>/agent.json` 的 `defaultProjectId` / `boundProjectIds` 是权威（`long-agents.json` 里那份暂作投影，见 §5.5）。语义 = "允许在哪些项目里干活"的清单（方向 **Agent → Project**）。
 项目共用信息（该项目的交互 harness 内容）在 `<home>/projects/<projectId>/`。细节见 [`lifeos-context-resource-model.md`](./lifeos-context-resource-model.md)。
+
+**默认 project = workspace（2026-10-17 定）**：`defaultProjectId` 的缺省值就是内置 project `workspace`（`agents/<id>/projects/workspace/`）。项目指引（`AGENTS.md`）、会话（`sessions/`）、任务（`tasks/`）、每日记录（`daily/`）、案例（`cases/`）、`todo/`、概念索引（`concept-space.md`）都落在这个目录里（协议 §15）。与顶层 `projects/<pid>/`（项目共用层，跨 Agent 共享）的区分不变：**workspace 属 Agent 私有层**。
 
 ### 5.7 运行与生命周期（包含"注册"）
 
@@ -138,6 +144,7 @@ Agent 的全部信息放在 `agents/<id>/agent.json`；**列举 = 扫描 `agents
 | 6 | 目录改名 `long-agents/` → `agents/<id>/`、私有运行产物搬进 `agents/<id>/runtime/` | 设计已定，**代码改动待排期** |
 | 7 | ~~注册表字段归属~~ | **已定**：注册表删除，`agent.json` 权威。剩余细节：扫描规则（候选，待确认） |
 | 8 | 能力（工具/技能/扩展/MCP）与记忆 | **先放下**（按用户指示），待后续讨论 |
+| 9 | workspace 归属 / 会话放哪 / 默认会话 / Todo（2026-10-17 用户指出骨架与协议没对齐） | **已定并已落地（2026-10-17 晚）**：workspace = 默认第一个 project（`projects/workspace/`）；会话物理即 `projects/workspace/sessions/`（结构即事实，无迁移）；默认会话 = 出厂预置 JSONL（`opening.md` 方案废弃）；Todo 落 project 的 `todo/`。详见协议 §15 |
 
 ## 8 实现阶段的待决项（不属 Agent 定义，等做到再定）
 

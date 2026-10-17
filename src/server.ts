@@ -4,10 +4,10 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { createSession, getSession, messagesOf, runTurn, sessionDir, snapshotOf, subscribeAgent } from "./agent-host.ts";
+import { createSession, deleteSession, getSession, messagesOf, renameSession, runTurn, snapshotOf, subscribeAgent } from "./agent-host.ts";
 import { resolveHome } from "./home.ts";
 
-export type AgentDefinition = { id: string; name: string; description?: string };
+export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string };
 
 const agentsRoot = () => join(resolveHome(), "agents");
 
@@ -16,13 +16,19 @@ async function readAgent(id: string): Promise<AgentDefinition | undefined> {
   catch { return undefined; }
 }
 
-function problem(code: string, message: string, status: 400 | 404) {
+function problem(code: string, message: string, status: 400 | 404 | 409) {
   return { body: { error: { code, message } }, status } as const;
 }
 
-/** 会话列表：读该 Agent 的会话文件（Pi 的 JSONL），取首句作为标题。 */
-async function listSessions(agentId: string) {
-  const dir = sessionDir(agentId);
+/** 某 project 的会话目录：结构即事实（`agents/<id>/projects/<pid>/sessions/`，协议 §15.1）。 */
+function projectSessionsDir(agentId: string, projectId: string): string {
+  return join(agentsRoot(), agentId, "projects", projectId, "sessions");
+}
+
+/** 会话列表：标题优先 `session_info` 展示名（重命名写的就是它），否则取首句；
+ * `defaultSessionId`（agent.json）命中的那条标为默认会话。 */
+async function listSessions(agentId: string, projectId: string, defaultSessionId?: string) {
+  const dir = projectSessionsDir(agentId, projectId);
   const names = await readdir(dir).catch(() => [] as string[]);
   const items = [];
   for (const name of names) {
@@ -31,16 +37,18 @@ async function listSessions(agentId: string) {
     const content = await readFile(path, "utf8");
     const lines = content.split("\n").filter((line) => line.trim() !== "");
     let title = "";
+    let displayName = "";
     let sessionId = "";
     for (const line of lines) {
       try {
-        const entry = JSON.parse(line) as { type?: string; id?: string; message?: { role?: string; content?: unknown } };
+        const entry = JSON.parse(line) as { type?: string; id?: string; name?: string; message?: { role?: string; content?: unknown } };
         if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+        if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
         if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message).slice(0, 40);
       } catch { /* 跳过坏行 */ }
     }
     if (sessionId === "") continue;
-    items.push({ sessionId, title, updatedAt: (await stat(path)).mtime.toISOString(), messages: lines.length });
+    items.push({ sessionId, title: displayName !== "" ? displayName : title, updatedAt: (await stat(path)).mtime.toISOString(), messages: lines.length, isDefault: sessionId === defaultSessionId });
   }
   return items.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
@@ -76,8 +84,66 @@ export function createApp(cwd = process.cwd()) {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const running = snapshotOf(agent.id).running;
-    const items = (await listSessions(agent.id)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
+    const items = (await listSessions(agent.id, agent.defaultProjectId ?? "workspace", agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
     return c.json({ items });
+  });
+
+  // project 列表：扫描 agents/<id>/*/，**注册判据 = 有 project.json**（与 agents/*/agent.json 判据同构）；
+  // 只有任务/日记记录、无 manifest 的目录（如 harness 的 projects/lifeos/）不算用户可见项目。
+  app.get("/api/agents/:id/projects", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const root = join(agentsRoot(), agent.id, "projects");
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    const defaultId = agent.defaultProjectId ?? "workspace";
+    const items: Array<{ id: string; name: string; isDefault: boolean }> = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const manifest = await readFile(join(root, entry.name, "project.json"), "utf8")
+        .then((text) => JSON.parse(text) as { name?: unknown }, () => undefined);
+      if (manifest === undefined) continue;   // 无 manifest → 未注册为项目
+      items.push({ id: entry.name, name: typeof manifest.name === "string" ? manifest.name : entry.name, isDefault: entry.name === defaultId });
+    }
+    items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+    return c.json({ items });
+  });
+
+  app.get("/api/agents/:id/projects/:pid/sessions", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const pid = c.req.param("pid");
+    if (!await stat(join(agentsRoot(), agent.id, "projects", pid)).then(() => true, () => false)) {
+      const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status);
+    }
+    const running = snapshotOf(agent.id).running;
+    const items = (await listSessions(agent.id, pid, agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
+    return c.json({ items });
+  });
+
+  // 重命名会话（写 Pi session_info 展示名；列表标题优先用它）。
+  app.put("/api/agents/:id/sessions/:sessionId", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { name?: unknown } | undefined;
+    if (body === undefined || typeof body.name !== "string" || body.name.trim() === "") {
+      const error = problem("invalid_request", "需要 name 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const sessionId = c.req.param("sessionId");
+    if (await getSession(agent.id, sessionId, cwd) === undefined) {
+      const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+    }
+    await renameSession(agent.id, sessionId, body.name.trim().slice(0, 80), cwd);
+    return c.json({ sessionId, name: body.name.trim().slice(0, 80) });
+  });
+
+  // 删除会话：运行中拒绝（409），否则移除文件与内存态。
+  app.delete("/api/agents/:id/sessions/:sessionId", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const result = await deleteSession(agent.id, c.req.param("sessionId"));
+    if (result === "not_found") { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    if (result === "running") { const error = problem("session_running", "会话正在运行，先打断再删除", 409); return c.json(error.body, error.status); }
+    return c.json({ sessionId: c.req.param("sessionId"), deleted: true });
   });
 
   app.post("/api/agents/:id/sessions", async (c) => {

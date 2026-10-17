@@ -26,7 +26,7 @@
 
 ## 1.1 它在交互 harness「任务」分类中的位置（2026-10-15 定）
 
-协议把**任务（总类）**分成两类（见 [`assets/interaction-harness/protocol.md`](../../assets/interaction-harness/protocol.md) §3.8）：
+协议把**任务（总类）**分成两类（见 [`.lifeos/interaction-harness/protocol.md`](../../.lifeos/interaction-harness/protocol.md) §3.8）：
 
 | 类型 | 谁发起 | 我们这份文档对应的是 |
 |---|---|---|

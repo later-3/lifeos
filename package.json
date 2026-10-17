@@ -11,7 +11,7 @@
     "@hono/node-server": "^1.19.1"
   },
   "scripts": {
-    "home:install": "node --experimental-strip-types src/home.ts",
+    "home:install": "node --experimental-strip-types src/install.ts",
     "dev": "node --experimental-strip-types --watch src/main.ts",
     "dev:web": "pnpm --dir frontend dev",
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs && pnpm --dir frontend build",

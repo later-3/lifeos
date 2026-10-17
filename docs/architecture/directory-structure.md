@@ -9,7 +9,7 @@
 | 东西 | 说明 |
 |---|---|
 | `docs/**` | 设计文档（唯一准绳） |
-| `assets/interaction-harness/protocol.md` | **交互 harness 协议正文**（随包资产，装到家目录 `~/.lifeos/interaction-harness/protocol.md`） |
+| `.lifeos/**` | **家目录模板（随包资产）**：交互 harness 协议正文、默认 Agent、目录骨架——install = 整树复制到 `~/.lifeos` |
 | `pi/` | Pi SDK 子模块（依赖） |
 | 脚手架 | `package.json`、`tsconfig.json`、`pnpm-workspace.yaml`、`.gitignore`、`.gitmodules`、`README.md`、`AGENTS.md`、`CLAUDE.md`（README/AGENTS/CLAUDE 已于 2026-10-16 按新结构重写，原先引用的是已删的旧世界） |
 
@@ -38,8 +38,8 @@ lifeos/
 │  └─ vite.config.ts     dev 代理 /api → 后端端口
 ├─ test/
 │  └─ health.test.mjs    后端测试：GET /api/health 返回 {ok:true,service:"lifeos"}
-├─ assets/
-│  └─ interaction-harness/protocol.md   交互 harness 协议正文（随包资产）
+├─ .lifeos/
+│  └─ …            家目录模板：interaction-harness/ + agents/lifeosagent/ + 目录骨架（install 整树复制）
 ├─ docs/**               设计文档（保留）
 └─ pi/                   Pi SDK 子模块（依赖）
 ```
@@ -57,4 +57,5 @@ lifeos/
 
 - 文件 kebab-case；函数/变量 camelCase；类型/组件 PascalCase。
 - HTTP 路径 `/api/<资源>`；Agent 路径段用 **id**（slug，见 `foundation.md` §5.1）。
-- 家目录固定名（运行时数据，不进仓库）：`config/`、`interaction-harness/`、`agents/<id>/`、`projects/<id>/`、`workspaces/`、`runtime/`、`logs/`。
+- 家目录固定名（运行时数据，不进仓库）：`config/`、`interaction-harness/`、`agents/<id>/`（含 `projects/workspace/`）、`projects/<pid>/`、`runtime/`、`logs/`。
+  **骨架的模板事实源 = 仓库根 `.lifeos/`**（同构复制，不在代码里另写目录清单）。

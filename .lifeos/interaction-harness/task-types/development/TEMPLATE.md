@@ -33,5 +33,5 @@
 - **规范**：本类型的细则在 `task-types/development/`（需求 / 前端 / 开发 / task / 测试 / 维护）；
 - **原则**：做取舍时引用 `principles.md`，不在这里重复写；
 - **概念**：用词以 `concept-space.md` 为准；
-- **项目级**：项目自己的规范在项目仓库里（**不属于 harness**）；项目共用内容在 `~/.chat/projects/<projectId>/`；
-- **Agent 专属**：`~/.chat/long-agents/<agentId>/`（项目内私有：`.../projects/<projectId>/`）。
+- **项目级**：项目自己的规范在项目仓库里（**不属于 harness**）；项目共用内容在 `~/.lifeos/projects/<projectId>/`；
+- **Agent 专属**：`~/.lifeos/agents/<agentId>/`（项目内私有：`.../projects/<projectId>/`）。

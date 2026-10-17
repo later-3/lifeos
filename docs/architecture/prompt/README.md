@@ -7,7 +7,7 @@
 |---|---|
 | 本文件 | **Prompt 在 Life OS 里指什么**、分几层、业务怎样挂在上面、做 Prompt 相关业务必须遵守什么 |
 | [mechanism.md](./mechanism.md) | **通用机制**：区域声明与注册、承载形态、常在/按需判据、差分落点、请求边界门禁 |
-| [harness-protocol.md](../../../assets/interaction-harness/protocol.md) | **交互 harness 协议（首版，待审核）**：是什么、由什么组成、逐部分展开、自举概念空间、日期与大小策略、层级与归属机制 |
+| [harness-protocol.md](../../../.lifeos/interaction-harness/protocol.md) | **交互 harness 协议（首版，待审核）**：是什么、由什么组成、逐部分展开、自举概念空间、日期与大小策略、层级与归属机制 |
 | [interaction-harness.md](./interaction-harness.md) | **交互 harness 的注入契约**：包含哪些内容、进哪个区域、各场景怎样使用 |
 | [generic-layer-design.md](./generic-layer-design.md) | **通用层设计（目标，待审核）**：一个类型 = 声明 + 生产者；装入位置按形态；指针复用 Pi Skill；四类 prompt 需求的落法 |
 | [backend-implementation.md](./backend-implementation.md) | **后端实现（第一层）**：用户发消息到 Pi SDK 请求的逐步链路、Pi 与 Life OS 的职责分界、验证状态 |

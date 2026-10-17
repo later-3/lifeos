@@ -32,13 +32,14 @@ pi/         Pi SDK（子模块，Agent 运行时）
 ## 4 家目录（`~/.lifeos`）
 
 ```
-config/                 唯一配置目录（settings.json、models.json）
+config/                 唯一配置目录（settings.json、models.json；含密钥，不进 Git）
 interaction-harness/    协议、任务类型、概念空间、案例
-agents/<id>/            Agent 定义（agent.json、identity.md、能力、workspace）
-projects/<id>/          项目共用层
-workspaces/ runtime/ logs/
+agents/<id>/            Agent 定义与私有空间（agent.json、identity.md、projects/<pid>/…含出厂默认会话）
+projects/<pid>/          项目共用层（跨 Agent 共享）
+runtime/ logs/
 install-receipt.json    安装收据
 ```
+骨架的**模板事实源 = 仓库根 `.lifeos/`**：`pnpm home:install` = 模板整树复制（家目录已存在则只提醒、不动任何东西）；服务启动只校验家目录存在，不创建、不覆盖。
 细则见 `agent.md` §9。**不引入环境变量**（仅 `LIFEOS_HOME` 作引导/测试）。
 
 ## 5 接口面（v1 最小集）
@@ -49,6 +50,10 @@ install-receipt.json    安装收据
 | `GET /api/home`、`GET /api/home/installation` | 家目录与安装收据 |
 | `GET·POST /api/agents`、`GET·PATCH·DELETE /api/agents/:id` | Agent 定义 |
 | `GET·PUT /api/agents/:id/avatar` | 头像 |
+| `GET /api/agents/:id/projects` | Agent 的 project 列表（扫描 `agents/<id>/projects/*/`，name 读 `project.json`） |
+| `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表 |
+| `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
+| `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |
 | `GET /api/sessions`、`GET /api/sessions/:id`、`DELETE /api/sessions/:id` | 会话 |
 | `POST /api/agents/:id/turns` | 发一条消息（受理） |
 | `GET /api/turns/:turnId/events`（SSE） | 回合事件流（带游标，可续） |
