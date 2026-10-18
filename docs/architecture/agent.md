@@ -109,10 +109,16 @@ Agent 的全部信息放在 `agents/<id>/agent.json`；**列举 = 扫描 `agents
 ### 5.6 项目关系
 
 主体是 **Agent**；**Project 在它的工作范围内**（记录落在 Agent 目录内部）。
-**落地（我们的设计）**：`agents/<id>/agent.json` 的 `defaultProjectId` / `boundProjectIds` 是权威（`long-agents.json` 里那份暂作投影，见 §5.5）。语义 = "允许在哪些项目里干活"的清单（方向 **Agent → Project**）。
+**落地（我们的设计）**：`agents/<id>/agent.json` 的 `defaultProjectId` / `boundProjectIds` 是权威（注册表类总表已废，见 §5.5）。语义 = "允许在哪些项目里干活"的清单（方向 **Agent → Project**）。
 项目共用信息（该项目的交互 harness 内容）在 `<home>/projects/<projectId>/`。细节见 [`lifeos-context-resource-model.md`](./lifeos-context-resource-model.md)。
 
 **默认 project = workspace（2026-10-17 定）**：`defaultProjectId` 的缺省值就是内置 project `workspace`（`agents/<id>/projects/workspace/`）。项目指引（`AGENTS.md`）、会话（`sessions/`）、任务（`tasks/`）、每日记录（`daily/`）、案例（`cases/`）、`todo/`、概念索引（`concept-space.md`）都落在这个目录里（协议 §15）。与顶层 `projects/<pid>/`（项目共用层，跨 Agent 共享）的区分不变：**workspace 属 Agent 私有层**。
+
+**注册与解绑（2026-10-18 定稿，本轮实现）**：
+- **注册 = `POST /api/agents/:id/projects {path}` 合成入口**（注册+绑定一步，用户拍板）：校验目录 → **同 path 幂等复用** → 否则生成 **pid = uuidv7**、写共用层 `~/.lifeos/projects/<pid>/project.json {schemaVersion,id,name,path}`（**不写进用户目录**）、追加 `boundProjectIds`（agent.json 原子写）。
+- **枚举 = 扫描共用层**（同 §5.5 “扫描即枚举”，不建 registry 总表，家目录保持干净）；`GET …/projects` = boundProjectIds 解析 + 内置 workspace；私有目录**按需建**（旧协议 §9.1 缺口A 已决）。
+- **解绑 = `DELETE …/:pid`**：仅从 `boundProjectIds` 移除，**项目注册与会话/记录全部保留**（§9.1 已决原文）；内置 workspace 不可解绑（400）。
+- **会话 cwd**：workspace → `~/.lifeos`；外部项目 → 项目 `path`（Pi 工具作用域 = 项目目录）。
 
 ### 5.7 运行与生命周期（包含"注册"）
 

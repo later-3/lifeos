@@ -50,20 +50,23 @@ install-receipt.json    安装收据
 | `GET /api/home`、`GET /api/home/installation` | 家目录与安装收据 |
 | `GET·POST /api/agents`、`GET·PATCH·DELETE /api/agents/:id` | Agent 定义 |
 | `GET·PUT /api/agents/:id/avatar` | 头像 |
-| `GET /api/agents/:id/projects` | Agent 的 project 列表（扫描 `agents/<id>/projects/*/`，name 读 `project.json`） |
-| `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表 |
+| `GET /api/agents/:id/projects` | Agent 的 project 列表（`boundProjectIds` 解析 + 内置 workspace；外部项目 name/path 读共用层 manifest） |
+| `POST /api/agents/:id/projects` | **注册外部项目 + 绑定合成一步**（校验目录 → 同 path 幂等复用 → 否则 pid=uuidv7、写 `~/.lifeos/projects/<pid>/project.json {schemaVersion,id,name,path}`、追加 `boundProjectIds`） |
+| `DELETE /api/agents/:id/projects/:pid` | 解绑（仅移出 `boundProjectIds`；**项目注册与会话/记录全部保留**；内置 workspace 不可解绑 400） |
+| `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表（已注册且已绑定即 200，私有目录未建返回空列表） |
+| `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd=项目 path；workspace 则 = `~/.lifeos`**；私有目录按需建） |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
 | `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |
 | `GET /api/fs/roots`、`POST /api/fs/roots` | 文件浏览器的根白名单（默认根=家目录；额外根持久化到 `config/file-roots.json`） |
 | `GET /api/fs/tree`、`GET /api/fs/content` | 列目录 / 读文件（**resolve 后必须落在已注册根内**，越权 403） |
 | `GET /api/fs/browse` | 目录选择器专用：任意路径只列子目录名（不读文件） |
-| `GET /api/sessions`、`GET /api/sessions/:id`、`DELETE /api/sessions/:id` | 会话 |
-| `POST /api/agents/:id/turns` | 发一条消息（受理） |
+| `GET /api/sessions`、`GET /api/sessions/:id`、`DELETE /api/sessions/:id` | 会话 || `POST /api/agents/:id/turns` | 发一条消息（受理） |
 | `GET /api/turns/:turnId/events`（SSE） | 回合事件流（带游标，可续） |
 | `POST /api/turns/:turnId/interrupt` | 打断 |
 | `GET·PUT /api/sessions/:id/prompt-config`、`GET·PUT /api/agents/:id/prompt-config` | 提示词配置（会话级 / 默认层） |
 | `GET·PUT /api/models-config` | 模型与运行参数 |
-| `GET /api/projects`、`POST /api/projects/open` | 项目注册表 |
+
+> 项目注册的旧规划 `POST /api/projects/open`（两步 open+bind）**已废弃为合成入口** `POST /api/agents/:id/projects`（用户 2026-10-18 拍板：合成、pid=uuidv7、解绑随本轮、URL 三键随本轮）。
 
 ### 5.1 路径里用的是 **id**（不是可改的显示名）
 

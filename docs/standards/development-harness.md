@@ -10,8 +10,8 @@
 | 层 | 物理位置 | 我们放什么 |
 |---|---|---|
 | 通用层（跨项目的共用资产） | `~/.lifeos/interaction-harness/` | 协议正文、本层指引、飞轮、概念空间索引、案例、**任务模板** `task-types/<type>/TEMPLATE.md` |
-| **项目共用层**（= 该项目的交互 harness：项目共用信息） | `~/.lifeos/projects/lifeos/` | 项目声明 `task-types.json`；**该项目的开发规范 6 份**（`task-types/development/`） |
-| **Agent × 项目私有层**（默认 Agent `lifeosagent` 在 lifeos 项目下） | `~/.lifeos/long-agents/lifeosagent/projects/lifeos/` | 任务记录 `tasks/`、日报 `daily/`、案例 `cases/`、项目专属指引 `project-guidance.md` |
+| **项目共用层**（= 已注册项目的共用信息） | `~/.lifeos/projects/<pid>/`（**仅当项目已注册**；记录不放这里） | 注册身份 `project.json`；项目声明等共用资产 |
+| **Agent × 项目私有层**（记录跟当前工作项目走） | `~/.lifeos/agents/<agent>/projects/<当前工作项目>/`，**默认 = `workspace/`**；打开外部项目后 = `projects/<pid>/` | 任务 `tasks/`、日报 `daily/`、案例 `cases/`、`todo/` |
 
 **方向（别再说反了）**：主体是 **Agent**，项目是它工作范围里的一部分（记录落在 Agent 目录内）；`boundProjectIds` 只是"这个 Agent 允许在哪些项目里干活"的清单。
 | 项目自己的仓库文件 | `/Users/xulater/Code/lifeos/AGENTS.md` 等 | 仓库级约定（由 Pi 资源发现读取，不进 harness 区域） |
@@ -25,9 +25,9 @@
 
 | 动作 | 落点 | 现状 |
 |---|---|---|
-| 任务要有目录与 `task.md` | `<agent>/projects/lifeos/tasks/<slug>-<id8>/` | 已在做（本任务就是） |
-| 每轮回填日报 | `<agent>/projects/lifeos/daily/<日期>.md` | 已在做（旧家） |
-| 正例/反例编号回填 | `<agent>/projects/lifeos/cases/<日期>.md`；通用案例在 `~/.lifeos/interaction-harness/cases/` | 部分（旧家） |
+| 任务要有目录与 `task.md` | `<agent>/projects/workspace/tasks/<slug>-<id8>/`（打开外部项目后随该项目 pid） | 已在做 |
+| 每轮回填日报 | `<agent>/projects/workspace/daily/<日期>.md`（默认；外部项目打开后随该项目） | 已在做 |
+| 正例/反例编号回填 | `<agent>/projects/workspace/cases/<日期>.md`；通用案例在 `~/.lifeos/interaction-harness/cases/` | 已在做 |
 | 新概念先写概念空间再用 | `~/.lifeos/interaction-harness/concept-space.md` + 索引 | 待迁 |
 | 任务类型按声明加载 | `~/.lifeos/projects/lifeos/task-types.json` = `{"schemaVersion":1,"taskTypes":["development"]}` + `~/.lifeos/interaction-harness/task-types/development/*.md` | ✅ 已建（2026-10-15，实机验证请求可见） |
 

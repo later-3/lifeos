@@ -21,6 +21,8 @@ type AgentState = {
   listeners: Set<(event: AgentEvent) => void>;
   sessions: Map<string, SessionState>;
   running: Map<string, RunSnapshot>;
+  /** 已创建但尚未落盘的会话（Pi 对无消息会话延迟写文件）——列表必须包含它们，否则“新建会话”隐身。 */
+  pending: Map<string, { projectId: string; at: string }>;
 };
 
 // 状态以「家 + agentId」为键：测试/引导切换 LIFEOS_HOME 后不串状态（同 id 会话可能存在于不同家）。
@@ -31,7 +33,7 @@ function stateOf(agentId: string): AgentState {
   const key = stateKey(agentId);
   const existing = agents.get(key);
   if (existing !== undefined) return existing;
-  const created: AgentState = { seq: 0, recent: [], listeners: new Set(), sessions: new Map(), running: new Map() };
+  const created: AgentState = { seq: 0, recent: [], listeners: new Set(), sessions: new Map(), running: new Map(), pending: new Map() };
   agents.set(key, created);
   return created;
 }
@@ -60,23 +62,49 @@ export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot
   return { seq: state.seq, running: [...state.running.values()] };
 }
 
-/** 会话物理落在默认 project（workspace）下——结构即事实（协议 §15.1 终态，无“迁移”）。 */
-export function sessionDir(agentId: string): string {
-  return join(resolveHome(), "agents", agentId, "projects", "workspace", "sessions");
+/** 会话物理落在所属 project 的 sessions/ 下（协议 §15.1 结构即事实；默认 workspace）。 */
+export function sessionDir(agentId: string, projectId = "workspace"): string {
+  return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
 }
 
-/** 新建会话：先确保默认 workspace 已注册（每个 Agent 天然有默认 project，agent.md §5.6），再建会话。 */
-export async function createSession(agentId: string, cwd: string): Promise<string> {
-  const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
-  await mkdir(projectDir, { recursive: true });
-  await writeFile(join(projectDir, "project.json"),
-    JSON.stringify({ schemaVersion: 1, id: "workspace", name: "工作区" }) + "\n",
-    { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // 已存在则不覆盖（create-only）
-  const manager = SessionManager.create(cwd, sessionDir(agentId));
+/** 跨 project 定位会话文件（会话可能在任一已绑定项目的 sessions/ 里）。 */
+async function findSessionFile(agentId: string, sessionId: string): Promise<{ path: string; dir: string } | undefined> {
+  const root = join(resolveHome(), "agents", agentId, "projects");
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(root, entry.name, "sessions");
+    const file = (await readdir(dir).catch(() => [] as string[])).find((name) => name.endsWith(`_${sessionId}.jsonl`));
+    if (file !== undefined) return { path: join(dir, file), dir };
+  }
+  return undefined;
+}
+
+/** 新建会话到指定 project（cwd 由调用方按项目定：workspace=~/.lifeos，外部=项目 path）。 */
+export async function createSession(agentId: string, cwd: string, projectId = "workspace"): Promise<string> {
+  if (projectId === "workspace") {
+    // 内置 workspace 兜底注册（每个 Agent 天然有默认 project，agent.md §5.6）；外部项目 manifest 在共用层，不在此处理。
+    const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "project.json"),
+      JSON.stringify({ schemaVersion: 1, id: "workspace", name: "工作区" }) + "\n",
+      { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
+  }
+  const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));
   const { session } = await createAgentSession({ sessionManager: manager });
   const sessionId = manager.getSessionId();
   stateOf(agentId).sessions.set(sessionId, { session });
+  stateOf(agentId).pending.set(sessionId, { projectId, at: new Date().toISOString() });
   return sessionId;
+}
+
+/** 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。 */
+export function pendingSessions(agentId: string): Array<{ sessionId: string; projectId: string; at: string; name?: string }> {
+  const state = stateOf(agentId);
+  return [...state.pending.entries()].map(([sessionId, meta]) => {
+    const name = state.sessions.get(sessionId)?.session.sessionManager.getSessionName();
+    return { sessionId, ...meta, ...(name !== undefined && name !== "" ? { name } : {}) };
+  });
 }
 
 /** 取会话：内存没有就从会话文件恢复（重启后也能续接；出厂默认会话也走这条路）。
@@ -86,13 +114,12 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   const state = stateOf(agentId);
   const existing = state.sessions.get(sessionId);
   if (existing !== undefined) return existing;
-  const dir = sessionDir(agentId);
-  const file = (await readdir(dir).catch(() => [] as string[]))
-    .find((name) => name.endsWith(`_${sessionId}.jsonl`));
-  if (file === undefined) return undefined;
-  const { session } = await createAgentSession({ sessionManager: SessionManager.open(join(dir, file), dir, cwd) });
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return undefined;
+  const { session } = await createAgentSession({ sessionManager: SessionManager.open(found.path, found.dir, cwd) });
   const restored: SessionState = { session };
   state.sessions.set(sessionId, restored);
+  state.pending.delete(sessionId);
   return restored;
 }
 
@@ -115,6 +142,7 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   } finally {
     unsubscribe();
     state.running.delete(sessionId);
+    state.pending.delete(sessionId);   // 首轮消息后 Pi 已落盘，文件列表接管
   }
 }
 
@@ -122,11 +150,11 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
 export async function deleteSession(agentId: string, sessionId: string): Promise<"deleted" | "not_found" | "running"> {
   const state = stateOf(agentId);
   if (state.running.has(sessionId)) return "running";
-  const dir = sessionDir(agentId);
-  const file = (await readdir(dir).catch(() => [] as string[])).find((name) => name.endsWith(`_${sessionId}.jsonl`));
-  if (file === undefined && !state.sessions.has(sessionId)) return "not_found";
-  if (file !== undefined) await rm(join(dir, file), { force: true });
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined && !state.sessions.has(sessionId)) return "not_found";
+  if (found !== undefined) await rm(found.path, { force: true });
   state.sessions.delete(sessionId);
+  state.pending.delete(sessionId);
   return "deleted";
 }
 
@@ -134,10 +162,9 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
 export async function renameSession(agentId: string, sessionId: string, name: string, cwd: string): Promise<boolean> {
   const loaded = stateOf(agentId).sessions.get(sessionId);
   if (loaded !== undefined) { loaded.session.sessionManager.appendSessionInfo(name); return true; }
-  const dir = sessionDir(agentId);
-  const file = (await readdir(dir).catch(() => [] as string[])).find((n) => n.endsWith(`_${sessionId}.jsonl`));
-  if (file === undefined) return false;
-  SessionManager.open(join(dir, file), dir, cwd).appendSessionInfo(name);
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return false;
+  SessionManager.open(found.path, found.dir, cwd).appendSessionInfo(name);
   return true;
 }
 

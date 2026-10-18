@@ -3,5 +3,7 @@
   "id": "lifeosagent",
   "name": "Life Agent",
   "description": "Life OS 的默认 Agent",
-  "defaultSessionId": "de64dc0a-68f6-4382-ac43-f18fd7696c7b"
+  "defaultSessionId": "de64dc0a-68f6-4382-ac43-f18fd7696c7b",
+  "defaultProjectId": "workspace",
+  "boundProjectIds": []
 }

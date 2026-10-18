@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { IconChevronLeft, IconChevronRight, IconLayoutSidebarRight, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconLayoutSidebarRight, IconPencil, IconPlus, IconTrash, IconX } from "@tabler/icons-react";
+import { DirectoryPicker } from "./DirectoryPicker";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
 import { useColumnWidth, type ColumnKey } from "./useColumnWidth";
@@ -9,7 +10,7 @@ import { useFilePanel } from "./useFilePanel";
 // 折叠**完全独立**（收第2级不牵连第3级）：藏起的列在其原位留一条窄边（chevron），点边即展开（2026-10-17 用户更正）。
 // 每列可拖宽（宽度持久化）；图标语言与 Pi Web 一致（Tabler、纯图标 + title 提示、静音 hover）。
 type Agent = { id: string; name: string };
-type Project = { id: string; name: string; isDefault: boolean };
+type Project = { id: string; name: string; isDefault: boolean; path?: string };   // path = 外部项目（注册过才有）
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type Block =
   | { type: "text"; text: string }
@@ -58,6 +59,8 @@ export default function App() {
   const [showProjects, setShowProjects] = useState(true);
   const [showSessions, setShowSessions] = useState(true);
   const [showTree, setShowTree] = useState(() => localStorage.getItem("lifeos.fileTree") !== "0");   // 面板内树列（独立折叠）
+  const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();              // 会话行内重命名
+  const [addingProject, setAddingProject] = useState(false);                                              // 注册外部项目（DirectoryPicker 模态）
   // 文件面板（页签/开合）与列宽（拖拽/视口钳制）各自成模块（2026-10-17 坏味道清理）
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
   const { widths, beginDrag, panelWidth, treeWidth, panelFits } = useColumnWidth({ nav: showNav, projects: showProjects, sessions: showSessions });
@@ -70,6 +73,15 @@ export default function App() {
   useEffect(() => { current.current = sessionId; }, [sessionId]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); });
   useEffect(() => { localStorage.setItem("lifeos.fileTree", showTree ? "1" : "0"); }, [showTree]);
+  // URL 三键（2026-10-18 拍板）：agent → project → session，切换即 replaceState（刷新/分享可恢复）。
+  useEffect(() => {
+    if (agent === undefined || sessionId === undefined) return;
+    const params = new URLSearchParams();
+    params.set("agent", agent.id);
+    if (selectedProjectId !== undefined) params.set("project", selectedProjectId);
+    params.set("session", sessionId);
+    window.history.replaceState(null, "", `?${params.toString()}`);
+  }, [agent?.id, selectedProjectId, sessionId]);
   async function fetchGroups(id: string): Promise<Group[]> {
     const projects = (await (await fetch(`/api/agents/${id}/projects`)).json()) as { items: Project[] };
     return await Promise.all(projects.items.map(async (project) => {
@@ -180,33 +192,83 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id, streamSeq === 0]);
 
-  // 首屏：Agent 列表 → 选中第一个 → 下钻到最近会话。
+  // 首屏：读 URL 三键恢复（无效键逐级降级）；无 URL → 第一个 agent → 最近会话。
   useEffect(() => {
     void (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const wantAgent = params.get("agent");
+      const wantProject = params.get("project");
+      const wantSession = params.get("session");
       const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
       setAgents(data.items);
-      const first = data.items[0];
-      if (first !== undefined) await selectAgent(first);
+      const found = data.items.find((item) => item.id === wantAgent) ?? data.items[0];
+      if (found === undefined) return;
+      setAgent(found);
+      ctx.current = { agentId: found.id };
+      const groups = await fetchGroups(found.id);
+      setGroups(groups);
+      // 一致性：session 所在 group 是事实源（三键必须同链，不匹配的键降级忽略）
+      const owner = wantSession !== null ? groups.find((g) => g.sessions.some((s) => s.sessionId === wantSession)) : undefined;
+      const group = owner ?? groups.find((g) => g.project.id === wantProject) ?? groups.find((g) => g.project.isDefault) ?? groups[0];
+      setSelectedProjectId(group?.project.id);
+      const target = wantSession !== null && group?.sessions.some((s) => s.sessionId === wantSession)
+        ? wantSession
+        : pickLatest(group?.sessions ?? [])?.sessionId;
+      if (target !== undefined) await openSession(found, target);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function newSession() {
     if (agent === undefined) return;
-    const created = await (await fetch(`/api/agents/${agent.id}/sessions`, { method: "POST" })).json() as { sessionId: string };
-    const next = await reloadGroups();
-    const home = (next ?? groups).find((group) => group.project.isDefault) ?? (next ?? groups)[0];
-    setSelectedProjectId(home?.project.id);
+    const created = await (await fetch(`/api/agents/${agent.id}/projects/${selectedProjectId ?? "workspace"}/sessions`, { method: "POST" })).json() as { sessionId: string };
+    await reloadGroups();
+    // 新会话就建在当前选中的 project 下（2026-10-18：按 project 创建后，不再跳回默认项目）
     setShowSessions(true);
     await openSession(agent, created.sessionId);
   }
 
-  async function renameSession(session: SessionItem) {
+  /** 注册外部项目（合成入口：注册+绑定一步）；成功后直接进入该项目（URL 三键随之更新）。 */
+  async function registerProject(path: string): Promise<string | null> {
+    if (agent === undefined) return "没有当前助手";
+    const response = await fetch(`/api/agents/${agent.id}/projects`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }),
+    });
+    const data = await response.json() as { project?: { id: string }; error?: { message: string } };
+    if (!response.ok || data.project === undefined) return data.error?.message ?? "注册失败";
+    const pid = data.project.id;
+    setAddingProject(false);
+    const next = await reloadGroups();
+    const target = (next ?? []).find((g) => g.project.id === pid);
+    if (target !== undefined) await selectProject(target.project);
+    return null;
+  }
+
+  /** 解绑：仅移出清单；项目注册与会话/记录全部保留（agent.md §5.6）。 */
+  async function unbindProject(project: Project) {
     if (agent === undefined) return;
-    const name = window.prompt("重命名会话", session.title);
-    if (name === null || name.trim() === "") return;
+    if (!window.confirm(`从该助手移除「${project.name}」？\n项目注册与该项目下的会话、记录都会保留。`)) return;
+    const response = await fetch(`/api/agents/${agent.id}/projects/${project.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const error = await response.json() as { error?: { message?: string } };
+      window.alert(error.error?.message ?? "移除失败");
+      return;
+    }
+    const next = await reloadGroups();
+    if (selectedProjectId === project.id) {
+      const fallback = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
+      if (fallback !== undefined) await selectProject(fallback.project);
+      else { setSelectedProjectId(undefined); setSessionId(undefined); setMessages([]); }
+    }
+  }
+
+  /** 行内重命名（Pi Web 同型）：Enter 保存，Esc/失焦取消；写 session_info（name 机制）。 */
+  async function commitRename(session: SessionItem, value: string) {
+    setRenaming(undefined);
+    const trimmed = value.trim();
+    if (agent === undefined || trimmed === "" || trimmed === session.title) return;
     await fetch(`/api/agents/${agent.id}/sessions/${session.sessionId}`, {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }),
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: trimmed }),
     });
     await reloadGroups();
   }
@@ -222,8 +284,12 @@ export default function App() {
     }
     const next = await reloadGroups();
     if (session.sessionId === sessionId) {
-      const latest = pickLatest((next ?? []).flatMap((group) => group.sessions));
-      if (latest !== undefined) await openSession(agent, latest.sessionId);
+      // 回退保持三键一致：先在当前 project 内找兄弟会话；本项目空了才整体切到默认项目（selectProject 会同步 URL）
+      const currentGroup = (next ?? []).find((g) => g.project.id === selectedProjectId);
+      const sibling = pickLatest((currentGroup?.sessions ?? []).filter((s) => s.sessionId !== session.sessionId));
+      if (sibling !== undefined) { await openSession(agent, sibling.sessionId); return; }
+      const fallbackGroup = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
+      if (fallbackGroup !== undefined) await selectProject(fallbackGroup.project);
       else { setSessionId(undefined); setMessages([]); }
     }
   }
@@ -251,7 +317,8 @@ export default function App() {
   useEffect(() => {
     if (panelOpen && !panelFits) setPanelOpen(false);
   }, [panelOpen, panelFits]);
-  const titleOf = (item?: SessionItem) => item?.title || (item?.isDefault ? "默认会话" : "新会话");
+  // 显示链（用户 2026-10-17 定，对齐 Pi Web、无兜底）：session_info.name ‖ 首条用户消息（后端返全文，UI 截 50）
+  const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
   /** 列头：小标题 + 纯图标收起按钮（Pi Web 式：icon + title 提示）。 */
   const ColumnHeader = ({ label, onHide }: { label: React.ReactNode; onHide: () => void }) => (
@@ -304,14 +371,30 @@ export default function App() {
             <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
               {groups.length === 0 && <p className="px-2 py-6 text-center text-xs text-neutral-400">该助手还没有项目</p>}
               {groups.map((group) => (
-                <button key={group.project.id} onClick={() => void selectProject(group.project)}
-                  className={`${rowBase} ${group.project.id === selectedProjectId ? rowActive : rowIdle}`}>
+                <div key={group.project.id} onClick={() => void selectProject(group.project)}
+                  className={`group flex w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${group.project.id === selectedProjectId ? rowActive : rowIdle}`}>
                   <span className="min-w-0 flex-1 truncate">{group.project.name}</span>
                   {group.project.isDefault && <span className="shrink-0 rounded-md bg-neutral-200/80 px-1.5 py-px text-[10px] font-normal text-neutral-500">默认</span>}
-                  <span className="shrink-0 text-[10px] font-normal text-neutral-400">{group.sessions.length}</span>
-                </button>
+                  <span className="shrink-0 text-[10px] font-normal text-neutral-400 group-hover:hidden" title={group.project.path ?? ""}>{group.sessions.length}</span>
+                  {group.project.path !== undefined && (
+                    <span className="hidden shrink-0 items-center group-hover:flex">
+                      <button title="从该助手移除（项目与会话保留）" aria-label="从该助手移除项目"
+                        onClick={(event) => { event.stopPropagation(); void unbindProject(group.project); }}
+                        className="rounded-md p-1 text-neutral-300 transition-colors hover:bg-neutral-200 hover:text-neutral-700"><IconX size={13} /></button>
+                    </span>
+                  )}
+                </div>
               ))}
             </div>
+            <div className="border-t border-neutral-200 p-2">
+              <button onClick={() => setAddingProject(true)}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-neutral-200 bg-white py-1.5 text-[13px] text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
+                <IconFolderPlus size={14} /> 添加项目
+              </button>
+            </div>
+            {addingProject && (
+              <DirectoryPicker onCancel={() => setAddingProject(false)} onSelect={registerProject} />
+            )}
           </aside>
           <DragHandle k="c2" />
         </>
@@ -336,13 +419,28 @@ export default function App() {
                 <div key={item.sessionId}
                   className={`group flex w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${item.sessionId === sessionId ? rowActive : rowIdle}`}
                   onClick={() => agent !== undefined && void openSession(agent, item.sessionId)}>
-                  <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
+                  {renaming?.sid === item.sessionId ? (
+                    <input autoFocus
+                      value={renaming.value}
+                      onFocus={(event) => event.currentTarget.select()}
+                      onChange={(event) => setRenaming({ sid: item.sessionId, value: event.target.value })}
+                      onKeyDown={(event) => {
+                        // 提交读 DOM 当前值（currentTarget.value），避免极快输入时闭包值过期
+                        if (event.key === "Enter") { event.preventDefault(); void commitRename(item, event.currentTarget.value); }
+                        if (event.key === "Escape") { event.preventDefault(); setRenaming(undefined); }
+                      }}
+                      onBlur={() => setRenaming(undefined)}
+                      onClick={(event) => event.stopPropagation()}
+                      className="min-w-0 flex-1 rounded-md border border-neutral-400 bg-white px-1 py-0.5 text-[13px] outline-none focus:border-neutral-500" />
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
+                  )}
                   {item.running
                     ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="生成中" />
                     : <span className="shrink-0 text-[10px] text-neutral-400 group-hover:hidden">{timeAgo(item.updatedAt)}</span>}
                   <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
                     <button title="重命名" aria-label="重命名会话"
-                      onClick={(event) => { event.stopPropagation(); void renameSession(item); }}
+                      onClick={(event) => { event.stopPropagation(); setRenaming({ sid: item.sessionId, value: item.title }); }}
                       className="rounded-md p-1 text-neutral-300 transition-colors hover:bg-neutral-200 hover:text-neutral-700"><IconPencil size={13} /></button>
                     <button title="删除" aria-label="删除会话"
                       onClick={(event) => { event.stopPropagation(); void removeSession(item); }}
