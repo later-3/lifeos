@@ -1,10 +1,11 @@
 // HTTP 接口：只读 Agent + 会话列表/读取 + 一条按 Agent 的事件流（带快照与序号，可续传）。
 import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createSession, deleteSession, getSession, messagesOf, renameSession, runTurn, snapshotOf, subscribeAgent } from "./agent-host.ts";
+import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { resolveHome } from "./home.ts";
 
 export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string };
@@ -184,6 +185,48 @@ export function createApp(cwd = process.cwd()) {
         c.req.raw.signal.addEventListener("abort", () => { unsubscribe(); void stream.close(); resolve(); });
       });
     });
+  });
+
+  // —— 文件浏览器（docs/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——
+  const fsError = (c: Context, error: { code: string; message: string; status: number }) =>
+    c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
+
+  app.get("/api/fs/roots", async (c) => c.json({ roots: await readRoots() }));
+
+  app.post("/api/fs/roots", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { path?: unknown } | undefined;
+    if (body === undefined || typeof body.path !== "string" || body.path.trim() === "") {
+      const error = problem("invalid_request", "需要 path 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const result = await registerRoot(body.path);
+    if ("code" in result) return fsError(c, result);
+    return c.json({ roots: result.roots }, 201);
+  });
+
+  app.get("/api/fs/browse", async (c) => {
+    const result = await browse(c.req.query("path"));
+    if ("code" in result) return fsError(c, result);
+    return c.json(result);
+  });
+
+  app.get("/api/fs/tree", async (c) => {
+    const path = c.req.query("path");
+    if (path === undefined || path === "") {
+      const error = problem("invalid_request", "需要 path 查询参数", 400); return c.json(error.body, error.status);
+    }
+    const result = await listTree(path);
+    if ("code" in result) return fsError(c, result);
+    return c.json(result);
+  });
+
+  app.get("/api/fs/content", async (c) => {
+    const path = c.req.query("path");
+    if (path === undefined || path === "") {
+      const error = problem("invalid_request", "需要 path 查询参数", 400); return c.json(error.body, error.status);
+    }
+    const result = await readContent(path);
+    if ("code" in result) return fsError(c, result);
+    return c.json(result);
   });
 
   app.use("/*", serveStatic({ root: "./frontend/dist" }));

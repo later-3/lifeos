@@ -54,6 +54,9 @@ install-receipt.json    安装收据
 | `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
 | `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |
+| `GET /api/fs/roots`、`POST /api/fs/roots` | 文件浏览器的根白名单（默认根=家目录；额外根持久化到 `config/file-roots.json`） |
+| `GET /api/fs/tree`、`GET /api/fs/content` | 列目录 / 读文件（**resolve 后必须落在已注册根内**，越权 403） |
+| `GET /api/fs/browse` | 目录选择器专用：任意路径只列子目录名（不读文件） |
 | `GET /api/sessions`、`GET /api/sessions/:id`、`DELETE /api/sessions/:id` | 会话 |
 | `POST /api/agents/:id/turns` | 发一条消息（受理） |
 | `GET /api/turns/:turnId/events`（SSE） | 回合事件流（带游标，可续） |

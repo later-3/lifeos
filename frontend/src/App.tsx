@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { IconChevronLeft, IconChevronRight, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import { IconChevronLeft, IconChevronRight, IconLayoutSidebarRight, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import { FileTree } from "./FileTree";
+import { FilePanel } from "./FilePanel";
+import { useColumnWidth, type ColumnKey } from "./useColumnWidth";
+import { useFilePanel } from "./useFilePanel";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠**完全独立**（收第2级不牵连第3级）：藏起的列在其原位留一条窄边（chevron），点边即展开（2026-10-17 用户更正）。
@@ -14,19 +18,6 @@ type Block =
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[] };
 type Group = { project: Project; sessions: SessionItem[] };
 type AgentEvent = { seq: number; sessionId: string; type: "delta" | "done" | "error"; text?: string; message?: string };
-
-type ColumnKey = "c1" | "c2" | "c3";
-const WIDTH_KEY = "lifeos.columnWidths";
-const DEFAULT_WIDTHS: Record<ColumnKey, number> = { c1: 232, c2: 216, c3: 272 };
-const WIDTH_LIMITS: Record<ColumnKey, [number, number]> = { c1: [180, 440], c2: [160, 400], c3: [200, 560] };
-
-function loadWidths(): Record<ColumnKey, number> {
-  try {
-    const raw = localStorage.getItem(WIDTH_KEY);
-    if (raw !== null) return { ...DEFAULT_WIDTHS, ...(JSON.parse(raw) as Partial<Record<ColumnKey, number>>) };
-  } catch { /* 损坏则用默认 */ }
-  return DEFAULT_WIDTHS;
-}
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -66,7 +57,10 @@ export default function App() {
   const [showNav, setShowNav] = useState(true);        // 第1列（独立折叠）
   const [showProjects, setShowProjects] = useState(true);
   const [showSessions, setShowSessions] = useState(true);
-  const [widths, setWidths] = useState<Record<ColumnKey, number>>(loadWidths);
+  const [showTree, setShowTree] = useState(() => localStorage.getItem("lifeos.fileTree") !== "0");   // 面板内树列（独立折叠）
+  // 文件面板（页签/开合）与列宽（拖拽/视口钳制）各自成模块（2026-10-17 坏味道清理）
+  const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
+  const { widths, beginDrag, panelWidth, treeWidth, panelFits } = useColumnWidth({ nav: showNav, projects: showProjects, sessions: showSessions });
   const current = useRef<string | undefined>(undefined);
   const ctx = useRef<{ agentId?: string }>({});
   const snapshotSeq = useRef(0);
@@ -75,30 +69,7 @@ export default function App() {
 
   useEffect(() => { current.current = sessionId; }, [sessionId]);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); });
-  useEffect(() => { localStorage.setItem(WIDTH_KEY, JSON.stringify(widths)); }, [widths]);
-
-  /** 列宽拖拽（夹紧区间；松手即持久化）。 */
-  function beginDrag(key: ColumnKey, event: React.MouseEvent) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = widths[key];
-    const [min, max] = WIDTH_LIMITS[key];
-    const move = (moveEvent: MouseEvent) => {
-      const next = Math.min(max, Math.max(min, startWidth + moveEvent.clientX - startX));
-      setWidths((prev) => ({ ...prev, [key]: next }));
-    };
-    const stop = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", stop);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", stop);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-  }
-
+  useEffect(() => { localStorage.setItem("lifeos.fileTree", showTree ? "1" : "0"); }, [showTree]);
   async function fetchGroups(id: string): Promise<Group[]> {
     const projects = (await (await fetch(`/api/agents/${id}/projects`)).json()) as { items: Project[] };
     return await Promise.all(projects.items.map(async (project) => {
@@ -275,7 +246,11 @@ export default function App() {
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
-  const selected = [...groups.flatMap((group) => group.sessions)].find((item) => item.sessionId === sessionId);
+
+  // 视口挤压保护：装不下“面板+聊天保底”就先收面板（宽度数学全部在 useColumnWidth）。
+  useEffect(() => {
+    if (panelOpen && !panelFits) setPanelOpen(false);
+  }, [panelOpen, panelFits]);
   const titleOf = (item?: SessionItem) => item?.title || (item?.isDefault ? "默认会话" : "新会话");
 
   /** 列头：小标题 + 纯图标收起按钮（Pi Web 式：icon + title 提示）。 */
@@ -352,7 +327,7 @@ export default function App() {
                 {currentGroup?.project.isDefault && <span className="rounded-md bg-neutral-200/80 px-1.5 py-px text-[10px] text-neutral-500">默认</span>}
               </span>}
               onHide={() => setShowSessions(false)} />
-            <div className="flex-1 overflow-y-auto p-2">
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {currentGroup === undefined && <p className="px-2 py-6 text-center text-xs text-neutral-400">先在左侧选择项目</p>}
               {currentGroup !== undefined && currentGroup.sessions.length === 0 && (
                 <p className="px-2 py-6 text-center text-xs text-neutral-400">该项目暂无会话</p>
@@ -376,6 +351,7 @@ export default function App() {
                 </div>
               ))}
             </div>
+
             <div className="border-t border-neutral-200 p-2">
               <button onClick={() => void newSession()}
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-neutral-200 bg-white py-1.5 text-[13px] text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
@@ -389,13 +365,14 @@ export default function App() {
 
       {/* 主区 · 聊天（列收起后占满） */}
       <div className="flex h-dvh min-w-0 flex-1 flex-col bg-white">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-200 px-4">
+        <header className="flex h-12 shrink-0 items-center border-b border-neutral-200 px-4">
           <h1 className="text-sm font-semibold tracking-tight text-neutral-900">Life OS</h1>
-          <span className="truncate text-xs text-neutral-400">
-            {agent !== undefined && <span>{agent.name} · </span>}
-            {currentGroup !== undefined && <span>{currentGroup.project.name} · </span>}
-            {titleOf(selected)}
-          </span>
+          {/* 面板开合钮贴右缘（Pi Web top bar 同位）；不放任何未要求的面包屑 */}
+          <button aria-label="文件面板" title={panelOpen ? "收起文件面板" : "展开文件面板"}
+            onClick={() => setPanelOpen((prev) => !prev)}
+            className={`ml-auto rounded-md p-1.5 transition-colors ${panelOpen ? "bg-neutral-100 text-neutral-800" : "text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"}`}>
+            <IconLayoutSidebarRight size={16} />
+          </button>
         </header>
 
         <main className="flex w-full flex-1 flex-col gap-2.5 overflow-y-auto px-6 py-5">
@@ -430,6 +407,27 @@ export default function App() {
           </div>
         </footer>
       </div>
+
+      {/* 右侧文件面板：独立区域 = [文件夹树 | 查看器]，左右可各自拖宽（用户 2026-10-17） */}
+      {panelOpen && (
+        <>
+          <DragHandle k="c4" />
+          <aside style={{ width: panelWidth }} className="flex shrink-0 overflow-hidden border-l border-neutral-200 bg-white">
+            {showTree ? (
+              <>
+                <div style={{ width: treeWidth }} className="flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-neutral-200">
+                  <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+                </div>
+                <DragHandle k="c4t" />
+              </>
+            ) : <FoldStrip label="展开文件树" onShow={() => setShowTree(true)} />}
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <FilePanel tabs={fileTabs} activeId={activeFileTabId} onSelectTab={setActiveFileTabId}
+                onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs} />
+            </div>
+          </aside>
+        </>
+      )}
     </div>
   );
 }

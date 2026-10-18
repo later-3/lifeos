@@ -1,1 +1,24 @@
 @import "tailwindcss";
+
+/* 文件查看器的 Markdown 排版（紧凑、单色；file-browser.md P3.3） */
+.md-body { font-size: 14px; line-height: 1.7; color: #171717; word-break: break-word; }
+.md-body > *:first-child { margin-top: 0; }
+.md-body h1, .md-body h2 { font-weight: 600; margin: 1.2em 0 0.5em; padding-bottom: 0.3em; border-bottom: 1px solid #e5e5e5; }
+.md-body h1 { font-size: 1.3em; }
+.md-body h2 { font-size: 1.15em; }
+.md-body h3, .md-body h4 { font-weight: 600; margin: 1em 0 0.4em; font-size: 1.02em; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.65em 0; }
+.md-body ul, .md-body ol { padding-left: 1.5em; }
+.md-body li { margin: 0.25em 0; }
+.md-body li > ul, .md-body li > ol { margin: 0.2em 0; }
+.md-body code { background: #f5f5f5; padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.9em; }
+.md-body pre { background: #fafafa; border: 1px solid #e5e5e5; padding: 0.75em 1em; border-radius: 8px; overflow-x: auto; }
+.md-body pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.6; }
+.md-body blockquote { border-left: 3px solid #e5e5e5; color: #737373; padding-left: 0.9em; }
+.md-body table { border-collapse: collapse; font-size: 0.95em; }
+.md-body th, .md-body td { border: 1px solid #e5e5e5; padding: 0.35em 0.75em; text-align: left; }
+.md-body th { background: #fafafa; font-weight: 600; }
+.md-body a { color: #171717; text-decoration: underline; text-underline-offset: 2px; }
+.md-body hr { border: none; border-top: 1px solid #e5e5e5; margin: 1.2em 0; }
+.md-body img { max-width: 100%; }
+.md-body input[type="checkbox"] { margin-right: 0.4em; }
