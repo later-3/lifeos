@@ -1,24 +1,55 @@
 @import "tailwindcss";
+@import "./design/tokens.css";
 
-/* 文件查看器的 Markdown 排版（紧凑、单色；file-browser.md P3.3） */
-.md-body { font-size: 14px; line-height: 1.7; color: #171717; word-break: break-word; }
+/* 字体（参考 Daybridge foundations：Inter 优先，中文回落系统字体；不引网络字体） */
+html, body, button, input, textarea, select {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+}
+
+/*
+ * Markdown 排版：颜色/字号一律走 tokens，不再硬编码 #171717。
+ * .md-inverse 用于用户消息（深色气泡内的反白）。
+ */
+.md-body { font-size: var(--text-content); line-height: 1.72; color: var(--color-ink-900); word-break: break-word; }
 .md-body > *:first-child { margin-top: 0; }
-.md-body h1, .md-body h2 { font-weight: 600; margin: 1.2em 0 0.5em; padding-bottom: 0.3em; border-bottom: 1px solid #e5e5e5; }
-.md-body h1 { font-size: 1.3em; }
-.md-body h2 { font-size: 1.15em; }
-.md-body h3, .md-body h4 { font-weight: 600; margin: 1em 0 0.4em; font-size: 1.02em; }
-.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.65em 0; }
-.md-body ul, .md-body ol { padding-left: 1.5em; }
-.md-body li { margin: 0.25em 0; }
-.md-body li > ul, .md-body li > ol { margin: 0.2em 0; }
-.md-body code { background: #f5f5f5; padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.9em; }
-.md-body pre { background: #fafafa; border: 1px solid #e5e5e5; padding: 0.75em 1em; border-radius: 8px; overflow-x: auto; }
-.md-body pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.6; }
-.md-body blockquote { border-left: 3px solid #e5e5e5; color: #737373; padding-left: 0.9em; }
-.md-body table { border-collapse: collapse; font-size: 0.95em; }
-.md-body th, .md-body td { border: 1px solid #e5e5e5; padding: 0.35em 0.75em; text-align: left; }
-.md-body th { background: #fafafa; font-weight: 600; }
-.md-body a { color: #171717; text-decoration: underline; text-underline-offset: 2px; }
-.md-body hr { border: none; border-top: 1px solid #e5e5e5; margin: 1.2em 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+.md-body h1, .md-body h2 { font-weight: 600; margin: 1.1em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--color-line); }
+.md-body h1 { font-size: 1.25em; }
+.md-body h2 { font-size: 1.12em; }
+.md-body h3, .md-body h4 { font-weight: 600; margin: 0.95em 0 0.35em; font-size: 1.02em; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.6em 0; }
+.md-body ul, .md-body ol { padding-left: 1.45em; }
+/* Tailwind preflight 会把 list-style 清成 none —— 这里显式恢复，否则列表没有圆点/序号 */
+.md-body ul { list-style: disc outside; }
+.md-body ol { list-style: decimal outside; }
+.md-body li::marker { color: var(--color-ink-500); }
+.md-inverse li::marker { color: rgba(255, 255, 255, 0.7); }
+.md-body li { margin: 0.2em 0; }
+.md-body li > ul, .md-body li > ol { margin: 0.15em 0; }
+.md-body code { background: var(--color-hover); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
+.md-body pre { background: var(--color-sunken); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
+.md-body pre code { background: none; padding: 0; font-size: 12px; line-height: 1.6; }
+.md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
+.md-body table { border-collapse: collapse; font-size: 0.94em; }
+.md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; }
+.md-body th { background: var(--color-sunken); font-weight: 600; }
+.md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+.md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
 .md-body input[type="checkbox"] { margin-right: 0.4em; }
+
+/* 用户消息（深色气泡内） */
+.md-inverse { color: #fff; }
+.md-inverse a { color: #fff; }
+.md-inverse code { background: rgba(255, 255, 255, 0.16); }
+.md-inverse pre { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.18); }
+.md-inverse pre code { background: none; }
+.md-inverse th { background: rgba(255, 255, 255, 0.1); }
+.md-inverse th, .md-inverse td { border-color: rgba(255, 255, 255, 0.2); }
+.md-inverse blockquote { border-left-color: rgba(255, 255, 255, 0.3); color: rgba(255, 255, 255, 0.85); }
+.md-inverse h1, .md-inverse h2 { border-bottom-color: rgba(255, 255, 255, 0.22); }
+.md-inverse hr { border-top-color: rgba(255, 255, 255, 0.2); }
+
+/* 文件查看器里的 Markdown 更紧凑（面板窄） */
+.md-body--compact { font-size: var(--text-body); line-height: 1.65; }

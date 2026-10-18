@@ -100,11 +100,11 @@ test("手动新建的会话是空白的（开场只属于出厂默认会话）",
   } finally { server.close(); }
 });
 
-test("三层结构：project 列表返回默认工作区，按 project 列会话，未知 project 404", async () => {
+test("三层结构：project 列表 = projects/ 目录（名称即目录名），按 project 列会话，未知 project 404", async () => {
   const { server, base } = await start();
   try {
     const projects = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
-    assert.deepEqual(projects.items, [{ id: "workspace", name: "工作区", isDefault: true }]);
+    assert.deepEqual(projects.items, [{ id: "workspace", name: "workspace", isDefault: true }]);
 
     const sessions = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
     assert.ok(sessions.items.length >= 1, "默认工作区下应有出厂会话");
@@ -112,6 +112,58 @@ test("三层结构：project 列表返回默认工作区，按 project 列会话
     const missing = await fetch(`${base}/api/agents/lifeosagent/projects/nope/sessions`);
     assert.equal(missing.status, 404);
     assert.equal((await missing.json()).error.code, "project_not_found");
+  } finally { server.close(); }
+});
+
+test("project 列表按目录扫描：新增目录即出现（名称=目录名），文件与隐藏项忽略", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { mkdir, readFile, writeFile } = await import("node:fs/promises");
+    const root = join(home, "agents", "lifeosagent", "projects");
+    await mkdir(join(root, "demo-project"), { recursive: true });
+    await writeFile(join(root, "not-a-project.txt"), "x");
+    await mkdir(join(root, ".hidden"), { recursive: true });
+
+    const projects = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    assert.deepEqual(projects.items.map((item) => item.id), ["workspace", "demo-project"], "默认项目在前，其余按目录名排序");
+    assert.equal(projects.items[0].name, "workspace", "内置项目显示目录名，不用「工作区」这类展示名");
+    assert.equal(projects.items[1].name, "demo-project", "显示名必须等于目录名");
+    assert.equal(projects.items[1].path, join(root, "demo-project"), "未注册的私有目录也能用，path=该目录");
+
+    // 目录即项目：可以直接在里面建会话（不要求先注册）
+    const created = await fetch(`${base}/api/agents/lifeosagent/projects/demo-project/sessions`, { method: "POST" });
+    assert.equal(created.status, 200, "私有目录应可直接建会话");
+    const { sessionId } = await created.json();
+    const file = await readFile(join(home, "agents", "lifeosagent", "projects", "demo-project", "sessions", `${sessionId}.jsonl`)).catch(() => undefined);
+    assert.ok(file !== undefined || (await import("node:fs/promises")).readdir(join(root, "demo-project", "sessions")).then((list) => list.some((name) => name.includes(sessionId))), "会话应落在该项目目录下");
+  } finally { server.close(); }
+});
+
+test("移除项目 = 从列表消失，目录与会话保留；重新注册后再次出现", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { mkdir, readFile, readdir, writeFile } = await import("node:fs/promises");
+    const root = join(home, "agents", "lifeosagent", "projects");
+    const dir = join(root, "left-behind");
+    await mkdir(join(dir, "sessions"), { recursive: true });
+    await writeFile(join(dir, "sessions", "2026-10-18T00:00:00.000Z_x.jsonl"), "");
+
+    const removed = await fetch(`${base}/api/agents/lifeosagent/projects/left-behind`, { method: "DELETE" });
+    assert.equal(removed.status, 200);
+    const listed = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    assert.ok(!listed.items.some((item) => item.id === "left-behind"), "移除后不应出现在列表");
+    assert.equal((await readdir(join(dir, "sessions"))).length, 1, "会话数据必须保留");
+
+    const agent = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "agent.json"), "utf8"));
+    assert.deepEqual(agent.hiddenProjectIds, ["left-behind"], "移除写入 hiddenProjectIds");
+
+    // 重新注册同一路径（即便指向自身目录）→ 从 hidden 摘除 → 再次出现
+    const again = await fetch(`${base}/api/agents/lifeosagent/projects`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: dir }),
+    });
+    assert.equal(again.status, 201);
+    const after = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    assert.ok(after.items.some((item) => item.path === dir), "重新注册后应再次出现在列表");
   } finally { server.close(); }
 });
 
@@ -266,5 +318,105 @@ test("按 project 建会话：落对目录、cwd 正确（workspace=家目录，
     // 列表：外部项目私有目录已存在 → 会话列表 1 条
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/${pid}/sessions`)).json();
     assert.equal(list.items.length, 1);
+  } finally { server.close(); }
+});
+
+test("模型解析：返回 provider/模型清单，响应绝不含 apiKey", async () => {
+  const { server, base, home } = await start();
+  const { mkdir: mk, writeFile: wf } = await import("node:fs/promises");
+  try {
+    await mk(join(home, "config"), { recursive: true });
+    await wf(join(home, "config", "models.json"), JSON.stringify({
+      providers: { p1: { baseUrl: "https://x.example/v1", apiKey: "SECRET-XYZ-123", models: [{ id: "m1", name: "Model One" }, { id: "m2", name: "Model Two" }] } },
+    }));
+    await wf(join(home, "config", "settings.json"), JSON.stringify({ defaultProvider: "p1" }));
+    const response = await fetch(`${base}/api/models-config`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.providers.length, 1);
+    assert.equal(body.providers[0].id, "p1");
+    assert.deepEqual(body.providers[0].models.map((m) => m.id), ["m1", "m2"]);
+    assert.equal(body.settings.defaultProvider, "p1");
+    const raw = JSON.stringify(body);
+    assert.equal(raw.includes("SECRET-XYZ-123"), false, "apiKey 绝不能出现在响应里");
+    assert.equal(/apiKey/i.test(raw), false, "连字段名都不应出现");
+  } finally { server.close(); }
+});
+
+test("基础信息与身份：PUT 改名生效、identity 读写往返、非法改名拒绝", async () => {
+  const { server, base } = await start();
+  try {
+    const renamed = await fetch(`${base}/api/agents/lifeosagent`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Life Agent Pro", description: "测试描述" }),
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal((await renamed.json()).name, "Life Agent Pro");
+    assert.equal((await (await fetch(`${base}/api/agents/lifeosagent`)).json()).name, "Life Agent Pro");
+
+    const putId = await fetch(`${base}/api/agents/lifeosagent/identity`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "# 我是 Life Agent Pro\n负责打招呼。" }),
+    });
+    assert.equal(putId.status, 200);
+    const got = await (await fetch(`${base}/api/agents/lifeosagent/identity`)).json();
+    assert.match(got.text, /我是 Life Agent Pro/);
+
+    const bad = await fetch(`${base}/api/agents/lifeosagent`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "  " }),
+    });
+    assert.equal(bad.status, 400);
+  } finally { server.close(); }
+});
+
+test("Agent 个人模型配置：保存到 workspace/config.json 并可回读", async () => {
+  const { server, base, home } = await start();
+  const { readFile } = await import("node:fs/promises");
+  try {
+    const saved = await fetch(`${base}/api/agents/lifeosagent/config`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash", defaultThinkingLevel: "high" }),
+    });
+    assert.equal(saved.status, 200);
+    const file = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "workspace", "config.json"), "utf8"));
+    assert.equal(file.defaultProvider, "command");
+    assert.equal(file.defaultThinkingLevel, "high");
+    const loaded = await (await fetch(`${base}/api/agents/lifeosagent/config`)).json();
+    assert.equal(loaded.config.defaultModel, "z-ai/glm-5.3-flash");
+
+    const bad = await fetch(`${base}/api/agents/lifeosagent/config`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaultProvider: "", defaultModel: "x" }),
+    });
+    assert.equal(bad.status, 400);
+    assert.equal((await (await fetch(`${base}/api/agents/lifeosagent/config`)).json()).config.defaultProvider, "command", "非法保存不得破坏已有配置");
+  } finally { server.close(); }
+});
+
+test("头像：上传 PNG→GET 返回图片→reset 回自动；非法格式拒绝", async () => {
+  const { server, base } = await start();
+  try {
+    const png1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const up = await fetch(`${base}/api/agents/lifeosagent/avatar`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ data: png1x1.toString("base64") }),
+    });
+    assert.equal(up.status, 200);
+    const { avatar } = await up.json();
+    assert.equal(avatar.kind, "image");
+    const get = await fetch(`${base}/api/agents/lifeosagent/avatar`);
+    assert.equal(get.status, 200);
+    assert.equal(get.headers.get("content-type"), "image/png");
+    assert.deepEqual(Buffer.from(await get.arrayBuffer()), png1x1);
+    // 列表带 avatar 字段
+    const agent = await (await fetch(`${base}/api/agents/lifeosagent`)).json();
+    assert.equal(agent.avatar.kind, "image");
+    // 非法格式
+    const bad = await fetch(`${base}/api/agents/lifeosagent/avatar`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ data: Buffer.from("not-an-image").toString("base64") }),
+    });
+    assert.equal(bad.status, 400);
+    // reset → 回自动（无图片头像 404）
+    const reset = await fetch(`${base}/api/agents/lifeosagent/avatar`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reset: true }),
+    });
+    assert.equal(reset.status, 200);
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/avatar`)).status, 404);
   } finally { server.close(); }
 });

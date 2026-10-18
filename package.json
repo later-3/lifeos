@@ -19,7 +19,12 @@
     "test": "node --experimental-strip-types --test test/*.test.mjs",
     "dev:all": "concurrently -k -n api,web -c blue,magenta \"pnpm dev\" \"pnpm dev:web\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p frontend/tsconfig.json --noEmit",
-    "stop": "node scripts/stop.mjs"
+    "stop": "node scripts/stop.mjs",
+    "lint:tokens": "node scripts/lint-tokens.mjs",
+    "test:ui": "node frontend/test/ui-contract.mjs",
+    "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
+    "audit:ui": "node scripts/audit-ui.mjs",
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui"
   },
   "type": "module",
   "devDependencies": {

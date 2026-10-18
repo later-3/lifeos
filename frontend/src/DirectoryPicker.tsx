@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from "react";
-import { IconArrowUp, IconFolder, IconX } from "@tabler/icons-react";
+import { useEffect, useState } from "react";
+import { IconArrowUp, IconFolder } from "@tabler/icons-react";
+import { Modal } from "./design/overlay";
+import { Button, EmptyState, IconButton, Skeleton, controlClass } from "./design/ui";
 
 type BrowseResult = { path: string; parent: string | null; dirs: string[] };
 
 /**
- * 目录选择器（Pi Web DirectoryPicker 同型）：模态面板 —— 路径输入直接跳转 +
- * 逐级目录列表（点击进入）+ 上级 + “选择此目录”。只与 /api/fs/browse 交互（只读目录名）。
+ * 目录选择器（Pi Web DirectoryPicker 同型）：路径输入直接跳转 + 逐级目录列表 + 上级 + 选择。
+ * 模态语义/焦点陷阱/Esc 由 design/overlay.tsx 提供。
  */
 export function DirectoryPicker({ onCancel, onSelect }: {
   onCancel: () => void;
-  onSelect: (path: string) => Promise<string | null>;   // 返回错误信息，null=成功
+  onSelect: (path: string) => Promise<string | null>;
 }) {
   const [currentPath, setCurrentPath] = useState("");
   const [parent, setParent] = useState<string | null>(null);
@@ -44,59 +46,43 @@ export function DirectoryPicker({ onCancel, onSelect }: {
     if (message !== null) setError(message);
   }
 
-  const nameOf = (path: string) => path === "/" ? "/" : path.slice(path.lastIndexOf("/") + 1) || path;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-2"
-      onClick={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}
-      onKeyDown={(event) => { if (event.key === "Escape" && !busy) onCancel(); }}>
-      <div className="flex h-[min(620px,calc(100dvh-16px))] w-[520px] max-w-full flex-col overflow-hidden rounded-[10px] border border-neutral-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3">
-          <span className="text-sm font-semibold">选择目录</span>
-          <button aria-label="关闭" title="关闭" onClick={onCancel}
-            className="rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"><IconX size={16} /></button>
-        </div>
+    <Modal title="选择目录" subtitle="注册为一个项目（不复制文件，只记录路径）" width={560} onClose={() => { if (!busy) onCancel(); }}
+      footer={<>
+        <span className="mr-auto flex min-w-0 items-center gap-2">
+          <span className="min-w-0 truncate font-mono text-micro text-ink-500" title={currentPath}>{currentPath || "—"}</span>
+          {error !== null && <span className="shrink-0 text-micro text-danger">{error}</span>}
+        </span>
+        <Button onClick={onCancel} disabled={busy}>取消</Button>
+        <Button variant="primary" onClick={() => void choose()} disabled={busy || loading || currentPath === ""}>
+          {busy ? "注册中…" : "选择此目录"}
+        </Button>
+      </>}>
+      <form className="mb-2 flex items-center gap-1.5"
+        onSubmit={(event) => { event.preventDefault(); void navigate(pathInput.trim() || undefined); }}>
+        <IconButton label="上级目录" disabled={parent === null || loading}
+          onClick={() => { if (parent !== null) void navigate(parent); }}>
+          <IconArrowUp size={16} />
+        </IconButton>
+        <input value={pathInput} onChange={(event) => setPathInput(event.target.value)}
+          placeholder="输入路径后回车跳转"
+          className={`${controlClass} h-9 font-mono text-meta`} />
+      </form>
 
-        <form className="flex items-center gap-2 border-b border-neutral-200 px-3 py-2"
-          onSubmit={(event) => { event.preventDefault(); void navigate(pathInput.trim() || undefined); }}>
-          <button type="button" aria-label="上级目录" title="上级目录" disabled={parent === null || loading}
-            onClick={() => parent !== null && void navigate(parent)}
-            className="rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-30">
-            <IconArrowUp size={15} />
-          </button>
-          <input value={pathInput} onChange={(event) => setPathInput(event.target.value)}
-            placeholder="输入路径后回车跳转"
-            className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs outline-none transition-colors focus:border-neutral-400 focus:bg-white" />
-        </form>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {loading && <p className="px-3 py-6 text-center text-xs text-neutral-400">加载中…</p>}
-          {!loading && dirs.length === 0 && <p className="px-3 py-6 text-center text-xs text-neutral-400">没有子目录</p>}
-          {!loading && dirs.map((name) => {
-            const child = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
-            return (
-              <button key={name} onClick={() => void navigate(child)}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-neutral-700 transition-colors hover:bg-neutral-100">
-                <IconFolder size={15} className="shrink-0 text-neutral-400" />
-                <span className="truncate">{name}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="flex items-center justify-between gap-2 border-t border-neutral-200 px-4 py-3">
-          <span className="min-w-0 truncate font-mono text-[11px] text-neutral-400" title={currentPath}>{currentPath || "—"}</span>
-          <div className="flex shrink-0 items-center gap-2">
-            {error !== null && <span className="max-w-40 truncate text-[11px] text-red-500" title={error}>{error}</span>}
-            <button onClick={onCancel} disabled={busy}
-              className="rounded-lg border border-neutral-200 px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:border-neutral-300 disabled:opacity-50">取消</button>
-            <button onClick={() => void choose()} disabled={busy || loading || currentPath === ""}
-              className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-neutral-800 disabled:opacity-40">
-              {busy ? "注册中…" : "选择此目录"}
+      <div className="max-h-80 min-h-40 overflow-y-auto">
+        {loading && <Skeleton rows={6} />}
+        {!loading && dirs.length === 0 && <EmptyState title="没有子目录" hint="可以直接选择当前目录。" />}
+        {!loading && dirs.map((name) => {
+          const child = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
+          return (
+            <button key={name} type="button" onClick={() => void navigate(child)}
+              className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900">
+              <IconFolder size={16} className="shrink-0 text-ink-300" />
+              <span className="truncate">{name}</span>
             </button>
-          </div>
-        </div>
+          );
+        })}
       </div>
-    </div>
+    </Modal>
   );
 }

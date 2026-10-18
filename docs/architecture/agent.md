@@ -116,8 +116,10 @@ Agent 的全部信息放在 `agents/<id>/agent.json`；**列举 = 扫描 `agents
 
 **注册与解绑（2026-10-18 定稿，本轮实现）**：
 - **注册 = `POST /api/agents/:id/projects {path}` 合成入口**（注册+绑定一步，用户拍板）：校验目录 → **同 path 幂等复用** → 否则生成 **pid = uuidv7**、写共用层 `~/.lifeos/projects/<pid>/project.json {schemaVersion,id,name,path}`（**不写进用户目录**）、追加 `boundProjectIds`（agent.json 原子写）。
-- **枚举 = 扫描共用层**（同 §5.5 “扫描即枚举”，不建 registry 总表，家目录保持干净）；`GET …/projects` = boundProjectIds 解析 + 内置 workspace；私有目录**按需建**（旧协议 §9.1 缺口A 已决）。
-- **解绑 = `DELETE …/:pid`**：仅从 `boundProjectIds` 移除，**项目注册与会话/记录全部保留**（§9.1 已决原文）；内置 workspace 不可解绑（400）。
+- **枚举 = 扫描 `agents/<id>/projects/` 下的目录**（2026-10-18 用户定，改自“boundProjectIds 解析 + 内置 workspace”）：**有多少个项目目录就有多少行**，每个 Agent 同构；**显示名 = 目录名**（`workspace` 就显示 `workspace`，不再用「工作区」这类展示名；外部项目显示其真实目录名 basename(path)）。文件、`.` 开头的目录不算项目；排序 = 默认项目在前，其余按名称。
+- **目录即项目**：`projects/<pid>/` 存在即可用（含未注册的私有目录，cwd = 该目录）；注册（共用层 manifest）用于把外部真实目录接入（cwd = 项目 path）。注册时同步建 `projects/<pid>/` 目录，保证列表立刻可见。
+- **解绑 / 移除 = `DELETE …/:pid`**：写 `hiddenProjectIds`（从列表移除），**目录与会话/记录全部保留**；再次 `POST /projects` 同 path → 从 hidden 摘除、重新出现；内置 workspace 不可移除（400），重复移除非幂等（404）。
+- **manifest 的 `name` 字段不参与界面显示**（历史遗留的「工作区」已从出厂 manifest 移除）。
 - **会话 cwd**：workspace → `~/.lifeos`；外部项目 → 项目 `path`（Pi 工具作用域 = 项目目录）。
 
 ### 5.7 运行与生命周期（包含"注册"）

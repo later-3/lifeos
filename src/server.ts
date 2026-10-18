@@ -2,14 +2,14 @@
 import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { createSession, deleteSession, getSession, messagesOf, pendingSessions, renameSession, runTurn, snapshotOf, subscribeAgent } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { getShared, readSharedProjects, registerShared } from "./projects.ts";
 import { resolveHome } from "./home.ts";
 
-export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string; boundProjectIds?: string[] };
+export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string; boundProjectIds?: string[]; hiddenProjectIds?: string[] };
 
 const agentsRoot = () => join(resolveHome(), "agents");
 
@@ -28,17 +28,64 @@ async function writeAgent(agent: AgentDefinition): Promise<void> {
 
 type ResolvedProject = { id: string; name: string; path?: string };
 
-/** 解析项目（agent.md §5.6 定稿）：workspace=内置私有 manifest；外部=已绑定 + 共用层 manifest（私有目录按需、此处不碰）。 */
+/**
+ * 项目目录：`<home>/agents/<agent>/projects/<pid>/`（协议 §15.1「结构即事实」）。
+ * 每个 Agent 同构：目录在就是项目，显示名 = 目录名（用户 2026-10-18 定：workspace 就显示 workspace，
+ * 不用「工作区」这类展示名）；外部项目显示其真实目录名（basename of path）。
+ */
+const agentProjectsRoot = (agentId: string) => join(agentsRoot(), agentId, "projects");
+
+/** 扫描某 Agent 的项目目录（只看目录，文件忽略；排序稳定）。 */
+async function scanProjectDirs(agentId: string): Promise<string[]> {
+  const entries = await readdir(agentProjectsRoot(agentId), { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name).sort();
+}
+
+/**
+ * 解析项目（名称一律取真实目录名）：
+ * - workspace：内置默认项目；
+ * - 外部项目：共用层有 manifest 就用它的真实 path；
+ * - 私有项目：projects/<pid> 目录存在即可用（cwd = 该目录）——「结构即事实」，不要求先注册。
+ */
 async function resolveProject(agent: AgentDefinition, pid: string): Promise<ResolvedProject | undefined> {
-  if (pid === "workspace") {
-    const manifest = await readFile(join(agentsRoot(), agent.id, "projects", "workspace", "project.json"), "utf8")
-      .then((text) => JSON.parse(text) as { name?: unknown }, () => undefined);
-    return { id: "workspace", name: typeof manifest?.name === "string" ? manifest.name : "工作区" };
-  }
-  if (!(agent.boundProjectIds ?? []).includes(pid)) return undefined;
+  if (pid === "workspace") return { id: "workspace", name: "workspace" };
   const shared = await getShared(pid);
-  if (shared === undefined) return undefined;
-  return { id: shared.id, name: shared.name, path: shared.path };
+  if (shared !== undefined) return { id: shared.id, name: basename(shared.path) || shared.name, path: shared.path };
+  const info = await stat(join(agentProjectsRoot(agent.id), pid)).catch(() => undefined);
+  if (info?.isDirectory() === true) return { id: pid, name: pid, path: join(agentProjectsRoot(agent.id), pid) };
+  return undefined;
+}
+
+// —— Agent 配置工具（2026-10-18）——
+const SENSITIVE_KEY = /^(api[-_]?key|authorization|access[-_]?token|secret|password)$/i;
+
+/** 返回给前端前剔除任何密钥类字段（models.json 含用户 apiKey，绝不能带出）。 */
+function stripSecrets<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => stripSecrets(item)) as unknown as T;
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) if (!SENSITIVE_KEY.test(key)) out[key] = stripSecrets(val);
+    return out as unknown as T;
+  }
+  return value;
+}
+
+const identityPath = (id: string) => join(agentsRoot(), id, "identity.md");
+const agentConfigPath = (id: string) => join(agentsRoot(), id, "workspace", "config.json");
+
+/** 原子写文本文件（tmp + rename）。 */
+async function writeTextAtomic(path: string, text: string): Promise<void> {
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, text, { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, path);
+}
+
+/** 头像魔数嗅探：png / jpeg / webp。 */
+function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return { ext: "png", mime: "image/png" };
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { ext: "jpg", mime: "image/jpeg" };
+  if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return { ext: "webp", mime: "image/webp" };
+  return undefined;
 }
 
 function problem(code: string, message: string, status: 400 | 404 | 409) {
@@ -131,17 +178,19 @@ export function createApp(cwd = process.cwd()) {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const defaultId = agent.defaultProjectId ?? "workspace";
-    const items: Array<{ id: string; name: string; isDefault: boolean; path?: string }> = [];
-    const workspace = await resolveProject(agent, "workspace");
-    if (workspace !== undefined) items.push({ id: "workspace", name: workspace.name, isDefault: defaultId === "workspace" });
     const shared = await readSharedProjects();
-    for (const pid of agent.boundProjectIds ?? []) {
-      if (pid === "workspace") continue;
-      const project = shared.get(pid);
-      if (project === undefined) continue;
-      items.push({ id: pid, name: project.name, path: project.path, isDefault: pid === defaultId });
+    const hidden = new Set(agent.hiddenProjectIds ?? []);
+    const items: Array<{ id: string; name: string; isDefault: boolean; path?: string }> = [];
+
+    // 列表 = projects/ 下的目录 − 已移除项（用户 2026-10-18 定：有多少个目录就多少行，名称=目录名）
+    for (const dir of await scanProjectDirs(agent.id)) {
+      if (hidden.has(dir)) continue;
+      const sharedProject = shared.get(dir);
+      const name = dir === "workspace" ? "workspace" : sharedProject !== undefined ? basename(sharedProject.path) || dir : dir;
+      const path = dir === "workspace" ? undefined : sharedProject?.path ?? join(agentProjectsRoot(agent.id), dir);
+      items.push({ id: dir, name, isDefault: dir === defaultId, ...(path !== undefined ? { path } : {}) });
     }
-    items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+    items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
     return c.json({ items });
   });
 
@@ -167,12 +216,15 @@ export function createApp(cwd = process.cwd()) {
     }
     const registered = await registerShared(body.path);
     if ("code" in registered) return fsError(c, registered);
+    // 目录即项目：注册时就把该 Agent 下的项目目录建出来，保证列表（= 目录扫描）立刻能看到
+    await mkdir(join(agentProjectsRoot(agent.id), registered.project.id), { recursive: true });
     const defaultId = agent.defaultProjectId ?? "workspace";
     const project = { id: registered.project.id, name: registered.project.name, path: registered.project.path, isDefault: registered.project.id === defaultId };
     const bound = agent.boundProjectIds ?? [];
-    if (bound.includes(project.id)) return c.json({ project }, 200);
-    await writeAgent({ ...agent, boundProjectIds: [...bound, project.id] });
-    return c.json({ project }, 201);
+    const hidden = (agent.hiddenProjectIds ?? []).filter((item) => item !== project.id);
+    if (bound.includes(project.id) && hidden.length === (agent.hiddenProjectIds ?? []).length) return c.json({ project }, 200);
+    await writeAgent({ ...agent, boundProjectIds: bound.includes(project.id) ? bound : [...bound, project.id], hiddenProjectIds: hidden });
+    return c.json({ project }, bound.includes(project.id) ? 200 : 201);
   });
 
   // 解绑（2026-10-18 拍板 A）：仅移出 boundProjectIds；项目注册与会话/记录全部保留；内置 workspace 不可解绑。
@@ -184,12 +236,22 @@ export function createApp(cwd = process.cwd()) {
     if (pid === "workspace" || pid === defaultId) {
       const error = problem("cannot_unbind_default", "默认项目不可解绑", 400); return c.json(error.body, error.status);
     }
-    const bound = agent.boundProjectIds ?? [];
-    if (!bound.includes(pid)) {
-      const error = problem("project_not_bound", "该 Agent 未绑定这个项目", 404); return c.json(error.body, error.status);
+    // 「移除」= 从该助手的列表移除（写 hiddenProjectIds），目录与会话文件原样保留（协议：结构即事实）。
+    // 重新注册同一路径（POST /projects）会把 pid 从 hidden 里摘掉，列表里再次出现。
+    const hidden = agent.hiddenProjectIds ?? [];
+    if (hidden.includes(pid)) {
+      const error = problem("project_not_found", "该 Agent 下没有这个项目", 404); return c.json(error.body, error.status);
     }
-    await writeAgent({ ...agent, boundProjectIds: bound.filter((item) => item !== pid) });
-    return c.json({ unbound: pid });
+    const dirExists = (await scanProjectDirs(agent.id)).includes(pid);
+    if (!dirExists && !(agent.boundProjectIds ?? []).includes(pid)) {
+      const error = problem("project_not_found", "该 Agent 下没有这个项目", 404); return c.json(error.body, error.status);
+    }
+    await writeAgent({
+      ...agent,
+      boundProjectIds: (agent.boundProjectIds ?? []).filter((item) => item !== pid),
+      hiddenProjectIds: hidden.includes(pid) ? hidden : [...hidden, pid],
+    });
+    return c.json({ hidden: pid });
   });
 
   // 在某 project 下新建会话：cwd = 项目 path（workspace = ~/.lifeos，拍板2）；外部须已注册且已绑定。
@@ -269,6 +331,126 @@ export function createApp(cwd = process.cwd()) {
         c.req.raw.signal.addEventListener("abort", () => { unsubscribe(); void stream.close(); resolve(); });
       });
     });
+  });
+
+  // —— Agent 配置（2026-10-18 用户需求：基础信息 / 身份 / 头像 / 模型解析 / 个人模型默认落 workspace）——
+
+  // 基础信息：改名/描述（写 agent.json，原子）
+  app.put("/api/agents/:id", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { name?: unknown; description?: unknown } | undefined;
+    if (body === undefined) { const error = problem("invalid_request", "请求体无效", 400); return c.json(error.body, error.status); }
+    const updated: AgentDefinition = { ...agent };
+    if (body.name !== undefined) {
+      if (typeof body.name !== "string" || body.name.trim() === "") {
+        const error = problem("invalid_name", "name 需为非空字符串", 400); return c.json(error.body, error.status);
+      }
+      updated.name = body.name.trim().slice(0, 60);
+    }
+    if (body.description !== undefined) updated.description = String(body.description).slice(0, 300);
+    await writeAgent(updated);
+    return c.json(updated);
+  });
+
+  // 身份信息 identity.md：读/写
+  app.get("/api/agents/:id/identity", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const text = await readFile(identityPath(agent.id), "utf8").catch(() => "");
+    return c.json({ text });
+  });
+  app.put("/api/agents/:id/identity", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { text?: unknown } | undefined;
+    if (body === undefined || typeof body.text !== "string" || body.text.length > 64 * 1024) {
+      const error = problem("invalid_request", "需要 text 字段（≤64KB）", 400); return c.json(error.body, error.status);
+    }
+    await writeTextAtomic(identityPath(agent.id), body.text);
+    return c.json({ ok: true });
+  });
+
+  // 头像：上传（png/jpg/webp，≤2MB，魔数校验）或 reset（回自动头像）
+  app.post("/api/agents/:id/avatar", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { data?: unknown; reset?: unknown } | undefined;
+    const avatarDir = join(agentsRoot(), agent.id, "avatar");
+    if (body?.reset === true) {
+      await rm(avatarDir, { recursive: true, force: true });
+      const updated = { ...agent } as AgentDefinition & { avatar?: unknown };
+      delete updated.avatar;
+      await writeAgent(updated);
+      return c.json({ avatar: null });
+    }
+    if (body === undefined || typeof body.data !== "string" || body.data.length === 0) {
+      const error = problem("invalid_request", "需要 data（base64）或 reset", 400); return c.json(error.body, error.status);
+    }
+    const buffer = Buffer.from(body.data, "base64");
+    if (buffer.length > 2 * 1024 * 1024) { const error = problem("image_too_large", "头像不能超过 2MB", 400); return c.json(error.body, error.status); }
+    const sniffed = sniffImage(buffer);
+    if (sniffed === undefined) { const error = problem("invalid_image", "仅支持 png/jpg/webp", 400); return c.json(error.body, error.status); }
+    await mkdir(avatarDir, { recursive: true, mode: 0o700 });
+    await rm(avatarDir, { recursive: true, force: true });
+    await mkdir(avatarDir, { recursive: true, mode: 0o700 });
+    const file = `avatar.${sniffed.ext}`;
+    await writeFile(join(avatarDir, file), buffer, { mode: 0o600 });
+    const avatar = { kind: "image", file, revision: Date.now() };
+    await writeAgent({ ...agent, avatar } as AgentDefinition);
+    return c.json({ avatar });
+  });
+  app.get("/api/agents/:id/avatar", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const avatar = (agent as AgentDefinition & { avatar?: { kind?: string; file?: string } }).avatar;
+    if (avatar?.kind !== "image" || typeof avatar.file !== "string") {
+      const error = problem("no_avatar", "未设置图片头像", 404); return c.json(error.body, error.status);
+    }
+    const buffer = await readFile(join(agentsRoot(), agent.id, "avatar", avatar.file)).catch(() => undefined);
+    if (buffer === undefined) { const error = problem("no_avatar", "头像文件不存在", 404); return c.json(error.body, error.status); }
+    const mime = avatar.file.endsWith(".png") ? "image/png" : avatar.file.endsWith(".webp") ? "image/webp" : "image/jpeg";
+    return c.body(buffer, 200, { "Content-Type": mime });
+  });
+
+  // 模型解析（只读用户 models.json；响应经 stripSecrets，apiKey 永不外带）+ settings 默认
+  app.get("/api/models-config", async (c) => {
+    const providers = await readFile(join(resolveHome(), "config", "models.json"), "utf8")
+      .then((text) => (JSON.parse(text) as { providers?: Record<string, unknown> }).providers ?? {}, () => ({}));
+    const settings = await readFile(join(resolveHome(), "config", "settings.json"), "utf8")
+      .then((text) => JSON.parse(text), () => null);
+    const items = Object.entries(providers).map(([id, value]) => {
+      const provider = (value ?? {}) as { baseUrl?: string; models?: unknown };
+      return { id, baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : "", models: Array.isArray(provider.models) ? provider.models : [] };
+    });
+    return c.json(stripSecrets({ providers: items, settings }));
+  });
+
+  // Agent 个人模型默认：保存/加载在自己的 workspace 下（用户 2026-10-18 指定）
+  app.get("/api/agents/:id/config", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const config = await readFile(agentConfigPath(agent.id), "utf8")
+      .then((text) => JSON.parse(text), () => null);
+    return c.json({ config });
+  });
+  app.put("/api/agents/:id/config", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { defaultProvider?: unknown; defaultModel?: unknown; defaultThinkingLevel?: unknown } | undefined;
+    if (body === undefined || typeof body.defaultProvider !== "string" || body.defaultProvider.trim() === "" ||
+        typeof body.defaultModel !== "string" || body.defaultModel.trim() === "") {
+      const error = problem("invalid_request", "需要 defaultProvider 与 defaultModel（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const config = {
+      schemaVersion: 1,
+      defaultProvider: body.defaultProvider.trim(),
+      defaultModel: body.defaultModel.trim(),
+      ...(typeof body.defaultThinkingLevel === "string" && body.defaultThinkingLevel !== "" ? { defaultThinkingLevel: body.defaultThinkingLevel } : {}),
+    };
+    await mkdir(join(agentsRoot(), agent.id, "workspace"), { recursive: true });
+    await writeTextAtomic(agentConfigPath(agent.id), JSON.stringify(config, null, 2) + "\n");
+    return c.json({ config });
   });
 
   // —— 文件浏览器（docs/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——

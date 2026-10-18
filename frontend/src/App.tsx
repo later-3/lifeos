@@ -1,24 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconLayoutSidebarRight, IconPencil, IconPlus, IconTrash, IconX } from "@tabler/icons-react";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import {
+  IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconLayoutSidebarRight, IconMessageCircle,
+  IconPencil, IconPlus, IconTrash, IconX,
+} from "@tabler/icons-react";
+import { useFold } from "./design/fold";
+import { AgentConfigModal } from "./AgentConfig";
+import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
-import { useColumnWidth, type ColumnKey } from "./useColumnWidth";
+import { useColumnWidth } from "./useColumnWidth";
 import { useFilePanel } from "./useFilePanel";
+import { MessageView, type Block } from "./Message";
+import { NavRail } from "./design/rail";
+import { ConfirmDialog } from "./design/overlay";
+import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
-// 折叠**完全独立**（收第2级不牵连第3级）：藏起的列在其原位留一条窄边（chevron），点边即展开（2026-10-17 用户更正）。
-// 每列可拖宽（宽度持久化）；图标语言与 Pi Web 一致（Tabler、纯图标 + title 提示、静音 hover）。
-type Agent = { id: string; name: string };
-type Project = { id: string; name: string; isDefault: boolean; path?: string };   // path = 外部项目（注册过才有）
+// 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
+// 视觉：tokens（design/tokens.css）+ primitive（design/ui.tsx），页面层只组装。
+type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
+type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
-type Block =
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "toolCall"; id?: string; name: string; arguments?: unknown; result?: string; isError?: boolean };
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[] };
 type Group = { project: Project; sessions: SessionItem[] };
 type AgentEvent = { seq: number; sessionId: string; type: "delta" | "done" | "error"; text?: string; message?: string };
+
+const LAST_AGENT = "lifeos.lastAgent";
+const lastSessionKey = (agentId: string) => `lifeos.lastSession.${agentId}`;
+
+function readLast(key: string): string | undefined {
+  try { return localStorage.getItem(key) ?? undefined; } catch { return undefined; }
+}
+function writeLast(key: string, value: string | undefined) {
+  try { if (value === undefined) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* 忽略 */ }
+}
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -32,18 +49,26 @@ function timeAgo(iso: string): string {
   return `${date.getMonth() + 1}月${date.getDate()}日`;
 }
 
-/** 头像：auto = 由稳定 id 推导色阶 + 首字母（agent.md §5.1）。 */
-const AVATAR_TONES = ["bg-neutral-900", "bg-neutral-700", "bg-neutral-500"];
-function avatarTone(id: string): string {
-  let hash = 0;
-  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return AVATAR_TONES[Math.abs(hash) % AVATAR_TONES.length]!;
+/** 列头：40px，11px 小标签 + 收起钮（唯一收起入口）。列头只写"这一列是什么"，徽标留给行内数据。 */
+function ColumnHeader({ label, hint, onHide }: { label: string; hint?: string; onHide: () => void }) {
+  return (
+    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
+      <Label className="min-w-0 truncate">{label}</Label>
+      {hint !== undefined && <span className="min-w-0 truncate text-micro text-ink-500">· {hint}</span>}
+      <span className="ml-auto" />
+      <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
+    </div>
+  );
 }
 
-const rowBase = "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300";
-const rowActive = "bg-white font-medium text-neutral-900 shadow-sm ring-1 ring-neutral-200";
-const rowIdle = "text-neutral-700 hover:bg-neutral-100";
-const iconBtn = "rounded-md p-0.5 text-neutral-300 transition-colors hover:bg-neutral-200/70 hover:text-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300";
+/** 拖宽把手：6px 命中区，hover 才显 2px accent。 */
+function DragHandle({ onStart }: { onStart: (event: ReactMouseEvent) => void }) {
+  return (
+    <div className="group flex w-1.5 shrink-0 cursor-col-resize justify-center" onMouseDown={onStart}>
+      <div className="h-full w-px bg-line transition-colors group-hover:bg-accent" />
+    </div>
+  );
+}
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -55,25 +80,38 @@ export default function App() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [streamSeq, setStreamSeq] = useState(0);
-  const [showNav, setShowNav] = useState(true);        // 第1列（独立折叠）
-  const [showProjects, setShowProjects] = useState(true);
-  const [showSessions, setShowSessions] = useState(true);
-  const [showTree, setShowTree] = useState(() => localStorage.getItem("lifeos.fileTree") !== "0");   // 面板内树列（独立折叠）
-  const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();              // 会话行内重命名
-  const [addingProject, setAddingProject] = useState(false);                                              // 注册外部项目（DirectoryPicker 模态）
-  // 文件面板（页签/开合）与列宽（拖拽/视口钳制）各自成模块（2026-10-17 坏味道清理）
+  const [loaded, setLoaded] = useState(false);
+  const [showNav, setShowNav] = useFold("agents");
+  const [showProjects, setShowProjects] = useFold("projects");
+  const [showSessions, setShowSessions] = useFold("sessions");
+  const [showTree, setShowTree] = useFold("tree");
+  const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
+  const [addingProject, setAddingProject] = useState(false);
+  const [configAgent, setConfigAgent] = useState<Agent>();
+  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; run: () => void }>();
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
-  const { widths, beginDrag, panelWidth, treeWidth, panelFits } = useColumnWidth({ nav: showNav, projects: showProjects, sessions: showSessions });
+  const { box, beginDrag } = useColumnWidth({
+    folded: { nav: !showNav, projects: !showProjects, sessions: !showSessions },
+    panelOpen,
+  });
+
   const current = useRef<string | undefined>(undefined);
   const ctx = useRef<{ agentId?: string }>({});
   const snapshotSeq = useRef(0);
   const streaming = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLElement>(null);
+  const followTail = useRef(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => { current.current = sessionId; }, [sessionId]);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); });
-  useEffect(() => { localStorage.setItem("lifeos.fileTree", showTree ? "1" : "0"); }, [showTree]);
-  // URL 三键（2026-10-18 拍板）：agent → project → session，切换即 replaceState（刷新/分享可恢复）。
+  useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
+  useEffect(() => { if (agent !== undefined) writeLast(LAST_AGENT, agent.id); }, [agent?.id]);
+
+  // 只在"贴底"时跟随，否则用户可以往上翻历史
+  useEffect(() => {
+    if (followTail.current) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
+
   useEffect(() => {
     if (agent === undefined || sessionId === undefined) return;
     const params = new URLSearchParams();
@@ -82,6 +120,18 @@ export default function App() {
     params.set("session", sessionId);
     window.history.replaceState(null, "", `?${params.toString()}`);
   }, [agent?.id, selectedProjectId, sessionId]);
+
+  // 面板放不下就收起（视口挤压保护）
+  useEffect(() => { if (panelOpen && !box.panelFits) setPanelOpen(false); }, [panelOpen, box.panelFits, setPanelOpen]);
+
+  // 输入框自适应高度（1–8 行）
+  useEffect(() => {
+    const node = inputRef.current;
+    if (node === null) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, 176)}px`;
+  }, [input]);
+
   async function fetchGroups(id: string): Promise<Group[]> {
     const projects = (await (await fetch(`/api/agents/${id}/projects`)).json()) as { items: Project[] };
     return await Promise.all(projects.items.map(async (project) => {
@@ -92,6 +142,7 @@ export default function App() {
 
   async function loadMessages(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as { messages: Message[] };
+    followTail.current = true;
     setMessages(data.messages ?? []);
   }
 
@@ -106,7 +157,6 @@ export default function App() {
     await loadMessages(a.id, sid);
   }
 
-  /** 选中 Agent：级联下钻（选默认 project、开最近会话、展开下游两列）。 */
   async function selectAgent(a: Agent) {
     setAgent(a);
     ctx.current = { agentId: a.id };
@@ -120,13 +170,14 @@ export default function App() {
     setShowSessions(true);
     const next = await fetchGroups(a.id);
     setGroups(next);
-    const home = next.find((group) => group.project.isDefault) ?? next[0];
+    const remembered = readLast(lastSessionKey(a.id));
+    const owner = next.find((group) => group.sessions.some((item) => item.sessionId === remembered));
+    const home = owner ?? next.find((group) => group.project.isDefault) ?? next[0];
     setSelectedProjectId(home?.project.id);
-    const latest = pickLatest(home?.sessions ?? []);
-    if (latest !== undefined) await openSession(a, latest.sessionId);
+    const target = (remembered !== undefined && owner !== undefined ? remembered : undefined) ?? pickLatest(home?.sessions ?? [])?.sessionId;
+    if (target !== undefined) await openSession(a, target);
   }
 
-  /** 选中 project：第 3 列换成它的会话，打开其最近会话。 */
   async function selectProject(project: Project) {
     if (agent === undefined) return;
     setSelectedProjectId(project.id);
@@ -146,7 +197,6 @@ export default function App() {
     return next;
   }
 
-  // 一条流承载当前 Agent 的所有会话（换 Agent 时 streamSeq 归零重订）。
   useEffect(() => {
     const agentId = agent?.id;
     if (agentId === undefined) return;
@@ -192,7 +242,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id, streamSeq === 0]);
 
-  // 首屏：读 URL 三键恢复（无效键逐级降级）；无 URL → 第一个 agent → 最近会话。
+  // 首屏：URL 三键 > 上次会话 > 上次 agent > 第一个 agent
   useEffect(() => {
     void (async () => {
       const params = new URLSearchParams(window.location.search);
@@ -201,20 +251,22 @@ export default function App() {
       const wantSession = params.get("session");
       const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
       setAgents(data.items);
-      const found = data.items.find((item) => item.id === wantAgent) ?? data.items[0];
-      if (found === undefined) return;
+      const found = data.items.find((item) => item.id === wantAgent)
+        ?? data.items.find((item) => item.id === readLast(LAST_AGENT))
+        ?? data.items[0];
+      if (found === undefined) { setLoaded(true); return; }
       setAgent(found);
       ctx.current = { agentId: found.id };
       const groups = await fetchGroups(found.id);
       setGroups(groups);
-      // 一致性：session 所在 group 是事实源（三键必须同链，不匹配的键降级忽略）
-      const owner = wantSession !== null ? groups.find((g) => g.sessions.some((s) => s.sessionId === wantSession)) : undefined;
+      const remembered = readLast(lastSessionKey(found.id));
+      const candidates = [wantSession, remembered].filter((value): value is string => value !== null && value !== undefined);
+      const owner = candidates.length === 0 ? undefined : groups.find((g) => g.sessions.some((s) => candidates.includes(s.sessionId)));
       const group = owner ?? groups.find((g) => g.project.id === wantProject) ?? groups.find((g) => g.project.isDefault) ?? groups[0];
       setSelectedProjectId(group?.project.id);
-      const target = wantSession !== null && group?.sessions.some((s) => s.sessionId === wantSession)
-        ? wantSession
-        : pickLatest(group?.sessions ?? [])?.sessionId;
+      const target = candidates.find((sid) => group?.sessions.some((s) => s.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
       if (target !== undefined) await openSession(found, target);
+      setLoaded(true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -223,12 +275,10 @@ export default function App() {
     if (agent === undefined) return;
     const created = await (await fetch(`/api/agents/${agent.id}/projects/${selectedProjectId ?? "workspace"}/sessions`, { method: "POST" })).json() as { sessionId: string };
     await reloadGroups();
-    // 新会话就建在当前选中的 project 下（2026-10-18：按 project 创建后，不再跳回默认项目）
     setShowSessions(true);
     await openSession(agent, created.sessionId);
   }
 
-  /** 注册外部项目（合成入口：注册+绑定一步）；成功后直接进入该项目（URL 三键随之更新）。 */
   async function registerProject(path: string): Promise<string | null> {
     if (agent === undefined) return "没有当前助手";
     const response = await fetch(`/api/agents/${agent.id}/projects`, {
@@ -244,16 +294,10 @@ export default function App() {
     return null;
   }
 
-  /** 解绑：仅移出清单；项目注册与会话/记录全部保留（agent.md §5.6）。 */
   async function unbindProject(project: Project) {
     if (agent === undefined) return;
-    if (!window.confirm(`从该助手移除「${project.name}」？\n项目注册与该项目下的会话、记录都会保留。`)) return;
     const response = await fetch(`/api/agents/${agent.id}/projects/${project.id}`, { method: "DELETE" });
-    if (!response.ok) {
-      const error = await response.json() as { error?: { message?: string } };
-      window.alert(error.error?.message ?? "移除失败");
-      return;
-    }
+    if (!response.ok) return;
     const next = await reloadGroups();
     if (selectedProjectId === project.id) {
       const fallback = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
@@ -262,7 +306,6 @@ export default function App() {
     }
   }
 
-  /** 行内重命名（Pi Web 同型）：Enter 保存，Esc/失焦取消；写 session_info（name 机制）。 */
   async function commitRename(session: SessionItem, value: string) {
     setRenaming(undefined);
     const trimmed = value.trim();
@@ -275,16 +318,10 @@ export default function App() {
 
   async function removeSession(session: SessionItem) {
     if (agent === undefined) return;
-    if (!window.confirm(`删除会话「${session.title || "未命名"}」？此操作不可恢复。`)) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${session.sessionId}`, { method: "DELETE" });
-    if (!response.ok) {
-      const error = await response.json() as { error?: { message?: string } };
-      window.alert(error.error?.message ?? "删除失败");
-      return;
-    }
+    if (!response.ok) return;
     const next = await reloadGroups();
     if (session.sessionId === sessionId) {
-      // 回退保持三键一致：先在当前 project 内找兄弟会话；本项目空了才整体切到默认项目（selectProject 会同步 URL）
       const currentGroup = (next ?? []).find((g) => g.project.id === selectedProjectId);
       const sibling = pickLatest((currentGroup?.sessions ?? []).filter((s) => s.sessionId !== session.sessionId));
       if (sibling !== undefined) { await openSession(agent, sibling.sessionId); return; }
@@ -300,225 +337,241 @@ export default function App() {
     setInput("");
     setBusy(true);
     streaming.current = true;
+    followTail.current = true;
     setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }, { role: "assistant", text: "", blocks: [] }]);
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/messages`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
     });
     if (!response.ok) {
-      const error = await response.json() as { error?: { message?: string } };
-      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: `[出错] ${error.error?.message ?? "请求失败"}`, blocks: [{ type: "text", text: `[出错] ${error.error?.message ?? "请求失败"}` }] }]);
+      const error = await response.json() as { error?: { message: string } };
+      const failure = `[出错] ${error.error?.message ?? "请求失败"}`;
+      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: failure, blocks: [{ type: "text", text: failure }] }]);
       setBusy(false);
     }
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
-
-  // 视口挤压保护：装不下“面板+聊天保底”就先收面板（宽度数学全部在 useColumnWidth）。
-  useEffect(() => {
-    if (panelOpen && !panelFits) setPanelOpen(false);
-  }, [panelOpen, panelFits]);
-  // 显示链（用户 2026-10-17 定，对齐 Pi Web、无兜底）：session_info.name ‖ 首条用户消息（后端返全文，UI 截 50）
+  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
   const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
-  /** 列头：小标题 + 纯图标收起按钮（Pi Web 式：icon + title 提示）。 */
-  const ColumnHeader = ({ label, onHide }: { label: React.ReactNode; onHide: () => void }) => (
-    <div className="flex h-9 shrink-0 items-center justify-between border-b border-neutral-200 px-3">
-      <span className="min-w-0 truncate text-[11px] font-medium tracking-wide text-neutral-400">{label}</span>
-      <button aria-label="收起此列" title="收起此列" onClick={onHide} className={iconBtn}><IconChevronLeft size={15} /></button>
-    </div>
-  );
-
-  /** 藏起的列在其原位留一条窄边，点边即展开（独立、保空间记忆）。 */
-  const FoldStrip = ({ label, onShow }: { label: string; onShow: () => void }) => (
-    <button aria-label={label} title={label} onClick={onShow}
-      className="flex w-5 shrink-0 items-center justify-center border-r border-neutral-200 bg-neutral-50 text-neutral-300 transition-colors hover:bg-neutral-100 hover:text-neutral-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
-      <IconChevronRight size={13} />
-    </button>
-  );
-
-  const DragHandle = ({ k }: { k: ColumnKey }) => (
-    <div className="group w-1.5 shrink-0 cursor-col-resize" onMouseDown={(event) => beginDrag(k, event)}>
-      <div className="mx-auto h-full w-px bg-neutral-200 transition-colors group-hover:bg-neutral-400" />
-    </div>
-  );
+  // 收起态的列 → 单轨条目（成本常数 44px）
+  // disabled = 用户本来要打开、但窗口太窄被自动收起（点了也没用，给出准确提示）
+  const folded = box.folded;
+  const railItems = [
+    ...(!folded.nav ? [] : [{ key: "nav", label: "助手", disabled: showNav === true, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onOpen: () => setShowNav(true) }]),
+    ...(!folded.projects ? [] : [{ key: "projects", label: "项目", disabled: showProjects === true, icon: <IconFolder size={18} />, onOpen: () => setShowProjects(true) }]),
+    ...(!folded.sessions ? [] : [{ key: "sessions", label: "会话", disabled: showSessions === true, icon: <IconMessageCircle size={18} />, onOpen: () => setShowSessions(true) }]),
+  ];
 
   return (
-    <div className="flex h-dvh bg-white text-neutral-900">
-      {/* 第1列 · Agent（独立折叠） */}
-      {showNav ? (
+    <div className="flex h-dvh bg-surface text-ink-900">
+      {box.rail > 0 && <NavRail items={railItems} />}
+
+      {/* 第1列 · 助手 */}
+      {!folded.nav && (
         <>
-          <aside style={{ width: widths.c1 }} className="flex shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
+          <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
             <ColumnHeader label="助手" onHide={() => setShowNav(false)} />
-            <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2">
+              {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
-                <button key={item.id} onClick={() => void selectAgent(item)}
-                  className={`${rowBase} ${item.id === agent?.id ? rowActive : rowIdle}`}>
-                  <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] text-white ${avatarTone(item.id)}`}>{item.name.slice(0, 1)}</span>
-                  <span className="truncate">{item.name}</span>
-                </button>
+                <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
+                  <button aria-label={`配置 ${item.name}`} title="配置助手"
+                    onClick={(event) => { event.stopPropagation(); setConfigAgent(item); }}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105">
+                    <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
+                  </button>
+                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                </Row>
               ))}
             </div>
           </aside>
-          <DragHandle k="c1" />
+          <DragHandle onStart={(event) => beginDrag("c1", event)} />
         </>
-      ) : <FoldStrip label="展开助手列" onShow={() => setShowNav(true)} />}
+      )}
 
-      {/* 第2列 · 当前 Agent 的 Projects（独立折叠） */}
-      {showProjects ? (
+      {/* 第2列 · 项目 */}
+      {!folded.projects && (
         <>
-          <aside style={{ width: widths.c2 }} className="flex shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
+          <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken">
             <ColumnHeader label="项目" onHide={() => setShowProjects(false)} />
-            <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-              {groups.length === 0 && <p className="px-2 py-6 text-center text-xs text-neutral-400">该助手还没有项目</p>}
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2">
+              {!loaded && <Skeleton rows={2} />}
+              {loaded && groups.length === 0 && <EmptyState title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />}
               {groups.map((group) => (
-                <div key={group.project.id} onClick={() => void selectProject(group.project)}
-                  className={`group flex w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${group.project.id === selectedProjectId ? rowActive : rowIdle}`}>
+                <Row key={group.project.id} selected={group.project.id === selectedProjectId}
+                  onClick={() => void selectProject(group.project)}>
+                  {/* 行里只写名称：默认项目不标注（圆点会被误读成"运行中"，与状态点语义冲突） */}
                   <span className="min-w-0 flex-1 truncate">{group.project.name}</span>
-                  {group.project.isDefault && <span className="shrink-0 rounded-md bg-neutral-200/80 px-1.5 py-px text-[10px] font-normal text-neutral-500">默认</span>}
-                  <span className="shrink-0 text-[10px] font-normal text-neutral-400 group-hover:hidden" title={group.project.path ?? ""}>{group.sessions.length}</span>
-                  {group.project.path !== undefined && (
-                    <span className="hidden shrink-0 items-center group-hover:flex">
-                      <button title="从该助手移除（项目与会话保留）" aria-label="从该助手移除项目"
-                        onClick={(event) => { event.stopPropagation(); void unbindProject(group.project); }}
-                        className="rounded-md p-1 text-neutral-300 transition-colors hover:bg-neutral-200 hover:text-neutral-700"><IconX size={13} /></button>
-                    </span>
-                  )}
-                </div>
+                  {/* 固定槽位：计数常显，操作图标原地显隐 → hover 不位移 */}
+                  <span className="relative flex w-11 shrink-0 items-center justify-end">
+                    <span className="text-micro tabular-nums text-ink-500 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">{group.sessions.length}</span>
+                    {group.project.path !== undefined && (
+                      <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                        <IconButton label="从该助手移除项目" size="sm"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setConfirm({
+                              title: `移除「${group.project.name}」`,
+                              message: "只从该助手移除；项目注册、该项目下的会话与记录都会保留。",
+                              confirmLabel: "移除",
+                              run: () => void unbindProject(group.project),
+                            });
+                          }}>
+                          <IconX size={14} />
+                        </IconButton>
+                      </span>
+                    )}
+                  </span>
+                </Row>
               ))}
             </div>
-            <div className="border-t border-neutral-200 p-2">
-              <button onClick={() => setAddingProject(true)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-neutral-200 bg-white py-1.5 text-[13px] text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
+            <div className="px-1.5 py-2">
+              <Button size="sm" className="w-full" onClick={() => setAddingProject(true)}>
                 <IconFolderPlus size={14} /> 添加项目
-              </button>
+              </Button>
             </div>
-            {addingProject && (
-              <DirectoryPicker onCancel={() => setAddingProject(false)} onSelect={registerProject} />
-            )}
           </aside>
-          <DragHandle k="c2" />
+          <DragHandle onStart={(event) => beginDrag("c2", event)} />
         </>
-      ) : <FoldStrip label="展开项目列" onShow={() => setShowProjects(true)} />}
+      )}
 
-      {/* 第3列 · 选中 Project 下的所有事情（独立折叠） */}
-      {showSessions ? (
+      {/* 第3列 · 会话 */}
+      {!folded.sessions && (
         <>
-          <aside style={{ width: widths.c3 }} className="flex shrink-0 flex-col border-r border-neutral-200 bg-neutral-50">
-            <ColumnHeader
-              label={<span className="flex items-center gap-1.5">
-                <span className="truncate">{currentGroup?.project.name ?? "会话"}</span>
-                {currentGroup?.project.isDefault && <span className="rounded-md bg-neutral-200/80 px-1.5 py-px text-[10px] text-neutral-500">默认</span>}
-              </span>}
+          <aside style={{ width: box.c3 }} className="flex shrink-0 flex-col bg-sunken">
+            {/* 第3列列头：项目列可见时写"会话"（避免与相邻行重复）；项目列收起时才写项目名（补回上下文） */}
+            <ColumnHeader label={folded.projects ? currentGroup?.project.name ?? "会话" : "会话"}
+              hint={folded.projects ? "会话" : undefined}
               onHide={() => setShowSessions(false)} />
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {currentGroup === undefined && <p className="px-2 py-6 text-center text-xs text-neutral-400">先在左侧选择项目</p>}
+            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+              {currentGroup === undefined && <EmptyState title="先选择项目" />}
               {currentGroup !== undefined && currentGroup.sessions.length === 0 && (
-                <p className="px-2 py-6 text-center text-xs text-neutral-400">该项目暂无会话</p>
+                <EmptyState title="该项目暂无会话" hint="新建一个会话开始对话。" />
               )}
               {currentGroup?.sessions.map((item) => (
-                <div key={item.sessionId}
-                  className={`group flex w-full cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[13px] transition-colors ${item.sessionId === sessionId ? rowActive : rowIdle}`}
-                  onClick={() => agent !== undefined && void openSession(agent, item.sessionId)}>
+                <Row key={item.sessionId} selected={item.sessionId === sessionId}
+                  onClick={() => agent !== undefined && void openSession(agent, item.sessionId)}
+                  className="group/session">
                   {renaming?.sid === item.sessionId ? (
-                    <input autoFocus
-                      value={renaming.value}
+                    <input autoFocus value={renaming.value}
                       onFocus={(event) => event.currentTarget.select()}
                       onChange={(event) => setRenaming({ sid: item.sessionId, value: event.target.value })}
                       onKeyDown={(event) => {
-                        // 提交读 DOM 当前值（currentTarget.value），避免极快输入时闭包值过期
                         if (event.key === "Enter") { event.preventDefault(); void commitRename(item, event.currentTarget.value); }
                         if (event.key === "Escape") { event.preventDefault(); setRenaming(undefined); }
                       }}
                       onBlur={() => setRenaming(undefined)}
                       onClick={(event) => event.stopPropagation()}
-                      className="min-w-0 flex-1 rounded-md border border-neutral-400 bg-white px-1 py-0.5 text-[13px] outline-none focus:border-neutral-500" />
+                      className="min-w-0 flex-1 rounded bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
                   ) : (
                     <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
                   )}
-                  {item.running
-                    ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="生成中" />
-                    : <span className="shrink-0 text-[10px] text-neutral-400 group-hover:hidden">{timeAgo(item.updatedAt)}</span>}
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                    <button title="重命名" aria-label="重命名会话"
-                      onClick={(event) => { event.stopPropagation(); setRenaming({ sid: item.sessionId, value: item.title }); }}
-                      className="rounded-md p-1 text-neutral-300 transition-colors hover:bg-neutral-200 hover:text-neutral-700"><IconPencil size={13} /></button>
-                    <button title="删除" aria-label="删除会话"
-                      onClick={(event) => { event.stopPropagation(); void removeSession(item); }}
-                      className="rounded-md p-1 text-neutral-300 transition-colors hover:bg-neutral-200 hover:text-neutral-700"><IconTrash size={13} /></button>
+                  <span className="relative flex w-14 shrink-0 items-center justify-end">
+                    {item.running
+                      ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="生成中" />
+                      : <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>}
+                    <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+                      <IconButton label="重命名会话" size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setRenaming({ sid: item.sessionId, value: item.title });
+                        }}>
+                        <IconPencil size={14} />
+                      </IconButton>
+                      <IconButton label="删除会话" size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setConfirm({
+                            title: "删除会话",
+                            message: `删除「${item.title || "未命名"}」？此操作不可恢复。`,
+                            confirmLabel: "删除",
+                            run: () => void removeSession(item),
+                          });
+                        }}>
+                        <IconTrash size={14} />
+                      </IconButton>
+                    </span>
                   </span>
-                </div>
+                </Row>
               ))}
             </div>
-
-            <div className="border-t border-neutral-200 p-2">
-              <button onClick={() => void newSession()}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-neutral-200 bg-white py-1.5 text-[13px] text-neutral-600 transition-colors hover:border-neutral-300 hover:text-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
+            <div className="px-1.5 py-2">
+              <Button size="sm" className="w-full" onClick={() => void newSession()}>
                 <IconPlus size={14} /> 新建会话
-              </button>
+              </Button>
             </div>
           </aside>
-          <DragHandle k="c3" />
+          <DragHandle onStart={(event) => beginDrag("c3", event)} />
         </>
-      ) : <FoldStrip label="展开会话列" onShow={() => setShowSessions(true)} />}
+      )}
 
-      {/* 主区 · 聊天（列收起后占满） */}
-      <div className="flex h-dvh min-w-0 flex-1 flex-col bg-white">
-        <header className="flex h-12 shrink-0 items-center border-b border-neutral-200 px-4">
-          <h1 className="text-sm font-semibold tracking-tight text-neutral-900">Life OS</h1>
-          {/* 面板开合钮贴右缘（Pi Web top bar 同位）；不放任何未要求的面包屑 */}
-          <button aria-label="文件面板" title={panelOpen ? "收起文件面板" : "展开文件面板"}
-            onClick={() => setPanelOpen((prev) => !prev)}
-            className={`ml-auto rounded-md p-1.5 transition-colors ${panelOpen ? "bg-neutral-100 text-neutral-800" : "text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"}`}>
+      {/* 主区 · 聊天 */}
+      <div className="flex h-dvh min-w-0 flex-1 flex-col bg-surface">
+        <header className="flex h-11 shrink-0 items-center gap-2 px-4">
+          <div className="min-w-0">
+            <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
+            <p className="truncate text-micro text-ink-500">
+              {[agent?.name, currentGroup?.project.name].filter((part) => part !== undefined && part !== "").join(" · ") || "选择或新建一个会话"}
+            </p>
+          </div>
+          <span className="ml-auto" />
+          <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
             <IconLayoutSidebarRight size={16} />
-          </button>
+          </IconButton>
         </header>
 
-        <main className="flex w-full flex-1 flex-col gap-2.5 overflow-y-auto px-6 py-5">
-          {sessionId === undefined && <p className="mt-8 text-center text-sm text-neutral-400">选择或新建一个会话开始。</p>}
-          {messages.length === 0 && sessionId !== undefined && <p className="mt-8 text-center text-sm text-neutral-400">发一条消息开始对话。</p>}
-          {messages.map((message, index) => message.role === "user" ? (
-            <div key={index} className="flex justify-end">
-              <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-neutral-900 px-4 py-2.5 text-sm leading-relaxed text-white">{message.text}</div>
-            </div>
-          ) : (
-            <div key={index} className="flex flex-col items-start gap-2">
-              {message.blocks.length === 0
-                ? <div className="max-w-[80%] rounded-2xl rounded-bl-md bg-neutral-100 px-4 py-2.5 text-sm">{busy ? "…" : ""}</div>
-                : message.blocks.map((block, blockIndex) => <BlockView key={blockIndex} block={block} busy={busy} />)}
-            </div>
-          ))}
-          <div ref={endRef} />
+        <main ref={scrollRef}
+          onScroll={(event) => {
+            const node = event.currentTarget;
+            followTail.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
+          }}
+          className="min-h-0 w-full flex-1 overflow-y-auto px-6 py-5">
+          <div className="mx-auto flex w-full max-w-reading flex-col gap-4">
+            {sessionId === undefined && <EmptyState icon={<IconMessageCircle size={22} />} title="选择或新建一个会话" hint="左侧第 3 列是该项目下的所有对话。" />}
+            {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" />}
+            {messages.map((message, index) => (
+              <MessageView key={index} role={message.role} blocks={message.blocks} busy={busy} />
+            ))}
+            <div ref={endRef} />
+          </div>
         </main>
 
-        <footer className="border-t border-neutral-200 p-3">
-          <div className="flex items-end gap-2">
-            <textarea
-              value={input} rows={1} placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }}
-              className="max-h-32 flex-1 resize-none rounded-xl border border-neutral-200 bg-neutral-50/60 px-3.5 py-2.5 text-sm outline-none transition-colors focus:border-neutral-400 focus:bg-white"
-            />
-            <button onClick={() => void send()} disabled={busy || input.trim() === "" || sessionId === undefined}
-              className="rounded-xl bg-neutral-900 px-4 py-2.5 text-sm text-white transition-opacity hover:bg-neutral-800 disabled:opacity-40">
-              {busy ? "生成中" : "发送"}
-            </button>
+        <footer className="shrink-0 px-6 pb-4">
+          <div className="mx-auto w-full max-w-reading">
+            <div className="flex items-end gap-2 rounded-panel bg-surface p-1.5 ring-1 ring-line focus-within:ring-accent">
+              <textarea ref={inputRef} value={input} rows={1}
+                placeholder="输入消息，Enter 发送 · Shift+Enter 换行"
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }}
+                className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+              <IconButton label={busy ? "生成中" : "发送"} size="lg" tone="solid"
+                disabled={busy || input.trim() === "" || sessionId === undefined}
+                onClick={() => void send()}>
+                <IconArrowUpIcon />
+              </IconButton>
+            </div>
           </div>
         </footer>
       </div>
 
-      {/* 右侧文件面板：独立区域 = [文件夹树 | 查看器]，左右可各自拖宽（用户 2026-10-17） */}
-      {panelOpen && (
+      {/* 右侧文件面板 */}
+      {panelOpen && box.panel > 0 && (
         <>
-          <DragHandle k="c4" />
-          <aside style={{ width: panelWidth }} className="flex shrink-0 overflow-hidden border-l border-neutral-200 bg-white">
+          <DragHandle onStart={(event) => beginDrag("c4", event)} />
+          <aside style={{ width: box.panel }} className="flex shrink-0 overflow-hidden bg-surface">
             {showTree ? (
               <>
-                <div style={{ width: treeWidth }} className="flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-neutral-200">
+                <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
                   <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
                 </div>
-                <DragHandle k="c4t" />
+                <DragHandle onStart={(event) => beginDrag("c4t", event)} />
               </>
-            ) : <FoldStrip label="展开文件树" onShow={() => setShowTree(true)} />}
+            ) : (
+              <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-sunken py-1.5">
+                <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
+              </nav>
+            )}
             <div className="min-w-0 flex-1 overflow-hidden">
               <FilePanel tabs={fileTabs} activeId={activeFileTabId} onSelectTab={setActiveFileTabId}
                 onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs} />
@@ -526,37 +579,34 @@ export default function App() {
           </aside>
         </>
       )}
+
+      {configAgent !== undefined && (
+        <AgentConfigModal agent={configAgent}
+          onSaved={(updated) => {
+            setAgents((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+            if (agent?.id === updated.id) setAgent(updated);
+          }}
+          onClose={() => setConfigAgent(undefined)} />
+      )}
+
+      {addingProject && (
+        <DirectoryPicker onCancel={() => setAddingProject(false)} onSelect={registerProject} />
+      )}
+
+      {confirm !== undefined && (
+        <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} danger
+          onCancel={() => setConfirm(undefined)}
+          onConfirm={() => { const run = confirm.run; setConfirm(undefined); run(); }} />
+      )}
     </div>
   );
 }
 
-/** 结构化块渲染（参考 Pi Web MessageView：思考与工具折叠展示）。 */
-function BlockView({ block, busy }: { block: Block; busy: boolean }) {
-  if (block.type === "text") {
-    return (
-      <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-bl-md bg-neutral-100 px-4 py-2.5 text-sm leading-relaxed">
-        {block.text === "" && busy ? "…" : block.text}
-      </div>
-    );
-  }
-  if (block.type === "thinking") {
-    return (
-      <details className="max-w-[80%] overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 text-sm">
-        <summary className="cursor-pointer select-none px-3 py-2 text-xs text-neutral-500 transition-colors hover:text-neutral-700">思考过程</summary>
-        <div className="whitespace-pre-wrap border-t border-neutral-200 px-3 py-2 text-xs leading-relaxed text-neutral-600">{block.text}</div>
-      </details>
-    );
-  }
-  const status = block.isError ? "（出错）" : block.result !== undefined ? "（已完成）" : "（执行中…）";
+/** 发送按钮图标（向上箭头；与 IconUser 等一起走 Tabler 尺寸规范 16/18） */
+function IconArrowUpIcon() {
   return (
-    <details className="max-w-[80%] overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 text-sm">
-      <summary className="cursor-pointer select-none px-3 py-2 text-xs text-neutral-500 transition-colors hover:text-neutral-700">工具 · {block.name}{status}</summary>
-      <div className="border-t border-neutral-200">
-        <pre className="overflow-x-auto whitespace-pre-wrap px-3 py-2 text-xs text-neutral-600">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
-        {block.result !== undefined && (
-          <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-500">{block.result}</pre>
-        )}
-      </div>
-    </details>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 19V5" /><path d="m5 12 7-7 7 7" />
+    </svg>
   );
 }

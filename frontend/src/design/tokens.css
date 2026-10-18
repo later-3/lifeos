@@ -1,0 +1,71 @@
+/*
+ * 视觉唯一事实源（前端开发路径 · 闸 1）
+ * - 只在这里定义数值：字阶 / 灰阶 / 语义色 / 圆角。组件里禁止再写 text-[13px]、rounded-[10px]、#rrggbb。
+ * - 灰阶三档是按对比度选的，不是按"看起来差不多"：ink-500 白底 4.83:1、ink-700 9.9:1、ink-900 18.9:1。
+ * - ink-300 只允许用于分隔线、图标、占位装饰，禁止承载文本（对比度 2.6:1）。
+ * - 由 scripts/lint-tokens.mjs 机器校验，不靠自觉。
+ */
+@theme {
+  /* 表面：靠背景差分层，不靠满屏 1px 边框 */
+  --color-surface: #ffffff;
+  --color-sunken: #fafafa;
+  --color-hover: #f1f1f3;
+  --color-line: #e9e9ec;
+
+  /* 文字与图标 */
+  --color-ink-900: #111113;
+  --color-ink-700: #3f3f46;
+  --color-ink-500: #71717a;
+  --color-ink-300: #a1a1aa;
+
+  /* 语义色：只给主操作、选中、危险 */
+  --color-accent: #2563eb;
+  --color-accent-soft: #eff4ff;
+  --color-accent-line: #cbdcff;
+  --color-danger: #b42318;
+  --color-danger-soft: #fef3f2;
+  --color-success: #067647;
+
+  /* 字阶 5 档：micro / meta / body / content / title */
+  --text-micro: 11px;
+  --text-micro--line-height: 1.45;
+  --text-meta: 12px;
+  --text-meta--line-height: 1.5;
+  --text-body: 13.5px;
+  --text-body--line-height: 1.55;
+  --text-content: 15px;
+  --text-content--line-height: 1.72;
+  --text-title: 17px;
+  --text-title--line-height: 1.35;
+
+  /* 圆角 4 档：内嵌(分段控件内部) / 控件 / 面板 / 气泡；另有 full(头像) */
+  --radius-inner: 4px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --radius-bubble: 14px;
+
+  /* 阅读列宽度：正文行宽上限，避免超宽屏一行 200 字 */
+  --container-reading: 860px;
+  --container-bubble: 720px;
+}
+
+/*
+ * 焦点：全局兜底，任何控件被键盘聚焦都可见（闸 3 的键盘断言依赖它）。
+ * 组件一律不写 outline-none。
+ */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  ::selection {
+    background: var(--color-accent-soft);
+    color: var(--color-ink-900);
+  }
+  /* 细滚动条（macOS 默认覆盖式太粗，面板里会压内容） */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-300) transparent;
+  }
+}

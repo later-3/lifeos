@@ -49,10 +49,14 @@ install-receipt.json    安装收据
 | `GET /api/health` | 健康 |
 | `GET /api/home`、`GET /api/home/installation` | 家目录与安装收据 |
 | `GET·POST /api/agents`、`GET·PATCH·DELETE /api/agents/:id` | Agent 定义 |
-| `GET·PUT /api/agents/:id/avatar` | 头像 |
-| `GET /api/agents/:id/projects` | Agent 的 project 列表（`boundProjectIds` 解析 + 内置 workspace；外部项目 name/path 读共用层 manifest） |
+| `PUT /api/agents/:id` | 基础信息（改名/描述，写 agent.json 原子） |
+| `GET·PUT /api/agents/:id/identity` | 身份正文 `identity.md`（读/写） |
+| `GET·PUT /api/agents/:id/config` | **Agent 个人模型默认**（保存/加载于 `agents/<id>/workspace/config.json`，Agent 个人信息归 workspace） |
+| `GET /api/models-config` | 解析用户 `config/models.json` 为 provider/模型清单（**响应剔除一切密钥字段**，apiKey 永不外带） |
+| `POST·GET /api/agents/:id/avatar` | 头像：上传（png/jpg/webp≤2MB 魔数校验）/ reset 回自动 / 读图 |
+| `GET /api/agents/:id/projects` | Agent 的 project 列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；**显示名=目录名**（外部项目=basename(path)）；排序=默认项目在前 |
 | `POST /api/agents/:id/projects` | **注册外部项目 + 绑定合成一步**（校验目录 → 同 path 幂等复用 → 否则 pid=uuidv7、写 `~/.lifeos/projects/<pid>/project.json {schemaVersion,id,name,path}`、追加 `boundProjectIds`） |
-| `DELETE /api/agents/:id/projects/:pid` | 解绑（仅移出 `boundProjectIds`；**项目注册与会话/记录全部保留**；内置 workspace 不可解绑 400） |
+| `DELETE /api/agents/:id/projects/:pid` | 从该助手移除（写 `hiddenProjectIds`；**目录与会话/记录全部保留**；再次注册同 path 会重新出现；内置 workspace 不可移除 400） |
 | `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表（已注册且已绑定即 200，私有目录未建返回空列表） |
 | `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd=项目 path；workspace 则 = `~/.lifeos`**；私有目录按需建） |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |

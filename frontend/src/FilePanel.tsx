@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { IconCopy, IconFile, IconFileText, IconX } from "@tabler/icons-react";
+import { IconCopy, IconFile, IconFileText, IconTextWrap, IconX } from "@tabler/icons-react";
 import { isMarkdown } from "./fs-utils";
+import { EmptyState, IconButton, Segmented } from "./design/ui";
 
 export type FileTab = { id: string; fileName: string; filePath: string; mode?: "render" | "source"; wrap?: boolean };
 type FileData = { content: string; size: number; truncated: boolean; isBinary: boolean };
@@ -104,15 +105,12 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
     return DOMPurify.sanitize(marked.parse(data.content, { async: false }) as string);
   }, [data, mode]);
 
-  const mono = "font-mono text-[11px] text-neutral-500 truncate";
-  const segBtn = "px-2 py-0.5 text-[11px] transition-colors";
-  const segActive = "bg-white text-neutral-900 shadow-sm";
-  const segIdle = "text-neutral-500 hover:text-neutral-800";
+  const mono = "font-mono text-micro text-ink-500 truncate";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
-      {/* 页签行（36px）：图标 + 名 + ×（hover 出现），中键关闭 */}
-      <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-neutral-200 bg-neutral-50">
+    <div className="flex h-full min-h-0 flex-col bg-surface">
+      {/* 页签行（32px）：图标 + 名 + ×（hover 出现），中键关闭；激活页签用 2px accent 下划线 */}
+      <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-line bg-sunken">
         {tabs.map((tab) => {
           const isActive = tab.id === activeId;
           return (
@@ -120,13 +118,14 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
               onClick={() => onSelectTab(tab.id)}
               onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); onCloseTab(tab.id); } }}
               title={tab.filePath}
-              className={`group flex h-9 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 border-r border-neutral-200 px-3 text-[12px] transition-colors ${isActive ? "bg-white font-medium text-neutral-900" : "text-neutral-500 hover:bg-neutral-100"}`}>
-              {isMarkdown(tab.fileName) ? <IconFileText size={13} className="shrink-0" /> : <IconFile size={13} className="shrink-0" />}
+              className={`group relative flex h-8 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
+              {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
+              {isMarkdown(tab.fileName) ? <IconFileText size={14} className="shrink-0" /> : <IconFile size={14} className="shrink-0" />}
               <span className="truncate">{tab.fileName}</span>
-              <button aria-label={`关闭 ${tab.fileName}`} title="关闭"
+              <button aria-label={`关闭 ${tab.fileName}`} title="关闭" tabIndex={isActive ? 0 : -1}
                 onClick={(event) => { event.stopPropagation(); onCloseTab(tab.id); }}
-                className="rounded p-0.5 text-neutral-300 opacity-0 transition-opacity hover:bg-neutral-200 hover:text-neutral-700 group-hover:opacity-100">
-                <IconX size={12} />
+                className="rounded p-0.5 text-ink-300 opacity-0 transition-opacity hover:bg-hover hover:text-ink-700 group-hover:opacity-100 focus-visible:opacity-100">
+                <IconX size={14} />
               </button>
             </div>
           );
@@ -135,40 +134,37 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
 
       {/* 查看器 */}
       {active === undefined ? (
-        <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-neutral-400">
-          从左侧文件树选择文件，将在这里打开（可多页签）。
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState icon={<IconFileText size={22} />} title="还没有打开文件"
+            hint="从左侧文件树点一个文件，会在这里以页签打开（可多开）。" />
         </div>
       ) : (
         <>
           {/* 工具栏：路径 · 大小 · 模式切换 · 复制 */}
-          <div className="flex h-9 shrink-0 items-center gap-2 border-b border-neutral-200 px-3">
+          <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-3">
             <span className={`${mono} min-w-0 flex-1`} title={active.filePath}>{active.filePath}</span>
-            {data !== null && <span className="shrink-0 text-[10px] text-neutral-400">{formatSize(data.size)}</span>}
-            {data?.truncated === true && <span className="shrink-0 rounded bg-amber-50 px-1.5 py-px text-[10px] text-amber-600">仅前 2MB</span>}
-            {data?.isBinary === true && <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-px text-[10px] text-neutral-500">二进制</span>}
+            {data !== null && <span className="shrink-0 text-micro text-ink-500">{formatSize(data.size)}</span>}
+            {data?.truncated === true && <span className="shrink-0 rounded bg-danger-soft px-1.5 py-px text-micro text-danger">仅前 2MB</span>}
+            {data?.isBinary === true && <span className="shrink-0 rounded bg-hover px-1.5 py-px text-micro text-ink-500">二进制</span>}
             {data !== null && !data.isBinary && isMarkdown(active.fileName) && (
-              <span className="flex shrink-0 items-center rounded-md bg-neutral-100 p-0.5">
-                <button onClick={() => setMode("render")} className={`${segBtn} ${mode === "render" ? segActive : segIdle}`}>渲染</button>
-                <button onClick={() => setMode("source")} className={`${segBtn} ${mode === "source" ? segActive : segIdle}`}>源码</button>
-              </span>
+              <Segmented value={mode} onChange={setMode}
+                options={[{ value: "render", label: "渲染" }, { value: "source", label: "源码" }]} />
             )}
             {data !== null && !data.isBinary && mode === "source" && (
-              <button onClick={() => setWrap(!wrap)}
-                className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] transition-colors ${wrap ? "border-neutral-400 bg-neutral-100 text-neutral-800" : "border-neutral-200 text-neutral-500 hover:border-neutral-300"}`}>
-                换行
-              </button>
+              <IconButton label={wrap ? "关闭自动换行" : "自动换行"} active={wrap} onClick={() => setWrap(!wrap)}>
+                <IconTextWrap size={14} />
+              </IconButton>
             )}
-            <button aria-label="复制内容" title="复制内容" disabled={data === null || data.isBinary}
+            <IconButton label="复制内容" tone={copied ? "accent" : "default"} active={copied} disabled={data === null || data.isBinary}
               onClick={() => {
                 if (data === null) return;
                 void navigator.clipboard.writeText(data.content).then(() => {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 1500);
                 });
-              }}
-              className={`shrink-0 rounded-md p-1 transition-colors ${copied ? "bg-emerald-500/15 text-emerald-500" : "text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"} disabled:opacity-30`}>
+              }}>
               <IconCopy size={14} />
-            </button>
+            </IconButton>
           </div>
 
           {/* 内容 */}
@@ -179,24 +175,24 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
               prefs.current.set(active.id, { ...prev, mode, wrap, scrollTop: event.currentTarget.scrollTop });
             }}
             className="min-h-0 flex-1 overflow-auto">
-            {loading && <p className="px-4 py-6 text-center text-sm text-neutral-400">加载中…</p>}
-            {failed !== null && <p className="px-4 py-6 text-center text-sm text-red-500">{failed}</p>}
+            {loading && <p className="px-4 py-6 text-center text-body text-ink-500">加载中…</p>}
+            {failed !== null && <p className="px-4 py-6 text-center text-body text-danger">{failed}</p>}
             {!loading && failed === null && data?.isBinary === true && (
-              <p className="px-4 py-6 text-center text-sm text-neutral-400">二进制文件，暂不支持预览。</p>
+              <p className="px-4 py-6 text-center text-body text-ink-500">二进制文件，暂不支持预览。</p>
             )}
             {!loading && failed === null && data !== null && !data.isBinary && mode === "render" && html !== null && (
-              <div className="md-body px-5 py-4" dangerouslySetInnerHTML={{ __html: html }} />
+              <div className="md-body md-body--compact px-5 py-4" dangerouslySetInnerHTML={{ __html: html }} />
             )}
             {!loading && failed === null && data !== null && !data.isBinary && mode === "source" && lines !== null && (
-              <div className={`min-w-full py-2 text-[12px] leading-[1.55] ${wrap ? "whitespace-pre-wrap" : ""}`}>
+              <div className={`min-w-full py-2 text-meta text-body ${wrap ? "whitespace-pre-wrap" : ""}`}>
                 {lines.list.map((line, index) => (
                   <div key={index} className={`flex ${wrap ? "flex-wrap" : ""}`}>
-                    <span className="sticky left-0 w-12 shrink-0 select-none border-r border-neutral-100 bg-white px-2 text-right text-[11px] tabular-nums text-neutral-300">{index + 1}</span>
-                    <code className={`min-w-0 flex-1 px-3 font-mono text-neutral-700 ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"}`}>{line === "" ? " " : line}</code>
+                    <span className="sticky left-0 w-12 shrink-0 select-none border-r border-hover bg-surface px-2 text-right text-micro tabular-nums text-ink-500">{index + 1}</span>
+                    <code className={`min-w-0 flex-1 px-3 font-mono text-ink-700 ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"}`}>{line === "" ? " " : line}</code>
                   </div>
                 ))}
                 {lines.total > LINE_CAP && (
-                  <p className="border-t border-neutral-100 px-3 py-2 text-[11px] text-neutral-400">
+                  <p className="border-t border-hover px-3 py-2 text-micro text-ink-500">
                     文件共 {lines.total.toLocaleString()} 行，仅显示前 {LINE_CAP.toLocaleString()} 行。
                   </p>
                 )}

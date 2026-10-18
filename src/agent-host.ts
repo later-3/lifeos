@@ -87,7 +87,7 @@ export async function createSession(agentId: string, cwd: string, projectId = "w
     const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
     await mkdir(projectDir, { recursive: true });
     await writeFile(join(projectDir, "project.json"),
-      JSON.stringify({ schemaVersion: 1, id: "workspace", name: "工作区" }) + "\n",
+      JSON.stringify({ schemaVersion: 1, id: "workspace" }) + "\n",
       { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
   }
   const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));

@@ -33,6 +33,7 @@
 ## 验证
 
 - 前后端改动完成后运行 `pnpm test` 与 `pnpm build`（这两条命令在实现第一步落地，落地前以实际存在的命令为准）。
+- 前端改动走 `docs/design/frontend-path.md` 的四道闸：`pnpm verify`（typecheck + lint:tokens + test + test:ui）。数值/颜色只在 `frontend/src/design/tokens.css`，控件只在 `frontend/src/design/`，布局宽度只改 `design/layout.ts`；视觉变化必须回应截图基线 diff（`pnpm test:ui:update` + 人眼确认）。
 - 针对性测试覆盖真实场景与边界，不能只断言实现细节；测试通过不代表架构正确，提交前还要核对文档、配置与真实行为是否一致。
 
 ## Git

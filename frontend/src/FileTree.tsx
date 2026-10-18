@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconFolderPlus, IconRefresh } from "@tabler/icons-react";
 import { DirectoryPicker } from "./DirectoryPicker";
+
+import { IconButton, Label, Skeleton } from "./design/ui";
 import { isMarkdown } from "./fs-utils";
 
 type TreeEntry = { name: string; isDir: boolean };
@@ -100,21 +102,21 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
         return (
           <div key={childPath}>
             <button onClick={() => void toggle(childPath)}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12.5px] text-neutral-700 transition-colors hover:bg-neutral-100"
+              className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900"
               style={{ paddingLeft: 8 + depth * 14 }}>
-              <IconChevronRight size={12}
-                className={`shrink-0 text-neutral-400 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
+              <IconChevronRight size={14}
+                className={`shrink-0 text-ink-500 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
               {pending.has(childPath)
-                ? <IconFolder size={14} className="shrink-0 animate-pulse text-neutral-300" />
+                ? <IconFolder size={14} className="shrink-0 animate-pulse text-ink-300" />
                 : isOpen
-                  ? <IconFolderOpen size={14} className="shrink-0 text-neutral-400" />
-                  : <IconFolder size={14} className="shrink-0 text-neutral-400" />}
+                  ? <IconFolderOpen size={14} className="shrink-0 text-ink-500" />
+                  : <IconFolder size={14} className="shrink-0 text-ink-500" />}
               <span className="truncate">{entry.name}</span>
             </button>
             {isOpen && (
               <>
                 {(entries[childPath] ?? []).length === 0 && !pending.has(childPath) && (
-                  <p className="py-0.5 text-[11px] text-neutral-300" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>空</p>
+                  <p className="py-1 text-micro text-ink-500" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>空</p>
                 )}
                 {renderRows(childPath, depth + 1)}
               </>
@@ -124,11 +126,11 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
       }
       return (
         <button key={childPath} onClick={() => onOpenFile(childPath, entry.name)}
-          className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[12.5px] text-neutral-600 transition-colors hover:bg-neutral-100"
+          className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900"
           style={{ paddingLeft: 8 + depth * 14 + 18 }}>
           {isMarkdown(entry.name)
-            ? <IconFileText size={14} className="shrink-0 text-neutral-400" />
-            : <IconFile size={14} className="shrink-0 text-neutral-400" />}
+            ? <IconFileText size={14} className="shrink-0 text-ink-500" />
+            : <IconFile size={14} className="shrink-0 text-ink-500" />}
           <span className="truncate">{entry.name}</span>
         </button>
       );
@@ -140,31 +142,18 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
       {pickerOpen && (
         <DirectoryPicker onCancel={() => setPickerOpen(false)} onSelect={selectDirectory} />
       )}
-      <div className="flex h-full min-h-0 flex-col bg-neutral-50">
-        {/* 树列头：根名 + 选择目录 + 刷新 */}
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-neutral-200 px-2">
-          <span className="text-[11px] font-medium tracking-wide text-neutral-400">文件</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-neutral-400" title={root ?? ""}>· {rootLabel}</span>
-          <button aria-label="选择目录" title="选择目录" onClick={() => setPickerOpen(true)}
-            className="rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-200/70 hover:text-neutral-700">
-            <IconFolderPlus size={14} />
-          </button>
-          <button aria-label="刷新文件树" title="刷新文件树" onClick={() => void refresh()}
-            className={`rounded-md p-1 transition-colors ${refreshing ? "bg-emerald-500/15 text-emerald-500" : "text-neutral-400 hover:bg-neutral-200/70 hover:text-neutral-700"}`}>
-            <IconRefresh size={14} className={refreshing ? "stroke-[2.5]" : ""} />
-          </button>
-          {onHide !== undefined && (
-            <button aria-label="收起文件树" title="收起文件树" onClick={onHide}
-              className="rounded-md p-0.5 text-neutral-300 transition-colors hover:bg-neutral-200/70 hover:text-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300">
-              <IconChevronLeft size={15} />
-            </button>
-          )}
+      <div className="flex h-full min-h-0 flex-col bg-sunken">
+        {/* 树列头（与三列同 40px）：根名 + 选择目录 + 刷新 + 收起 */}
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-3 pr-1">
+          <Label className="shrink-0">文件</Label>
+          <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-500" title={root ?? ""}>· {rootLabel}</span>
+          <IconButton label="选择目录" onClick={() => setPickerOpen(true)}><IconFolderPlus size={14} /></IconButton>
+          <IconButton label="刷新文件树" active={refreshing} onClick={() => void refresh()}><IconRefresh size={14} /></IconButton>
+          {onHide !== undefined && <IconButton size="sm" label="收起文件树" onClick={onHide}><IconChevronLeft size={16} /></IconButton>}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
-          {error !== null && <p className="px-2 py-3 text-center text-[11px] text-red-500">{error}</p>}
-          {root !== undefined && entries[root] === undefined && error === null && (
-            <p className="px-2 py-3 text-center text-[11px] text-neutral-400">加载中…</p>
-          )}
+          {error !== null && <p className="px-2 py-3 text-center text-micro text-danger">{error}</p>}
+          {root !== undefined && entries[root] === undefined && error === null && <Skeleton rows={5} />}
           {root !== undefined && renderRows(root, 0)}
         </div>
       </div>

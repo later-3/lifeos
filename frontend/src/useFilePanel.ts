@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { FileTab } from "./FilePanel";
+import { useFold } from "./design/fold";
 
 // 文件面板状态（从 App 拆出，2026-10-17 坏味道清理）：
 // 页签列表 / 激活页签 / 面板开合 + 开关页签动作，全部持久化（内容不入 localStorage，按路径内存缓存）。
 
-const PANEL_KEY = "lifeos.filePanel";
 const TABS_KEY = "lifeos.fileTabs";
 type TabsPersist = { tabs: FileTab[]; activeId?: string };
 
@@ -21,11 +21,10 @@ function loadPersist(): TabsPersist {
 
 export function useFilePanel() {
   const [initial] = useState(loadPersist);   // 只解析一次（原实现两个 useState 各解析一次）
-  const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem(PANEL_KEY) !== "0");
+  const [panelOpen, setPanelOpen] = useFold("panel", false);   // 默认收起：文件面板是次要区域，先给聊天空间
   const [fileTabs, setFileTabs] = useState<FileTab[]>(initial.tabs);
   const [activeFileTabId, setActiveFileTabId] = useState<string | undefined>(initial.activeId);
 
-  useEffect(() => { localStorage.setItem(PANEL_KEY, panelOpen ? "1" : "0"); }, [panelOpen]);
   useEffect(() => { localStorage.setItem(TABS_KEY, JSON.stringify({ tabs: fileTabs, activeId: activeFileTabId })); }, [fileTabs, activeFileTabId]);
 
   /** 打开/聚焦页签并自动开面板（Pi Web handleOpenFile 同型）。 */
