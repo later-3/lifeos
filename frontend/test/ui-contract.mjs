@@ -488,6 +488,36 @@ const urlThreeKeys = await page.evaluate(async () => {
 check("URL 三键：切项目更新 ?project=（无会话时也要）", urlThreeKeys.skipped === true || urlThreeKeys.ok === true,
   urlThreeKeys.skipped === true ? "只有 1 个项目，跳过" : String(urlThreeKeys.detail ?? ""));
 
+// 空项目 / 新 Agent：输入框可用，首条消息 = 建会话 + 发送（参照 Pi Web 的 new session draft）
+const freshPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+await freshPage.clock.install({ time: FROZEN_TIME });
+await freshPage.goto(APP_URL, { waitUntil: "networkidle" });
+const emptyTarget = await freshPage.evaluate(async () => {
+  const agents = (await (await fetch("/api/agents")).json()).items;
+  for (const agent of agents) {
+    const groups = (await (await fetch(`/api/agents/${agent.id}/projects`)).json()).items;
+    for (const project of groups) {
+      const sessions = (await (await fetch(`/api/agents/${agent.id}/projects/${project.id}/sessions`)).json()).items;
+      if (sessions.length === 0) return { agentId: agent.id, projectId: project.id };
+    }
+  }
+  return null;
+});
+if (emptyTarget === null) {
+  check("没有会话时输入框仍可用（首条消息＝建会话）", true, "没有空项目可测，跳过");
+} else {
+  await freshPage.goto(`${APP_URL}/?agent=${emptyTarget.agentId}&project=${emptyTarget.projectId}`, { waitUntil: "networkidle" });
+  await freshPage.waitForTimeout(700);
+  const emptyState = await freshPage.evaluate(() => ({
+    disabled: document.querySelector("textarea")?.disabled ?? true,
+    hint: (document.body.innerText ?? "").includes("会自动"),
+  }));
+  check("没有会话时输入框仍可用（首条消息＝建会话）", emptyState.disabled === false,
+    `agent=${emptyTarget.agentId} project=${emptyTarget.projectId} disabled=${emptyState.disabled}`);
+  check("空会话态有「直接发送即建会话」的提示", emptyState.hint);
+}
+await freshPage.close();
+
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
 // 否则同一 context 里页面的先后顺序、以及"4小时前"这类相对时间文案，会让基线随机抖动（实测 66457 vs 66460 字节）。

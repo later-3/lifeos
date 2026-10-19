@@ -133,16 +133,18 @@ export default function App() {
   useEffect(() => { if (agent !== undefined) writeLast(LAST_AGENT, agent.id); }, [agent?.id]);
 
   // 输入草稿：按会话归属（切会话换草稿、刷新不丢）；发送时清空，失败回填。
+  // 还没有会话时（新 Agent / 空项目）草稿挂在 agent+project 上——这就是"新会话草稿"（Pi Web 的 newSessionDraftKey）。
+  const draftKey = sessionId ?? (agent !== undefined && selectedProjectId !== undefined ? `${agent.id}/${selectedProjectId}` : undefined);
   useEffect(() => {
-    if (sessionId === undefined) { setInputState(""); return; }
-    try { setInputState(localStorage.getItem(`${DRAFT_PREFIX}${sessionId}`) ?? ""); } catch { setInputState(""); }
-  }, [sessionId]);
+    if (draftKey === undefined) { setInputState(""); return; }
+    try { setInputState(localStorage.getItem(`${DRAFT_PREFIX}${draftKey}`) ?? ""); } catch { setInputState(""); }
+  }, [draftKey]);
   function setInput(text: string) {
     setInputState(text);
-    if (sessionId === undefined) return;
+    if (draftKey === undefined) return;
     try {
-      if (text === "") localStorage.removeItem(`${DRAFT_PREFIX}${sessionId}`);
-      else localStorage.setItem(`${DRAFT_PREFIX}${sessionId}`, text);
+      if (text === "") localStorage.removeItem(`${DRAFT_PREFIX}${draftKey}`);
+      else localStorage.setItem(`${DRAFT_PREFIX}${draftKey}`, text);
     } catch { /* 忽略 */ }
   }
 
@@ -487,9 +489,36 @@ export default function App() {
    */
   async function sendText(raw: string) {
     const text = raw.trim();
-    if (text === "" || agent === undefined || sessionId === undefined) return;
+    if (text === "" || agent === undefined) return;
+    // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
+    // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
+    let sid = sessionId;
+    if (sid === undefined) {
+      if (selectedProjectId === undefined || submittingRef.current || busyRef.current) return;
+      submittingRef.current = true;
+      setInput("");
+      try {
+        const created = await fetch(`/api/agents/${agent.id}/projects/${selectedProjectId}/sessions`, { method: "POST" });
+        if (!created.ok) {
+          const body = await created.json().catch(() => ({}) as { error?: { message?: string } });
+          toast(body.error?.message ?? "新建会话失败", "error");
+          setInput(text);
+          return;
+        }
+        sid = ((await created.json()) as { sessionId: string }).sessionId;
+        setSessionId(sid);
+        setMessages([]);
+        void reloadGroups();
+      } catch {
+        toast("网络错误：新建会话失败", "error");
+        setInput(text);
+        return;
+      } finally {
+        submittingRef.current = false;
+      }
+    }
     if (busyRef.current || submittingRef.current) {
-      queueRef.current = [...queueRef.current, { sid: sessionId, text }];
+      queueRef.current = [...queueRef.current, { sid, text }];
       setQueued({ count: queueRef.current.length, text });
       setInput("");
       return;
@@ -511,7 +540,7 @@ export default function App() {
       setBusy(false);
     };
     try {
-      const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/messages`, {
+      const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
       });
       if (!response.ok) {
@@ -645,7 +674,7 @@ export default function App() {
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
               {currentGroup === undefined && <EmptyState title="先选择项目" />}
               {currentGroup !== undefined && currentGroup.sessions.length === 0 && (
-                <EmptyState title="该项目暂无会话" hint="新建一个会话开始对话。" />
+                <EmptyState title="该项目暂无会话" hint="直接在右下输入框发消息，会自动新建会话。" />
               )}
               {currentGroup?.sessions.map((item) => (
                 <Row key={item.sessionId} selected={item.sessionId === sessionId}
@@ -749,7 +778,9 @@ export default function App() {
           }}
           className="min-h-0 w-full flex-1 overflow-y-auto px-6 py-5">
           <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
-            {sessionId === undefined && <EmptyState icon={<IconMessageCircle size={22} />} title="选择或新建一个会话" hint="左侧第 3 列是该项目下的所有对话。" />}
+            {sessionId === undefined && (selectedProjectId === undefined
+              ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
+              : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
             {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" />}
             {messages.map((message, index) => (
               <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true} />
@@ -788,7 +819,7 @@ export default function App() {
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
                 className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
               <IconButton label={busy ? "生成中" : "发送"} size="lg" tone="solid"
-                disabled={busy || input.trim() === "" || sessionId === undefined}
+                disabled={busy || input.trim() === "" || selectedProjectId === undefined}
                 onClick={() => void send()}>
                 <IconArrowUpIcon />
               </IconButton>
