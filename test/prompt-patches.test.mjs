@@ -36,12 +36,12 @@ test("首条补丁建立基线：全量落盘，但不标“本次变更”", ()
 
 test("真实会话的场景：第 1 条全量 + 第 2 条只有 {project_context, cwd} → 累计 7 个区", () => {
   const full = {
-    preamble: "<lifeos_identity>…", skills: "…", cwd: "<cwd>\n/Users/xulater/.lifeos\n</cwd>",
+    preamble: "<lifeos_identity>…", skills: "…", cwd: "<cwd>\n/home/user/.lifeos\n</cwd>",
     tools: "…", rules: "…", lifeos_interaction_harness: "…",
   };
-  const sections = sectionsAfter([full, { cwd: "<cwd>\n/Users/xulater/Code/lifeos\n</cwd>", project_context: "<project_context>…" }]);
+  const sections = sectionsAfter([full, { cwd: "<cwd>\n/home/user/code/my-project\n</cwd>", project_context: "<project_context>…" }]);
   assert.deepEqual(Object.keys(sections).sort(), ["cwd", "lifeos_interaction_harness", "preamble", "project_context", "rules", "skills", "tools"]);
-  assert.match(sections.cwd, /Code\/lifeos/);
+  assert.match(sections.cwd, /code\/my-project/);
   assert.match(sections.preamble, /lifeos_identity/);
 });
 

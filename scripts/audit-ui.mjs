@@ -9,6 +9,7 @@
  */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -16,7 +17,7 @@ const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
 const CANDIDATES = [
   process.env.PLAYWRIGHT_CORE,
   join(HERE, "../frontend/node_modules/playwright-core/index.js"),
-  "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js",
+  join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js"),
 ].filter(Boolean);
 
 let playwright;

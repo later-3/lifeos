@@ -13,6 +13,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { pixelDiff } from "./png.mjs";
 
@@ -25,7 +26,7 @@ const UPDATE_BASELINE = process.argv.includes("--update-baseline");
 const PLAYWRIGHT_CANDIDATES = [
   process.env.PLAYWRIGHT_CORE,
   join(HERE, "../../frontend/node_modules/playwright-core/index.js"),
-  "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js",
+  join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js"),
 ].filter(Boolean);
 
 const MIN_CHAT = 420;
