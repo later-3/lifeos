@@ -9,9 +9,11 @@ type BrowseResult = { path: string; parent: string | null; dirs: string[] };
  * 目录选择器（Pi Web DirectoryPicker 同型）：路径输入直接跳转 + 逐级目录列表 + 上级 + 选择。
  * 模态语义/焦点陷阱/Esc 由 design/overlay.tsx 提供。
  */
-export function DirectoryPicker({ onCancel, onSelect }: {
+export function DirectoryPicker({ onCancel, onSelect, startPath }: {
   onCancel: () => void;
   onSelect: (path: string) => Promise<string | null>;
+  /** 打开时从哪个目录开始（当前正在浏览的根）；不传则由服务端给默认根（家目录）。 */
+  startPath?: string;
 }) {
   const [currentPath, setCurrentPath] = useState("");
   const [parent, setParent] = useState<string | null>(null);
@@ -31,13 +33,18 @@ export function DirectoryPicker({ onCancel, onSelect }: {
       if (!response.ok) { setError(data.error?.message ?? "无法打开该目录"); return; }
       setCurrentPath(data.path);
       setPathInput(data.path);
+      // 单行输入框只会显示一部分：把视图滚到末尾，让"最深的目录段"可见（路径用户关心的是末尾）
+      requestAnimationFrame(() => {
+        const el = pathRef.current;
+        if (el !== null) el.scrollLeft = el.scrollWidth;
+      });
       setParent(data.parent);
       setDirs(data.dirs);
     } catch { setError("网络错误"); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { void navigate(); }, []);
+  useEffect(() => { void navigate(startPath); }, []);   // 从当前目录开始，而不是每次都从家目录
 
   async function choose() {
     if (busy || currentPath === "") return;
@@ -69,7 +76,7 @@ export function DirectoryPicker({ onCancel, onSelect }: {
         <input ref={pathRef} value={pathInput} onChange={(event) => setPathInput(event.target.value)}
           autoComplete="off" spellCheck={false}
           placeholder="输入路径后回车跳转"
-          className={`${controlClass} h-9 font-mono text-meta`} />
+          className={`${controlClass} h-9 min-w-0 flex-1 font-mono text-meta`} />
       </form>
 
       <div className="max-h-80 min-h-40 overflow-y-auto">

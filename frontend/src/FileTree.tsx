@@ -158,7 +158,7 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
   return (
     <>
       {pickerOpen && (
-        <DirectoryPicker onCancel={() => setPickerOpen(false)} onSelect={switchRoot} />
+        <DirectoryPicker onCancel={() => setPickerOpen(false)} onSelect={switchRoot} startPath={root} />
       )}
       {switcherOpen && (
         <Modal title="切换目录" subtitle="打开过的目录会留在这里（最近使用在前）" width={560} onClose={() => setSwitcherOpen(false)}
@@ -168,8 +168,8 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
             {roots.map((path) => (
               <Row key={path} selected={path === root} onClick={() => void switchRoot(path)}>
                 <IconFolder size={14} className="shrink-0 text-ink-300" />
-                <span className="min-w-0 flex-1 truncate font-mono text-meta">{rootName(path)}</span>
-                <span className="min-w-0 max-w-72 truncate font-mono text-micro text-ink-500" title={path}>{path}</span>
+                <span className="max-w-40 shrink-0 truncate font-mono text-meta">{rootName(path)}</span>
+                <span className="min-w-0 flex-1 truncate text-right font-mono text-micro text-ink-500" title={path}>{path}</span>
               </Row>
             ))}
           </div>

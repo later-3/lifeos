@@ -291,6 +291,13 @@ const pickerFocus = await page.evaluate(() => {
   return { focused: document.activeElement === el, tag: document.activeElement?.tagName ?? null };
 });
 check("目录选择器：打开即聚焦路径输入框（不是关闭按钮）", pickerFocus.focused === true, `焦点在 ${pickerFocus.tag}`);
+// 从"当前根"开始（不是每次回家目录）；长路径自动滚到末尾，保证最深一段可见
+const startPath = await page.evaluate(() => ({
+  rootTitle: [...document.querySelectorAll('button[title]')].find((b) => (b.textContent ?? '').trim().startsWith('· '))?.getAttribute('title') ?? null,
+  inputValue: document.querySelector('input[placeholder="输入路径后回车跳转"]')?.value ?? null,
+}));
+check("目录选择器：从当前所在目录开始", startPath.rootTitle !== null && startPath.inputValue === startPath.rootTitle,
+  `root=${startPath.rootTitle} input=${startPath.inputValue}`);
 const beforeBackspace = await page.locator('input[placeholder="输入路径后回车跳转"]').inputValue();
 await page.keyboard.type("xyz");
 await page.keyboard.press("Backspace");
