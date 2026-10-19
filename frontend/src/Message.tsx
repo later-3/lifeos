@@ -25,6 +25,8 @@ export type Block =
     };
 export type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[];
+  /** Pi 的失败原因（stopReason=error）：显示在气泡里，并让"重新发送"可用 */
+  error?: string;
   /** 仅客户端：这条正在被流事件更新（工作指示与块自动展开都只认它）。loadMessages 重建后自然清掉。 */
   streaming?: boolean;
 };
@@ -51,27 +53,34 @@ function useWorkingSeconds(active: boolean): number {
 }
 
 const PHASE_LABEL: Record<Phase, string> = {
-  waiting: "等待模型…",
+  waiting: "等待模型响应…",
   thinking: "思考中…",
   tool: "正在执行工具…",
   text: "输出中…",
 };
 
 /** 工作指示行：转圈 + 现在在干什么 + 已用秒数。 */
-export function WorkingRow({ phase, activeTool }: { phase: Phase; activeTool?: string }) {
+export function WorkingRow({ phase, activeTool, retry }: {
+  phase: Phase; activeTool?: string;
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string };
+}) {
   const seconds = useWorkingSeconds(true);
-  const label = phase === "tool" && activeTool !== undefined && activeTool !== "" ? `正在执行 ${activeTool}…` : PHASE_LABEL[phase];
+  // 状态区分（2026-10-19）：请求刚发出 = 连接中；超过 3s 还没首个事件 = 等待模型响应
+  const label = retry !== undefined
+    ? `模型调用失败，${Math.max(1, Math.round(retry.delayMs / 1000))}s 后重试（${retry.attempt}/${retry.maxAttempts}）：${retry.message}`
+    : phase === "tool" && activeTool !== undefined && activeTool !== "" ? `正在执行 ${activeTool}…`
+    : phase === "waiting" && seconds < 3 ? "正在连接模型…" : PHASE_LABEL[phase];
   return (
-    <div className="flex items-center gap-2 py-0.5 text-meta text-ink-500">
-      <Spinner size={14} className="text-accent" />
+    <div className={`flex flex-wrap items-center gap-2 py-0.5 text-meta ${retry !== undefined ? "text-danger" : "text-ink-500"}`}>
+      <Spinner size={14} className={retry !== undefined ? "text-danger" : "text-accent"} />
       <span className="animate-pulse">{label}</span>
       <span className="tabular-nums text-micro text-ink-500">{seconds}s</span>
     </div>
   );
 }
 
-export function MessageView({ role, blocks, busy, align = "end" }: {
-  role: "user" | "assistant"; blocks: Block[]; busy: boolean;
+export function MessageView({ role, blocks, busy, error, align = "end" }: {
+  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
 }) {
@@ -90,6 +99,7 @@ export function MessageView({ role, blocks, busy, align = "end" }: {
       {blocks.map((block, index) => (
         <BlockView key={index} block={block} live={busy} />
       ))}
+      {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
     </div>
   );
 }

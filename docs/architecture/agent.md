@@ -74,7 +74,10 @@
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
 - **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别。
 - **前端交互**（对照 Pi CLI / Pi Web，2026-10-19）：生成中 **Esc / 停止按钮 = 打断**；生成中 Enter = **steer 插话**；生成中超过 **60s 无事件 = 判为运行丢失**（清生成态 + 重载消息，尾部空回复给「重新发送」）；SSE 重连快照显示"不在跑"也走同一恢复；斜杠命令面板（`/compact /model /thinking /name /new /copy /export /abort`）；空输入时 **↑/↓ 浏览发送历史**。
-- 模型选择：**优先级 A** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ Pi 回落；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。
+- **失败与状态可见**（2026-10-19，用户实测「发了消息没回复、不知道在等什么」）：头部显示**会话当前模型**（`provider/model`，来自 `GET …/sessions/:sid` 的 `meta`）；工作指示行按真实阶段变化——请求刚发出 **3s 内「正在连接模型…」**、之后 **「等待模型响应…」+ 秒数**、Pi 自动重试时 **「模型调用失败，Ns 后重试（i/max）：<原因>」**（危险色）、进模型后 **思考中 / 执行工具 / 输出中**；失败的 assistant 气泡显示 **`模型调用失败：<原因>`**，并在尾部给 **「重新发送」**（空回复同样给）。失败原因与重试信息全部来自 Pi（`errorMessage` / `auto_retry_start`），不自造文案。
+- **深链接**（`?agent&project&session`）：URL 指定项目时**只在该项目里选会话**，不拿别的项目"记住的会话"顶上（2026-10-19 实测：`?project=<空项目>` 被 workspace 会话顶掉）。
+- 模型选择：**优先级 A** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ Pi 回落；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。新建会话的模型与来源会打一行日志 `[assembly] 新建会话 … · 模型 <provider>/<id>（来源 …）`，排查"怎么用了这个模型"先看它。
+- **会话级切换**（`/model` `/thinking`，走 Pi `setModel` / `setThinkingLevel`）：只改当前会话（Pi 写 `model_change`），不动 Agent 默认、不动全局；`setModel` 会校验 provider 是否配了 key，失败原因（如 `No API key for …`）原样显示，不吞成"切换失败"。
 
 ## 5 装配（方案 E，2026-10-18 定稿，现状）
 

@@ -42,11 +42,22 @@ test("不关心的事件一律 undefined（生命周期/重试/压缩/队列都�
     { type: "agent_start" }, { type: "agent_end", messages: [] }, { type: "turn_start" },
     { type: "tool_execution_start", toolCallId: "x", toolName: "read", args: {} },
     { type: "tool_execution_update", toolCallId: "x", toolName: "read", partialResult: {} },
-    { type: "auto_retry_start", attempt: 1 }, { type: "compaction_start", reason: "threshold" },
+    { type: "compaction_start", reason: "threshold" },
     { type: "bash_execution_update", delta: "…" }, { type: "message_start", message: {} },
     { type: "message_update" }, { type: "message_update", assistantMessageEvent: { type: "done" } },
     {}, undefined, null,
   ]) {
     assert.equal(toStreamEvent(event), undefined, JSON.stringify(event));
   }
+});
+
+
+test("自动重试也映射（界面上要能显示失败原因与第几次）", () => {
+  assert.deepEqual(
+    toStreamEvent({ type: "auto_retry_start", attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "Request timed out." }),
+    { type: "retrying", attempt: 2, maxAttempts: 3, delayMs: 4000, message: "Request timed out." },
+  );
+  assert.deepEqual(toStreamEvent({ type: "auto_retry_end", success: false }), { type: "retry_end", success: false });
+  // 缺字段时给安全默认值（不崩、不造假）
+  assert.deepEqual(toStreamEvent({ type: "auto_retry_start" }), { type: "retrying", attempt: 0, maxAttempts: 0, delayMs: 0, message: "" });
 });

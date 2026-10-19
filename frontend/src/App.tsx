@@ -27,7 +27,7 @@ import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/u
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
-type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean };
+type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
@@ -101,6 +101,8 @@ export default function App() {
   const [streamSeq, setStreamSeq] = useState(0);
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
+  const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string } | undefined>();
+  const [meta, setMeta] = useState<{ model: { provider: string; id: string } | null; thinkingLevel: string } | undefined>();
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
@@ -215,9 +217,12 @@ export default function App() {
   }
 
   async function loadMessages(id: string, sid: string) {
-    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as { messages: Message[] };
+    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
+      messages: Message[]; meta?: { model: { provider: string; id: string } | null; thinkingLevel: string };
+    };
     followTail.current = true;
     setMessages(data.messages ?? []);
+    if (data.meta !== undefined) setMeta(data.meta);
   }
 
   function pickLatest(list: SessionItem[]): SessionItem | undefined {
@@ -242,6 +247,7 @@ export default function App() {
     setHistory(undefined);
     streamRef.current = createStreamState();
     setPhase("waiting");
+    setRetry(undefined);
     setActiveTool(undefined);
     setSessionId(sid);
     streaming.current = false;
@@ -333,6 +339,21 @@ export default function App() {
       });
     };
     for (const name of ["delta", "thinking", "thinking_end", "tool_call", "tool_result"] as const) stream.addEventListener(name, onStream);
+    // Pi 的自动重试：显示"失败原因 + 第几次/共几次"，结束后收起
+    stream.addEventListener("retrying", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; attempt: number; maxAttempts: number; delayMs: number; message: string };
+      if (payload.sessionId !== undefined && payload.sessionId !== current.current) return;
+      lastEventAtRef.current = Date.now();
+      setRetry({ attempt: payload.attempt, maxAttempts: payload.maxAttempts, delayMs: payload.delayMs, message: payload.message });
+      busyRef.current = true;
+      setBusy(true);
+    });
+    stream.addEventListener("retry_end", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string };
+      if (payload.sessionId !== undefined && payload.sessionId !== current.current) return;
+      lastEventAtRef.current = Date.now();
+      setRetry(undefined);
+    });
     const finish = (event: MessageEvent) => {
       const payload = JSON.parse(event.data) as AgentEvent;
       setStreamSeq(payload.seq);
@@ -341,6 +362,7 @@ export default function App() {
       streaming.current = false;
       busyRef.current = false;
       setBusy(false);
+      setRetry(undefined);
       if (current.current !== undefined) void loadMessages(agentId, current.current);
     };
     stream.addEventListener("done", finish);
@@ -376,12 +398,19 @@ export default function App() {
       ctx.current = { agentId: found.id };
       const groups = await fetchGroups(found.id);
       setGroups(groups);
+      // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
+      // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
+      const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
       const remembered = readLast(lastSessionKey(found.id));
-      const candidates = [wantSession, remembered].filter((value): value is string => value !== null && value !== undefined);
-      const owner = candidates.length === 0 ? undefined : groups.find((g) => g.sessions.some((s) => candidates.includes(s.sessionId)));
-      const group = owner ?? groups.find((g) => g.project.id === wantProject) ?? groups.find((g) => g.project.isDefault) ?? groups[0];
+      const candidates = (wantGroup === undefined
+        ? [wantSession, remembered]
+        : [wantSession, ...wantGroup.sessions.map((session) => session.sessionId)]
+      ).filter((value): value is string => value !== null && value !== undefined);
+      const group = wantGroup
+        ?? groups.find((g) => g.sessions.some((session) => candidates.includes(session.sessionId)))
+        ?? groups.find((g) => g.project.isDefault) ?? groups[0];
       setSelectedProjectId(group?.project.id);
-      const target = candidates.find((sid) => group?.sessions.some((s) => s.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
+      const target = candidates.find((sid) => group?.sessions.some((session) => session.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
       if (target !== undefined) await openSession(found, target);
       setLoaded(true);
     })();
@@ -573,12 +602,17 @@ export default function App() {
     if (items.length === 0) toast("模型清单是空的", "error");
   }
 
+  // 切换后必须重读会话：头部的"当前模型/思考级别"来自接口 meta，不刷新就会一直显示旧值
   async function applyModel(provider: string, model: string) {
     if (agent === undefined || sessionId === undefined) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/model`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, model }),
     }).catch(() => undefined);
-    toast(response?.ok === true ? `已切到 ${provider}/${model}` : "切换失败", response?.ok === true ? "success" : "error");
+    // Pi 的 setModel 会校验 provider 有没有 API key（抛 "No API key for …"）：把真正原因告诉用户，不吞成"切换失败"
+    const body = response === undefined ? {} : await response.json().catch(() => ({})) as { error?: { message?: string } };
+    const ok = response?.ok === true;
+    toast(ok ? `已切到 ${provider}/${model}` : (body.error?.message ?? "切换失败"), ok ? "success" : "error");
+    if (ok) void loadMessages(agent.id, sessionId);
   }
 
   async function applyThinking(level: string) {
@@ -586,13 +620,15 @@ export default function App() {
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/thinking`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level }),
     }).catch(() => undefined);
-    toast(response?.ok === true ? `思考级别：${level}` : "切换失败", response?.ok === true ? "success" : "error");
+    const ok = response?.ok === true;
+    toast(ok ? `思考级别：${level}` : "切换失败", ok ? "success" : "error");
+    if (ok) void loadMessages(agent.id, sessionId);
   }
 
   const COMMANDS: PaletteItem[] = [
     { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", run: () => void compactNow() },
     { key: "/model", label: "/model", hint: "切换本会话模型", run: () => void openModelPalette() },
-    { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "low", "medium", "high"].map((level) => ({ key: level, label: level, hint: "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
+    { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
     { key: "/name", label: "/name <名称>", hint: "重命名会话", run: () => setInput("/name ") },
     { key: "/new", label: "/new", hint: "新建会话", run: () => void newSession() },
     { key: "/copy", label: "/copy", hint: "复制最后一条回复", run: copyLastAssistant },
@@ -614,7 +650,6 @@ export default function App() {
     }
     const hit = COMMANDS.find((item) => item.key === name);
     if (hit !== undefined) { setInput(""); hit.run(); return; }
-    if (name === "/model" || name === "/thinking") { setInput(""); return; }
     toast(`未知命令 ${name}（按 / 看列表）`, "error");
   }
 
@@ -631,6 +666,7 @@ export default function App() {
     busyRef.current = false;
     streaming.current = false;
     setBusy(false);
+    setRetry(undefined);
     toast(reason, "error");
     if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
   }
@@ -858,8 +894,9 @@ export default function App() {
         <header className="flex h-11 shrink-0 items-center gap-2 px-4">
           <div className="min-w-0">
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
-            <p className="truncate text-micro text-ink-500">
+            <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {[agent?.name, currentGroup?.project.name].filter((part) => part !== undefined && part !== "").join(" · ") || "选择或新建一个会话"}
+              {meta?.model != null && ` · ${meta.model.provider}/${meta.model.id}`}
             </p>
           </div>
           <span className="ml-auto" />
@@ -883,19 +920,25 @@ export default function App() {
             {sessionId === undefined && (selectedProjectId === undefined
               ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
               : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
-            {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" />}
+            {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
             {messages.map((message, index) => (
-              <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true} />
+              <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
+                {...(message.error !== undefined ? { error: message.error } : {})} />
             ))}
-            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} />}
+            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} {...(retry !== undefined ? { retry } : {})} />}
             {/* 尾部空回复 = 那一轮没跑出结果（后端重启/断线）：给一条明确的"重新发送" */}
             {!busy && (() => {
               const tail = messages[messages.length - 1];
               const lastUser = [...messages].reverse().find((message) => message.role === "user");
-              if (tail?.role !== "assistant" || tail.text !== "" || lastUser === undefined) return null;
+              // assistant 空回复/失败 → 重发；尾部是 user（那一轮连 assistant 条目都没写出来）→ 同样是丢了，也给重发
+              const failed = tail?.role === "assistant"
+                ? (tail.text === "" || tail.error !== undefined)
+                : tail?.role === "user";
+              if (!failed || lastUser === undefined) return null;
+              // 失败原因已经在气泡里显示过了，这里只留动作，不重复说一遍
               return (
-                <div className="flex items-center gap-2 text-meta text-ink-500">
-                  <span>本轮没有回复（可能被中断）。</span>
+                <div className="flex flex-wrap items-center gap-2 text-meta text-ink-500">
+                  {tail.error === undefined && <span>本轮没有回复（可能被中断）。</span>}
                   <Button size="sm" onClick={() => void sendText(lastUser.text)}>重新发送</Button>
                 </div>
               );

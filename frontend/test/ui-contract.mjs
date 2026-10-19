@@ -441,8 +441,20 @@ const headerMeta = await page.evaluate(async () => {
   return { line, projectName: data.items?.[0]?.name ?? "" };
 });
 check("会话区头部显示「Agent · 项目目录名」且与接口一致",
-  headerMeta.projectName !== "" && headerMeta.line.endsWith(headerMeta.projectName) && headerMeta.line.includes(" · "),
+  headerMeta.projectName !== "" && headerMeta.line.includes(` · ${headerMeta.projectName}`) && headerMeta.line.includes(" · "),
   `${headerMeta.line}（接口 name=${headerMeta.projectName}）`);
+
+// 头部同时显示会话实际用的模型（用户要能一眼看到"到底在连哪个模型"）
+const headerModel = await page.evaluate(async () => {
+  const id = new URL(location.href).searchParams.get("agent");
+  const sid = new URL(location.href).searchParams.get("session");
+  if (id === null || sid === null) return { expected: null, line: "" };
+  const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json();
+  return { expected: data.meta?.model ?? null, line: document.querySelector('[data-testid="header-meta"]')?.textContent ?? "" };
+});
+check("头部显示会话实际模型（与接口 meta 一致）",
+  headerModel.expected === null || headerModel.line.includes(`${headerModel.expected.provider}/${headerModel.expected.id}`),
+  `${headerModel.line}（接口 ${headerModel.expected === null ? "无模型" : `${headerModel.expected.provider}/${headerModel.expected.id}`}）`);
 
 // 列头语义：列头只写"这一列是什么"，"默认"这类徽标属于行内数据，不许重复出现在列头
 const headerTexts = await page.evaluate(() => [...document.querySelectorAll("aside > div:first-child")]
@@ -617,11 +629,12 @@ if (emptyTarget === null) {
   await freshPage.waitForTimeout(700);
   const emptyState = await freshPage.evaluate(() => ({
     disabled: document.querySelector("textarea")?.disabled ?? true,
-    hint: (document.body.innerText ?? "").includes("会自动"),
+    hint: /会自动|写进这个会话/.test(document.body.innerText ?? ""),
+    text: (document.body.innerText ?? "").split("\n").filter((line) => line.trim() !== "").slice(-8).join(" | "),
   }));
   check("没有会话时输入框仍可用（首条消息＝建会话）", emptyState.disabled === false,
     `agent=${emptyTarget.agentId} project=${emptyTarget.projectId} disabled=${emptyState.disabled}`);
-  check("空会话态有「直接发送即建会话」的提示", emptyState.hint);
+  check("空会话态有「直接发送即建会话」的提示", emptyState.hint, String(emptyState.text ?? ""));
 }
 await freshPage.close();
 

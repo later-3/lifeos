@@ -16,7 +16,9 @@ export type StreamEvent =
   | { type: "thinking_end"; index: number }
   | { type: "delta"; index: number; text: string }
   | { type: "tool_call"; index: number; id: string; name: string; arguments: unknown }
-  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number };
+  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number }
+  | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
+  | { type: "retry_end"; success: boolean };
 
 /** 界面上的"正在干什么"阶段（工作指示文案由 Message.tsx 决定）。 */
 export type Phase = "waiting" | "thinking" | "tool" | "text";

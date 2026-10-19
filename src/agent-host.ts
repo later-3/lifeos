@@ -291,6 +291,15 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   }
 }
 
+/** 会话当前用的模型与思考级别（内存态才有；界面用来显示"到底在用哪个模型"）。 */
+export function sessionMeta(state: SessionState): { model: { provider: string; id: string } | null; thinkingLevel: string } {
+  const model = state.session.model;
+  return {
+    model: model === undefined ? null : { provider: model.provider, id: model.id },
+    thinkingLevel: state.session.thinkingLevel,
+  };
+}
+
 // —— 会话内的 Pi 原生能力（2026-10-19：全部对接 Pi AgentSession 的公开方法，不自己造）——
 
 /** 打断当前 run（`abort()` 会等 idle；runTurn 的 finally 照常发 done）。 */
@@ -370,7 +379,8 @@ type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock;
 /** 消息（含结构化块）：text/thinking/toolCall 按 Pi 真实内容块返回，toolResult 挂回对应调用
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
-  const out: Array<{ role: string; text: string; blocks: MessageBlock[] }> = [];
+  // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
+  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; error?: string }> = [];
   for (const message of state.session.sessionManager.buildSessionProjection().messages) {
     if (message.role === "user") {
       const text = textOf(message);
@@ -383,7 +393,11 @@ export function messagesOf(state: SessionState) {
         else if (part.type === "toolCall") blocks.push({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments });
       }
       const text = blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
-      out.push({ role: "assistant", text, blocks });
+      const failure = message as { stopReason?: string; errorMessage?: string };
+      out.push({
+        role: "assistant", text, blocks,
+        ...(failure.stopReason === "error" ? { error: failure.errorMessage ?? "模型调用失败（未返回原因）" } : {}),
+      });
     } else if (message.role === "toolResult") {
       const result = textOf(message);
       for (let i = out.length - 1; i >= 0; i--) {

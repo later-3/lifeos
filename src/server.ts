@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { basename, join } from "node:path";
 import {
   abortSession, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
-  projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd,
+  projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionThinking, snapshotOf, subscribeAgent,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
@@ -385,7 +385,7 @@ export function createApp() {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const state = await getSession(agent.id, c.req.param("sessionId"), await cwdOfSession(agent, c.req.param("sessionId")));
     if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-    return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state) });
+    return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(state) });
   });
 
   app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {

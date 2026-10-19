@@ -17,7 +17,10 @@ export type StreamEvent =
   | { type: "thinking_end"; index: number }
   | { type: "delta"; index: number; text: string }
   | { type: "tool_call"; index: number; id: string; name: string; arguments: unknown }
-  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number };
+  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number }
+  // Pi 的自动重试：让界面能显示"失败原因 + 第几次/共几次"（否则失败时界面一片空白）
+  | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
+  | { type: "retry_end"; success: boolean };
 
 /** 工具返回值取文本：与 Pi 自己的 `textOf()` 同义（只取 text 块，用换行连接）。 */
 export function toolResultText(result: unknown): { text: string; truncated: boolean } {
@@ -47,6 +50,7 @@ type PiEvent = {
     toolCall?: { id?: unknown; name?: unknown; arguments?: unknown };
   };
   toolCallId?: unknown;
+  attempt?: unknown; maxAttempts?: unknown; delayMs?: unknown; errorMessage?: unknown; success?: unknown;
   result?: unknown;
   isError?: unknown;
   durationMs?: unknown;
@@ -71,6 +75,19 @@ export function toStreamEvent(event: unknown): StreamEvent | undefined {
       return { type: "tool_call", index, id: call.id, name: call.name, arguments: call.arguments ?? {} };
     }
     return undefined;
+  }
+
+  if (input.type === "auto_retry_start") {
+    return {
+      type: "retrying",
+      attempt: typeof input.attempt === "number" ? input.attempt : 0,
+      maxAttempts: typeof input.maxAttempts === "number" ? input.maxAttempts : 0,
+      delayMs: typeof input.delayMs === "number" ? input.delayMs : 0,
+      message: typeof input.errorMessage === "string" ? input.errorMessage : "",
+    };
+  }
+  if (input.type === "auto_retry_end") {
+    return { type: "retry_end", success: input.success === true };
   }
 
   if (input.type === "tool_execution_end") {
