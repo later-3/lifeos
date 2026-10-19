@@ -579,3 +579,38 @@ test("Agent 生命周期：创建（slug id/骨架/无预置会话）与归档�
     assert.equal("archivedAt" in still, false, "拒绝时出厂 Agent 不受影响");
   } finally { server.close(); }
 });
+
+
+test("创建/归档助手会广播 agents_changed（前端据此自动刷新列表，不需要手动刷新）", async () => {
+  const { server, base } = await start();
+  const controller = new AbortController();
+  try {
+    const response = await fetch(`${base}/api/agents/lifeosagent/events?since=0`, { signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const readUntil = async (needle, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes(needle)) return true;
+      }
+      return false;
+    };
+    assert.ok(await readUntil("event: snapshot", 2000), "先收到快照");
+
+    const created = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Broadcast Probe" }),
+    });
+    assert.equal(created.status, 201);
+    const probe = (await created.json()).agent;
+    assert.ok(await readUntil("event: agents_changed", 3000), "创建后必须广播 agents_changed");
+
+    buffer = "";
+    assert.equal((await fetch(`${base}/api/agents/${probe.id}`, { method: "DELETE" })).status, 200);
+    assert.ok(await readUntil("event: agents_changed", 3000), "归档后必须再广播一次");
+  } finally { controller.abort(); server.close(); }
+});

@@ -271,6 +271,24 @@ await page.waitForTimeout(200);
 // 多个助手时会有多个（隐藏的）按钮 → 只看第一行那个；数据无关
 check("助手行悬停出现删除入口", await page.locator('[aria-label="删除助手"]').first().isVisible());
 
+// 输入法组字中的 Enter 不能触发发送（照 Pi Web ChatInput 的守卫：composing / isComposing / keyCode 229 / 100ms 宽限）
+const imeGuard = await page.evaluate(() => {
+  const textarea = document.querySelector("textarea");
+  if (textarea === null) return { ok: false, detail: "找不到输入框" };
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+  setValue.call(textarea, "ime-probe");
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  const kept = textarea.value === "ime-probe";
+  // 收尾：结束组字并清空（不发消息）
+  textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  setValue.call(textarea, "");
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  return { ok: kept, detail: `组字后输入框 value=${textarea.value}` };
+});
+check("输入法组字中的 Enter 不发送", imeGuard.ok, String(imeGuard.detail));
+
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
   const row = [...document.querySelectorAll('[role="button"]')].find((el) => el.className.includes("h-8") && el.textContent.includes("welcome"));

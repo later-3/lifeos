@@ -12,7 +12,9 @@ import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 type AgentEventPayload =
   | ({ sessionId: string } & StreamEvent)
   | { sessionId: string; type: "done" }
-  | { sessionId: string; type: "error"; message: string };
+  | { sessionId: string; type: "error"; message: string }
+  // 助手列表变了（创建/归档，工具与 HTTP 都会触发）：前端收到后重取 /api/agents，无需手动刷新
+  | { type: "agents_changed" };
 
 export type AgentEvent = AgentEventPayload & { seq: number };
 
@@ -50,6 +52,19 @@ function publish(agentId: string, event: AgentEventPayload): AgentEvent {
   if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
   for (const listener of state.listeners) listener(full);
   return full;
+}
+
+/**
+ * 全局广播（不绑定某个会话）：目前用于 "助手列表变了"。
+ * 助手是跨 Agent 的实体——不管用户此刻正在看哪个 Agent，都要收到，所以逐条 state 推一遍。
+ */
+export function broadcast(event: { type: "agents_changed" }): void {
+  for (const state of agents.values()) {
+    const full: AgentEvent = { ...event, seq: ++state.seq };
+    state.recent.push(full);
+    if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
+    for (const listener of state.listeners) listener(full);
+  }
 }
 
 /** 订阅某 Agent 的事件流：先回放 seq > since 的事件，再持续推新的。 */

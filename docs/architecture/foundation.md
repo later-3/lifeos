@@ -61,7 +61,7 @@ install-receipt.json    安装收据
 | `POST /api/agents/:id/sessions` | 在默认 project（workspace）下新建会话（前端「＋新建会话」入口） |
 | `GET /api/agents/:id/sessions/:sid` | 读消息（含 `thinking` / `toolCall` / `toolResult` 块） |
 | `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE） |
-| `GET /api/agents/:id/events`（SSE） | 一条流承载该 Agent 的全部会话：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error`；每条带 `seq`，`?since=` 可续传；**事件名 = 事件类型**（映射见 `src/stream-events.ts`） |
+| `GET /api/agents/:id/events`（SSE） | 一条流承载该 Agent 的全部会话：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error` / **`agents_changed`**（助手创建/归档后广播，前端据此自动重取列表）；每条带 `seq`，`?since=` 可续传；**事件名 = 事件类型**（映射见 `src/stream-events.ts`） |
 | `GET /api/agents/:id/sessions/:sid/entries` | **会话历史**：原始条目只读直出（`offset/limit` 分页、`labels`、`leafId`）；不投影、不改写，与会话 JSONL 逐条一致 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
 | `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |

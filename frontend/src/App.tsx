@@ -30,7 +30,7 @@ type SessionItem = { sessionId: string; title: string; updatedAt: string; messag
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
-type AgentEvent = { seq: number; sessionId: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string });
+type AgentEvent = { seq: number; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" });
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
@@ -86,6 +86,9 @@ export default function App() {
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   const [queued, setQueued] = useState<{ count: number; text: string } | undefined>();
+  // 输入法组字：组字中/刚提交 100ms 内的 Enter 不发送（照 Pi Web ChatInput 的判定，见 reference-baseline）
+  const composingRef = useRef(false);
+  const lastCompositionEndRef = useRef(0);
   const busyRef = useRef(false);          // 供回调读的即时 busy（state 有渲染延迟）
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   // 排队是"多条"（连按两次 Enter 不能只留最后一条）；按会话归属，切了会话就退回草稿。
@@ -318,7 +321,7 @@ export default function App() {
       setStreamSeq(payload.seq);
       if (payload.seq <= snapshotSeq.current) return;
       if (payload.sessionId !== current.current) return;
-      if (payload.type === "done" || payload.type === "error") return;
+      if (payload.type === "done" || payload.type === "error" || payload.type === "agents_changed") return;
       const tailIsStreaming = streaming.current;
       if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
       const next = applyStreamEvent(streamRef.current, payload);
@@ -373,6 +376,16 @@ export default function App() {
     };
     stream.addEventListener("done", finish);
     stream.addEventListener("error", finish);
+    // 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新
+    stream.addEventListener("agents_changed", () => {
+      void (async () => {
+        const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
+        setAgents(data.items);
+        if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
+          await selectAgent(data.items[0]);
+        }
+      })();
+    });
     return () => stream.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id, streamSeq === 0]);
@@ -757,7 +770,22 @@ export default function App() {
               <textarea ref={inputRef} value={input} rows={1}
                 placeholder="输入消息，Enter 发送 · Shift+Enter 换行"
                 onChange={(event) => setInput(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.shiftKey) return;
+                  const native = event.nativeEvent;
+                  // 组字中（输入法正在选词）不发送：把 Enter 让给输入法去确认候选词
+                  const composing = composingRef.current || native.isComposing || native.keyCode === 229;
+                  // 组字刚结束的 100ms 内也不发送：某些浏览器会把"确认候选词的那次 Enter"再冒泡一次
+                  const recentlyComposed = Date.now() - lastCompositionEndRef.current < 100;
+                  if (composing || recentlyComposed) {
+                    if (recentlyComposed) event.preventDefault();
+                    return;
+                  }
+                  event.preventDefault();
+                  void send();
+                }}
+                onCompositionStart={() => { composingRef.current = true; }}
+                onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
                 className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
               <IconButton label={busy ? "生成中" : "发送"} size="lg" tone="solid"
                 disabled={busy || input.trim() === "" || sessionId === undefined}

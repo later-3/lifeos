@@ -134,6 +134,9 @@ export async function createAgent(input: CreateAgentInput): Promise<
     await writeJson(join(workspace, "project.json"), { schemaVersion: 1, id: "workspace", name: "工作区" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceAgentsMd, { encoding: "utf8", mode: 0o600 });
     await writeFile(join(workspace, "concept-space.md"), workspaceConceptSpace, { encoding: "utf8", mode: 0o600 });
+    // 写操作必须闭环到 UI（用户 2026-10-19 点名）：广播后前端自动重取助手列表，不需要手动刷新
+    const { broadcast } = await import("./agent-host.ts");
+    broadcast({ type: "agents_changed" });
     return { id, name, dir };
   } catch (error) {
     await rm(dir, { recursive: true, force: true }).catch(() => { /* 尽力回滚半成品 */ });
@@ -154,5 +157,7 @@ export async function archiveAgent(id: string): Promise<{ archived: string } | A
   const alive = (await allAgents()).filter((entry) => entry.record.archivedAt === undefined);
   if (alive.length <= 1) return { code: "last_agent", message: "至少保留一个 Agent", status: 400 };
   await writeJson(path, { ...raw, archivedAt: new Date().toISOString() });
+  const { broadcast } = await import("./agent-host.ts");
+  broadcast({ type: "agents_changed" });
   return { archived: id };
 }
