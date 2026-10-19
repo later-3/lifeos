@@ -8,14 +8,14 @@ import type { ReactNode } from "react";
  * - 这条轨的宽度由 design/layout.ts 统一计算，组件不再各自声明宽度。
  */
 export function NavRail({ items }: {
-  items: { key: string; label: string; icon: ReactNode; onOpen: () => void; disabled?: boolean }[];
+  items: { key: string; label: string; icon: ReactNode; onOpen: () => void }[];
 }) {
   return (
     <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center gap-1 bg-sunken py-1.5">
       {items.map((item) => (
-        <button key={item.key} type="button" onClick={item.onOpen} disabled={item.disabled === true}
-          aria-label={`展开${item.label}`} title={item.disabled === true ? `${item.label}：窗口太窄，加宽窗口后自动恢复` : `展开${item.label}`}
-          className="flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:bg-hover hover:text-ink-900 disabled:cursor-not-allowed disabled:text-ink-300 disabled:hover:bg-transparent">
+        <button key={item.key} type="button" onClick={item.onOpen}
+          aria-label={`展开${item.label}`} title={`展开${item.label}（若右侧面板开着，会先关闭面板）`}
+          className="flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:bg-hover hover:text-ink-900">
           {item.icon}
         </button>
       ))}

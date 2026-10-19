@@ -13,7 +13,12 @@ function loadPersist(): TabsPersist {
     const raw = localStorage.getItem(TABS_KEY);
     if (raw !== null) {
       const parsed = JSON.parse(raw) as TabsPersist;
-      if (Array.isArray(parsed.tabs)) return parsed;
+      // 迁移：历史页签曾与文件页签混存（v1 方案），现已改为主区视图——没有 filePath 的条目直接丢弃
+      if (Array.isArray(parsed.tabs)) {
+        const tabs = parsed.tabs.filter((tab) => typeof (tab as { filePath?: unknown }).filePath === "string");
+        const activeId = tabs.some((tab) => tab.id === parsed.activeId) ? parsed.activeId : tabs[tabs.length - 1]?.id;
+        return { tabs, ...(activeId !== undefined ? { activeId } : {}) };
+      }
     }
   } catch { /* 损坏则空 */ }
   return { tabs: [] };

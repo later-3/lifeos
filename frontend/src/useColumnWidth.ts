@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { clampWidth, DEFAULT_WIDTHS, layout, type Folded, type Widths } from "./design/layout";
+import { DEFAULT_WIDTHS, dragWidth, layout, type Folded, type Widths } from "./design/layout";
 
 // 列宽与拖拽（数值全部走 design/layout.ts 的唯一计算入口）：
 // - 持久化；旧格式（无 c4t）整体重置为默认，避免历史坏值把树钳死；
@@ -20,7 +20,7 @@ function loadWidths(): Widths {
   return DEFAULT_WIDTHS;
 }
 
-export function useColumnWidth(input: { folded: Folded; panelOpen: boolean }) {
+export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; historyOpen?: boolean }) {
   const [widths, setWidths] = useState<Widths>(loadWidths);
   const [viewport, setViewport] = useState(() => window.innerWidth);
 
@@ -31,15 +31,15 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean }) {
   }, []);
   useEffect(() => { localStorage.setItem(WIDTH_KEY, JSON.stringify(widths)); }, [widths]);
 
-  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen });
+  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true });
 
   function beginDrag(key: keyof Widths, event: ReactMouseEvent) {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = widths[key];
-    const sign = key === "c4" ? -1 : 1;
+    // 方向来自把手位置（design/layout.ts HANDLE_SIGN），不在调用处判断
     const move = (moveEvent: MouseEvent) => {
-      const next = clampWidth(key, startWidth + sign * (moveEvent.clientX - startX));
+      const next = dragWidth(key, startWidth, moveEvent.clientX - startX);
       setWidths((prev) => ({ ...prev, [key]: next }));
     };
     const stop = () => {
@@ -54,5 +54,5 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean }) {
     document.body.style.userSelect = "none";
   }
 
-  return { widths, box, beginDrag };
+  return { widths, viewport, box, beginDrag };
 }

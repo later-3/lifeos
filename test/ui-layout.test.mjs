@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, RAIL,
-  clampWidth, effectiveFolded, layout,
+  clampWidth, dragWidth, effectiveFolded, layout,
 } from "../frontend/src/design/layout.ts";
 
 /**
@@ -95,4 +95,17 @@ test("折叠状态与视口无关地可恢复（放宽后不会被悄悄改写�
   assert.deepEqual(effectiveFolded(requested, 1400), requested);
   assert.deepEqual(effectiveFolded(requested, 1100), { nav: false, projects: true, sessions: false });
   assert.deepEqual(effectiveFolded(requested, 960), { nav: false, projects: true, sessions: true });
+});
+
+test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反号）", () => {
+  // 左列表：把手在右缘 → 右拉变大
+  assert.equal(dragWidth("c1", 232, 40), 272);
+  assert.equal(dragWidth("c2", 216, -40), 176);
+  // 右侧停靠面板：把手在左缘 → 左拉变大、右拉变小
+  assert.equal(dragWidth("c4", 600, -60), 660);
+  assert.equal(dragWidth("c5", 440, -60), 500);
+  assert.equal(dragWidth("c5", 440, 60), 380);
+  // 夹紧仍生效
+  assert.equal(dragWidth("c5", 440, -9999), 720);
+  assert.equal(dragWidth("c5", 440, 9999), 360);
 });
