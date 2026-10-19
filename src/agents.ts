@@ -50,15 +50,19 @@ async function allAgents(): Promise<Array<{ id: string; record: AgentRecord }>> 
 
 export type CreateAgentInput = { name: string; description?: string };
 
+// 与模板 identity.md 同构（标题结构照搬；正文留给用户/Agent 填，不复制 Life Agent 的个人内容）
 const identitySkeleton = (name: string) => `# ${name}
 
-## 身份与职责
+（一句话：这个 Agent 是谁、长期负责什么。）
 
-（这个 Agent 是谁、长期负责什么、不该做什么。）
+## 身份
 
-## 人格与性格
+- 名称：${name}
+- 角色：（待填）
 
-（口吻、风格、与用户协作的边界。）
+## 人格
+
+- （待填：口吻、风格、协作边界。）
 `;
 
 // 与出厂模板同构（模板 = 当前 Agent 结构的唯一事实源）：concept-space.md 的开头也照模板写。
@@ -71,18 +75,32 @@ const workspaceConceptSpace = `# 概念空间（workspace 项目层 · 索引）
 |---|---|---|---|
 `;
 
-const workspaceAgentsMd = `# 工作区（本 Agent 的默认项目）
+// 与模板 workspace/AGENTS.md 同源（那是通用的项目私有层指引，不含个人内容）；
+// 唯一适配：模板"出厂默认会话预置于此"只对出厂 Agent 成立 → 改为"出厂预置只随出厂模板"。
+const workspaceAgentsMd = `# 交互 harness · 项目私有层（workspace）
 
-- 会话、每日记录、案例、Todo 都落在本目录下，跟当前工作项目走。
-- 交互 harness 的规则与资料在 ~/.lifeos/interaction-harness/（协议正文 protocol.md）。
+这里是 Agent 默认工作区（内置第一个 project）的指引。**以协议正文为准**：
+\`~/.lifeos/interaction-harness/protocol.md\`（尤其 §15 会话、开场与项目私有骨架）。本文件只写本目录的规矩。
+
+- \`sessions/\` 会话（见协议 §15.1；出厂预置的默认会话只随出厂模板）
+- \`tasks/\` 任务目录（一个任务一个目录，需要时才创建，不预建）
+- \`daily/\` 每日记录（按日期分文件，追加，不改写历史）
+- \`cases/\` 正例与反例（按日期分文件，编号引用，不改写历史）
+- \`todo/\` 一句话待办（不是任务；升级为任务时建 \`tasks/<slug>-<id8>/\`）
+- \`concept-space.md\` 本项目词索引：先建词条、再用词（协议 §4 自举）
+
+通用层（协议、飞轮、通用概念、任务类型）在 \`~/.lifeos/interaction-harness/\`；
+本目录只放**本项目**内容，不复制通用正文（协议 §6 不复制）。
 `;
 
 /** 创建一个 Agent（原子性：中途失败就删掉半成品目录）。 */
 export async function createAgent(input: CreateAgentInput): Promise<
   { id: string; name: string; dir: string } | AgentError
 > {
-  const name = (input.name ?? "").trim();
+  // 与 PUT /api/agents/:id 校验一致（不要多不要少）：name 非空截 60、description 截 300
+  const name = (input.name ?? "").trim().slice(0, 60);
   if (name === "") return { code: "invalid_name", message: "name 不能为空", status: 400 };
+  const description = input.description !== undefined ? input.description.trim().slice(0, 300) : undefined;
   const base = slugify(name);
   const existing = new Set((await allAgents()).map((entry) => entry.id));
   let id = base;
@@ -91,8 +109,13 @@ export async function createAgent(input: CreateAgentInput): Promise<
 
   const dir = agentDir(id);
   try {
-    if (await stat(dir).catch(() => undefined) !== undefined) {
-      return { code: "id_taken", message: `目录已存在：${id}`, status: 400 };
+    try {
+      await mkdir(dir, { mode: 0o700 });                    // 非递归：目录已存在就报错（recursive 会静默复用别人目录）
+    } catch (error) {
+      if (await stat(dir).catch(() => undefined) !== undefined) {
+        return { code: "id_taken", message: `目录已存在：${id}`, status: 400 };
+      }
+      throw error;                                          // 其它错误：外层 catch 回滚半成品
     }
     // workspace 骨架 = 出厂模板同构（agent.json / identity.md / AGENTS.md / concept-space.md /
     // project.json / sessions / daily / cases / todo），只差"预置会话文件"（协议 §12.2：只随出厂模板）
@@ -101,7 +124,7 @@ export async function createAgent(input: CreateAgentInput): Promise<
     }
     const record: AgentRecord = {
       schemaVersion: 1, id, name,
-      ...(input.description !== undefined && input.description.trim() !== "" ? { description: input.description.trim() } : {}),
+      ...(description !== undefined && description !== "" ? { description } : {}),
       defaultProjectId: "workspace",
     };
     await writeJson(join(dir, "agent.json"), record);

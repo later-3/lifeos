@@ -66,10 +66,24 @@ test("lifeos_agent_create：id 由 name 自动生成、骨架齐、不写预置�
     (await readdir(join(templateAgent, "projects", "workspace"))).sort(),
     "workspace 骨架与模板同构（AGENTS/concept-space/project/sessions/daily/cases/todo）");
 
-  // identity.md：只有骨架（用户没批准过传身份内容的入口，见 C029）
+  // identity.md：只有骨架，且标题结构与模板同构（## 身份 / ## 人格）
   const skeleton = await readFile(join(home, "agents", zh.details.id, "identity.md"), "utf8");
-  assert.match(skeleton, /## 身份与职责/, "identity.md 装骨架");
-  assert.match(skeleton, /评审助手/, "骨架标题用 name");
+  assert.match(skeleton, /^# 评审助手/, "骨架标题用 name");
+  assert.match(skeleton, /## 身份/, "标题结构与模板同构：身份");
+  assert.match(skeleton, /## 人格/, "标题结构与模板同构：人格");
+  assert.match(skeleton, /- 名称：评审助手/, "身份节含名称");
+
+  // workspace/AGENTS.md：与模板同源的项目私有层指引（不是我发明的三行），且不写"出厂预置会话"这种不成立的话
+  const workspaceGuide = await readFile(join(home, "agents", zh.details.id, "projects", "workspace", "AGENTS.md"), "utf8");
+  assert.match(workspaceGuide, /以协议正文为准/, "指引与模板同源（含协议指向）");
+  assert.match(workspaceGuide, /不复制通用正文/, "指引与模板同源（含不复制原则）");
+  assert.equal(workspaceGuide.includes("出厂默认会话预置于此"), false, "新 Agent 没有预置会话，模板那半句不照抄");
+
+  // 校验与 PUT 一致：name 截 60、description 截 300
+  const long = await run(create, { name: "x".repeat(80), description: "d".repeat(500) });
+  const longRecord = JSON.parse(await readFile(join(home, "agents", long.details.id, "agent.json"), "utf8"));
+  assert.equal(longRecord.name.length, 60, "name 与 PUT 一致截 60");
+  assert.equal(longRecord.description.length, 300, "description 与 PUT 一致截 300");
 
   // 空 name → 失败（throw = 失败的工具结果）
   await assert.rejects(() => run(create, { name: "   " }), /name 不能为空/);
