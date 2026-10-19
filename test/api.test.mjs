@@ -12,7 +12,7 @@ async function start() {
   const home = await mkdtemp(join(tmpdir(), "lifeos-test-"));
   await installHome(process.cwd(), home);
   process.env.LIFEOS_HOME = home;
-  const server = serve({ fetch: createApp(process.cwd()).fetch, port: 0 });
+  const server = serve({ fetch: createApp().fetch, port: 0 });
   await new Promise((resolve) => server.once("listening", resolve));
   const { port } = server.address();
   return { server, base: `http://127.0.0.1:${port}`, home };
@@ -228,14 +228,15 @@ test("删除会话：从列表消失，重复删除 404", async () => {
   } finally { server.close(); }
 });
 
-test("项目注册与解绑：合成入口、同 path 幂等、pid=uuidv7、解绑保留数据、默认不可解绑", async () => {
+test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Agent 私有层、移除保留数据、默认不可移除", async () => {
   const { server, base, home } = await start();
-  const { mkdtemp, readFile, access, readdir: rd } = await import("node:fs/promises");
+  const { mkdtemp, readFile, access, readdir: rd, stat } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   try {
     const ext = await mkdtemp(join(tmpdir(), "lifeos-proj-"));
+    const privateRoot = join(home, "agents", "lifeosagent", "projects");
 
-    // 注册+绑定（合成一步）
+    // 打开目录（= 添加项目）
     const first = await fetch(`${base}/api/agents/lifeosagent/projects`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: ext }),
     });
@@ -245,7 +246,7 @@ test("项目注册与解绑：合成入口、同 path 幂等、pid=uuidv7、解�
     assert.equal(project.path, ext);
     assert.equal(project.name, ext.slice(ext.lastIndexOf("/") + 1));
 
-    // 幂等：同 path 再注册 → 同 pid、列表不重复
+    // 幂等：同 path 再打开 → 同 pid、列表不重复
     const again = await fetch(`${base}/api/agents/lifeosagent/projects`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: ext }),
     });
@@ -255,10 +256,18 @@ test("项目注册与解绑：合成入口、同 path 幂等、pid=uuidv7、解�
     assert.deepEqual(list.items.map((i) => i.id), ["workspace", project.id], "workspace 默认在前");
     assert.equal(list.items[1].isDefault, false);
 
-    // 共用层 manifest 存在（家目录内，不写用户目录）
-    const manifest = JSON.parse(await readFile(join(home, "projects", project.id, "project.json"), "utf8"));
+    // manifest 落在 Agent 私有层：目录 0700、文件 0600；顶层不再有共用层；不写用户目录
+    const manifestPath = join(privateRoot, project.id, "project.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     assert.equal(manifest.path, ext);
+    assert.equal((await stat(join(privateRoot, project.id))).mode & 0o777, 0o700, "项目目录必须 0700");
+    assert.equal((await stat(manifestPath)).mode & 0o777, 0o600, "manifest 必须 0600");
+    await access(join(home, "projects")).then(() => assert.fail("顶层共用层不应存在")).catch(() => {});
     assert.equal((await rd(ext)).includes(".lifeos"), false, "不污染用户目录");
+
+    // agent.json 不再有旧字段（boundProjectIds 是死字段，已删）
+    const agent = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "agent.json"), "utf8"));
+    assert.equal("boundProjectIds" in agent, false, "boundProjectIds 必须已删除");
 
     // 非法 path
     const missing = await fetch(`${base}/api/agents/lifeosagent/projects`, {
@@ -266,17 +275,79 @@ test("项目注册与解绑：合成入口、同 path 幂等、pid=uuidv7、解�
     });
     assert.equal(missing.status, 404);
 
-    // 解绑：仅断关系；注册保留；workspace 不可解绑；重复解绑 404
+    // 从列表移除：只写 hidden；目录/manifest/会话/记录全留；workspace 不可移除；重复移除 404
     const del = await fetch(`${base}/api/agents/lifeosagent/projects/${project.id}`, { method: "DELETE" });
     assert.equal(del.status, 200);
     list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
     assert.deepEqual(list.items.map((i) => i.id), ["workspace"]);
-    await access(join(home, "projects", project.id, "project.json")).catch(() => assert.fail("解绑后注册应保留"));
+    await access(manifestPath).catch(() => assert.fail("移除后 manifest 应保留"));
     const delAgain = await fetch(`${base}/api/agents/lifeosagent/projects/${project.id}`, { method: "DELETE" });
     assert.equal(delAgain.status, 404);
     const delDefault = await fetch(`${base}/api/agents/lifeosagent/projects/workspace`, { method: "DELETE" });
     assert.equal(delDefault.status, 400);
     assert.equal((await delDefault.json()).error.code, "cannot_unbind_default");
+
+    // 再次打开同 path → 重新出现（hidden 摘除）
+    const reopen = await fetch(`${base}/api/agents/lifeosagent/projects`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: ext }),
+    });
+    assert.equal(reopen.status, 200);
+    list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    assert.deepEqual(list.items.map((i) => i.id), ["workspace", project.id], "重新打开后回到列表");
+  } finally { server.close(); }
+});
+
+test("会话 cwd 由所属项目决定（外部项目=manifest.path，workspace=家目录），与后端启动目录无关", async () => {
+  const { server, base, home } = await start();
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  try {
+    const { cwdOfSession } = await import("../src/server.ts");
+    const ext = await mkdtemp(join(tmpdir(), "lifeos-cwd-"));
+
+    // 外部项目：打开目录 → 建会话 → 该会话的 cwd 必须是项目 path（不是 process.cwd()）
+    const opened = await (await fetch(`${base}/api/agents/lifeosagent/projects`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: ext }),
+    })).json();
+    const created = await (await fetch(`${base}/api/agents/lifeosagent/projects/${opened.project.id}/sessions`, { method: "POST" })).json();
+    const agent = { id: "lifeosagent", name: "Life Agent" };
+    assert.equal(await cwdOfSession(agent, created.sessionId), ext, "外部项目会话 cwd = 项目 path");
+    assert.notEqual(await cwdOfSession(agent, created.sessionId), process.cwd(), "不能等于后端启动目录");
+
+    // 模拟"重启后恢复"：手写一份已落盘的会话文件（内存里没有）→ cwd 仍必须来自项目 manifest
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const sessionsDir = join(home, "agents", "lifeosagent", "projects", opened.project.id, "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    const sid = "01a14f80-0000-7000-8000-000000000001";
+    await writeFile(join(sessionsDir, `2026-10-18T00-00-00-000Z_${sid}.jsonl`),
+      JSON.stringify({ type: "session", version: 3, id: sid, timestamp: "2026-10-18T00:00:00.000Z", cwd: "" }) + "\n");
+    assert.equal(await cwdOfSession(agent, sid), ext, "已落盘会话恢复时 cwd 来自项目 path（不看后端启动目录）");
+
+    // workspace：cwd = 家目录
+    const w = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json();
+    assert.equal(await cwdOfSession(agent, w.sessionId), home, "workspace 会话 cwd = 家目录");
+  } finally { server.close(); }
+});
+
+test("旧数据迁移：顶层共用层 manifest → 搬进 Agent 私有层并清掉旧目录", async () => {
+  const { server, base, home } = await start();
+  const { mkdir, writeFile, readFile, access } = await import("node:fs/promises");
+  try {
+    // 造一份"旧设计"的数据：私有层目录存在（无 manifest）+ 顶层共用层有 manifest
+    const pid = "01a14f39-b0f9-7422-ab41-8770edabb414";
+    await mkdir(join(home, "agents", "lifeosagent", "projects", pid), { recursive: true });
+    await mkdir(join(home, "projects", pid), { recursive: true });
+    await writeFile(join(home, "projects", pid, "project.json"), JSON.stringify({ schemaVersion: 1, id: pid, name: "legacy", path: "/tmp/legacy-proj" }) + "\n");
+
+    const list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    const item = list.items.find((entry) => entry.id === pid);
+    assert.ok(item, "迁移后项目应出现在列表里");
+    assert.equal(item.path, "/tmp/legacy-proj", "path 来自 manifest");
+    assert.equal(item.name, "legacy-proj", "显示名 = basename(path)（manifest.name 不参与显示）");
+
+    const moved = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", pid, "project.json"), "utf8"));
+    assert.equal(moved.path, "/tmp/legacy-proj");
+    await access(join(home, "projects")).then(() => assert.fail("旧顶层共用层应被清掉")).catch(() => {});
   } finally { server.close(); }
 });
 
@@ -376,7 +447,7 @@ test("Agent 个人模型配置：保存到 workspace/config.json 并可回读", 
       body: JSON.stringify({ defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash", defaultThinkingLevel: "high" }),
     });
     assert.equal(saved.status, 200);
-    const file = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "workspace", "config.json"), "utf8"));
+    const file = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", "workspace", "config.json"), "utf8"));
     assert.equal(file.defaultProvider, "command");
     assert.equal(file.defaultThinkingLevel, "high");
     const loaded = await (await fetch(`${base}/api/agents/lifeosagent/config`)).json();
@@ -418,5 +489,37 @@ test("头像：上传 PNG→GET 返回图片→reset 回自动；非法格式拒
     });
     assert.equal(reset.status, 200);
     assert.equal((await fetch(`${base}/api/agents/lifeosagent/avatar`)).status, 404);
+  } finally { server.close(); }
+});
+
+test("会话历史条目：与 JSONL 逐条一致（不投影）、分页正确、labels/leafId 属实", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const sid = "22222222-3333-4777-8888-999999999999";
+    const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+    const entries = [
+      { type: "session", version: 3, id: sid, timestamp: "2026-10-18T00:00:00.000Z", cwd: "" },
+      { type: "model_change", id: "m1", parentId: sid, timestamp: "2026-10-18T00:00:01.000Z", provider: "p", modelId: "mid" },
+      { type: "message", id: "m2", parentId: "m1", timestamp: "2026-10-18T00:00:02.000Z", message: { role: "user", content: "hi" } },
+      { type: "label", id: "m3", parentId: "m2", timestamp: "2026-10-18T00:00:03.000Z", targetId: "m2", label: "入口" },
+      { type: "message", id: "m4", parentId: "m3", timestamp: "2026-10-18T00:00:04.000Z", message: { role: "assistant", content: [{ type: "text", text: "yo" }] } },
+    ];
+    await writeFile(join(dir, `2026-10-18T00-00-00-000Z_${sid}.jsonl`), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+
+    const all = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/entries`)).json();
+    assert.equal(all.total, 4, "total 不含 session 头");
+    assert.equal(all.header.id, sid);
+    assert.deepEqual(all.entries, entries.slice(1), "条目与文件逐条一致（不投影、不改写）");
+    assert.equal(all.labels.m2, "入口");
+    assert.equal(all.leafId, "m4");
+    assert.equal(all.hasMore, false);
+
+    const page = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/entries?offset=1&limit=2`)).json();
+    assert.deepEqual(page.entries.map((e) => e.id), ["m2", "m3"]);
+    assert.equal(page.hasMore, true);
+
+    const missing = await fetch(`${base}/api/agents/lifeosagent/sessions/nope/entries`);
+    assert.equal(missing.status, 404);
   } finally { server.close(); }
 });

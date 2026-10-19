@@ -12,7 +12,7 @@ async function start() {
   const home = await mkdtemp(join(tmpdir(), "lifeos-fs-"));
   await installHome(process.cwd(), home);
   process.env.LIFEOS_HOME = home;
-  const server = serve({ fetch: createApp(process.cwd()).fetch, port: 0 });
+  const server = serve({ fetch: createApp().fetch, port: 0 });
   await new Promise((resolve) => server.once("listening", resolve));
   const { port } = server.address();
   return { server, base: `http://127.0.0.1:${port}`, home };
@@ -76,13 +76,13 @@ test("content：文本读取；二进制识别；超 2MB 截断", async () => {
     assert.equal(text.truncated, false);
     assert.equal(text.isBinary, false);
 
-    const binPath = join(home, "runtime", "blob.bin");
+    const binPath = join(home, "blob.bin");
     await writeFile(binPath, Buffer.from([0x50, 0x4b, 0x00, 0x01, 0x02]));
     const binary = await (await fetch(`${base}/api/fs/content?path=${encodeURIComponent(binPath)}`)).json();
     assert.equal(binary.isBinary, true);
     assert.equal(binary.content, "");
 
-    const bigPath = join(home, "runtime", "big.txt");
+    const bigPath = join(home, "big.txt");
     await writeFile(bigPath, "a".repeat(2 * 1024 * 1024 + 1024));
     const big = await (await fetch(`${base}/api/fs/content?path=${encodeURIComponent(bigPath)}`)).json();
     assert.equal(big.truncated, true);

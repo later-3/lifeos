@@ -1,12 +1,15 @@
 // 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进“按 Agent 的事件流”（带序号，可续传）。
 // 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §15.2），这里只负责加载。
-import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } from "./assembly.ts";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
+import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 
+// 流事件（思考/文本/工具）来自 stream-events.ts 的唯一映射；done/error 是本层的运行边界。
 type AgentEventPayload =
-  | { sessionId: string; type: "delta"; text: string }
+  | ({ sessionId: string } & StreamEvent)
   | { sessionId: string; type: "done" }
   | { sessionId: string; type: "error"; message: string };
 
@@ -62,9 +65,118 @@ export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot
   return { seq: state.seq, running: [...state.running.values()] };
 }
 
+// 装配常量（2026-10-18 用户拍板）：Pi 注册的 8 个内置工具，显式写死，不依赖隐式默认。
+const ALL_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const;
+
+type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
+type ThinkingOption = NonNullable<CreateOptions["thinkingLevel"]>;
+type ModelOption = NonNullable<CreateOptions["model"]>;
+
+/**
+ * 资源加载器（装配点）：
+ * - **显式关闭 Pi 的上下文文件**（`noContextFiles: true`）：Pi 默认会把 cwd **及其所有父目录**的
+ *   `AGENTS.md`/`CLAUDE.md` 读进 `<project_context>` 区——"向上继承父目录规范"不是我们的设计（2026-10-18 用户确认），
+ *   所以我们关掉它；要项目规范时走我们自己的通道：`agents/<id>/projects/<pid>/AGENTS.md` → harness 区（有出处、可反查）。
+ * - 方案 E 的内联 extension：preamble 换 identity + 回填 Pi 的 tools/rules + 独立 harness 区。
+ */
+export async function createHostedResourceLoader(input: {
+  cwd: string; configDir: string; settingsManager: SettingsManager; parts: Awaited<ReturnType<typeof buildPromptParts>>;
+}): Promise<DefaultResourceLoader> {
+  const loader = new DefaultResourceLoader({
+    cwd: input.cwd,
+    agentDir: input.configDir,
+    settingsManager: input.settingsManager,
+    noContextFiles: true,
+    extensionFactories: [createLifeOsPromptExtension(input.parts)],
+  });
+  await loader.reload();
+  return loader;
+}
+
+/**
+ * 统一创建 Agent 会话（装配层，事实见 docs/architecture/agent.md §9.4）：
+ * - agentDir = ~/.lifeos/config（Pi 由此读 models.json/auth.json/settings.json——界面里配的模型才真正生效）；
+ * - customPrompt = identity（替换 Pi 默认“编码 agent”前言）+ harness 独立区；Pi 的 tools/rules 原样回填；
+ * - tools = 全部 8 个内置工具（显式，不随隐式默认漂移）；Pi 的上下文文件读取已关闭（见 createHostedResourceLoader）；
+ * - 新建会话：按优先级 A 显式选模型；恢复会话：不传 model，尊重会话内 model_change。
+ */
+async function createHostedSession(
+  agentId: string,
+  sessionManager: ReturnType<typeof SessionManager.create>,
+  mode: "new" | "restored",
+): Promise<{ session: SessionState["session"]; modelLabel: string | undefined }> {
+  const cwd = sessionManager.getCwd();
+  const configDir = join(resolveHome(), "config");
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(configDir, "auth.json"),
+    modelsPath: join(configDir, "models.json"),
+  });
+  const settingsManager = SettingsManager.create(cwd, configDir);
+
+  const projectId = projectOfSessionDir(sessionManager.getSessionDir());
+  const parts = await buildPromptParts(agentId, projectId);
+  const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts });
+
+  let model: ModelOption | undefined;
+  let thinkingLevel: ThinkingOption | undefined;
+  let modelLabel: string | undefined;
+  if (mode === "new") {
+    const resolution = await resolveModelChoice(agentId);
+    if (resolution !== undefined) {
+      const found = modelRuntime.getModel(resolution.choice.defaultProvider, resolution.choice.defaultModel);
+      if (found !== undefined) {
+        model = found;
+        modelLabel = `${resolution.choice.defaultProvider}/${resolution.choice.defaultModel}（来源 ${resolution.source === "agent" ? "Agent 个人配置" : "系统 settings"}）`;
+        if (resolution.choice.defaultThinkingLevel !== undefined) {
+          thinkingLevel = resolution.choice.defaultThinkingLevel as ThinkingOption;
+        }
+      }
+    }
+  }
+
+  const { session } = await createAgentSession({
+    sessionManager,
+    cwd,
+    agentDir: configDir,
+    modelRuntime,
+    settingsManager,
+    resourceLoader,
+    tools: [...ALL_TOOL_NAMES],
+    ...(model !== undefined ? { model } : {}),
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+  });
+  return { session, modelLabel };
+}
+
+/** 从会话目录反推 projectId：…/agents/<id>/projects/<pid>/sessions → <pid>。 */
+function projectOfSessionDir(dir: string): string {
+  const marker = `${sep}projects${sep}`;
+  const index = dir.lastIndexOf(marker);
+  if (index === -1) return "workspace";
+  return dir.slice(index + marker.length).split(sep)[0] ?? "workspace";
+}
+
 /** 会话物理落在所属 project 的 sessions/ 下（协议 §15.1 结构即事实；默认 workspace）。 */
 export function sessionDir(agentId: string, projectId = "workspace"): string {
   return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
+}
+
+/** 读会话原始条目（会话历史的事实源）：文件里的 session 头 + 每条 append-only 条目，不做任何投影/裁剪。 */
+export async function readSessionEntries(agentId: string, sessionId: string): Promise<{
+  header: Record<string, unknown>;
+  entries: Array<Record<string, unknown>>;
+} | undefined> {
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return undefined;
+  const text = await readFile(found.path, "utf8");
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const parsed: Array<Record<string, unknown>> = [];
+  for (const line of lines) {
+    try { parsed.push(JSON.parse(line) as Record<string, unknown>); } catch { /* 坏行跳过（如实跳过，不补造） */ }
+  }
+  const header = parsed[0]?.type === "session" ? parsed[0] : undefined;
+  if (header === undefined) return undefined;
+  return { header, entries: parsed.slice(1) };
 }
 
 /** 跨 project 定位会话文件（会话可能在任一已绑定项目的 sessions/ 里）。 */
@@ -91,8 +203,9 @@ export async function createSession(agentId: string, cwd: string, projectId = "w
       { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
   }
   const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));
-  const { session } = await createAgentSession({ sessionManager: manager });
+  const { session, modelLabel } = await createHostedSession(agentId, manager, "new");
   const sessionId = manager.getSessionId();
+  if (modelLabel !== undefined) console.log(`[assembly] 新建会话 ${sessionId} · 模型 ${modelLabel}`);
   stateOf(agentId).sessions.set(sessionId, { session });
   stateOf(agentId).pending.set(sessionId, { projectId, at: new Date().toISOString() });
   return sessionId;
@@ -107,6 +220,17 @@ export function pendingSessions(agentId: string): Array<{ sessionId: string; pro
   });
 }
 
+/** 内存态会话的 cwd（刚创建还没落盘时是唯一来源）。 */
+export function sessionCwd(agentId: string, sessionId: string): string | undefined {
+  return stateOf(agentId).sessions.get(sessionId)?.session.sessionManager.getCwd();
+}
+
+/** 会话所属项目：由会话文件所在目录决定（`agents/<id>/projects/<pid>/sessions/*.jsonl`）—— 文件位置即事实。 */
+export async function projectIdOfSession(agentId: string, sessionId: string): Promise<string | undefined> {
+  const found = await findSessionFile(agentId, sessionId);
+  return found === undefined ? undefined : projectOfSessionDir(found.dir);
+}
+
 /** 取会话：内存没有就从会话文件恢复（重启后也能续接；出厂默认会话也走这条路）。
  * 按文件名 `<ts>_<id>.jsonl` 匹配而不是 findById：出厂文件 header 的 cwd 为空，
  * findById 的 cwd 过滤会把它拒掉（换机器/换目录就 404）；open() 带 cwdOverride 即可绕开。 */
@@ -116,7 +240,7 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   if (existing !== undefined) return existing;
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return undefined;
-  const { session } = await createAgentSession({ sessionManager: SessionManager.open(found.path, found.dir, cwd) });
+  const { session } = await createHostedSession(agentId, SessionManager.open(found.path, found.dir, cwd), "restored");
   const restored: SessionState = { session };
   state.sessions.set(sessionId, restored);
   state.pending.delete(sessionId);
@@ -129,10 +253,9 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   const target = state.sessions.get(sessionId);
   if (target === undefined) return;
   state.running.set(sessionId, { sessionId, startedAt: new Date().toISOString() });
-  const unsubscribe = target.session.subscribe((event: { type: string; assistantMessageEvent?: { type: string; delta?: string } }) => {
-    if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
-      publish(agentId, { sessionId, type: "delta", text: event.assistantMessageEvent.delta ?? "" });
-    }
+  const unsubscribe = target.session.subscribe((event: unknown) => {
+    const mapped = toStreamEvent(event);
+    if (mapped !== undefined) publish(agentId, { sessionId, ...mapped });
   });
   try {
     await target.session.prompt(text);
