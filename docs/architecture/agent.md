@@ -100,6 +100,8 @@
 
 ## 6 配置（现状）
 
+- **模型清单与 Pi CLI 共用同一份**（2026-10-19 用户定）：`config/models.json` 内容与 `~/.pi/agent/models.json` 保持一致（当前 6 个 provider / 20 个模型）。**同步用复制，不要用软链**——实测软链会让 Pi 的 `ModelRuntime` 读不到 provider（`getModel` 落空）。
+- 只有 `models.json` 同步；`settings.json`（Pi CLI 的默认模型）**不自动复制**——它的默认可能指向本机 local 端点，端点没开时新 Agent 会失败。要换默认模型：在 Agent 配置里选（个人配置优先），或自己加 `config/settings.json`。
 - **只有一个配置目录** `~/.lifeos/config/`（= Pi 的 `agentDir`）：`models.json`（provider/模型/密钥）· `auth.json` · `models-store.json` · `settings.json?` · `file-roots.json`（文件浏览器的根白名单）。
 - Agent 个人模型默认：`agents/<id>/projects/workspace/config.json`。
 - 环境变量只有 `LIFEOS_HOME`（读配置前告诉进程"家在哪"，测试与部署用；其余一律走配置文件）。
