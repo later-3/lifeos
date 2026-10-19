@@ -298,6 +298,30 @@ const startPath = await page.evaluate(() => ({
 }));
 check("目录选择器：从当前所在目录开始", startPath.rootTitle !== null && startPath.inputValue === startPath.rootTitle,
   `root=${startPath.rootTitle} input=${startPath.inputValue}`);
+// 标准几何校验（用户 2026-10-19 要求）：输入框必须完整落在对话框内、宽度可用、无横向溢出/裁切
+const pickerGeometry = await page.evaluate(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const input = document.querySelector('input[placeholder="输入路径后回车跳转"]');
+  if (dialog === null || input === null) return { ok: false, detail: "找不到对话框/输入框" };
+  const d = dialog.getBoundingClientRect();
+  const i = input.getBoundingClientRect();
+  const style = getComputedStyle(input);
+  return {
+    ok: true,
+    inputWidth: Math.round(i.width),
+    insideLeft: i.left >= d.left, insideRight: i.right <= d.right,
+    insideTop: i.top >= d.top, insideBottom: i.bottom <= d.bottom,
+    marginRight: Math.round(d.right - i.right),
+    paddingRight: Number.parseFloat(style.paddingRight),
+    overflowX: document.documentElement.scrollWidth > window.innerWidth + 1,
+  };
+});
+check("目录选择器：输入框完整可见（不被对话框裁切）",
+  pickerGeometry.ok === true && pickerGeometry.insideLeft && pickerGeometry.insideRight && pickerGeometry.insideTop && pickerGeometry.insideBottom,
+  `w=${pickerGeometry.inputWidth} rightMargin=${pickerGeometry.marginRight} inside=${pickerGeometry.insideLeft}/${pickerGeometry.insideRight}`);
+check("目录选择器：输入框宽度可用（≥280px）且页面无横向溢出",
+  pickerGeometry.inputWidth >= 280 && pickerGeometry.overflowX === false,
+  `w=${pickerGeometry.inputWidth} overflowX=${pickerGeometry.overflowX}`);
 const beforeBackspace = await page.locator('input[placeholder="输入路径后回车跳转"]').inputValue();
 await page.keyboard.type("xyz");
 await page.keyboard.press("Backspace");
@@ -596,6 +620,10 @@ const SHOTS = [
   ["history.png", 1600, async (shotPage) => {
     await shotPage.locator('[aria-label="完整历史"]').first().click();
     await shotPage.waitForTimeout(700);
+  }],
+  ["picker.png", 1600, async (shotPage) => {
+    await shotPage.getByRole("button", { name: /添加项目/ }).first().click();
+    await shotPage.waitForTimeout(800);
   }],
   ["modal.png", 1600, async (shotPage) => {
     await shotPage.locator('button[aria-label^="配置 "]').first().click();
