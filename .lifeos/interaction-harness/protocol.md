@@ -1,6 +1,6 @@
 # 交互 harness 协议（v1 首版）
 
-> 角色：架构 / 需求 / 开发　类型：说明　状态：**v1 定稿（2026-10-14）**
+> 角色：架构 / 需求 / 开发　类型：说明　状态：**现状**（v1 定稿 2026-10-14；2026-10-18 按实现校正：删掉未实现/旧设计的描述）
 
 这是**协议本身**的正文。它不描述当前 `~/.lifeos` 里已有的组织（那里是实验状态，没有义务符合本标准）；
 它规定"应该长什么样"，写完之后我们按它直接落地、直接测。
@@ -162,331 +162,92 @@
 
 ## 8 待定（需与用户讨论后才定）
 
-1. **落地位置**：协议先落 Life OS 仓库文档（本文），随后**直接在 `~/.lifeos` 按本协议改造**（那里是实验状态，可以改）；
-   还是新建一个独立位置并行铺开、验证后再切换？
-2. **lifeos 项目的既有架构文档能否用本协议转化**：初步判断——架构/模块文档属于**项目的知识库**（按主题、带出处），
+1. **既有架构文档能否用本协议转化**：初步判断——架构/模块文档属于**项目的知识库**（按主题、带出处），
    开发规范属于**项目规范**，案例与日记按日期；转化可行，但需要先补"主题索引"，且转化的只有组织方式，内容仍需逐份核对。
 3. **规范与原则是否要分成两类**：本文只留"规范"（必须怎么做）；"原则"（凭什么判断）是否单列，取决于它是否跨任务类型复用。
 
 ---
 
-## 9 场景验证与落地逻辑（现实现 vs 协议预期）
+## 9 项目：现状（2026-10-18 定稿）
 
-### 9.1 场景一：用户在前端给某个 Agent 添加一个 project（选了一个目录）
+**项目 = 被某个 Agent 打开的一个目录。** 现在只支持"单 Agent 自己的项目"；**跨 Agent 共享项目信息/资源未实现**（登记在仓库 `docs/todo.md`）。
 
-**目标（用户 2026-10-14 明确）**：为**那个 Agent** 建好这个 project 的归属；"一个 Agent 有哪些 project"要落在
-**该 Agent 自己的信息里**（不是散在别处）。
+两层（这就是全部存储）：
 
-**现实现（代码事实）**
-
-| 环节 | 事实 |
-|---|---|
-| 请求 | `POST /api/projects/open {path}`（`src/routes/api/projects/open.post.ts`） |
-| 建 manifest | 读/建 `<目录>/.lifeos/project.json`（`id` = 目录名 slug + 8 位随机）→ `registry.ts:102-105` |
-| 注册 | 写 `~/.lifeos/projects/registry.json`（`kind: "project"`），返回 `projectId / name / cwd / projectRoot` |
-| 共享部分 | 项目共用数据固定放 `~/.lifeos/projects/<projectId>/`（sessions/memory/prompt-resources 按需创建） |
-| Agent 归属 | `LongAgentConfig.boundProjectIds`（该 Agent 绑定的项目清单）+ `defaultProjectId`（默认项目）——**已存在** |
-| Agent × 项目私有 | `~/.lifeos/long-agents/<agentId>/projects/<projectId>/`（`project-guidance.md`、`daily/`、`tasks/`…） |
-
-**共享注册的细节逻辑（用户提出的问题）**：另一个 Agent 再加**同一个目录**时怎么办？
-事实是**天然复用**：manifest 的 `id` 写在项目目录里，open 时读到已有 manifest 就复用同一 `projectId`
-（`createProjectManifest` 已有即返回），而共享部分按 `projectId` 定位 → **不需要重建**。
-换句话说：**共享是"按 projectId 一份"，Agent 归属是"各自绑一份"**，两者互不复制。
-
-**协议要求（落地动作）**：前端选目录后应完成三件事，而不是只 open 一下：
-
-```text
-① 打开/注册项目（幂等）      POST /api/projects/open        → 得到 projectId（已在跑）
-② 把该项目绑到该 Agent       PUT /api/long-agents/:id/config → boundProjectIds 增加一项（已有通道）
-③ 确保 Agent × 项目的私有目录就绪  <agent>/projects/<projectId>/（需要时才建，避免幽灵目录）
-```
-
-**前端怎么展示、怎么发起（协议要求）**
-
-| 展示 | 数据来源 | 请求 |
+| 层 | 位置 | 放什么 |
 |---|---|---|
-| 该 Agent 的 project 列表 | `GET /api/long-agents/:id/config` 的 `boundProjectIds`（+ registry 的可用性/名称） | —— |
-| 添加 | 目录选择器 | `open` → 再 `PUT config` 绑定 |
-| 默认项目 | `defaultProjectId` | `PUT config` |
-| 解绑 | `boundProjectIds` 去掉一项 | `PUT config`（不删项目、不删会话） |
+| **工作区**（真实目录） | 用户自己的目录；内置 `workspace` 例外 → `~/.lifeos` | 用户的代码/文档。只作 cwd（工具作用域），**不写我们的数据进去** |
+| **Agent 私有层** | `~/.lifeos/agents/<id>/projects/<pid>/` | 记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ 外部项目的身份 `project.json {schemaVersion,id,name,path}` |
 
-**结论（缺口 A）**：**不需要新机制**；需要的是把"②绑定"与"③私有目录就绪"接到"①open"之后（前端一次动作三步，或后端合成一个入口）。
+界面上的三个动作（对应后端接口）：
 
-### 9.2 场景二：用户说"我要创建一个 task 用于开发需求"
-
-**目标（用户 2026-10-14 明确）**：创建 task 属于**交互 harness 下的一个动作**，至少要完成四件事：
-
-```text
-① 建任务目录 + 填 task.md 基本信息（类型/类别/状态/目标）
-② 在项目下记录"这个项目有哪些 task"
-③ 明确这个 task 的类型，并找地方承载它
-④ 默认把模板拿过来，把默认规范先整进 task.md
-```
-
-**现实现（代码事实）**
-
-| 环节 | 事实 |
-|---|---|
-| 触发 | 用户这句话只是**普通消息**；建任务靠 Agent 自己调 `task_manage create` |
-| 字段 | `name / prompt / timeZone / schedule / missed / overlap`，**无 taskType**（`task-manage/index.ts:26-56`） |
-| 存储 | `<agent>/tasks.json`（含 `contextProjectId`，但没有类型） |
-| 任务目录 / `task.md` | **无任何代码支持**（全仓 grep 为空）——只是任务规范里的文字 |
-| 执行 | 触发 → 受理 → 出队 → `prepareLongAgentAssembly`；此时按 `projectId` 读 harness 项目层、按**项目声明**加载任务类型细则 |
-
-**协议要求（落地动作）**
-
-| # | 动作 | 归属 | 现状 → 要做 |
-|---|---|---|---|
-| ① | 建任务目录（`tasks/<id>/`）+ `task.md`（类型/类别/状态/目标/必需文档） | Agent × 项目私有目录 | 无 → 创建任务时生成（模板来自 `task-types/<type>/TEMPLATE.md`） |
-| ② | 项目下记录 task 清单 | 该 Agent 的 `tasks.json` 已带 `contextProjectId` → **按项目分组查询即可**，不新建清单文件 | 有 → 补"按项目列出"的入口 |
-| ③ | 明确 task 类型并承载 | `Task.taskType`（新字段，缺省取项目声明） | 无 → 加字段 + 校验 + 组装到执行 |
-| ④ | 把模板与默认规范整进 `task.md` | 任务目录 | 无 → 生成时复制模板骨架 + 该类型的必需文档清单 |
-
-**创建之后的编辑/增删（用户强调的细节）**：用户在**一个 session 里**建了 task，后续新增的规范/知识库
-**不一定**都留在 task 下；按情形**动态配置作用域**：
-
-| 内容 | 建议作用域 | 是否自动加载 |
+| 用户动作 | 接口 | 事实 |
 |---|---|---|
-| 只跟这次任务有关 | **本轮**（请求体/发送前编辑） | 只此一轮 |
-| 这个 session 后面都要 | **会话**（`lifeos.long-agent-prompt-config.v1`） | 下一轮起 |
-| 这个项目都要 | **项目**（`~/.lifeos/projects/<projectId>/…`） | 该项目自动加载 |
-| 这个 Agent 都要 | **Agent**（`~/.lifeos/long-agents/<agentId>/…`） | 该 Agent 的轮次自动加载 |
-| 所有 Agent 都要 | **通用**（harness 协议/规范、`~/.lifeos/projects/<projectId>/`） | 常驻 |
+| 打开目录（添加项目） | `POST /api/agents/:id/projects {path}` | 同 path 幂等复用；否则 `pid = uuidv7`、建私有层目录并写 `project.json`（**不写用户目录**） |
+| 列出项目 | `GET /api/agents/:id/projects` | 扫描私有层目录 − `hiddenProjectIds`；外部项目显示名 = `basename(path)` |
+| 从列表移除（可逆） | `DELETE /api/agents/:id/projects/:pid` | 写 `hiddenProjectIds`；目录、manifest、会话、记录**全部保留** |
 
-**加载策略**：常驻的只有**协议**；其余按作用域**按需加载**（项目级只在进该项目时、任务级只在该任务执行时），
-不是一上来全塞进 prompt。
+- **目录即项目**：私有层目录存在即可用；外部项目必须有 `project.json`（cwd = 它的 `path`）。
+- **术语**：界面上说"打开目录 / 从列表移除"；"注册 / 绑定 / 解绑"是旧设计的词，**不再使用**。
+- 任务现状：只有目录约定 `tasks/<slug>/task.md`；把任务落成结构化事实的工具**未实现**（登记在仓库 `docs/todo.md`）。
 
-**结论（缺口 B）**：需要小改代码——`Task.taskType`（字段+校验+执行时按类型选细则）、
-创建任务时生成任务目录与 `task.md`、按项目列任务；`TASK.md` 模板已有（`task-types/development/TEMPLATE.md`）。
+## 10 协议怎么进入 Agent 的 prompt（现状）
 
-### 9.3 验证结论
+`src/assembly.ts` 的 `buildPromptParts()` 把协议与配套文件读成**一个** `<lifeos_interaction_harness>` 区，顺序：
 
-协议的组成、层级机制、加载与维护机制**成立**；本次验证暴露的两个缺口都要**先补再定稿**：
+1. 本协议正文 `protocol.md`
+2. 本层指引 `AGENTS.md`
+3. 飞轮 `flywheel.md`
+4. 概念空间元规则 `concept-space.md` + 两份索引
+5. 任务类型细则 `task-types/development/*.md`
+6. **本项目指引** `agents/<id>/projects/<pid>/AGENTS.md`
 
-| 缺口 | 补法 | 状态 |
-|---|---|---|
-| A：添加 project 只 open、不绑定、不备私有目录 | open → 绑定 `boundProjectIds`（设置里已有列表）→ 私有目录由首次写入按需创建 | **复用既有通道，不改代码**（用户 2026-10-14：先不做合成入口，别搞复杂） |
-| B：任务没有类型/类别，任务目录与 `task.md` 无支撑 | ① `Task.taskType` + `taskCategory` ② 创建任务时生成任务目录与 `task.md` ③ `list` 支持按项目过滤 ④ 装配按任务类型选细则 | **已落地（2026-10-14）**：Life OS 提交 `1956ea29b`（字段）、本轮（目录/清单/装配）；单点测试见 `test/long-agents/tasks.test.mjs` 与 `interaction-harness.test.mjs` |
+（文件不存在就跳过；末尾附"按需读取"指针：案例目录、`{daily,tasks,todo}`。）
 
----
+- 身份 `agents/<id>/identity.md` 占 `preamble`（替换 Pi 默认的"编码 agent"前言）；Pi 自己的 `<tools>` / `<rules>` 原样回填。
+- 工作区是外部项目时，Pi 还会把工作区目录**及其父目录**的 `AGENTS.md` 读进 `project_context` 区（Pi 原生机制）。
+- **区域声明表 / 按需加载机制未实现**（现在按上面的固定顺序读成一段常驻）——登记在仓库 `docs/todo.md`。
 
-## 10 技术方案：协议怎样进入后端 Agent 的 prompt
+## 11 常驻与"动作 → 落点"
 
-**现状（事实）**：本文这份协议**在 Life OS 仓库文档里**，**不在** `~/.lifeos/interaction-harness/`；
-而 Agent 的 prompt 由 `readInteractionHarness` 读 `~/.lifeos/interaction-harness/**` 生成
-（`protocol/` 纯规则、资产、任务类型、项目层 → 一个 `<lifeos_interaction_harness>` 区域）。
-**所以今天 Agent 的 prompt 里没有这份协议**——它只进了我们的文档。
-
-**技术方案（推荐 A，预留 B）**
-
-| 方案 | 做法 | 代价 |
-|---|---|---|
-| **A（起步）** | 把协议正文作为**运行时资产**放进 `~/.lifeos/interaction-harness/protocol.md`——loader 已经在读 `protocol/*.md`，**零代码改动** | 协议与文档两处正文 → 用"文档是源、运行时是产物"的同步规则约束（§3.3 的源与产物原则） |
-| B（后续优化） | 按"组成部分"拆成多份资产，分别注入到对应位置（例如：思想/规范/任务类型各自一节），实现按需加载 | 需要定义"协议部分 → 区域"的映射，改 loader；等占用变高再做 |
-| C（不推荐） | 把协议正文硬编码进 Life OS 源码常量 | 内容型资产不该进代码，改一次要发版 |
-
-**协议生效 = 文本 + 工具 + 可验证，三样都要**：
-
-| 半 | 内容 | 现状 |
-|---|---|---|
-| **文本半** | 协议正文进 prompt（`<lifeos_interaction_harness>` 区域里的 `## 纯规则 · …`） | 待做（方案 A 一步到位） |
-| **工具半** | 协议要求的动作由 Life OS 工具提供：`task_manage`（创建任务时自动建目录与 `task.md`、按项目列出）、项目绑定（设置里已有） | **已就绪**（本轮补齐；工具描述已写明"不要自己建目录"） |
-| **约束半** | 请求边界 / 文件边界可验证：任务带类型、目录与 `task.md` 生成、按项目可查 | **已就绪**（单点测试） |
-
-## 11 场景走查：用户说"我现在要创建一个需求的 task"
-
-**现状（事实，逐步）**
-
-1. 这句话是一条**普通消息** → 受理 → 装配 → 模型；**prompt 里没有这份协议**（只有 `<lifeos_runtime_capability_contract>` 与 `~/.lifeos` 里已有的 harness 内容）。
-2. 模型能看到 `task_manage`（工具描述现在已写明"创建会自动建目录与 `task.md`、不要自己建"）。
-3. 模型可能：直接 `create`（但不一定先确认类型/类别）／只回答不建 ／自己建目录（现在描述已禁止）。
-4. **结论：结果不可预期**——因为"创建任务必须做哪四件事"这条规则**没在 prompt 里**。
-
-**预期（协议进 prompt 之后）**
-
-1. 模型看到协议 §3.8：知道"创建任务 = 建目录与 `task.md` + 项目下登记 + 明确类型 + 套模板"；
-2. 模型识别场景，**确定 `taskType`（领域）与 `taskCategory`（类别）**：能从项目声明/上下文推断就推断；
-   **不确定就先问用户**（协议要求，不许猜）；
-3. 调 `task_manage create`（工具负责落目录、写 `task.md`、返回 `taskDir`）；
-4. 回报：任务目录位置、类型/类别、必需文档清单、下一步。
-
-**为什么 Agent 能做到**：协议在 prompt 里（**知道**要做什么）→ 工具存在且自描述（**能做**，不用自己造结构）→ 数据可查（`list` 按项目列出并给 `taskDir`，**能核对**）→ 不确定就追问（协议规定）。
-
-**架构上**
-
-```text
-prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
-      ↕ 同一份声明与作用域
-工具（task_manage / 项目绑定）        ← 能力：把规则落地成结构化事实
-      ↕
-数据（tasks.json + 任务目录 + task.md）← 事实：可查、可验证
-```
-
-三层对齐才是"协议生效"；缺任一层，模型就只能靠猜（现状：文本层缺）。
-
-**差距与补法**
-
-| 应有 | 现状 | 补法 |
-|---|---|---|
-| 协议正文在请求里 | 只在 Life OS 仓库文档 | 方案 A：放进 `~/.lifeos/interaction-harness/protocol.md`（loader 已支持，零代码） |
-| 工具自描述（不要自己建目录） | 已补（本轮 `tool.json` 描述） | 完成 |
-| 模型先定类型/类别、不确定就问 | 协议里写了，但协议不在 prompt | 同第一行 |
-| 可验证 | 单点测试已覆盖工具与装配 | 可选再加"协议正文出现在请求里"的断言 |
-
----
-
-## 12 协议如何进入 prompt（设计对账，待用户确认）
-
-### 12.1 "Loader" 具体是什么（自底向上第一跳）
-
-**不是 Pi 的某个加载接口，而是 Life OS 自己的读文件 + 组文本**；Pi 只负责把它放进 System Prompt。
-
-```text
-~/.lifeos/interaction-harness/**                文件（事实源）
-   ↓ Life OS loader：readInteractionHarness()           src/long-agents/interaction-harness.ts
-      读 protocol/ · 任务类型 · 资产 · 项目层 → 分节拼接成一个字符串
-   ↓ 装配点：prepareLongAgentAssembly()                src/long-agents/assembly.ts
-      放进 agent.customInstructions
-   ↓ Pi 公开接口：createAgentSession({ appendSystemPromptOverride })
-      （src/agents/pi-agent-session.ts:222）→ System Prompt 文本
-   ↓ 请求边界：providerRequestGate（onPayload）→ 记录到 interactions/
-   ↓ 展示：区域解析（prompt-region-registry.ts 白名单）→ 前端按区域显示
-```
-
-**要在什么流程完成加载**：**Long Agent 装配时**（受理之后、创建 Pi AgentSession 之前），每轮一次；
-检查视图与发送前预览走同一个解析器（同源）。
-
-### 12.2 "自定义区域"与标签体系（解决"分不清谁是谁"）
-
-现有三层标识，已经可用：
-
-| 层 | 形式 | 作用 | 实现 |
-|---|---|---|---|
-| **区域** | `<lifeos_interaction_harness>…</lifeos_interaction_harness>` | 一段的"性质"（协议 / 身份 / 记忆 / 自定义指令…） | `prompt-region-registry.ts`（9 区，唯一来源：id/tag/label/parent/topLevel/capture） |
-| **分节** | `## 纯规则 · <路径>`、`## 任务类型 · <type>/<文件>`、`## 通用资产 · <名>`、`## 本项目专属规范 · <名>` | 协议内部的分类 + **来源名**（反查依据） | `interactionHarnessInstruction()` |
-| **子条目** | `blockId = tag:<tag>#<子条目>` | 单条排除/改写；展示到条目级 | `context-edit.ts` |
-
-**待确认**：是否给分节再加显式来源属性（如 `## 通用资产 · AGENTS.md` 已经带文件名，够不够？）——
-倾向"够用，不加属性"，因为分节标题已含来源名，记录与展示都能对上。
-
-### 12.3 常驻什么、按需什么（回应"不可能全塞进去"）
-
-| 内容 | 进不进 prompt | 理由 |
-|---|---|---|
-| 协议正文（是什么/组成/机制/规则） | **常驻** | 不遵守就等于没有协议 |
-| **能力与资料清单**（"有哪些"） | **常驻（一小节）** | 按需读的前提是**知道有什么、在哪、何时读** |
-| 任务类型细则 | 按项目声明 / 任务类型 | 只在对应场景 |
-| 案例、概念正文、知识库 | **按需**（`read`） | 查了才知道有没有 |
-| 工具 | **不进 System Prompt** | 工具的 Schema 本来就在请求的 `tools` 字段里，模型天然知道有哪些；在文本里再列一遍是重复占位 |
-
-**"工具要不要专门一个区域列出来"——结论：不要**（理由见上）；但要**在协议里写清"动作 → 用哪个工具"**：
-
-| 协议要求 | 由哪个工具落地 | 生态归属 |
-|---|---|---|
-| 创建任务（目录 + `task.md` + 类型/类别） | `task_manage.create` | Life OS 系统 Tool（Pi `ToolDefinition`） |
-| 看项目下有哪些任务 | `task_manage.list`（按 `projectId`） | 同上 |
-| 把项目绑到 Agent | 设置页 / `PUT /api/long-agents/:id/config` | Life OS 配置 API |
-| 读资料正文（案例/概念/知识库） | `read`（Pi 原生工具） | Pi 生态 |
-| 按能力找方法 | Skill（描述进 prompt、正文按需） | Pi 生态 |
-
-**我们的工具是否要遵循 Pi 生态的 tool**：**已经是**——Life OS 工具就是 Pi 的 `ToolDefinition`（`defineTool` + `customTools`/Extension）。
-协议不新造工具体系，只规定"协议动作由哪个已有工具承担"。是否给这些工具加"协议工具"标记（与产品工具区分），待定。
-
-### 12.4 安装与首次运行（仓库是代码、`~/.lifeos` 是数据）
-
-- 仓库只存**代码与模板**；运行时数据在 `~/.lifeos`；
-- **协议正文应作为产品资产随发布**，首次运行（或升级）时安装到
-  `~/.lifeos/interaction-harness/protocol.md`；**文档是源、运行时是产物**（沿用既有"源与产物"规则）；
-- 安装/初始化已有入口：`ensureLife OSHome()` / `ensureLongAgentResourceDirs()` 等，加一处写入即可。
-
-### 12.5 双向闭环（校验点）
-
-| 方向 | 链路 | 校验点 |
-|---|---|---|
-| **自底向上** | 文件 → Life OS loader → Pi `appendSystemPromptOverride` → System Prompt → 请求 → 记录 → 展示 | 请求边界：协议正文确实在 payload 里；记录里区域可解析 |
-| **自顶向下** | 用户说"创建一个需求的 task" → 协议（在 prompt 里）→ 模型定类型/类别（不确定就问）→ `task_manage.create` → `tasks.json` + 任务目录 + `task.md` → `list` 可查 | 数据边界：目录与 `task.md` 存在；展示：按项目列得出 |
-
-### 12.6 用户确认（2026-10-14）
-
-| # | 事项 | 结论 |
-|---|---|---|
-| 1 | 协议正文随产品安装到 `~/.lifeos/interaction-harness/protocol/`（首次运行写入，文档是源、运行时是产物） | ✅ **已完成**（`0e2390024`：资产随包发布 + `ensureLife OSHome` 安装 + 用户改动不覆盖 + 单点测试） |
-| 2 | 常驻 = 协议正文 + 能力与资料清单；其余按需 | ✅ 同意 |
-| 3 | 工具**不**单列区域，只在协议里写"动作 → 工具"映射 | ✅ 同意（§13.2 已落表） |
-| 4 | 分节标题里的来源名够用，不加 `source=` 属性 | ✅ 同意 |
-| 5 | 给工具加"协议工具"标记 | ❌ **不做**（"没有必要搞复杂了"） |
-
-## 13 常驻清单与"动作 → 工具"映射（按用户确认落地）
-
-### 13.1 常驻那一小节写什么（"有哪些、在哪、何时读"）
+### 11.1 常驻的那一小节写什么（"有哪些、在哪、何时读"）
 
 ```text
 ## 通用资产 · 能力与资料索引
-- 协议：本协议（常驻）；细则见 task-types/<type>/（按项目声明或任务类型加载）
-- 任务：创建/查看用 task_manage（创建会自动生成任务目录与 task.md）
-- 资料（按需 read）：案例 cases/<日期>.md · 概念 concept-space/ · 知识库 · 项目规范（项目仓库内）
-- 项目：进入项目时按项目声明加载（~/.lifeos/projects/<projectId>/ 与项目仓库自己的规范）
+- 协议：本协议（常驻）；任务类型细则见 task-types/<type>/（随协议常驻）
+- 资料（按需 read）：案例 cases/<日期>.md · 概念 concept-space/ · 知识库 · 项目指引（项目仓库的 AGENTS.md）
+- 项目：当前工作项目 = agents/<id>/projects/<pid>/（打开外部目录后就是该项目）
 ```
 
 **只列"有什么、在哪、何时读"，不贴正文**——这是"按需读"能成立的前提。
 
-### 13.2 动作 → 工具（协议不新造工具体系）
+### 11.2 动作 → 落点（现在有什么用什么）
 
-| 协议动作 | 工具 / 接口 | 生态 |
-|---|---|---|
-| 创建任务（目录 + `task.md` + 类型/类别） | `task_manage.create` | Life OS 系统 Tool（Pi `ToolDefinition`） |
-| 按项目看任务 | `task_manage.list`（`projectId`） | 同上 |
-| 任务执行时选细则 | 装配按 `AcceptedTurn.taskType` → `prepareLongAgentAssembly` | Life OS 装配 |
-| 把项目绑到 Agent | 设置页 / `PUT /api/long-agents/:id/config` | Life OS API |
-| 读资料正文 | `read` | Pi 原生工具 |
-| 找方法（Skill 描述进 prompt、正文按需） | Pi Skill | Pi 生态 |
+| 动作 | 手段 |
+|---|---|
+| 读案例 / 概念 / 知识 / 项目规范正文 | Pi 的 `read`（按需，路径见常驻索引） |
+| 写日报 / 案例 / todo / 任务目录与 `task.md` | Pi 的 `write` / `edit`，落在 `agents/<id>/projects/<pid>/{daily,cases,todo,tasks}`（现在没有专用工具） |
+| 打开目录 / 从列表移除项目 | 界面（接口见 §9） |
+| 找方法（Skill 描述进 prompt、正文按需） | Pi Skill |
 
-### 13.3 通用层（用户 2026-10-14 确认的心智模型）
+### 11.3 通用层心智模型（用户 2026-10-14 确认）
 
 > **只要规定好"从哪加载、加载什么、装到哪个区域、什么标签、什么顺序"，任何新内容都能自动填入对应 Agent 的区域。**
 
-对"项目规范"这类新需求即：前端请求已知 `projectId` → 装配按协议去找该项目的内容 → 装入对应区域。
-**待补的正是这张"声明表"**（来源路径模式 → 区域标签 → 叠加顺序），当前是逐类硬编码 + Pi 资源发现。
+"声明表"（来源路径模式 → 区域标签 → 叠加顺序）**未实现**：现在由 `src/assembly.ts` 按固定顺序装配（见 §10）。登记在仓库 `docs/todo.md`。
 
----
-
-## 14 定稿记录（v1，2026-10-14）
-
-**定稿范围**：§1–§9（是什么 / 由什么组成 / 逐部分展开 / 自举概念空间 / 日期与大小 / 加载与维护 / 层级与归属 / 缺口与场景验证）、
-§12（怎么进 prompt）、§13（常驻清单与动作→工具映射）。
-
-**随定稿已落地**：
-- 协议正文随产品发布并安装到 `~/.lifeos/interaction-harness/protocol.md`（源与产物分离 + 同步脚本 + 初始化写入）；
-- 任务类型机制（声明、按类型加载、任务带类型、创建任务自动建目录与 `task.md`、按项目列任务）；
-- 来源声明表的**机制与第一行**（`<project>/.lifeos/harness/*.md` → `lifeos_interaction_harness` 区域）。
-
-**未纳入 v1（明确登记，后续单独立项）**：
-1. 用声明表**吸收既有通道**（项目根 `AGENTS.md` 走 Pi 资源发现、`<agent>/projects/<p>/` 走 harness 项目层、Prompt 资源库的选择与冻结）——是替换迁移，不是并行新增；
-2. 区域实例层（用户自定义区域的名称/顺序/启停）；
-3. 指针装载器（案例 / 概念正文按需读取）；
-4. 项目层写入（Long Agent × 项目的规范写入通道）。
-
-**迭代方式**：改协议 = 改本文（源）→ 跑 `pnpm sync:harness` 同步产物 → 重跑相关门禁 → 必要时更新用户目录里的运行时副本。
-
-**2026-10-17 补丁（v1.1）**：§2 新增 2.10/2.11、§4 新增两条词条、新增 §15（会话放哪 / 开场 / 项目私有骨架 / 迁移登记）——起因是家目录模板与协议对齐时发现的空白（用户：骨架和协议没完全对得起来）。
-
-**2026-10-17 补丁2（v1.2，用户裁决定稿）**：§15 改为**出厂预置默认会话**方案——删 `opening.md` 与一切运行时开场动作、删“待迁移”悬念（协议只写事实）、改名“默认会话”；§2.10 与 §4 词条同步。
-
----
-
-## 15 会话、默认会话与项目私有骨架（2026-10-17 定，同日晚按用户裁决定稿）
+## 12 会话、默认会话与项目私有骨架（2026-10-17 定稿）
 
 > 起因（用户 2026-10-17）：检查家目录模板时发现协议没写全——“project 下面的会话放哪、案例/概念空间/todo 归属、
 > 谁说第一句话”在协议里是空白，骨架和协议对不上。本节补齐；“第一句话”最终定为**出厂预置文件**方案。
 
-### 15.1 会话放哪
+### 12.1 会话放哪
 
 - **会话落在所属 project 的 `sessions/` 目录**：`agents/<id>/projects/<pid>/sessions/`；每个 Agent 的默认 project 是 `workspace`，默认路径 = `agents/<id>/projects/workspace/sessions/`。
 - 这是**终态事实，不是计划**：出厂模板即按此结构携带会话，协议怎么写、磁盘就怎么放（结构即事实；协议只写事实，不写“待迁移”这类悬念——2026-10-17 用户裁决）。
-- 旧的 `agents/<id>/sessions/` 是历史遗留目录，**不再读取**（旧数据自行处置）。
 - 会话文件格式沿用 Pi 的 JSONL（不自造）。
 
-### 15.2 默认会话（第一条消息）
+### 12.2 默认会话（第一条消息）
 
 **它是什么（以用户表述为准）**：系统总要有一个与用户的**起手动作**——现在的产品靠网页说明书/文档说明书教用户，
 我们的做法是**把说明书做成第一句话**：打开系统，Life OS Agent 先打招呼并告诉你可以怎么用，你顺着对话看就会用。
@@ -506,13 +267,13 @@ prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
 - **出厂显示名 `welcome to lifeos`**：预置会话文件内置一条 `session_info { name: "welcome to lifeos" }`（Pi 原生 name 机制，用户可随时改名覆盖）；界面不再出现“默认会话”字样。显示链（用户 2026-10-17 定）：`name ‖ 首条用户消息（后端全文、UI 截 50）`，**无兜底**。
 - 用户删掉默认会话后，新建的会话是空白会话：说明书是一次性的，不复活（无触发条件的直接推论，2026-10-17 用户裁决）。
 
-### 15.3 项目私有骨架（协议在 project 目录的落点）
+### 12.3 项目私有骨架（协议在 project 目录的落点）
 
 每个 project 目录（含内置的 `workspace/`）就是协议在该项目作用域的实例，骨架：
 
 | 骨架 | 对应协议板块 | 说明 |
 |---|---|---|
-| `project.json` | project 身份 | `{schemaVersion, id, name}`；`name` 供展示（如“工作区”） |
+| `project.json` | project 身份（**仅外部项目**） | `{schemaVersion, id, name, path}`；cwd = 它的 `path` |
 | `AGENTS.md` | 项目指引（§7 作用域：Agent × 项目） | 本目录的规矩与指引；不复制协议正文 |
 | `sessions/` | 会话（§15.1/§15.2） | 会话 JSONL；**出厂默认会话预置于此** |
 | `tasks/<slug>-<id8>/` | 任务（§3.8） | 一个任务一个目录 + `task.md`（需要时才创建，不预建） |
@@ -522,9 +283,9 @@ prompt（协议正文 + 任务类型细则）    ← 规则：怎么做
 | `concept-space.md` | 概念空间（§3.2） | 本项目层的词索引（正文按需读） |
 
 - **按需建**：`tasks/` 不预建（只放现在要用的）；`daily/ cases/ todo/` 由模板带占位保证存在，`sessions/` 由出厂默认会话天然存在。
-- 家目录顶层 `projects/<pid>/`（项目共用层，跨 Agent 共享）与本目录（Agent 私有）不可混：会话、案例、todo 都在私有层。
+- 项目只属于一个 Agent：会话、案例、todo、manifest 全在这个私有层里（跨 Agent 共享未实现，见仓库 `docs/todo.md`）。
 
-### 15.4 实现登记（兼容与历史）
+### 12.4 加载方式（现状）
 
 - **物理结构即终态**：会话读写直接使用 `agents/<id>/projects/workspace/sessions/`；不存在任何“迁移中”状态。
 - 加载兼容：恢复会话按文件名 `<ts>_<id>.jsonl` 匹配 + `SessionManager.open(path, dir, cwd)`（带 cwdOverride），不走 `findById` 的 header cwd 过滤——出厂文件 header 的 `cwd` 为空，避免换机器/换目录 404。

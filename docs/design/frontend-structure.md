@@ -15,20 +15,19 @@
 1. **参考优先**：`references.md` 里的参考项目有类似做法的，**采用它们的形式**；
 2. **自主设计**：参考里没有的，站在我们这边想清楚——**数据关系、数据本身、怎么交互**，再实现。
 
-## 1 数据：具体有哪些、什么关系（系统层，多 Agent 出发）
+## 1 数据：具体有哪些、什么关系（系统层）
 
 ```
 Life OS（~/.lifeos）
 ├─ 系统配置 config/（models/settings——跨 Agent，不属于任何 Agent）   [本轮不上界面]
 ├─ 通用层 interaction-harness/（协议/飞轮/概念/任务类型）            [本轮不上界面]
-├─ 项目共用层 projects/<pid>/（同一项目跨 Agent 共享）               [本轮不上界面]
-└─ Agents/（注册判据 = agent.json，枚举 = 扫描；多 Agent 是设计出发点）
+└─ agents/（枚举 = 扫描 agent.json；出厂只有一个 Agent）
    ├─ Agent { id, name, defaultProjectId, defaultSessionId, avatar(auto=按 id 推导) }
    │   ├─ SSE 流：一条流覆盖该 Agent 的全部会话（seq 单调、since 续传）
-   │   └─ Projects/（注册判据 = project.json；内置 workspace 为默认）
+   │   └─ Projects/（**目录即项目**；外部项目才有 project.json 记 path；内置 workspace 为默认）
    │       └─ Session（JSONL；标题 = session_info 重命名 > 首句；出厂默认会话用 defaultSessionId 标记）
    │           └─ Message → blocks：text / thinking / toolCall（toolResult 挂回对应调用）
-   └─ 其余 Agent 同构
+   └─ 多 Agent（新建/删除）与跨 Agent 共享项目 = 未实现，见 docs/todo.md
 ```
 
 - 会话操作：新建（POST）、重命名（PUT → Pi `session_info`）、删除（DELETE，运行中 409）。
@@ -46,10 +45,13 @@ Life OS（~/.lifeos）
 | 第2列 · 项目列表 | 行内**只写目录名**；右侧固定槽位常显会话计数、hover 原地换成「从该助手移除」（不位移）；**不标注“默认”**（与运行点语义冲突）；空态统一 EmptyState | 自主设计（v5 简化：列头不重复行内数据） |
 | 第3列 · 会话列表 | 标题、相对时间、运行点、悬停操作（✎重命名 / ✕删除）；底部「＋新建会话」；空态提示 | **Pi Web SessionSidebar**（会话操作与展示） |
 | 主区 · 头部 | 44px：左为**会话标题**（body 500）与次级 meta `Agent · project`（micro/ink-500），右为文件面板开关 | 自主设计（v5 恢复上下文显示；此前误删面包屑曾导致全列折叠后无法判断身处何地） |
+| 输入框（发送） | **草稿按会话归属**（切会话换草稿、刷新不丢）；**生成中按 Enter = 排队**（提示“已排队”，本轮结束自动发送；期间切会话则退回原会话草稿）；**发送失败回填草稿**并提示；`submittingRef` 防快速连按重复提交 | 行业通行做法（ChatGPT/Claude/LobeChat 的共同行为） |
 | 会话显示链 | `session_info.name`（出厂预置 **welcome to lifeos**、行内 ✎ 可改名）‖ 首条用户消息（后端返全文、UI 截 50）；**无兜底**（无名无首句即空白） | **Pi Web SessionSidebar 链**（去掉其 id12 兜底，用户 2026-10-17 定） |
-| 主区 · 消息 | 阅读列 `max-w-reading` 居中；**用户与助手都渲染 Markdown**（marked + DOMPurify，禁 HTML 透传）；用户消息深色气泡（含反白 md 样式）、助手消息无气泡贴白底；思考/工具折叠块带状态点 | **Pi Web MessageView** + Cherry 的"单侧气泡"对比法；Markdown 复用文件面板同一条已装依赖链路 |
-| 主区 · 流式 | 增量追加进文本块；空块显示 `…`；**仅在贴底时自动跟随**（上翻不被抢滚动）；完成后按接口全量刷新 | 自主设计（SSE 契约 §11） |
+| 主区 · 消息 | 阅读列 `max-w-reading` 居中；**用户与助手都渲染 Markdown**（marked + DOMPurify，禁 HTML 透传）；用户消息深色气泡（含反白 md 样式）、助手消息无气泡贴白底；思考块可折叠；工具块 = 名字 + 参数摘要 + 状态 + 耗时 + 结果（折叠） | **Pi Web MessageView** + Cherry 的"单侧气泡"对比法；Markdown 复用文件面板同一条已装依赖链路 |
+| 主区 · 流式（过程可见） | 块按模型输出的 `contentIndex` **有序归并**（思考/文本/工具交替；不把工具之后的文本串回工具之前）；思考增量实时可见（跑完自动收起、可再点开）；工具调用一出现就展示（执行中 → 完成/出错，结果留在眼前）；**仅在贴底时自动跟随**（上翻不被抢滚动）；完成后按接口全量刷新——**会话文件才是事实源** | **Pi Web `MessageView.tsx`**（`ThinkingBlock` / `ToolCallBlock`：内联 + 耗时 + 结果） |
+| 主区 · 工作指示 | 生成期间在消息之后显示一行：**旋转弧 + 阶段文案（等待模型…/思考中…/正在执行 <工具>…/输出中…）+ 已用秒数**；旋转与时长收口在 `tokens.css` 的 `--animate-arc`（系统"减少动态效果"时停转，状态由文案承担） | **Pi Web `ChatWindow.tsx`**（`phaseLabel` + pulse）+ 自主设计（动效须走 token） |
 | 新建/空态 | 底部"＋新建会话"；空态统一 `EmptyState`（图标 + 一句解释 + 主操作），列表加载用 skeleton | primitive 层（`design/ui.tsx`） |
+| 右侧 · 完整历史（含把手/互斥规则） | **与对话区并排的独立列**（不覆盖、可拖宽，默认 440 / 最小 360；与文件面板互斥；**取代了先前的“面板历史页签（方案 A）”**，原因：面板槽只有 ~200px 会挤死、≤1280 静默失效）。结构：`回合 → 请求 / 回复`，逐层可折叠；请求 = system 分区（每区带归属/拼装说明/代码位置/token/占比/窗口比）+ 消息序列；回复 = 思考/工具/文本按时间序。token 用 Pi Web 同款估算式（CJK≈1/字）。**请求侧**：system 分区按 Pi 的补丁序列累加还原（`frontend/src/prompt-patches.ts`），改动过的区标「本次变更」，没落新 system 消息的回合标「沿用上一轮」；**回复侧**：工具结果按 `toolCallId` 与调用配对（文件里它是 `message.role="toolResult"`），展开可见结果正文与耗时；**回合用量**：`in` 取该回合最后一次请求（最终上下文），`out`/耗时按本回合全部助手消息求和。折叠状态逐层记忆，Esc 关闭 | **v3**（v1 塞进文件面板 200px、v2 又变成"聊天的复刻"；v3 按用户定稿：回合=一问一答、工具属于回复内部动作、两侧是角色不是"我"）；数据来自 `GET …/sessions/:id/entries`，分区名/归属来自 `frontend/src/prompt-regions.ts` |
 
 **交互场景**：切换 Agent（重置流游标重订、定位该 Agent 最近会话）· 选会话（载入消息）· 新建 · 重命名（prompt）· 删除（confirm，删当前则定位最近）· 发送/流式/打断态沿用事件流。
 

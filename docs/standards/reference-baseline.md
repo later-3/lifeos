@@ -11,6 +11,8 @@
 | 场景 | 参照点（具体文件/机制） | 借什么 | 不借什么 |
 |---|---|---|---|
 | 资产打包与安装 | Pi `docs/packages.md`：`package.json` 的 `pi` 字段显式声明 + 约定目录；`pi install` 写声明到 `settings.json`；`pi update --extensions` 幂等 reconcile；本地路径装载不复制 | "声明 + 幂等 reconcile + 冲突保留先发现者并告警"的形态 | 不为 Life OS 另造一套包管理器 |
+| 会话文件里 system 提示的 `sections` 语义 | Pi `system-prompt.ts`：`buildSystemPromptSections`（全量）与 `diffSystemPromptSections`（**只落变化的区，删除记 null**）；落盘的是补丁 | "补丁按序列累加 = 该轮真正生效的完整分区"这一还原方式；据此标注"本次变更 / 沿用上一轮" | 不借"把补丁当全量"的读法（面板第一版就是这样，第 2 轮只显示 2 个区，看起来像少了 5 个区） |
+| 会话区"正在工作"与过程流式 | Pi Web `components/ChatWindow.tsx`（`streamState` / `agentPhase` / `phaseLabel`）、`components/MessageView.tsx`（`ThinkingBlock` / `ToolCallBlock`）；Pi SDK 事件 `message_update.assistantMessageEvent`（thinking/text/toolcall）与 `tool_execution_start/update/end` | 事件流驱动会话区：阶段文案（等模型 / 思考 / 执行工具）+ 思考与工具块内联出现、按 `contentIndex` 定序、跑完带耗时与结果；"没内容时显示阶段、有内容后显示块"的取舍 | 不借 Pi Web 的 CSS 变量体系与 i18n；不借它的 thinking 延迟加载接口（我们的历史走 `…/entries`）；不另发明事件名——沿用 Pi 的事件名 |
 | 技能（skill） | Pi `docs/skills.md`：约定目录 + 递归发现；启动只把 **name/description/path** 放进 system prompt；正文按需读取 | 目录约定、发现顺序、"索引进 prompt、正文按需" | 不改 Pi 的发现规则 |
 | 用户目录布局 | 实机 `~/.pi/agent/`：`auth.json`、`models.json`、`settings.json`、`extensions/`、`skills/`、`npm/` | 家的根放**名词式 json**（`config.json` 风格）、子目录按功能 | 不照搬 Pi 目录名（我们的家叫 `~/.lifeos`） |
 | Agent 会话装配 | Pi `createAgentSession({ appendSystemPromptOverride, settingsManager, sessionManager, resourceLoader, customTools, model, thinkingLevel, providerRequestGate })` | 只用公开入口，不自建运行时 | 不 fork/改造 Pi |

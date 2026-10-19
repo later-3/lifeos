@@ -1,61 +1,75 @@
-# Life OS 目录结构（v2 · 只放现在要用的）
+# Life OS 目录结构（只放现在要用的）
 
-> 原则（用户 2026-10-16 明确）：**只建"这次真的要写的东西"的目录与文件；未来演进到了再建。**
-> 参考（Pi / pi-web）只用于**命名风格**，不用来新增我们还没涉及的东西。
-> v1、v1.1 是凭空想出来的（`utils/`、`sessions/`、`models/`、`projects/`、`shared/` 等），已作废。
+> 角色：架构　类型：结构定义　状态：现状
+>
+> 原则（用户 2026-10-16 定）：**只建"这次真的要写的东西"的目录与文件；未来演进到了再建。**
+> 参考项目（Pi / Pi Web）只用于**命名风格**，不用来新增我们还没涉及的东西。
+> v1 / v1.1 是凭空想出来的（`utils/`、`sessions/`、`models/`、`projects/`、`shared/` 等），已作废。
 
-## 0 现在真实存在、且要保留的东西
-
-| 东西 | 说明 |
-|---|---|
-| `docs/**` | 设计文档（唯一准绳） |
-| `.lifeos/**` | **家目录模板（随包资产）**：交互 harness 协议正文、默认 Agent、目录骨架——install = 整树复制到 `~/.lifeos` |
-| `pi/` | Pi SDK 子模块（依赖） |
-| 脚手架 | `package.json`、`tsconfig.json`、`pnpm-workspace.yaml`、`.gitignore`、`.gitmodules`、`README.md`、`AGENTS.md`、`CLAUDE.md`（README/AGENTS/CLAUDE 已于 2026-10-16 按新结构重写，原先引用的是已删的旧世界） |
-
-**磁盘上还有但不进仓库**（务必知道，否则看目录会觉得"对不上"）：
-
-| 磁盘项 | 是什么 |
-|---|---|
-| `.git/` | 版本库 |
-| `.output/` | 线上旧构建产物（Nitro 产物，正在被 launchd 服务使用；切换新架构时替换） |
-| `node_modules/` | 依赖安装目录 |
-
-## 1 第一步（基础环境：前后端能跑、能编、能测）要写的代码
-
-就这些目录和文件：
+## 1 仓库（进 Git）
 
 ```
 lifeos/
-├─ src/
-│  ├─ main.ts            进程入口：起 HTTP 服务
-│  └─ server.ts          Hono 实例 + 路由表（本期只有 GET /api/health）
-├─ frontend/
-│  ├─ index.html
-│  ├─ src/main.tsx       挂载 React 根
-│  ├─ src/App.tsx        一个页面：请求 /api/health 并显示结果
-│  ├─ package.json       前端自己的依赖（react、vite、tailwind…）
-│  └─ vite.config.ts     dev 代理 /api → 后端端口
-├─ test/
-│  └─ health.test.mjs    后端测试：GET /api/health 返回 {ok:true,service:"lifeos"}
-├─ .lifeos/
-│  └─ …            家目录模板：interaction-harness/ + agents/lifeosagent/ + 目录骨架（install 整树复制）
-├─ docs/**               设计文档（保留）
-└─ pi/                   Pi SDK 子模块（依赖）
+├─ src/                     后端（Hono + Pi SDK）
+│  ├─ main.ts               进程入口：起 HTTP 服务（--port，默认 43120）
+│  ├─ server.ts             路由表（Agent / 项目 / 会话 / 事件流 / 文件浏览 / 配置）
+│  ├─ agent-host.ts         会话宿主：创建/加载会话、跑一轮、事件流、条目读取
+│  ├─ assembly.ts           提示装配（方案 E：identity + harness 区 + Pi 的 tools/rules 回填）
+│  ├─ stream-events.ts      Pi 会话事件 → SSE 流事件的唯一映射
+│  ├─ projects.ts           项目 manifest 的读写与旧数据迁移
+│  ├─ fs.ts                 文件浏览器后端（根白名单 / 列目录 / 读文件）
+│  ├─ home.ts               家目录解析与校验 · install.ts 安装（模板整树复制）
+├─ frontend/                前端（Vite + React + Tailwind v4）
+│  └─ src/
+│     ├─ App.tsx            三级级联 + 聊天 + 会话/项目/Agent 操作
+│     ├─ Message.tsx        消息与块渲染（文本/思考/工具）· stream-blocks.ts 流式块归并
+│     ├─ SessionHistory.tsx 完整历史（回合检查器）· prompt-patches.ts 分区补丁累加
+│     ├─ FileTree.tsx / FilePanel.tsx / DirectoryPicker.tsx
+│     ├─ AgentConfig.tsx · agent-avatar.tsx
+│     └─ design/            tokens.css（唯一数值来源）· ui.tsx（primitive）· layout.ts（布局数学）· fold/rail/overlay/toast
+├─ test/                    node:test：api / assembly / fs / home / ui-layout / stream-events / stream-blocks / prompt-patches
+├─ frontend/test/           UI 契约（ui-contract.mjs + 截图基线；基线本地生成、不进 Git）
+├─ scripts/                 lint-tokens.mjs（视觉 token 闸）· stop.mjs（按端口优雅结束）· audit-ui.mjs
+├─ docs/                    文档唯一准绳；入口 docs/README.md；未实现登记 docs/todo.md
+├─ .lifeos/                 家目录模板（随包资产）：install = 整树复制到 ~/.lifeos
+└─ pi/                      Pi SDK 子模块（固定 commit）
 ```
 
-命令（写在根 `package.json`）：`pnpm dev`（前后端一起起）· `pnpm build` · `pnpm start` · `pnpm test`。
+## 2 家目录（运行时数据；模板 = 仓库根 `.lifeos/`）
 
-## 2 明确**不建**（现在没有；等对应功能真要写时再建，建时说明用途）
+```
+~/.lifeos/
+├─ config/                  唯一配置目录（= Pi 的 agentDir）
+│                            models.json · auth.json · models-store.json · settings.json? · file-roots.json
+├─ interaction-harness/      通用层（所有 Agent 共用）
+│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/development/
+├─ agents/<id>/              每个 Agent 私有（目录名 = id）
+│  ├─ agent.json             身份与默认值（唯一来源）
+│  ├─ identity.md            身份正文（注入 preamble）
+│  ├─ avatar/                图片头像（可选）
+│  └─ projects/<pid>/        一项目一份：AGENTS.md · sessions/ · daily/ · cases/ · todo/ ·（外部项目）project.json
+└─ install-receipt.json      安装收据
+```
 
-`src/core/` · `src/server/`（子目录）· `src/utils/` · `src/home/` · `src/agents/` · `src/sessions/` · `src/projects/` · `src/models/` · `src/interaction-harness.ts`（写 Prompt 装配时才建）· `shared/` · `scripts/` · `deploy/` · `packages/`
+模板事实源 = 仓库根 `.lifeos/`（**整树复制，不在代码里另写目录清单**）；家目录已存在时安装只提醒、不改动任何文件。
 
-## 3 命名（只写现在用得上的）
+## 3 产出内容的归属
 
-- **交互 harness 一律写全**：不单独说 harness；代码/文件用 `interaction-harness`（首字母小写），不写 `harness`。
-- 交互 harness 的**注入代码**将在「Prompt 装配」那一步建：`src/interaction-harness.ts`（现在就规划名字，先不建文件）。
+| 内容 | 落点 |
+|---|---|
+| 会话（JSONL） · 每日记录 · 案例 · Todo · 任务 | `agents/<id>/projects/<pid>/`（默认 `workspace/`；打开外部项目后随该项目 pid） |
+| 通用案例 · 协议正文 · 任务类型细则 | `interaction-harness/`（通用层） |
+| 项目身份（外部项目） | `agents/<id>/projects/<pid>/project.json` |
 
+## 4 明确**不建**（现在没有；真要写时再建并说明用途）
+
+- 代码：`src/agents/`、`src/routes/`、`src/long-agents/`、`src/utils/`、`src/sessions/`、`src/models/`、`shared/`、`packages/`、`deploy/`
+- 家目录顶层：`projects/`（多 Agent 共用项目，等真做时再设计）、`logs/`、`runtime/`
+- 文档：`docs/architecture/prompt/`、`agent-memory.md`、`agent-tasks.md`、`agent-tools.md`（2026-10-18 删除：描述的是未实现的机制；要点登记在 `docs/todo.md`）
+
+## 5 命名
+
+- **交互 harness 一律写全**：不单独说 harness；代码/文件用 `interaction-harness`。
 - 文件 kebab-case；函数/变量 camelCase；类型/组件 PascalCase。
-- HTTP 路径 `/api/<资源>`；Agent 路径段用 **id**（slug，见 `foundation.md` §5.1）。
-- 家目录固定名（运行时数据，不进仓库）：`config/`、`interaction-harness/`、`agents/<id>/`（含 `projects/workspace/`）、`projects/<pid>/`、`runtime/`、`logs/`。
-  **骨架的模板事实源 = 仓库根 `.lifeos/`**（同构复制，不在代码里另写目录清单）。
+- HTTP 路径 `/api/<资源>`；Agent 路径段用 **id**（slug）。
+- 家目录固定名：`config/`、`interaction-harness/`、`agents/<id>/`（含 `projects/<pid>/`）、`install-receipt.json`。

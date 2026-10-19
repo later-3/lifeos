@@ -86,7 +86,6 @@ pnpm home:install
 ├─ config/                  模型配置（下一步由你填写；含密钥，永不进 Git）
 ├─ interaction-harness/     交互 harness：协议正文、指引、飞轮、概念空间、任务模板
 ├─ agents/lifeosagent/      默认 Agent（agent.json + identity.md + projects/workspace/…，含出厂默认会话）
-├─ projects/  runtime/  logs/
 └─ install-receipt.json     安装收据
 ```
 
