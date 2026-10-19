@@ -193,6 +193,17 @@ const browser = await playwright.chromium.launch({
 });
 
 mkdirSync(SHOT_DIR, { recursive: true });
+
+// 稳定入口：显式指定 agent/project/session。否则"上次选中的助手"可能是刚建的、还没有会话
+// → 完整历史按钮 disabled、面板/截图相关断言会超时（数据无关的写法）。
+const ENTRY_URL = await (async () => {
+  try {
+    const res = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`);
+    const body = await res.json();
+    const sid = body.items?.[0]?.sessionId;
+    return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
+  } catch { return APP_URL; }
+})();
 mkdirSync(BASELINE_DIR, { recursive: true });
 
 const FROZEN_TIME = new Date("2026-10-18T12:00:00+08:00");   // 冻结时钟：相对时间文案（"4小时前"）否则会让截图基线抖动
@@ -200,7 +211,7 @@ const FROZEN_TIME = new Date("2026-10-18T12:00:00+08:00");   // 冻结时钟：�
 for (const viewport of [1024, 1280, 1440, 1600]) {
   const page = await browser.newPage({ viewport: { width: viewport, height: 900 }, deviceScaleFactor: 1 });
   await page.clock.install({ time: FROZEN_TIME });
-  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await page.waitForTimeout(700);
   const data = await measure(page);
   check(`[${viewport}] 聊天列 ≥ ${MIN_CHAT}px`, data.chatWidth >= MIN_CHAT, `实际 ${data.chatWidth}px`);
@@ -216,7 +227,7 @@ for (const viewport of [1024, 1280, 1440, 1600]) {
 // 交互态：折叠 / 面板 / 模态 / hover
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
 await page.clock.install({ time: FROZEN_TIME });
-await page.goto(APP_URL, { waitUntil: "networkidle" });
+await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(700);
 
 // 图标轨常驻（VS Code Activity Bar 范式）：先量"三列都展开"时的轨宽
@@ -257,7 +268,8 @@ check("点图标后高亮跟随状态", await page.evaluate(() => {
 const firstAgentRow = page.locator('aside').first().locator('[role="button"]').first();
 await firstAgentRow.hover();
 await page.waitForTimeout(200);
-check("助手行悬停出现删除入口", await page.locator('[aria-label="删除助手"]').isVisible());
+// 多个助手时会有多个（隐藏的）按钮 → 只看第一行那个；数据无关
+check("助手行悬停出现删除入口", await page.locator('[aria-label="删除助手"]').first().isVisible());
 
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
@@ -427,7 +439,7 @@ if (await historyButton.count() > 0) {
 // 1280 并排：窗口变窄时自动收左三列，对话区与历史列都要保住
 const narrow = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
 await narrow.clock.install({ time: FROZEN_TIME });
-await narrow.goto(APP_URL, { waitUntil: "networkidle" });
+await narrow.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await narrow.waitForTimeout(700);
 await narrow.locator('[aria-label="完整历史"]').first().click();
 await narrow.waitForTimeout(900);
@@ -468,7 +480,7 @@ const shotBrowser = await playwright.chromium.launch({
 async function capture(width, setup) {
   const shotPage = await shotBrowser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
   await shotPage.clock.install({ time: FROZEN_TIME });
-  await shotPage.goto(APP_URL, { waitUntil: "networkidle" });
+  await shotPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await shotPage.waitForTimeout(500);
   if (setup !== undefined) await setup(shotPage);
   await settle(shotPage);
