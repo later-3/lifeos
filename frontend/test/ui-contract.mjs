@@ -322,6 +322,32 @@ check("目录选择器：输入框完整可见（不被对话框裁切）",
 check("目录选择器：输入框宽度可用（≥280px）且页面无横向溢出",
   pickerGeometry.inputWidth >= 280 && pickerGeometry.overflowX === false,
   `w=${pickerGeometry.inputWidth} overflowX=${pickerGeometry.overflowX}`);
+
+// 对话框分隔与滚动锁（用户 2026-10-19：输入框顶边像嵌进标题条；滚轮滚到后面的页面）
+const dialogLook = await page.evaluate(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const header = dialog?.querySelector('header');
+  const body = dialog?.querySelector('div.min-h-0.flex-1');
+  const input = dialog?.querySelector('input[placeholder="输入路径后回车跳转"]');
+  if (header === undefined || header === null || body === undefined || body === null || input === undefined || input === null) {
+    return { ok: false };
+  }
+  const cs = (el) => getComputedStyle(el);
+  return {
+    ok: true,
+    colorDiffers: cs(header).backgroundColor !== cs(body).backgroundColor,
+    border: Number.parseFloat(cs(header).borderBottomWidth) >= 1,
+    gap: Math.round(input.getBoundingClientRect().top - body.getBoundingClientRect().top),
+    bodyOverflow: document.body.style.overflow,
+    overscroll: cs(body).overscrollBehaviorY,
+  };
+});
+check("对话框：头部与正文有色差 + 分隔线，正文与输入框有间距（≥12px）",
+  dialogLook.ok === true && dialogLook.colorDiffers === true && dialogLook.border === true && dialogLook.gap >= 12,
+  `色差=${dialogLook.colorDiffers} 线=${dialogLook.border} 间距=${dialogLook.gap}px`);
+check("对话框打开时锁住背景滚动（body overflow hidden + 内容区 overscroll contain）",
+  dialogLook.ok === true && dialogLook.bodyOverflow === "hidden" && dialogLook.overscroll === "contain",
+  `body=${dialogLook.bodyOverflow} overscroll=${dialogLook.overscroll}`);
 const beforeBackspace = await page.locator('input[placeholder="输入路径后回车跳转"]').inputValue();
 await page.keyboard.type("xyz");
 await page.keyboard.press("Backspace");
@@ -589,7 +615,7 @@ const shotBrowser = await playwright.chromium.launch({
   headless: true, executablePath: playwright.chromium.executablePath(),
   args: ["--no-proxy-server", "--font-render-hinting=none", "--disable-lcd-text"],
 });
-async function capture(width, setup) {
+async function capture(width, setup, clipTo) {
   const shotPage = await shotBrowser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
   await shotPage.clock.install({ time: FROZEN_TIME });
   await shotPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
@@ -598,11 +624,22 @@ async function capture(width, setup) {
   await settle(shotPage);
   // 遮罩"会随对话变化"的正文（会话消息、完整历史正文与标题行）：基线只比界面骨架。
   // 不这么做的话，用户每聊一句、每多一个回合，截图就漂 → 门禁天天红（实测漂 5–8%）。
-  const buffer = await shotPage.screenshot({
-    animations: "disabled", caret: "hide",
-    mask: [shotPage.locator("[data-shot-mask]")],
-    maskColor: "#fafafa",
-  });
+  // 对话框类截图按元素裁剪：Playwright 的 mask 画在最上层，会把浮在上面的对话框一起盖住
+  const buffer = clipTo === undefined
+    ? await shotPage.screenshot({
+        animations: "disabled", caret: "hide",
+        mask: [shotPage.locator("[data-shot-mask]")],
+        maskColor: "#fafafa",
+      })
+    : await (async () => {
+        const box = await shotPage.locator(clipTo).first().boundingBox();
+        if (box === null) return await shotPage.screenshot({ animations: "disabled", caret: "hide" });
+        const pad = 24;
+        return await shotPage.screenshot({
+          animations: "disabled", caret: "hide",
+          clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: Math.min(1600, box.width + pad * 2), height: box.height + pad * 2 },
+        });
+      })();
   await shotPage.close();
   return buffer;
 }
@@ -624,14 +661,14 @@ const SHOTS = [
   ["picker.png", 1600, async (shotPage) => {
     await shotPage.getByRole("button", { name: /添加项目/ }).first().click();
     await shotPage.waitForTimeout(800);
-  }],
+  }, '[role="dialog"]'],
   ["modal.png", 1600, async (shotPage) => {
     await shotPage.locator('button[aria-label^="配置 "]').first().click();
     await shotPage.waitForTimeout(400);
-  }],
+  }, '[role="dialog"]'],
 ];
-for (const [name, width, setup] of SHOTS) {
-  const buffer = await capture(width, setup);
+for (const [name, width, setup, clipTo] of SHOTS) {
+  const buffer = await capture(width, setup, clipTo);
   writeFileSync(join(SHOT_DIR, name), buffer);
   const basePath = join(BASELINE_DIR, name);
   if (UPDATE_BASELINE || !existsSync(basePath)) {

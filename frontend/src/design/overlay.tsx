@@ -26,6 +26,9 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const node = panel.current;
+    // 打开对话框时锁住背景滚动（标准做法）：否则滚轮会滚到后面的页面（用户 2026-10-19 反馈）
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const list = () => [...(node?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
     // 初始焦点：显式指定 > 子元素自带的 autoFocus（焦点已在面板内）> 兜底第一个可聚焦元素。
     const preferred = initialFocus?.current;
@@ -45,6 +48,7 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = previousBodyOverflow;
       previous?.focus();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -56,7 +60,7 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
       <div ref={panel} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}
         style={{ maxWidth: width, maxHeight: "calc(100dvh - 24px)" }}
         className="flex w-full flex-col overflow-hidden rounded-panel bg-surface shadow-xl ring-1 ring-ink-900/10">
-        <header className="flex shrink-0 items-center gap-3 px-5 py-3">
+        <header className="flex shrink-0 items-center gap-3 border-b border-line bg-sunken px-5 py-3">
           {icon}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-body font-semibold text-ink-900">{title}</h2>
@@ -64,7 +68,7 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
           </div>
           <IconButton label="关闭" onClick={onClose}><IconX size={16} /></IconButton>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5 pt-4">{children}</div>
         {footer !== undefined && (
           <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer>
         )}
