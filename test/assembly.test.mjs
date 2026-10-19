@@ -47,13 +47,14 @@ test("模型优先级 A：Agent 个人（workspace/config.json）> 系统（sett
   assert.equal(withAgent.choice.defaultThinkingLevel, undefined);
 });
 
-test("会话装配：8 个内置工具全部启用；注入发生在每次 run 开始时（创建后仍是 Pi 默认提示）", async () => {
+test("会话装配：10 个工具全部启用（8 内置 + 2 个 Life OS 自有）；注入发生在每次 run 开始时", async () => {
   const home = await freshHome();
   const sessionId = await createSession("lifeosagent", home, "workspace");
   const state = await getSession("lifeosagent", sessionId, home);
   assert.ok(state !== undefined);
   const active = [...state.session.getActiveToolNames()].sort();
-  assert.deepEqual(active, ["bash", "edit", "find", "grep", "ls", "powershell", "read", "write"].sort(), "8 个内置工具全部启用");
+  assert.deepEqual(active, ["bash", "edit", "find", "grep", "ls", "powershell", "read", "write", "lifeos_agent_create", "lifeos_agent_delete"].sort(),
+    "8 个内置 + 2 个 Life OS 工具全部启用（白名单内才生效）");
   // 事实：system prompt 的分区在 _prepareRun（run 开始时）才应用 extension 变更；
   // 无模型环境下 prompt 在鉴权即失败、到不了注入点 → 这里只断言"未 run 时=Pi 默认"，注入逻辑由下一条离线测试覆盖。
   assert.match(state.session.systemPrompt, /^You are an expert coding assistant/, "未 run 时为 Pi 默认提示");

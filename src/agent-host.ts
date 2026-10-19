@@ -5,6 +5,7 @@ import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } fro
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
+import { AGENT_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 
 // 流事件（思考/文本/工具）来自 stream-events.ts 的唯一映射；done/error 是本层的运行边界。
@@ -65,8 +66,10 @@ export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot
   return { seq: state.seq, running: [...state.running.values()] };
 }
 
-// 装配常量（2026-10-18 用户拍板）：Pi 注册的 8 个内置工具，显式写死，不依赖隐式默认。
-const ALL_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const;
+// 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
+// 8 个内置 + 2 个 Life OS 自有工具（创建/归档 Agent，见 src/agent-tools.ts）。
+// 注意：createAgentSession 的 tools 是**白名单**（只允许列出的工具启用），新工具必须写进来。
+const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...AGENT_TOOL_NAMES];
 
 type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type ThinkingOption = NonNullable<CreateOptions["thinkingLevel"]>;
@@ -142,6 +145,7 @@ async function createHostedSession(
     settingsManager,
     resourceLoader,
     tools: [...ALL_TOOL_NAMES],
+    customTools: createAgentTools(),      // Pi 的 customTools 选项：注册（在白名单内即启用）
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });

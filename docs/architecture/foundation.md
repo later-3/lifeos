@@ -43,7 +43,9 @@ install-receipt.json    安装收据
 
 | 接口 | 作用 |
 |---|---|
-| `GET /api/agents` | 列出 Agent（扫描 `agents/*/agent.json`） |
+| `GET /api/agents` | 列出 Agent（扫描 `agents/*/agent.json`，**跳过归档 `archivedAt`**） |
+| `POST /api/agents` | **创建助手** `{name, description?, identity?}` → id 由 name 生成 slug、建目录与 workspace 骨架（与 `lifeos_agent_create` 工具同一实现） |
+| `DELETE /api/agents/:id` | **归档助手**（= 删除，可恢复）：写 `archivedAt`、数据全留；运行中 409、最后一个 400（与 `lifeos_agent_delete` 同一实现） |
 | `GET /api/agents/:id` | 单个 Agent 定义（未知 404） |
 | `PUT /api/agents/:id` | 基础信息（改名/描述，写 `agent.json` 原子） |
 | `GET·PUT /api/agents/:id/identity` | 身份正文 `identity.md`（读/写） |

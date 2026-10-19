@@ -226,6 +226,7 @@
 | 动作 | 手段 |
 |---|---|
 | 读案例 / 概念 / 知识 / 项目规范正文 | Pi 的 `read`（按需，路径见常驻索引） |
+| 创建 / 归档助手（多 Agent） | `lifeos_agent_create` / `lifeos_agent_delete`（Pi 工具，英文描述；归档 = 保留全部数据）；界面同语义为 `POST` / `DELETE /api/agents` |
 | 写日报 / 案例 / todo / 任务目录与 `task.md` | Pi 的 `write` / `edit`，落在 `agents/<id>/projects/<pid>/{daily,cases,todo,tasks}`（现在没有专用工具） |
 | 打开目录 / 从列表移除项目 | 界面（接口见 §9） |
 | 找方法（Skill 描述进 prompt、正文按需） | Pi Skill |

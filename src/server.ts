@@ -7,11 +7,12 @@ import { basename, join } from "node:path";
 import { createSession, deleteSession, getSession, messagesOf, pendingSessions, projectIdOfSession, readSessionEntries, renameSession, runTurn, sessionCwd, snapshotOf, subscribeAgent } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { readProjectManifest, readProjectManifests, registerProject } from "./projects.ts";
+import { archiveAgent, createAgent } from "./agents.ts";
 import { resolveHome } from "./home.ts";
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
 // boundProjectIds 是旧设计的死字段（写而不读），已删；旧文件里的同名键在写回时被剥掉。
-export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string; hiddenProjectIds?: string[] };
+export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string; hiddenProjectIds?: string[]; archivedAt?: string };
 
 const agentsRoot = () => join(resolveHome(), "agents");
 
@@ -172,20 +173,42 @@ function textOf(message: { content?: unknown }): string {
 export function createApp() {
   const app = new Hono();
 
+  // 创建助手（模型侧走 lifeos_agent_create 工具，界面暂无入口——用户 2026-10-19 定）
+  app.post("/api/agents", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { name?: unknown; description?: unknown; identity?: unknown } | undefined;
+    if (body === undefined || typeof body.name !== "string" || body.name.trim() === "") {
+      const error = problem("invalid_request", "需要 name 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const created = await createAgent({
+      name: body.name,
+      ...(typeof body.description === "string" ? { description: body.description } : {}),
+      ...(typeof body.identity === "string" ? { identity: body.identity } : {}),
+    });
+    if ("code" in created) { const error = problem(created.code, created.message, created.status); return c.json(error.body, error.status); }
+    return c.json({ agent: created }, 201);
+  });
+
+  // 归档助手 = 从列表移除（数据全留，可恢复）；会话运行中 409；最后一个 400
+  app.delete("/api/agents/:id", async (c) => {
+    const result = await archiveAgent(c.req.param("id"));
+    if ("code" in result) { const error = problem(result.code, result.message, result.status); return c.json(error.body, error.status); }
+    return c.json(result, 200);
+  });
+
   app.get("/api/agents", async (c) => {
     const entries = await readdir(agentsRoot(), { withFileTypes: true }).catch(() => []);
     const items: AgentDefinition[] = [];
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const agent = await readAgent(entry.name);
-      if (agent !== undefined) items.push(agent);
+      if (agent !== undefined && agent.archivedAt === undefined) items.push(agent);   // 归档的不再出现
     }
     return c.json({ items });
   });
 
   app.get("/api/agents/:id", async (c) => {
     const agent = await readAgent(c.req.param("id"));
-    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    if (agent === undefined || agent.archivedAt !== undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     return c.json(agent);
   });
 

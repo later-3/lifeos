@@ -5,6 +5,7 @@ import {
   IconPencil, IconPlus, IconTrash, IconX,
 } from "@tabler/icons-react";
 import { useFold } from "./design/fold";
+import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { DirectoryPicker } from "./DirectoryPicker";
@@ -96,6 +97,7 @@ export default function App() {
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
   const [activeTool, setActiveTool] = useState<string>();
+  const toast = useToast();
   const [loaded, setLoaded] = useState(false);
   const [showNav, setShowNav] = useFold("agents");
   const [showProjects, setShowProjects] = useFold("projects");
@@ -104,7 +106,7 @@ export default function App() {
   const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();
-  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; run: () => void }>();
+  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
   // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
   const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
   const restoreFolds = useRef<{ nav: boolean; projects: boolean; sessions: boolean } | undefined>(undefined);
@@ -228,6 +230,20 @@ export default function App() {
         localStorage.setItem(key, existing === "" ? item.text : `${existing}\n${item.text}`);
       } catch { /* 忽略 */ }
     }
+  }
+
+  /** 归档助手 = 从列表移除（数据全留）；当前选中的被删时回落到第一个。 */
+  async function removeAgent(item: Agent) {
+    const response = await fetch(`/api/agents/${item.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}) as { error?: { message?: string } });
+      toast(body.error?.message ?? "删除失败", "error");
+      return;
+    }
+    const next = agents.filter((entry) => entry.id !== item.id);
+    setAgents(next);
+    toast(`已归档「${item.name}」（会话与记录全部保留，可恢复）`);
+    if (agent?.id === item.id && next[0] !== undefined) await selectAgent(next[0]);
   }
 
   async function openSession(a: Agent, sid: string) {
@@ -536,6 +552,21 @@ export default function App() {
                     <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
                   </button>
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                  <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
+                    <IconButton label="删除助手" size="sm"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setConfirm({
+                          title: "删除助手",
+                          message: `归档「${item.name}」？它的会话与记录全部保留（可恢复），不会删除任何对话数据。`,
+                          confirmLabel: "归档",
+                          danger: true,
+                          run: () => void removeAgent(item),
+                        });
+                      }}>
+                      <IconTrash size={14} />
+                    </IconButton>
+                  </span>
                 </Row>
               ))}
             </div>
@@ -788,7 +819,7 @@ export default function App() {
       )}
 
       {confirm !== undefined && (
-        <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} danger
+        <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} danger={confirm.danger === true}
           onCancel={() => setConfirm(undefined)}
           onConfirm={() => { const run = confirm.run; setConfirm(undefined); run(); }} />
       )}

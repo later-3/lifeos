@@ -523,3 +523,59 @@ test("会话历史条目：与 JSONL 逐条一致（不投影）、分页正确�
     assert.equal(missing.status, 404);
   } finally { server.close(); }
 });
+
+
+test("Agent 生命周期：创建（slug id/骨架/无预置会话）与归档（列表过滤、详情 404、数据保留、护栏）", async () => {
+  const { server, base, home } = await start();
+  const { readFile, access } = await import("node:fs/promises");
+  try {
+    // 创建：英文名 → slug id
+    const created = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Code Reviewer", description: "评审助手" }),
+    });
+    assert.equal(created.status, 201);
+    const { agent: first } = await created.json();
+    assert.equal(first.id, "code-reviewer", "id 由 name 自动生成");
+    const record = JSON.parse(await readFile(join(home, "agents", "code-reviewer", "agent.json"), "utf8"));
+    assert.equal(record.defaultProjectId, "workspace");
+    assert.equal(record.description, "评审助手");
+    assert.equal("defaultSessionId" in record, false, "新 Agent 不写预置会话（只随出厂模板）");
+    await access(join(home, "agents", "code-reviewer", "identity.md"));
+    await access(join(home, "agents", "code-reviewer", "projects", "workspace", "project.json"));
+
+    // 中文名 → 合法 slug；缺 name → 400
+    const zh = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "评审助手" }),
+    });
+    assert.equal(zh.status, 201);
+    const second = (await zh.json()).agent;
+    assert.match(second.id, /^[a-z0-9][a-z0-9-]{0,63}$/, `中文名 slug：${second.id}`);
+    assert.equal((await fetch(`${base}/api/agents`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 400);
+
+    // 列表 = 三个（workspace 内置 + 两个新建），全部非归档
+    const ids = (await (await fetch(`${base}/api/agents`)).json()).items.map((item) => item.id);
+    assert.deepEqual([...ids].sort(), ["lifeosagent", "code-reviewer", second.id].sort());
+
+    // 归档：列表消失、详情 404、数据全留
+    const del = await fetch(`${base}/api/agents/code-reviewer`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+    assert.equal((await (await fetch(`${base}/api/agents`)).json()).items.some((item) => item.id === "code-reviewer"), false, "列表不再出现");
+    assert.equal((await fetch(`${base}/api/agents/code-reviewer`)).status, 404, "详情也 404（URL 恢复自然回落）");
+    const archived = JSON.parse(await readFile(join(home, "agents", "code-reviewer", "agent.json"), "utf8"));
+    assert.ok(typeof archived.archivedAt === "string", "归档 = 写 archivedAt（可恢复）");
+    await access(join(home, "agents", "code-reviewer", "identity.md"));           // identity 保留
+    await access(join(home, "agents", "code-reviewer", "projects", "workspace", "daily"));   // 记录目录保留
+
+    // 重复归档 404；不存在 404
+    assert.equal((await fetch(`${base}/api/agents/code-reviewer`, { method: "DELETE" })).status, 404);
+    assert.equal((await fetch(`${base}/api/agents/no-such-agent`, { method: "DELETE" })).status, 404);
+
+    // 归档到只剩 1 个 → 400 last_agent
+    assert.equal((await fetch(`${base}/api/agents/${second.id}`, { method: "DELETE" })).status, 200);
+    const last = await fetch(`${base}/api/agents/lifeosagent`, { method: "DELETE" });
+    assert.equal(last.status, 400);
+    assert.equal((await last.json()).error.code, "last_agent");
+    const still = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "agent.json"), "utf8"));
+    assert.equal("archivedAt" in still, false, "拒绝时出厂 Agent 不受影响");
+  } finally { server.close(); }
+});

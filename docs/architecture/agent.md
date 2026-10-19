@@ -9,6 +9,13 @@
 - 出厂只有一个 Agent：`~/.lifeos/agents/lifeosagent/`（显示名 `Life Agent`）。**没有"新建/删除 Agent"的接口**（登记在 todo）。
 - 一个 Agent = 一个目录，**目录名 = id**（稳定 slug，出现在 URL 里）；`agent.json` 里的 `id` 必须与目录名一致。
 
+## 1.1 创建 / 归档一个 Agent（现状，2026-10-19 用户拍板）
+
+**两个入口共用一份实现**（`src/agents.ts`，业务下沉、HTTP 只是薄适配）：**Pi 工具**（模型可调）`lifeos_agent_create` / `lifeos_agent_delete`（`src/agent-tools.ts`，英文描述、名字进白名单，见 reference-baseline「自有工具」行）与 **HTTP**（`POST /api/agents` · `DELETE /api/agents/:id`）。界面暂无「新建助手」按钮；**删除入口 = 助手行悬停出现的 ✕**（点击 → 确认对话框）。
+
+- **创建**：`name` 必填（`description`/`identity` 可选）→ id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/` + `agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（给了就写、没给装骨架）+ workspace 骨架（`project.json` / `AGENTS.md` / `daily/` `cases/` `todo/`）；不建 `avatar/`、不建 `sessions/`（Pi 按需）。
+- **归档（= 删除，可恢复）**：`agent.json` 写 `archivedAt` → 列表与详情都不再返回它；**目录、会话、记录全部保留**（恢复 = 删掉该字段）。护栏：有会话运行中 → 409；非归档只剩 1 个 → 400 `last_agent`。
+
 ## 2 目录与文件（现状）
 
 ```
@@ -19,7 +26,7 @@
 └─ projects/<pid>/  每个项目一份：AGENTS.md · sessions/ · daily/ · cases/ · todo/ ·（外部项目）project.json
 ```
 
-`agent.json` 字段（`src/server.ts`）：`schemaVersion` · `id` · `name` · `description` · `defaultProjectId` · `defaultSessionId` · `hiddenProjectIds` · `avatar?{kind,file,revision}`。
+`agent.json` 字段（`src/server.ts`）：`schemaVersion` · `id` · `name` · `description` · `defaultProjectId` · `defaultSessionId` · `hiddenProjectIds` · `avatar?{kind,file,revision}` · `archivedAt?`（归档标记）。
 
 - 头像：上传存 `avatar/avatar.<ext>`（dir 0700 / 文件 0600），`agent.json.avatar` 只存引用；reset 删目录与字段 → 回到按 id 推导的自动头像。
 - 没有头像字段时，前端用 id 推导颜色 + 首字母（`frontend/src/agent-avatar.tsx`）。

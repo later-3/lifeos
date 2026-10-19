@@ -253,6 +253,12 @@ check("点图标后高亮跟随状态", await page.evaluate(() => {
   return buttons.every((b) => b.getAttribute("aria-pressed") === "true");
 }));
 
+// 助手行悬停出现删除入口（归档；只断言入口存在，绝不点确认——契约跑在真实家目录上）
+const firstAgentRow = page.locator('aside').first().locator('[role="button"]').first();
+await firstAgentRow.hover();
+await page.waitForTimeout(200);
+check("助手行悬停出现删除入口", await page.locator('[aria-label="删除助手"]').isVisible());
+
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
   const row = [...document.querySelectorAll('[role="button"]')].find((el) => el.className.includes("h-8") && el.textContent.includes("welcome"));
