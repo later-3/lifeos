@@ -503,28 +503,25 @@ export default function App() {
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
   const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
-  // 收起态的列 → 单轨条目（成本常数 44px）
-  // disabled = 用户本来要打开、但窗口太窄被自动收起（点了也没用，给出准确提示）
   const folded = box.folded;
-  // 收起态 → 单轨条目。规则统一：**点轨道上的列 = 展开该列**；若右侧面板正开着（挤占宽度），
-  // 先关面板再展开（面板与列不互相"顶掉"，也不留点了没反应的禁用态）。
-  const dockOpen = history !== undefined || panelOpen;
-  const railOpen = (open: () => void) => () => {
+  // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
+  // 展开前若右侧（完整历史/文件面板）开着，先关掉它——宽度预算同一套，避免挤爆聊天区。
+  function toggleRail(key: "nav" | "projects" | "sessions") {
+    const open = key === "nav" ? showNav : key === "projects" ? showProjects : showSessions;
+    const set = key === "nav" ? setShowNav : key === "projects" ? setShowProjects : setShowSessions;
+    if (open) { set(false); return; }
     if (history !== undefined) closeHistory();
     else if (panelOpen) setPanelOpen(false);
-    open();
-  };
+    set(true);
+  }
   const railItems = [
-    ...(!folded.nav ? [] : [{ key: "nav", label: "助手", icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onOpen: railOpen(() => setShowNav(true)) }]),
-    ...(!folded.projects ? [] : [{ key: "projects", label: "项目", icon: <IconFolder size={18} />, onOpen: railOpen(() => setShowProjects(true)) }]),
-    ...(!folded.sessions ? [] : [{ key: "sessions", label: "会话", icon: <IconMessageCircle size={18} />, onOpen: railOpen(() => setShowSessions(true)) }]),
+    { key: "nav", label: "助手", active: showNav, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onToggle: () => toggleRail("nav") },
+    { key: "projects", label: "项目", active: showProjects, icon: <IconFolder size={18} />, onToggle: () => toggleRail("projects") },
+    { key: "sessions", label: "会话", active: showSessions, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("sessions") },
   ];
 
-  return (
-    <div className="flex h-dvh bg-surface text-ink-900">
-      {box.rail > 0 && <NavRail items={railItems} />}
-
-      {/* 第1列 · 助手 */}
+  const leftColumns = (
+    <>
       {!folded.nav && (
         <>
           <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
@@ -669,6 +666,17 @@ export default function App() {
           <DragHandle onStart={(event) => beginDrag("c3", event)} />
         </>
       )}
+    </>
+  );
+  const anyLeftOpen = showNav || showProjects || showSessions;
+  const closeAllLeft = () => { setShowNav(false); setShowProjects(false); setShowSessions(false); };
+
+  return (
+    <div className="relative flex h-dvh bg-surface text-ink-900">
+      <NavRail items={railItems} />
+
+      {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
+      {!box.overlayLeft && leftColumns}
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-dvh min-w-0 flex-1 flex-col bg-surface">
@@ -783,6 +791,16 @@ export default function App() {
         <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel} danger
           onCancel={() => setConfirm(undefined)}
           onConfirm={() => { const run = confirm.run; setConfirm(undefined); run(); }} />
+      )}
+
+      {/* 窄窗口：左三列浮层（点空白处收起全部；参照 Pi Web / 通用 AppShell 的 overlay 抽屉） */}
+      {box.overlayLeft && anyLeftOpen && (
+        <>
+          <div className="absolute inset-0 z-20 bg-ink-900/20" onClick={closeAllLeft} aria-hidden="true" />
+          <div className="absolute inset-y-0 left-11 z-30 flex shadow-lg">
+            {leftColumns}
+          </div>
+        </>
       )}
     </div>
   );

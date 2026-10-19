@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, RAIL,
-  clampWidth, dragWidth, effectiveFolded, layout,
+  clampWidth, dragWidth, layout,
 } from "../frontend/src/design/layout.ts";
 
 /**
@@ -24,17 +24,29 @@ const FOLD_COMBOS = [
 ];
 
 function total(box) {
+  // 浮层模式下列不占聊天宽度（只占图标轨）
   const openCols = [box.c1, box.c2, box.c3].filter((width) => width > 0).length;
-  const handles = openCols * HANDLE + (box.panel > 0 ? HANDLE : 0);
-  return box.rail + box.c1 + box.c2 + box.c3 + box.panel + box.chat + handles;
+  const columns = box.overlayLeft ? 0 : box.c1 + box.c2 + box.c3 + openCols * HANDLE;
+  const panel = box.panel > 0 ? box.panel + HANDLE : 0;
+  return box.rail + columns + box.chat + panel;
 }
 
-test("任何视口 × 折叠组合 × 面板开合，聊天列都不低于 MIN_CHAT", () => {
+test("面板/完整历史永不吃掉聊天保底；只有列本身占宽时才可能低于 MIN_CHAT", () => {
+  // 2026-10-18 起：图标轨常驻且不再按视口强制收起列（VS Code Activity Bar 范式），
+  // 所以"聊天永远 ≥ MIN_CHAT"只在左三列让得出空间时成立；不再成立时面板/历史必须为 0。
   for (const viewport of VIEWPORTS) {
     for (const requested of FOLD_COMBOS) {
       for (const panelOpen of [false, true]) {
         const box = layout({ viewport, widths: DEFAULT_WIDTHS, requested, panelOpen });
-        assert.ok(box.chat >= MIN_CHAT, `viewport=${viewport} folded=${JSON.stringify(requested)} panel=${panelOpen} chat=${box.chat}`);
+        const openCols = [box.c1, box.c2, box.c3].filter((width) => width > 0).length;
+        // 浮层模式下左三列不占聊天宽度（只占图标轨）
+        const leftCost = box.overlayLeft ? box.rail : box.rail + box.c1 + box.c2 + box.c3 + openCols * HANDLE;
+        if (viewport - leftCost >= MIN_CHAT) {
+          assert.ok(box.chat >= MIN_CHAT, `有空间时必须保底：viewport=${viewport} folded=${JSON.stringify(requested)} chat=${box.chat}`);
+        } else {
+          assert.equal(box.panel, 0, `没空间时不许再开面板：viewport=${viewport} folded=${JSON.stringify(requested)}`);
+          assert.equal(box.history, 0, `没空间时不许再开完整历史：viewport=${viewport}`);
+        }
       }
     }
   }
@@ -51,27 +63,36 @@ test("宽度守恒：各段之和等于视口（不溢出、不留空）", () =>
   }
 });
 
-test("折叠成本常数化：收起任何层都只占一条 44px 轨，全展开为 0", () => {
-  const none = layout({ viewport: 1600, widths: DEFAULT_WIDTHS, requested: FOLD_COMBOS[0], panelOpen: false });
-  assert.equal(none.rail, 0, "全展开时不应有导航轨");
-  for (const requested of FOLD_COMBOS.slice(1)) {
+test("图标轨常驻：收起/展开都是同一条 44px（不随折叠数变化）", () => {
+  for (const requested of FOLD_COMBOS) {
     const box = layout({ viewport: 1600, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-    assert.equal(box.rail, RAIL, `收起 ${JSON.stringify(requested)} 的轨宽应为常数 ${RAIL}，实际 ${box.rail}`);
+    assert.equal(box.rail, RAIL, `folded=${JSON.stringify(requested)} 的轨宽应为常数 ${RAIL}，实际 ${box.rail}`);
   }
 });
 
-test("窄视口自动降级：1024 收起项目列，<1000 再收会话列，聊天保底不破", () => {
+test("窄视口不再替用户收起列（点了不会弹回），改为压缩列/聊天", () => {
   const requested = { nav: false, projects: false, sessions: false };
-  const box = layout({ viewport: 1024, widths: DEFAULT_WIDTHS, requested, panelOpen: true });
-  assert.equal(box.folded.projects, true, "1024 应自动收起项目列");
-  assert.equal(box.folded.sessions, false, "1024 仍容得下会话列，不该替用户多收一列");
-  assert.ok(box.chat >= MIN_CHAT);
-  assert.equal(box.panel, 0, "1024 下面板放不下，必须自动收起");
-  assert.equal(total(box), 1024);
+  const narrow = layout({ viewport: 1024, widths: DEFAULT_WIDTHS, requested, panelOpen: true });
+  assert.deepEqual(narrow.folded, requested, "用户的收展状态必须原样生效（旧规则会强制收项目列）");
+  assert.equal(narrow.overlayLeft, true, "1024 并列放不下 → 左三列改浮层");
+  assert.ok(narrow.chat >= MIN_CHAT, `浮层模式下聊天仍要保底，实际 ${narrow.chat}`);
+  assert.equal(total(narrow), 1024, "宽度仍然守恒（浮层不占聊天宽度）");
 
   const tiny = layout({ viewport: 960, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.equal(tiny.folded.sessions, true, "<1000 应再收会话列");
-  assert.ok(tiny.chat >= MIN_CHAT);
+  assert.deepEqual(tiny.folded, requested, "960 也不强制收起会话列");
+  assert.equal(total(tiny), 960);
+});
+
+test("宽窗口并列、窄窗口浮层：分界由「并列 + 聊天保底」决定", () => {
+  const requested = { nav: false, projects: false, sessions: false };
+  const wide = layout({ viewport: 1600, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(wide.overlayLeft, false, "1600 够放 → 并列");
+  const border = layout({ viewport: 1202, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(border.overlayLeft, false, "1202 刚好够放（782 + 420）→ 仍并列");
+  assert.ok(border.chat >= MIN_CHAT);
+  const over = layout({ viewport: 1201, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(over.overlayLeft, true, "1201 差 1px → 转浮层");
+  assert.ok(over.chat > MIN_CHAT, "浮层后聊天反而更宽（不让内容被压扁）");
 });
 
 test("面板宽度：要么收起(0)，要么不小于 MIN_PANEL 且不挤破聊天", () => {
@@ -88,13 +109,6 @@ test("拖拽夹紧在声明区间内（c4 上限不再能压到聊天）", () =>
   assert.equal(clampWidth("c1", 9999), 440);
   assert.equal(clampWidth("c4", 1), 320);
   assert.equal(clampWidth("c4t", 9999), 560);
-});
-
-test("折叠状态与视口无关地可恢复（放宽后不会被悄悄改写）", () => {
-  const requested = { nav: false, projects: false, sessions: false };
-  assert.deepEqual(effectiveFolded(requested, 1400), requested);
-  assert.deepEqual(effectiveFolded(requested, 1100), { nav: false, projects: true, sessions: false });
-  assert.deepEqual(effectiveFolded(requested, 960), { nav: false, projects: true, sessions: true });
 });
 
 test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反号）", () => {

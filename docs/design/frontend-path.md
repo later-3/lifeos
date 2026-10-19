@@ -46,6 +46,7 @@ pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm build
 | **把手方向** | 由**把手位置**决定，不由 key 名决定：把手在列的右缘 → 右拉变大（+1）；在列左缘（右侧停靠面板）→ 右拉变小（−1）。新加面板只改 `HANDLE_SIGN` 一行 | `HANDLE_SIGN` + `dragWidth()`，`test/ui-layout.test.mjs` 断言 + 契约测试真实拖拽断言 |
 | **右侧面板互斥** | 文件面板与完整历史同时最多一个；打开一个自动关另一个 | `App.tsx` 两个入口 |
 | **右侧面板 vs 左列** | 面板要宽度时，只**临时**收左三列（记 restore）；点轨道上的列 = 展开该列并**先关掉右侧面板**，绝不留"点了没反应"的禁用态 | `railOpen()` + `openHistory()/closeHistory()` |
+| **窄窗口** | 并列（图标轨 + 左三列）+ 聊天保底放不下时 → 左三列转**浮层抽屉**（聊天只让出图标轨宽度）；不替用户收起列，也不把内容压扁 | `layout().overlayLeft` + `App.tsx` 浮层 |
 | **空间不足** | 面板放不下就不显示，且必须有可见原因（rail 临时态 / 提示），不允许静默吞掉点击 | `layout()` 返回 0 + 调用方降级 |
 
 ### 4.1 截图基线只比"界面骨架"

@@ -128,7 +128,7 @@ async function measure(page) {
     const body = document.body;
     const overflow = document.documentElement.scrollWidth > window.innerWidth + 1;
     // 折叠成本 = 导航轨容器宽度之和（不是轨上按钮之和）
-    const rail = [...document.querySelectorAll('nav[aria-label="收起的列"]')]
+    const rail = [...document.querySelectorAll('nav[aria-label="左侧图标轨"]')]
       .reduce((sum, el) => sum + Math.round(rect(el).width), 0);
 
     // 竖向裁切（横向截断是 ellipsis 的正常表现，不算）
@@ -219,17 +219,39 @@ await page.clock.install({ time: FROZEN_TIME });
 await page.goto(APP_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(700);
 
-// 折叠成本常数化
+// 图标轨常驻（VS Code Activity Bar 范式）：先量"三列都展开"时的轨宽
+const expandedRail = await measure(page);
+check("图标轨常驻：三列展开时轨仍是 44px", expandedRail.rail === 44, `实际 ${expandedRail.rail}px`);
 const hideButtons = page.locator('[aria-label="收起此列"]');
 while (await hideButtons.count() > 0) { await hideButtons.first().click(); await page.waitForTimeout(120); }
 const folded = await measure(page);
-check("收起三列后成本 = 一条 44px 轨", folded.rail === 44, `实际 ${folded.rail}px`);
+check("三列收起后轨道宽度不变（仍是同一条 44px）", folded.rail === 44, `实际 ${folded.rail}px`);
 check("收起后聊天列仍 ≥ MIN_CHAT", folded.chatWidth >= MIN_CHAT, `实际 ${folded.chatWidth}px`);
 await settle(page);
 for (const label of ["助手", "项目", "会话"]) {
   const railButton = page.locator(`[aria-label="展开${label}"]`);
   if (await railButton.count() > 0) { await railButton.first().click(); await page.waitForTimeout(120); }
 }
+
+// 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
+const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
+check("图标常驻：三列全展开时轨道上仍有 3 个图标", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
+check("图标顺序固定：助手 → 项目 → 会话", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,项目,会话");
+check("高亮 = 该列展开（aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .every((b) => b.getAttribute("aria-pressed") === "true")));
+const projectColumn = async () => await page.evaluate(() => [...document.querySelectorAll("aside")].some((el) => (el.innerText ?? "").startsWith("项目")));
+const clickProject = async () => { await page.locator('nav[aria-label="左侧图标轨"] button').nth(1).click(); await page.waitForTimeout(300); };
+const seq = [await projectColumn()];
+await clickProject(); seq.push(await projectColumn());
+await clickProject(); seq.push(await projectColumn());
+await clickProject(); seq.push(await projectColumn());
+check("点图标可连续切换（开 → 收 → 开 → 收），不弹回", JSON.stringify(seq) === JSON.stringify([true, false, true, false]), JSON.stringify(seq));
+await clickProject();   // 恢复展开
+check("点图标后高亮跟随状态", await page.evaluate(() => {
+  const buttons = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')];
+  return buttons.every((b) => b.getAttribute("aria-pressed") === "true");
+}));
 
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
@@ -494,7 +516,7 @@ await shotBrowser.close();
 await browser.close();
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "成本 = 一条 44px 轨", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 24,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);

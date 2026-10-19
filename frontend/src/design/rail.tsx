@@ -1,21 +1,25 @@
 import type { ReactNode } from "react";
 
 /**
- * 导航轨（前端开发路径 · 折叠成本常数化）：
- * 被收起的列合并成一条 44px 轨，而不是每列各留一条 36px 空条。
- * - 成本 O(1)：不管收起 1 列还是 3 列，都只占 44px；全展开时为 0。
- * - 轨同时承担"我在哪"：条目带图标 + tooltip，主项（当前助手）显示头像。
+ * 左侧图标轨（前端开发路径 · 参照 VS Code Activity Bar，2026-10-18 用户定）：
+ * - **常驻**：不管对应列收起还是展开，图标都在最左边（收起/展开都只占这条 44px 轨）；
+ * - **高亮 = 该列展开**；点当前图标 = 收起；点未展开的图标 = 展开（各自独立，可连续切换）；
+ * - 轨同时承担"我在哪"：条目带图标 + tooltip，主项（当前助手）显示头像；
  * - 这条轨的宽度由 design/layout.ts 统一计算，组件不再各自声明宽度。
  */
 export function NavRail({ items }: {
-  items: { key: string; label: string; icon: ReactNode; onOpen: () => void }[];
+  items: { key: string; label: string; icon: ReactNode; active: boolean; onToggle: () => void }[];
 }) {
   return (
-    <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center gap-1 bg-sunken py-1.5">
+    <nav aria-label="左侧图标轨" className="flex w-11 shrink-0 flex-col items-center gap-1 bg-sunken py-1.5">
       {items.map((item) => (
-        <button key={item.key} type="button" onClick={item.onOpen}
-          aria-label={`展开${item.label}`} title={`展开${item.label}（若右侧面板开着，会先关闭面板）`}
-          className="flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:bg-hover hover:text-ink-900">
+        <button key={item.key} type="button" onClick={item.onToggle}
+          aria-label={item.active ? `收起${item.label}` : `展开${item.label}`}
+          aria-pressed={item.active}
+          title={item.active ? `收起${item.label}` : `展开${item.label}（若右侧面板开着，会先关闭面板）`}
+          className={`flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
+            item.active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900"
+          }`}>
           {item.icon}
         </button>
       ))}

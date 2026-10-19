@@ -7,7 +7,7 @@
  *
  * 约定：
  * - 本函数是纯函数，不读 DOM、不读 localStorage；测试对「视口 × 折叠组合 × 面板」穷举断言。
- * - 折叠成本常数化：任一列收起 → 一条 44px 导航轨；全部展开 → 0px。绝不 O(n)。
+ * - 图标轨常驻 44px（收起/展开一样），列收展只影响列的 0/实宽；绝不 O(n)。
  * - 聊天保底 MIN_CHAT 由本函数钳制，面板永远拿不到"挤死聊天"的宽度。
  */
 
@@ -34,12 +34,9 @@ export const WIDTH_LIMITS: Record<keyof Widths, [number, number]> = {
   c5: [MIN_HISTORY, 720],
 };
 
-/** 窄视口自动降级：只影响"实际渲染"，不改用户手动状态（放宽后自动恢复）。 */
-export function effectiveFolded(requested: Folded, viewport: number): Folded {
-  if (viewport < 1000) return { nav: requested.nav, projects: true, sessions: true };
-  if (viewport < 1200) return { nav: requested.nav, projects: true, sessions: requested.sessions };
-  return requested;
-}
+// 2026-10-18（用户定 + 参照 VS Code Activity Bar）：**不再按视口强制收起列**。
+// 旧规则（<1200 收项目、<1000 收会话）会让"点图标展开"变成死点击；现在一律以用户的收展状态为准，
+// 窗口窄就压缩列/聊天（与 VS Code 一致：它也不会因为窗口变窄就把你的侧栏关掉）。
 
 export type LayoutInput = {
   viewport: number;
@@ -61,18 +58,24 @@ export type Layout = {
   chat: number;
   folded: Folded;
   panelFits: boolean;
+  /** 窄窗口：左三列改为浮层抽屉（overlay），不再挤占聊天列（参照 Pi Web 的移动端抽屉）。 */
+  overlayLeft: boolean;
 };
 
 export function layout(input: LayoutInput): Layout {
-  const folded = effectiveFolded(input.requested, input.viewport);
-  const anyFolded = folded.nav || folded.projects || folded.sessions;
-  const rail = anyFolded ? RAIL : 0;
+  const folded = input.requested;
+  // 图标轨**常驻**（VS Code Activity Bar 范式）：收起/展开都占一条 44px，收起只是不显示列内容。
+  const rail = RAIL;
 
   const c1 = folded.nav ? 0 : input.widths.c1;
   const c2 = folded.projects ? 0 : input.widths.c2;
   const c3 = folded.sessions ? 0 : input.widths.c3;
   const colHandles = (folded.nav ? 0 : HANDLE) + (folded.projects ? 0 : HANDLE) + (folded.sessions ? 0 : HANDLE);
-  const leftCost = rail + c1 + c2 + c3 + colHandles;
+  const leftDocked = rail + c1 + c2 + c3 + colHandles;
+  // 并列放不下（会把聊天压到 MIN_CHAT 以下）→ 左三列改浮层：聊天只让出图标轨的宽度。
+  // 参照 Pi Web / 通用 AppShell：窄屏用 overlay 抽屉，而不是把内容压扁或替用户收列。
+  const overlayLeft = leftDocked + MIN_CHAT > input.viewport;
+  const leftCost = overlayLeft ? rail : leftDocked;
 
   // 完整历史优先占右侧（与文件面板互斥）：先给它，再由剩余空间决定面板/聊天
   const historyMax = Math.max(0, input.viewport - leftCost - HANDLE - MIN_CHAT);
@@ -88,7 +91,7 @@ export function layout(input: LayoutInput): Layout {
   const tree = panel === 0 ? 0 : Math.max(0, Math.min(input.widths.c4t, panel - MIN_VIEWER));
   const chat = input.viewport - leftCost - historyCost - (panel > 0 ? HANDLE + panel : 0);
 
-  return { rail, history, c1, c2, c3, panel, tree, chat, folded, panelFits };
+  return { rail, history, c1, c2, c3, panel, tree, chat, folded, panelFits, overlayLeft };
 }
 
 /**
