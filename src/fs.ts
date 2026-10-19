@@ -34,12 +34,12 @@ export async function registerRoot(path: string): Promise<{ roots: string[] } | 
   const info = await stat(target).catch(() => undefined);
   if (info === undefined) return { code: "not_found", message: "目录不存在", status: 404 };
   if (!info.isDirectory()) return { code: "not_a_directory", message: "不是目录", status: 400 };
-  const existing = await readRoots();
-  if (!existing.includes(target)) {
-    const extra = existing.filter((root) => root !== resolve(resolveHome()));
-    extra.push(target);
-    await writeFile(rootsFilePath(), JSON.stringify({ schemaVersion: 1, roots: extra }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  }
+  // 白名单 = 打开过的目录历史：**最近使用在前**（MRU），家目录始终排在第一位且不写进 extras。
+  // 参照 VS Code「Open Recent」与 Pi Web 的 recent-projects（按最近排序、不另存历史）。
+  const home = resolve(resolveHome());
+  const extra = (await readRoots()).filter((root) => root !== home && root !== target);
+  extra.unshift(target);
+  await writeFile(rootsFilePath(), JSON.stringify({ schemaVersion: 1, roots: extra }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   return { roots: await readRoots() };
 }
 

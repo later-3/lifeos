@@ -65,7 +65,7 @@ install-receipt.json    安装收据
 | `GET /api/agents/:id/sessions/:sid/entries` | **会话历史**：原始条目只读直出（`offset/limit` 分页、`labels`、`leafId`）；不投影、不改写，与会话 JSONL 逐条一致 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
 | `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |
-| `GET /api/fs/roots`、`POST /api/fs/roots` | 文件浏览器的根白名单（默认根 = 家目录；额外根持久化到 `config/file-roots.json`） |
+| `GET /api/fs/roots`、`POST /api/fs/roots` | 文件浏览器的根白名单 = **打开过的目录历史**（默认根 = 家目录、永远第一；额外根持久化到 `config/file-roots.json`，**按最近使用排序**，重复打开只提前不重复） |
 | `GET /api/fs/tree`、`GET /api/fs/content` | 列目录 / 读文件（**resolve 后必须落在已注册根内**，越权 403） |
 | `GET /api/fs/browse` | 目录选择器专用：任意路径只列子目录名（不读文件） |
 

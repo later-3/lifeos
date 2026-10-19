@@ -17,7 +17,9 @@ export function createAgentTools() {
     label: "Create Life OS agent",
     description:
       "Create a new Life OS agent (a long-lived assistant with its own identity, workspace project, daily/cases/todo records and sessions). "
-      + "The id is generated from the name automatically, and the agent gets its standard skeleton (agent.json, identity.md, workspace project with AGENTS.md/concept-space.md/sessions/daily/cases/todo). "
+      + "The id is generated once and stays stable — renaming the display name never changes it, so never archive and recreate an agent just to change an id. "
+      + "Creating with an existing agent name returns that agent unchanged (no duplicates). Non-ASCII names get an opaque id such as agent-3f9a; that is expected. "
+      + "The agent gets its standard skeleton (agent.json, identity.md, workspace project with AGENTS.md/concept-space.md/sessions/daily/cases/todo). "
       + "Nothing is written outside ~/.lifeos/agents/<id>/, and other agents are untouched.",
     promptSnippet: "Create a new Life OS agent (multi-agent)",
     promptGuidelines: [
@@ -30,6 +32,16 @@ export function createAgentTools() {
     async execute(_toolCallId, params) {
       const result = await createAgent({ name: params.name, ...(params.description !== undefined ? { description: params.description } : {}) });
       if ("code" in result) throw new Error(result.message);
+      if (!result.created) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Agent "${result.name}" already exists (id: ${result.id}); nothing was created.\n`
+              + `The id is stable: renaming the display name never changes it — do not archive and recreate an agent to change an id.`,
+          }],
+          details: { id: result.id, dir: result.dir, created: false },
+        };
+      }
       return {
         content: [{
           type: "text" as const,
@@ -37,7 +49,7 @@ export function createAgentTools() {
             + `Files: ${result.dir}/agent.json · identity.md (skeleton) · projects/workspace/{project.json,AGENTS.md,concept-space.md,sessions,daily,cases,todo}\n`
             + `No preset session: the first message starts a new session.`,
         }],
-        details: { id: result.id, dir: result.dir },
+        details: { id: result.id, dir: result.dir, created: true },
       };
     },
   });

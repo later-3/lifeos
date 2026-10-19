@@ -28,7 +28,7 @@ test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除
   assert.equal(tools[1].annotations?.destructiveHint, true, "归档是破坏性动作，标注要让权限扩展能拦一道");
 });
 
-test("lifeos_agent_create：id 由 name 自动生成、骨架齐、不写预置会话、冲突加序号", async () => {
+test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨架齐、同名幂等", async () => {
   const home = await freshHome();
   const [create] = createAgentTools();
 
@@ -51,11 +51,16 @@ test("lifeos_agent_create：id 由 name 自动生成、骨架齐、不写预置�
   assert.equal(record.description, "评审助手");
   assert.equal("archivedAt" in record, false);
 
-  // 同名再建 → 不冲突（序号后缀）；中文名 → 合法 slug
+  // 同名再建 → 幂等（create-or-return）：返回同一个 Agent，不造第二个实体
   const again = await run(create, { name: "Code Reviewer" });
-  assert.equal(again.details.id, "code-reviewer-2");
+  assert.equal(again.details.id, id, "同名幂等：返回已有 Agent 的 id");
+  assert.equal(again.details.created, false, "同名时 created=false");
+  assert.match(again.content[0].text, /already exists/, "结果要告诉模型：已存在、没有新建");
+  assert.equal((await readdir(join(home, "agents"))).filter((n) => n.startsWith("code-reviewer")).length, 1, "磁盘上只有一个目录");
+
+  // 中文名 → 不透明随机后缀（agent-xxxx），不再是过通用的 "agent"（Kubernetes generateName 同款）
   const zh = await run(create, { name: "评审助手" });
-  assert.match(zh.details.id, /^[a-z0-9][a-z0-9-]{0,63}$/, `中文名也要得到合法 id：${zh.details.id}`);
+  assert.match(zh.details.id, /^agent-[0-9a-f]{4}$/, `中文名应得到 agent-xxxx，实际 ${zh.details.id}`);
 
   // 骨架 = 出厂模板同构（模板是「当前 Agent 包含啥」的唯一事实源；只差预置会话文件，协议 §12.2）
   const templateAgent = join(process.cwd(), ".lifeos", "agents", "lifeosagent");

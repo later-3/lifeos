@@ -184,7 +184,7 @@ export function createApp() {
       ...(typeof body.description === "string" ? { description: body.description } : {}),
     });
     if ("code" in created) { const error = problem(created.code, created.message, created.status); return c.json(error.body, error.status); }
-    return c.json({ agent: created }, 201);
+    return c.json({ agent: created }, created.created ? 201 : 200);
   });
 
   // 归档助手 = 从列表移除（数据全留，可恢复）；会话运行中 409；最后一个 400

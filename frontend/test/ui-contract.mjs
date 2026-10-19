@@ -271,6 +271,20 @@ await page.waitForTimeout(200);
 // 多个助手时会有多个（隐藏的）按钮 → 只看第一行那个；数据无关
 check("助手行悬停出现删除入口", await page.locator('[aria-label="删除助手"]').first().isVisible());
 
+// 文件根切换：打开面板 → 点根名 → 列出"打开过的目录"（家目录永远在）→ Esc 关闭
+await page.locator('[aria-label="展开文件面板"]').first().click();
+await page.waitForTimeout(600);
+const rootButton = page.locator('button[title]').filter({ hasText: /^· / }).first();
+await rootButton.click();
+await page.waitForTimeout(400);
+const switcher = await page.evaluate(() => {
+  const text = document.body.innerText;
+  return { listed: text.includes("切换目录") && text.includes("打开过的目录"), hasHome: text.includes(".lifeos") };
+});
+check("文件根切换框：能打开并列出打开过的目录", switcher.listed, String(switcher.listed));
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);
+
 // 输入法组字中的 Enter 不能触发发送（照 Pi Web ChatInput 的守卫：composing / isComposing / keyCode 229 / 100ms 宽限）
 const imeGuard = await page.evaluate(() => {
   const textarea = document.querySelector("textarea");

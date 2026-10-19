@@ -14,6 +14,7 @@
 **两个入口共用一份实现**（`src/agents.ts`，业务下沉、HTTP 只是薄适配）：**Pi 工具**（模型可调）`lifeos_agent_create` / `lifeos_agent_delete`（`src/agent-tools.ts`，英文描述、名字进白名单，见 reference-baseline「自有工具」行）与 **HTTP**（`POST /api/agents` · `DELETE /api/agents/:id`）。界面暂无「新建助手」按钮；**删除入口 = 助手行悬停出现的 ✕**（点击 → 确认对话框）。
 
 - **创建**：参数**只有 `name`（必填）与 `description`（可选）**——不开放「传身份内容」之类的入口（用户 2026-10-19 定，见 harness 案例 C029）。id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/`：`agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（**只装骨架**）+ workspace 骨架，**与出厂模板同构**：`project.json` / `AGENTS.md` / `concept-space.md` / `sessions/` / `daily/` / `cases/` / `todo/`（不建 `avatar/`；只差预置会话文件）。**内容也与模板同源**：`identity.md` 骨架的标题结构（`## 身份` / `## 人格`）、`AGENTS.md` 的项目私有层指引都取自模板（后者只去掉「出厂预置会话」那半句）；校验与 `PUT /api/agents/:id` 一致（name 截 60、description 截 300）；同构由测试的 readdir 深比较当守门人。
+- **id**：由 `name` 生成 slug（ASCII）；**非 ASCII 名得到不透明的随机后缀 `agent-3f9a`**（Kubernetes generateName 同款，不要生成过通用的 `agent`）。id 生成后**稳定**：改显示名不改 id；**创建按 name 幂等**——同名且未归档时返回已有 Agent（`POST` 200 / 工具结果 `created:false`），不会造出第二个实体。
 - **归档（= 删除，可恢复）**：`agent.json` 写 `archivedAt` → 列表与详情都不再返回它；**目录、会话、记录全部保留**（恢复 = 删掉该字段）。护栏：有会话运行中 → 409；非归档只剩 1 个 → 400 `last_agent`。
 
 ## 2 目录与文件（现状）

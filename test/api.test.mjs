@@ -543,6 +543,13 @@ test("Agent 生命周期：创建（slug id/骨架/无预置会话）与归档�
     await access(join(home, "agents", "code-reviewer", "identity.md"));
     await access(join(home, "agents", "code-reviewer", "projects", "workspace", "project.json"));
 
+    // 同名再建 → 200 + 同一个 id（幂等，不产生第二个实体）；缺 name → 400
+    const sameAgain = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Code Reviewer" }),
+    });
+    assert.equal(sameAgain.status, 200, "已存在时返回 200（与项目注册一致）");
+    assert.equal((await sameAgain.json()).agent.id, first.id, "同名幂等：同一个 id");
+
     // 中文名 → 合法 slug；缺 name → 400
     const zh = await fetch(`${base}/api/agents`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "评审助手" }),

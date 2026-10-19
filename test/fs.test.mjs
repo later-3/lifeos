@@ -46,6 +46,24 @@ test("roots：默认含家目录；注册额外根并持久化；非法注册被
   } finally { server.close(); }
 });
 
+test("roots 历史：最近使用在前（家目录永远第一），重复打开只提前不重复", async () => {
+  const { server, base, home } = await start();
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  try {
+    const a = await mkdtemp(join(tmpdir(), "lifeos-root-a-"));
+    const b = await mkdtemp(join(tmpdir(), "lifeos-root-b-"));
+    const register = async (path) => (await (await fetch(`${base}/api/fs/roots`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }),
+    })).json()).roots;
+    await register(a);
+    let roots = await register(b);
+    assert.deepEqual(roots, [home, b, a], "最近打开的排在前面");
+    roots = await register(a);
+    assert.deepEqual(roots, [home, a, b], "再次打开 a → 提到最前（不重复）");
+  } finally { server.close(); }
+});
+
 test("tree：根内列目录（目录优先字母序）；../ 越权与未注册根一律 403", async () => {
   const { server, base, home } = await start();
   try {

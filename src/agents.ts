@@ -8,6 +8,7 @@
 //   **不写 defaultSessionId**（出厂预置会话只随 lifeosagent 模板，协议 §12.2）；不建 avatar/（自动头像按 id 推导）。
 // - 归档 = agent.json 写 `archivedAt`：列表与详情都不再返回它，目录与会话/记录**全部保留**（可恢复：删掉该字段）。
 // - 护栏：有会话正在跑 → 拒绝（同删除会话的 409）；非归档 Agent 只剩 1 个 → 拒绝（保留最后一个）。
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
@@ -29,10 +30,15 @@ async function writeJson(path: string, data: unknown): Promise<void> {
   await rename(tmp, path);
 }
 
-/** name → slug（目录名 / URL id）；中文等非 ASCII 名字转不出合法 slug 时退到 "agent-" 前缀。 */
+/**
+ * name → slug（目录名 / URL id）。
+ * 中文等非 ASCII 名字转不出合法 slug 时，用**不透明的随机后缀**（`agent-3f9a`）：
+ * 参照 Kubernetes `metadata.generateName`（名字 + 随机后缀，id 不承载语义）——
+ * 不要生成 `agent` 这种过通用的 id（发生过：模型嫌它通用，自行归档重建，留下重复实体）。
+ */
 export function slugify(name: string): string {
   const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-  const id = base === "" ? "agent" : base;
+  const id = base === "" ? `agent-${randomBytes(2).toString("hex")}` : base;
   return isSlug(id) ? id : `agent-${id}`.slice(0, 64);
 }
 
@@ -95,12 +101,19 @@ const workspaceAgentsMd = `# 交互 harness · 项目私有层（workspace）
 
 /** 创建一个 Agent（原子性：中途失败就删掉半成品目录）。 */
 export async function createAgent(input: CreateAgentInput): Promise<
-  { id: string; name: string; dir: string } | AgentError
+  { id: string; name: string; dir: string; created: boolean } | AgentError
 > {
   // 与 PUT /api/agents/:id 校验一致（不要多不要少）：name 非空截 60、description 截 300
   const name = (input.name ?? "").trim().slice(0, 60);
   if (name === "") return { code: "invalid_name", message: "name 不能为空", status: 400 };
   const description = input.description !== undefined ? input.description.trim().slice(0, 300) : undefined;
+  // 按 name 幂等（create-or-return）：同名且未归档 → 直接返回已有的，不再造第二个实体。
+  // 参照声明式创建的通行做法（kubectl apply / Terraform：name 是唯一键，重复调用不改结果）——
+  // 工具被模型调用时会重试，非幂等就会留下重复 Agent（真实发生过）。
+  const live = (await allAgents()).find((entry) => entry.record.archivedAt === undefined && entry.record.name === name);
+  if (live !== undefined) {
+    return { id: live.id, name: live.record.name, dir: agentDir(live.id), created: false };
+  }
   const base = slugify(name);
   const existing = new Set((await allAgents()).map((entry) => entry.id));
   let id = base;
@@ -137,7 +150,7 @@ export async function createAgent(input: CreateAgentInput): Promise<
     // 写操作必须闭环到 UI（用户 2026-10-19 点名）：广播后前端自动重取助手列表，不需要手动刷新
     const { broadcast } = await import("./agent-host.ts");
     broadcast({ type: "agents_changed" });
-    return { id, name, dir };
+    return { id, name, dir, created: true };
   } catch (error) {
     await rm(dir, { recursive: true, force: true }).catch(() => { /* 尽力回滚半成品 */ });
     return { code: "create_failed", message: error instanceof Error ? error.message : String(error), status: 400 };

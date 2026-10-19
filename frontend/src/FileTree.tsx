@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconFolderPlus, IconRefresh } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconRefresh } from "@tabler/icons-react";
 import { DirectoryPicker } from "./DirectoryPicker";
 
-import { IconButton, Label, Skeleton } from "./design/ui";
+import { Button, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { Modal } from "./design/overlay";
 import { isMarkdown } from "./fs-utils";
 
 type TreeEntry = { name: string; isDir: boolean };
 type TreeResult = { path: string; entries: TreeEntry[]; error?: { message: string } };
 
 const ROOT_KEY = "lifeos.fsRoot";
+// 根 = 打开过的目录历史（后端白名单按最近使用排序，家目录永远第一）。
+// 参照 VS Code「Open Recent」与 Pi Web 的 recent-projects：不另存历史，直接用已有数据排序。
 
 /**
  * 文件夹树（右面板左栏形态，用户 2026-10-17：与查看器并排一体、独立拖宽）：
@@ -23,6 +26,8 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [refreshing, setRefreshing] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [roots, setRoots] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const cache = useRef(new Map<string, TreeEntry[]>());   // 拉过的层不重拉（性能红线）
 
@@ -79,17 +84,30 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
     setTimeout(() => setRefreshing(false), 2000);
   }
 
-  async function selectDirectory(path: string): Promise<string | null> {
+  /** 切换根：一次 POST 既注册（幂等）又把它提到历史最前，然后清缓存重拉。 */
+  async function switchRoot(path: string): Promise<string | null> {
     const response = await fetch("/api/fs/roots", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }),
     });
     const data = await response.json() as { roots?: string[]; error?: { message: string } };
-    if (!response.ok) { const message = data.error?.message ?? "注册失败"; setError(message); return message; }
+    if (!response.ok) { const message = data.error?.message ?? "切换失败"; setError(message); return message; }
     localStorage.setItem(ROOT_KEY, path);
+    if (data.roots !== undefined) setRoots(data.roots);
     setPickerOpen(false);
+    setSwitcherOpen(false);
     setRoot(path);   // 触发清缓存与重拉
     return null;
   }
+
+  async function openSwitcher() {
+    try {
+      const data = await (await fetch("/api/fs/roots")).json() as { roots: string[] };
+      setRoots(data.roots);
+    } catch { /* 打开失败就只显示当前根 */ }
+    setSwitcherOpen(true);
+  }
+
+  const rootName = (path: string) => path === "/" ? "/" : path.slice(path.lastIndexOf("/") + 1) || path;
 
   const rootLabel = root === undefined ? "…" : root === "/" ? "/" : root.slice(root.lastIndexOf("/") + 1) || root;
 
@@ -140,14 +158,31 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
   return (
     <>
       {pickerOpen && (
-        <DirectoryPicker onCancel={() => setPickerOpen(false)} onSelect={selectDirectory} />
+        <DirectoryPicker onCancel={() => setPickerOpen(false)} onSelect={switchRoot} />
+      )}
+      {switcherOpen && (
+        <Modal title="切换目录" subtitle="打开过的目录会留在这里（最近使用在前）" width={560} onClose={() => setSwitcherOpen(false)}
+          footer={<><span className="mr-auto text-micro text-ink-500">共 {roots.length} 个</span>
+            <Button variant="ghost" size="sm" onClick={() => { setSwitcherOpen(false); setPickerOpen(true); }}>浏览其他目录…</Button></>}>
+          <div className="space-y-0.5">
+            {roots.map((path) => (
+              <Row key={path} selected={path === root} onClick={() => void switchRoot(path)}>
+                <IconFolder size={14} className="shrink-0 text-ink-300" />
+                <span className="min-w-0 flex-1 truncate font-mono text-meta">{rootName(path)}</span>
+                <span className="min-w-0 max-w-72 truncate font-mono text-micro text-ink-500" title={path}>{path}</span>
+              </Row>
+            ))}
+          </div>
+        </Modal>
       )}
       <div className="flex h-full min-h-0 flex-col bg-sunken">
         {/* 树列头（与三列同 40px）：根名 + 选择目录 + 刷新 + 收起 */}
         <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-3 pr-1">
-          <Label className="shrink-0">文件</Label>
-          <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-500" title={root ?? ""}>· {rootLabel}</span>
-          <IconButton label="选择目录" onClick={() => setPickerOpen(true)}><IconFolderPlus size={14} /></IconButton>
+          <button type="button" onClick={() => void openSwitcher()} title={root ?? ""}
+            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-control px-0.5 text-left text-micro text-ink-500 transition-colors hover:text-ink-900">
+            <span className="min-w-0 truncate font-mono">· {rootLabel}</span>
+            <IconChevronDown size={12} className="shrink-0" />
+          </button>
           <IconButton label="刷新文件树" active={refreshing} onClick={() => void refresh()}><IconRefresh size={14} /></IconButton>
           {onHide !== undefined && <IconButton size="sm" label="收起文件树" onClick={onHide}><IconChevronLeft size={16} /></IconButton>}
         </div>
