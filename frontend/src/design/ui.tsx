@@ -98,6 +98,19 @@ export function EmptyState({ icon, title, hint, action }: {
   );
 }
 
+/**
+ * 工作指示（全站唯一的旋转件）：淡轨道 + 弧。颜色跟 currentColor，尺寸只给三种。
+ * 时长/缓动来自 tokens.css 的 --animate-arc（系统开启减少动态效果时自动停转）。
+ */
+export function Spinner({ size = 14, className = "" }: { size?: 12 | 14 | 16; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" className={`animate-arc shrink-0 ${className}`}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2.5" opacity="0.18" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function Skeleton({ rows = 3 }: { rows?: number }) {
   return (
     <div className="space-y-1.5 px-2 py-1" aria-hidden="true">

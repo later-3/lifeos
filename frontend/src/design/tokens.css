@@ -47,6 +47,20 @@
   /* 阅读列宽度：正文行宽上限，避免超宽屏一行 200 字 */
   --container-reading: 860px;
   --container-bubble: 720px;
+
+  /*
+   * 动效只有一处："正在工作"的旋转弧（会话区工作指示 / 工具执行中）。
+   * 页面层不再写 animate-[...] —— 时长与曲线只在这里定，改一处全站生效。
+   */
+  --animate-arc: arc-spin 0.9s linear infinite;
+  @keyframes arc-spin {
+    to { transform: rotate(360deg); }
+  }
+}
+
+/* 无障碍：系统开启"减少动态效果"时停转；状态仍由文案表达（"思考中…"）。 */
+@media (prefers-reduced-motion: reduce) {
+  .animate-arc { animation: none; }
 }
 
 /*
