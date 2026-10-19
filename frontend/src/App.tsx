@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconLayoutSidebarRight, IconMessageCircle,
+  IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
   IconPencil, IconPlus, IconTrash, IconX,
 } from "@tabler/icons-react";
 import { useFold } from "./design/fold";
@@ -11,8 +11,11 @@ import { DirectoryPicker } from "./DirectoryPicker";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
 import { useColumnWidth } from "./useColumnWidth";
+import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
-import { MessageView, type Block } from "./Message";
+import { MessageView, WorkingRow, type Block } from "./Message";
+import { applyStreamEvent, blocksOfStream, createStreamState, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
+import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
@@ -23,11 +26,13 @@ import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/u
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
-type Message = { role: "user" | "assistant"; text: string; blocks: Block[] };
+type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean };
 type Group = { project: Project; sessions: SessionItem[] };
-type AgentEvent = { seq: number; sessionId: string; type: "delta" | "done" | "error"; text?: string; message?: string };
+// 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
+type AgentEvent = { seq: number; sessionId: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string });
 
 const LAST_AGENT = "lifeos.lastAgent";
+const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
 const lastSessionKey = (agentId: string) => `lifeos.lastSession.${agentId}`;
 
 function readLast(key: string): string | undefined {
@@ -77,9 +82,20 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
+  const [queued, setQueued] = useState<{ count: number; text: string } | undefined>();
+  const busyRef = useRef(false);          // 供回调读的即时 busy（state 有渲染延迟）
+  const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
+  // 排队是"多条"（连按两次 Enter 不能只留最后一条）；按会话归属，切了会话就退回草稿。
+  const queueRef = useRef<{ sid: string; text: string }[]>([]);
+  // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
+  // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
+  const sendTextRef = useRef<(raw: string) => void>(() => {});
   const [streamSeq, setStreamSeq] = useState(0);
+  const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
+  const [phase, setPhase] = useState<Phase>("waiting");
+  const [activeTool, setActiveTool] = useState<string>();
   const [loaded, setLoaded] = useState(false);
   const [showNav, setShowNav] = useFold("agents");
   const [showProjects, setShowProjects] = useFold("projects");
@@ -89,10 +105,14 @@ export default function App() {
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; run: () => void }>();
+  // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
+  const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
+  const restoreFolds = useRef<{ nav: boolean; projects: boolean; sessions: boolean } | undefined>(undefined);
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
-  const { box, beginDrag } = useColumnWidth({
+  const { box, beginDrag, viewport, widths } = useColumnWidth({
     folded: { nav: !showNav, projects: !showProjects, sessions: !showSessions },
     panelOpen,
+    historyOpen: history !== undefined,
   });
 
   const current = useRef<string | undefined>(undefined);
@@ -107,19 +127,64 @@ export default function App() {
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
   useEffect(() => { if (agent !== undefined) writeLast(LAST_AGENT, agent.id); }, [agent?.id]);
 
+  // 输入草稿：按会话归属（切会话换草稿、刷新不丢）；发送时清空，失败回填。
+  useEffect(() => {
+    if (sessionId === undefined) { setInputState(""); return; }
+    try { setInputState(localStorage.getItem(`${DRAFT_PREFIX}${sessionId}`) ?? ""); } catch { setInputState(""); }
+  }, [sessionId]);
+  function setInput(text: string) {
+    setInputState(text);
+    if (sessionId === undefined) return;
+    try {
+      if (text === "") localStorage.removeItem(`${DRAFT_PREFIX}${sessionId}`);
+      else localStorage.setItem(`${DRAFT_PREFIX}${sessionId}`, text);
+    } catch { /* 忽略 */ }
+  }
+
   // 只在"贴底"时跟随，否则用户可以往上翻历史
   useEffect(() => {
     if (followTail.current) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
   useEffect(() => {
-    if (agent === undefined || sessionId === undefined) return;
+    // URL 三键反映当前状态：切到"没有会话的项目"也要更新（否则刷新会退回旧项目/旧会话）
+    if (agent === undefined) return;
     const params = new URLSearchParams();
     params.set("agent", agent.id);
     if (selectedProjectId !== undefined) params.set("project", selectedProjectId);
-    params.set("session", sessionId);
+    if (sessionId !== undefined) params.set("session", sessionId);
     window.history.replaceState(null, "", `?${params.toString()}`);
   }, [agent?.id, selectedProjectId, sessionId]);
+
+  /** 打开完整历史：并排优先；若当前列宽下放不下（history=0），临时把左三列收进导航轨，关闭时恢复。 */
+  function openHistory(sid: string, name: string) {
+    setPanelOpen(false);
+    // Folded 语义：true = 收起。这里试算"三列全开"时的并排空间
+    const trial = layout({ viewport, widths, requested: { nav: false, projects: false, sessions: false }, panelOpen: false, historyOpen: true });
+    // 并排要"对话够宽"才有意义：对话挤到 560 以下就先把左三列收进导航轨（关闭时恢复）
+    if (trial.history === 0 || trial.chat < 560) {
+      restoreFolds.current = { nav: showNav, projects: showProjects, sessions: showSessions };
+      setShowNav(false); setShowProjects(false); setShowSessions(false);
+    }
+    setHistory({ sessionId: sid, title: name });
+  }
+  function closeHistory() {
+    setHistory(undefined);
+    const previous = restoreFolds.current;
+    if (previous !== undefined) {
+      restoreFolds.current = undefined;
+      setShowNav(previous.nav); setShowProjects(previous.projects); setShowSessions(previous.sessions);
+    }
+  }
+
+  // 窗口变窄导致历史列放不下：自动收左三列（保持并排），收起面板
+  useEffect(() => {
+    if (history === undefined) return;
+    if (box.history === 0 && (showNav || showProjects || showSessions)) {
+      restoreFolds.current ??= { nav: showNav, projects: showProjects, sessions: showSessions };
+      setShowNav(false); setShowProjects(false); setShowSessions(false);
+    }
+  }, [history, box.history, showNav, showProjects, showSessions, setShowNav, setShowProjects, setShowSessions]);
 
   // 面板放不下就收起（视口挤压保护）
   useEffect(() => { if (panelOpen && !box.panelFits) setPanelOpen(false); }, [panelOpen, box.panelFits, setPanelOpen]);
@@ -150,7 +215,27 @@ export default function App() {
     return [...list].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
   }
 
+  /** 排队内容退回各自会话草稿：切会话/切项目时用，避免"排队中"跨会话悬着（永不触发）。 */
+  function parkQueueAsDrafts() {
+    const pending = queueRef.current;
+    if (pending.length === 0) return;
+    queueRef.current = [];
+    setQueued(undefined);
+    for (const item of pending) {
+      try {
+        const key = `${DRAFT_PREFIX}${item.sid}`;
+        const existing = localStorage.getItem(key) ?? "";
+        localStorage.setItem(key, existing === "" ? item.text : `${existing}\n${item.text}`);
+      } catch { /* 忽略 */ }
+    }
+  }
+
   async function openSession(a: Agent, sid: string) {
+    if (sid !== current.current) parkQueueAsDrafts();
+    setHistory(undefined);
+    streamRef.current = createStreamState();
+    setPhase("waiting");
+    setActiveTool(undefined);
     setSessionId(sid);
     streaming.current = false;
     setBusy(false);
@@ -180,6 +265,8 @@ export default function App() {
 
   async function selectProject(project: Project) {
     if (agent === undefined) return;
+    parkQueueAsDrafts();
+    setHistory(undefined);
     setSelectedProjectId(project.id);
     setShowSessions(true);
     setSessionId(undefined);
@@ -205,35 +292,67 @@ export default function App() {
       const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
       snapshotSeq.current = snapshot.seq;
       setStreamSeq(snapshot.seq);
-      setBusy(snapshot.running.some((run) => run.sessionId === current.current));
+      const running = snapshot.running.some((run) => run.sessionId === current.current);
+      busyRef.current = running;
+      setBusy(running);
     });
-    stream.addEventListener("delta", (event) => {
+    // 一条助手消息里的块是有序的（思考/文本/工具交替），全部交给 stream-blocks 的纯函数归并。
+    const onStream = (event: Event) => {
       const payload = JSON.parse((event as MessageEvent).data) as AgentEvent;
       setStreamSeq(payload.seq);
       if (payload.seq <= snapshotSeq.current) return;
       if (payload.sessionId !== current.current) return;
-      const delta = payload.text ?? "";
+      if (payload.type === "done" || payload.type === "error") return;
+      const tailIsStreaming = streaming.current;
+      if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
+      const next = applyStreamEvent(streamRef.current, payload);
+      streamRef.current = next;
+      setPhase(next.phase);
+      setActiveTool(next.activeTool);
+      const blocks = blocksOfStream(next);
+      const text = textOfBlocks(blocks);
+      busyRef.current = true;
       setBusy(true);
+      streaming.current = true;
       setMessages((list) => {
         const last = list[list.length - 1];
-        if (!streaming.current || last === undefined || last.role !== "assistant") {
-          streaming.current = true;
-          return [...list, { role: "assistant", text: delta, blocks: [{ type: "text", text: delta }] }];
+        if (!tailIsStreaming || last === undefined || last.role !== "assistant") {
+          return [...list, { role: "assistant", text, blocks, streaming: true }];
         }
-        const blocks = [...last.blocks];
-        const tail = blocks[blocks.length - 1];
-        if (tail?.type === "text") blocks[blocks.length - 1] = { type: "text", text: tail.text + delta };
-        else blocks.push({ type: "text", text: delta });
-        return [...list.slice(0, -1), { ...last, text: last.text + delta, blocks }];
+        return [...list.slice(0, -1), { ...last, text, blocks, streaming: true }];
       });
-    });
+    };
+    for (const name of ["delta", "thinking", "thinking_end", "tool_call", "tool_result"] as const) stream.addEventListener(name, onStream);
     const finish = (event: MessageEvent) => {
-      setStreamSeq((JSON.parse(event.data) as AgentEvent).seq);
+      const payload = JSON.parse(event.data) as AgentEvent;
+      setStreamSeq(payload.seq);
+      void reloadGroups();                                  // 别的会话结束也要更新列表的"运行中"点
+      if (payload.sessionId !== current.current) return;    // 不是当前会话 → 不动 busy/队列（否则会提前补发）
       streaming.current = false;
+      busyRef.current = false;
       setBusy(false);
-      if (current.current !== undefined) {
-        void loadMessages(agentId, current.current);
-        void reloadGroups();
+      if (current.current !== undefined) void loadMessages(agentId, current.current);
+
+      // 生成期间按 Enter 的内容：本轮结束后按顺序补发；不属于当前会话的退回该会话草稿。
+      const pending = queueRef.current;
+      queueRef.current = [];
+      setQueued(undefined);
+      const mine = pending.filter((item) => item.sid === current.current);
+      const others = pending.filter((item) => item.sid !== current.current);
+      for (const item of others) {
+        try {
+          const key = `${DRAFT_PREFIX}${item.sid}`;
+          const existing = localStorage.getItem(key) ?? "";
+          localStorage.setItem(key, existing === "" ? item.text : `${existing}\n${item.text}`);
+        } catch { /* 忽略 */ }
+      }
+      const [first, ...rest] = mine;
+      if (first !== undefined) {
+        sendTextRef.current(first.text);                    // 剩余几条留在队列里，等下一轮 done 再发
+        if (rest.length > 0) {
+          queueRef.current = [...rest, ...queueRef.current];
+          setQueued({ count: rest.length, text: first.text });
+        }
       }
     };
     stream.addEventListener("done", finish);
@@ -331,24 +450,54 @@ export default function App() {
     }
   }
 
-  async function send() {
-    const text = input.trim();
-    if (text === "" || agent === undefined || sessionId === undefined || busy) return;
-    setInput("");
+  /**
+   * 发送（行业通行做法）：
+   * - 生成中按 Enter **不丢内容** → 记入排队，本轮结束后自动发送（并显示“已排队”）；
+   * - 发送失败（网络/4xx）→ **回填草稿**，不静默吃掉用户输入；
+   * - `submittingRef` 防快速连按 Enter 重复提交。
+   */
+  async function sendText(raw: string) {
+    const text = raw.trim();
+    if (text === "" || agent === undefined || sessionId === undefined) return;
+    if (busyRef.current || submittingRef.current) {
+      queueRef.current = [...queueRef.current, { sid: sessionId, text }];
+      setQueued({ count: queueRef.current.length, text });
+      setInput("");
+      return;
+    }
+    submittingRef.current = true;
+    setInput("");                       // 事务开始：清该会话草稿（失败会回填）
+    streamRef.current = createStreamState();
+    setPhase("waiting");
+    setActiveTool(undefined);
+    busyRef.current = true;
     setBusy(true);
     streaming.current = true;
     followTail.current = true;
-    setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }, { role: "assistant", text: "", blocks: [] }]);
-    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/messages`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
-    });
-    if (!response.ok) {
-      const error = await response.json() as { error?: { message: string } };
-      const failure = `[出错] ${error.error?.message ?? "请求失败"}`;
-      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: failure, blocks: [{ type: "text", text: failure }] }]);
+    setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }, { role: "assistant", text: "", blocks: [], streaming: true }]);
+    const fail = (message: string) => {
+      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
+      setInput(text);                   // 失败回填草稿
+      busyRef.current = false;
       setBusy(false);
+    };
+    try {
+      const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/messages`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
+      });
+      if (!response.ok) {
+        const error = await response.json() as { error?: { message?: string } };
+        fail(`[出错] ${error.error?.message ?? "请求失败"}`);
+      }
+    } catch {
+      fail("[出错] 网络错误");
+    } finally {
+      submittingRef.current = false;
     }
   }
+
+  sendTextRef.current = sendText;      // 每次渲染刷新，供 finish 里的补发使用（见上面的注释）
+  function send() { void sendText(input); }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
@@ -357,10 +506,18 @@ export default function App() {
   // 收起态的列 → 单轨条目（成本常数 44px）
   // disabled = 用户本来要打开、但窗口太窄被自动收起（点了也没用，给出准确提示）
   const folded = box.folded;
+  // 收起态 → 单轨条目。规则统一：**点轨道上的列 = 展开该列**；若右侧面板正开着（挤占宽度），
+  // 先关面板再展开（面板与列不互相"顶掉"，也不留点了没反应的禁用态）。
+  const dockOpen = history !== undefined || panelOpen;
+  const railOpen = (open: () => void) => () => {
+    if (history !== undefined) closeHistory();
+    else if (panelOpen) setPanelOpen(false);
+    open();
+  };
   const railItems = [
-    ...(!folded.nav ? [] : [{ key: "nav", label: "助手", disabled: showNav === true, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onOpen: () => setShowNav(true) }]),
-    ...(!folded.projects ? [] : [{ key: "projects", label: "项目", disabled: showProjects === true, icon: <IconFolder size={18} />, onOpen: () => setShowProjects(true) }]),
-    ...(!folded.sessions ? [] : [{ key: "sessions", label: "会话", disabled: showSessions === true, icon: <IconMessageCircle size={18} />, onOpen: () => setShowSessions(true) }]),
+    ...(!folded.nav ? [] : [{ key: "nav", label: "助手", icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onOpen: railOpen(() => setShowNav(true)) }]),
+    ...(!folded.projects ? [] : [{ key: "projects", label: "项目", icon: <IconFolder size={18} />, onOpen: railOpen(() => setShowProjects(true)) }]),
+    ...(!folded.sessions ? [] : [{ key: "sessions", label: "会话", icon: <IconMessageCircle size={18} />, onOpen: railOpen(() => setShowSessions(true)) }]),
   ];
 
   return (
@@ -467,11 +624,18 @@ export default function App() {
                   ) : (
                     <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
                   )}
-                  <span className="relative flex w-14 shrink-0 items-center justify-end">
+                  <span className="relative flex w-24 shrink-0 items-center justify-end">
                     {item.running
                       ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="生成中" />
                       : <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>}
                     <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+                      <IconButton label="会话历史" size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openHistory(item.sessionId, titleOf(item));
+                        }}>
+                        <IconHistory size={14} />
+                      </IconButton>
                       <IconButton label="重命名会话" size="sm"
                         onClick={(event) => {
                           event.stopPropagation();
@@ -506,7 +670,7 @@ export default function App() {
         </>
       )}
 
-      {/* 主区 · 聊天 */}
+      {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-dvh min-w-0 flex-1 flex-col bg-surface">
         <header className="flex h-11 shrink-0 items-center gap-2 px-4">
           <div className="min-w-0">
@@ -516,7 +680,12 @@ export default function App() {
             </p>
           </div>
           <span className="ml-auto" />
-          <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen} onClick={() => setPanelOpen(!panelOpen)}>
+          <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
+            onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
+            <IconHistory size={16} />
+          </IconButton>
+          <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
+            onClick={() => { if (!panelOpen && history !== undefined) closeHistory(); setPanelOpen(!panelOpen); }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
         </header>
@@ -527,18 +696,24 @@ export default function App() {
             followTail.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
           }}
           className="min-h-0 w-full flex-1 overflow-y-auto px-6 py-5">
-          <div className="mx-auto flex w-full max-w-reading flex-col gap-4">
+          <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
             {sessionId === undefined && <EmptyState icon={<IconMessageCircle size={22} />} title="选择或新建一个会话" hint="左侧第 3 列是该项目下的所有对话。" />}
             {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" />}
             {messages.map((message, index) => (
-              <MessageView key={index} role={message.role} blocks={message.blocks} busy={busy} />
+              <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true} />
             ))}
+            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} />}
             <div ref={endRef} />
           </div>
         </main>
 
         <footer className="shrink-0 px-6 pb-4">
           <div className="mx-auto w-full max-w-reading">
+            {queued !== undefined && (
+              <p className="mb-1.5 px-1 text-micro text-ink-500">
+                已排队 {queued.count} 条（本轮回复完成后按顺序发送）：{queued.text}
+              </p>
+            )}
             <div className="flex items-end gap-2 rounded-panel bg-surface p-1.5 ring-1 ring-line focus-within:ring-accent">
               <textarea ref={inputRef} value={input} rows={1}
                 placeholder="输入消息，Enter 发送 · Shift+Enter 换行"
@@ -554,6 +729,17 @@ export default function App() {
           </div>
         </footer>
       </div>
+
+      {/* 完整历史 · 右侧并列列 */}
+      {history !== undefined && box.history > 0 && (
+        <>
+          <DragHandle onStart={(event) => beginDrag("c5", event)} />
+          <aside style={{ width: box.history }} className="flex shrink-0 overflow-hidden">
+            <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
+              agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
+          </aside>
+        </>
+      )}
 
       {/* 右侧文件面板 */}
       {panelOpen && box.panel > 0 && (
@@ -573,8 +759,8 @@ export default function App() {
               </nav>
             )}
             <div className="min-w-0 flex-1 overflow-hidden">
-              <FilePanel tabs={fileTabs} activeId={activeFileTabId} onSelectTab={setActiveFileTabId}
-                onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs} />
+              <FilePanel tabs={fileTabs} activeId={activeFileTabId}
+                onSelectTab={setActiveFileTabId} onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs} />
             </div>
           </aside>
         </>

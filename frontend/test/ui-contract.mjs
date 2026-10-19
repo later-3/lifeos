@@ -29,6 +29,7 @@ const PLAYWRIGHT_CANDIDATES = [
 ].filter(Boolean);
 
 const MIN_CHAT = 420;
+const MIN_HISTORY = 360;
 const MIN_HIT = 28;
 const MIN_CONTRAST = 4.5;
 
@@ -42,6 +43,35 @@ async function loadPlaywright() {
 }
 
 const results = [];
+async function measureHistory(target) {
+  return await target.evaluate(({ MIN_CONTRAST }) => {
+    const main = document.querySelector("main");
+    const box = main?.getBoundingClientRect();
+    const leafText = [...(main?.querySelectorAll("*") ?? [])].filter((el) => el.children.length === 0 && (el.textContent ?? "").trim() !== "");
+    const clipped = leafText
+      .filter((el) => getComputedStyle(el).textOverflow !== "ellipsis")            // truncate 是设计行为，不算裁切
+      .filter((el) => el.scrollWidth > el.clientWidth + 1)
+      .map((el) => (el.textContent ?? "").trim().slice(0, 12));
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1; const ctx = canvas.getContext("2d");
+    const toRgb = (c) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = "#fff"; ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2]]; };
+    const lum = (rgb) => rgb.map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const x = lum(toRgb(a)), y = lum(toRgb(b)); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    const bgOf = (el) => { for (let n = el; n !== null; n = n.parentElement) { const v = getComputedStyle(n).backgroundColor; if (v !== "rgba(0, 0, 0, 0)") return v; } return "rgb(255,255,255)"; };
+    const lowContrast = leafText.filter((el) => { const style = getComputedStyle(el); if (Number(style.opacity) < 0.9) return false; return ratio(style.color, bgOf(el)) < (Number.parseFloat(style.fontSize) >= 22 ? 3 : MIN_CONTRAST); })
+      .map((el) => `${(el.textContent ?? "").trim().slice(0, 10)} ${ratio(getComputedStyle(el).color, bgOf(el)).toFixed(2)}:1`);
+    return {
+      width: box === undefined ? 0 : Math.round(box.width),
+      rendered: document.body.innerText.includes("历史 ·"),
+      overflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+      clipped, lowContrast,
+      markdownBodies: main?.querySelectorAll(".md-body")?.length ?? 0,
+      contextSummary: document.body.innerText.includes("上下文"),
+      systemSectionsHidden: !document.body.innerText.includes("系统提示分段"),
+      buttons: main?.parentElement?.querySelectorAll("button, summary")?.length ?? 0,
+    };
+  }, { MIN_CONTRAST });
+}
+
 async function settle(page) {
   // 截图前把滚动位置归位（挂载时的 smooth scrollIntoView 会造成像素级抖动）
   await page.evaluate(() => {
@@ -254,8 +284,9 @@ const headerTexts = await page.evaluate(() => [...document.querySelectorAll("asi
 check("列头不重复行内徽标（无“默认”）", headerTexts.every((text) => !text.includes("默认")), headerTexts.join(" | "));
 
 // 列内文本噪音：项目/会话行不再出现"默认"这类文字徽标（默认项目改用 6px 点 + title）
-const bodyText = await page.evaluate(() => document.body.innerText);
-check("界面不再出现“默认”文字徽标", !bodyText.includes("默认"), bodyText.includes("默认") ? "仍有“默认”字样" : "");
+// 只查"界面自称"的地方：三列 + 右侧面板。会话正文里的"默认"是用户/模型说的话，不是徽标。
+const chromeText = await page.evaluate(() => [...document.querySelectorAll("aside")].map((el) => el.innerText).join("\n"));
+check("界面的列与面板不再出现“默认”文字徽标", !chromeText.includes("默认"), chromeText.includes("默认") ? "仍有“默认”字样" : "");
 
 // 键盘焦点可见（全局 :focus-visible 兜底）
 await page.keyboard.press("Tab");
@@ -266,6 +297,137 @@ const focusRing = await page.evaluate(() => {
   return { ok: style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0, detail: `${el.tagName} ${style.outlineStyle} ${style.outlineWidth}` };
 });
 check("键盘 Tab 后焦点可见（outline）", focusRing.ok, String(focusRing.detail));
+
+// 完整历史（v3：右侧并列列 + 回合树，不覆盖对话区）
+const historyButton = page.locator('[aria-label="完整历史"]').first();
+if (await historyButton.count() > 0) {
+  await historyButton.click();
+  await page.waitForTimeout(900);
+
+  const docking = await page.evaluate(() => {
+    const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+    const main = document.querySelector("main");
+    const rect = (el) => { const b = el.getBoundingClientRect(); return { w: Math.round(b.width), x: Math.round(b.x) }; };
+    return { dock: aside ? rect(aside) : null, chat: main ? rect(main) : null, text: document.body.innerText };
+  });
+  check("完整历史以右侧并列列出现（不覆盖对话区）",
+    docking.dock !== null && docking.chat !== null && docking.dock.x >= docking.chat.x + docking.chat.w - 2,
+    `chat ${docking.chat?.w ?? 0}px @${docking.chat?.x ?? 0} · dock ${docking.dock?.w ?? 0}px @${docking.dock?.x ?? 0}`);
+  check("并排：对话区与历史列同时 ≥ 下限", (docking.chat?.w ?? 0) >= MIN_CHAT && (docking.dock?.w ?? 0) >= MIN_HISTORY,
+    `chat ${docking.chat?.w ?? 0} / dock ${docking.dock?.w ?? 0}`);
+
+  const tree = await page.evaluate(() => {
+    const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+    const text = aside?.textContent ?? "";
+    const leaf = [...(aside?.querySelectorAll("*") ?? [])].filter((el) => el.children.length === 0 && (el.textContent ?? "").trim() !== "");
+    const clipped = leaf.filter((el) => getComputedStyle(el).textOverflow !== "ellipsis" && el.scrollWidth > el.clientWidth + 1).length;
+    return {
+      hasTurn: /回合 #\d/.test(text), hasRequest: text.includes("请求"), hasReply: text.includes("回复"),
+      hasToken: /tok/.test(text), hasWindow: text.includes("窗口"),
+      clipped,
+      horizontalOverflow: (aside?.scrollWidth ?? 0) > (aside?.clientWidth ?? 0) + 1,
+    };
+  });
+  check("回合树：回合 / 请求 / 回复 三层都在", tree.hasTurn && tree.hasRequest && tree.hasReply);
+  check("块头带 token 与占窗口比例", tree.hasToken && tree.hasWindow);
+  check("历史列无横向溢出/裁切", tree.horizontalOverflow === false && tree.clipped === 0, `clipped=${tree.clipped}`);
+
+  // 请求展开后必须能看到 system 分区（区域名 + 归属）。
+  // 不假设"最后一个回合就是 Life OS 跑的"：会话里可能有别的运行（或历史遗留）写入的回合，从后往前找到 Life OS 那个回合。
+  const sections = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+    if (aside === undefined) return { identity: false, harness: false, source: false, detail: "找不到历史列" };
+    const turns = [...aside.querySelectorAll("button")].filter((el) => /^回合 #\d/.test((el.textContent ?? "").trim()));
+    for (const turn of turns.slice().reverse()) {
+      turn.click();
+      await sleep(250);
+      const request = [...aside.querySelectorAll("button")].find((el) => (el.textContent ?? "").trim().startsWith("请求"));
+      if (request === undefined) continue;
+      request.click();
+      await sleep(350);
+      const text = aside.textContent ?? "";
+      if (text.includes("身份区") && text.includes("交互 harness 区")) {
+        return { identity: true, harness: true, source: text.includes("我方") && text.includes("Pi 内置"), detail: (turn.textContent ?? "").trim().slice(0, 12) };
+      }
+      request.click();   // 收起，继续往前找
+      await sleep(150);
+    }
+    return { identity: false, harness: false, source: false, detail: `${turns.length} 个回合都没有 Life OS 分区` };
+  });
+  check("请求里显示 system 分区（身份区 / 交互 harness 区）", sections.identity && sections.harness, String(sections.detail ?? ""));
+  check("分区带归属（我方 / Pi 内置）", sections.source);
+
+  // 把手方向一致性（用户点名的 bug）：右侧停靠面板左拉变大、左列表右拉变大
+  const dragCheck = await (async () => {
+    const measure = async () => await page.evaluate(() => {
+      const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+      return aside === undefined ? 0 : Math.round(aside.getBoundingClientRect().width);
+    });
+    const handle = await page.evaluate(() => {
+      const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+      if (aside === undefined) return null;
+      const box = aside.getBoundingClientRect();
+      const handles = [...document.querySelectorAll("div.cursor-col-resize")];
+      const nearest = handles
+        .map((el) => ({ el, distance: Math.abs(el.getBoundingClientRect().x - box.x) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (nearest === undefined) return null;
+      const rect = nearest.el.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    });
+    if (handle === null) return { ok: false, detail: "找不到把手" };
+    const before = await measure();
+    await page.mouse.move(handle.x, handle.y);
+    await page.mouse.down();
+    await page.mouse.move(handle.x - 60, handle.y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    const wider = await measure();
+    return { ok: wider > before + 40, detail: `左拉 ${before} → ${wider}（应变宽）` };
+  })();
+  check("右侧停靠面板把手方向正确（左拉变大）", dragCheck.ok, String(dragCheck.detail));
+
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  check("Esc 关闭完整历史", await page.evaluate(() => ![...document.querySelectorAll("aside")].some((el) => (el.textContent ?? "").includes("完整历史"))));
+} else {
+  check("完整历史入口存在", false, "找不到 [aria-label=\"完整历史\"]");
+}
+
+// 1280 并排：窗口变窄时自动收左三列，对话区与历史列都要保住
+const narrow = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+await narrow.clock.install({ time: FROZEN_TIME });
+await narrow.goto(APP_URL, { waitUntil: "networkidle" });
+await narrow.waitForTimeout(700);
+await narrow.locator('[aria-label="完整历史"]').first().click();
+await narrow.waitForTimeout(900);
+const narrowPair = await narrow.evaluate(() => {
+  const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+  const main = document.querySelector("main");
+  const width = (el) => (el === null || el === undefined ? 0 : Math.round(el.getBoundingClientRect().width));
+  return { chat: width(main), dock: width(aside) };
+});
+check("[1280] 仍并排（对话 ≥ MIN_CHAT，历史 ≥ MIN_HISTORY）", narrowPair.chat >= MIN_CHAT && narrowPair.dock >= MIN_HISTORY,
+  `chat ${narrowPair.chat} / dock ${narrowPair.dock}`);
+await narrow.close();
+
+// URL 三键：切项目必须更新 ?project=（尤其"该项目没有会话"时——否则刷新会退回旧项目/旧会话）
+const urlThreeKeys = await page.evaluate(async () => {
+  const list = await (await fetch("/api/agents/lifeosagent/projects")).json();
+  if (list.items.length < 2) return { skipped: true };
+  const target = list.items[1];
+  const projectCol = [...document.querySelectorAll("aside")][1];
+  if (projectCol === undefined) return { ok: false, detail: "找不到项目列" };
+  const row = [...projectCol.querySelectorAll("div")].find((el) => (el.textContent ?? "").trim().startsWith(target.name));
+  if (row === undefined) return { ok: false, detail: "找不到项目行 " + target.name };
+  row.click();
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  const params = new URLSearchParams(location.search);
+  return { ok: params.get("project") === target.id, detail: `?project=${params.get("project")}（期望 ${target.id}）` };
+});
+check("URL 三键：切项目更新 ?project=（无会话时也要）", urlThreeKeys.skipped === true || urlThreeKeys.ok === true,
+  urlThreeKeys.skipped === true ? "只有 1 个项目，跳过" : String(urlThreeKeys.detail ?? ""));
 
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
@@ -281,7 +443,13 @@ async function capture(width, setup) {
   await shotPage.waitForTimeout(500);
   if (setup !== undefined) await setup(shotPage);
   await settle(shotPage);
-  const buffer = await shotPage.screenshot({ animations: "disabled", caret: "hide" });
+  // 遮罩"会随对话变化"的正文（会话消息、完整历史正文与标题行）：基线只比界面骨架。
+  // 不这么做的话，用户每聊一句、每多一个回合，截图就漂 → 门禁天天红（实测漂 5–8%）。
+  const buffer = await shotPage.screenshot({
+    animations: "disabled", caret: "hide",
+    mask: [shotPage.locator("[data-shot-mask]")],
+    maskColor: "#fafafa",
+  });
   await shotPage.close();
   return buffer;
 }
@@ -291,6 +459,14 @@ const SHOTS = [
   ["folded.png", 1600, async (shotPage) => {
     const buttons = shotPage.locator('[aria-label="收起此列"]');
     while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
+  }],
+  ["history.png", 1600, async (shotPage) => {
+    await shotPage.locator('[aria-label="会话历史"]').first().click();
+    await shotPage.waitForTimeout(600);
+  }],
+  ["history.png", 1600, async (shotPage) => {
+    await shotPage.locator('[aria-label="完整历史"]').first().click();
+    await shotPage.waitForTimeout(700);
   }],
   ["modal.png", 1600, async (shotPage) => {
     await shotPage.locator('button[aria-label^="配置 "]').first().click();
