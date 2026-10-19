@@ -20,7 +20,9 @@ export type AgentEvent = AgentEventPayload & { seq: number };
 
 export type RunSnapshot = { sessionId: string; startedAt: string };
 
-type SessionState = { session: Awaited<ReturnType<typeof createAgentSession>>["session"] };
+type HostedSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+type ModelRuntimeInstance = Awaited<ReturnType<typeof ModelRuntime.create>>;
+type SessionState = { session: HostedSession; modelRuntime: ModelRuntimeInstance };
 type AgentState = {
   seq: number;
   recent: AgentEvent[];                       // 环形缓冲，供 since 续传
@@ -122,7 +124,7 @@ async function createHostedSession(
   agentId: string,
   sessionManager: ReturnType<typeof SessionManager.create>,
   mode: "new" | "restored",
-): Promise<{ session: SessionState["session"]; modelLabel: string | undefined }> {
+): Promise<{ session: SessionState["session"]; modelRuntime: ModelRuntimeInstance; modelLabel: string | undefined }> {
   const cwd = sessionManager.getCwd();
   const configDir = join(resolveHome(), "config");
   const modelRuntime = await ModelRuntime.create({
@@ -165,7 +167,7 @@ async function createHostedSession(
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
-  return { session, modelLabel };
+  return { session, modelRuntime, modelLabel };
 }
 
 /** 从会话目录反推 projectId：…/agents/<id>/projects/<pid>/sessions → <pid>。 */
@@ -223,10 +225,10 @@ export async function createSession(agentId: string, cwd: string, projectId = "w
       { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
   }
   const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));
-  const { session, modelLabel } = await createHostedSession(agentId, manager, "new");
+  const { session, modelRuntime, modelLabel } = await createHostedSession(agentId, manager, "new");
   const sessionId = manager.getSessionId();
   if (modelLabel !== undefined) console.log(`[assembly] 新建会话 ${sessionId} · 模型 ${modelLabel}`);
-  stateOf(agentId).sessions.set(sessionId, { session });
+  stateOf(agentId).sessions.set(sessionId, { session, modelRuntime });
   stateOf(agentId).pending.set(sessionId, { projectId, at: new Date().toISOString() });
   return sessionId;
 }
@@ -260,8 +262,8 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   if (existing !== undefined) return existing;
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return undefined;
-  const { session } = await createHostedSession(agentId, SessionManager.open(found.path, found.dir, cwd), "restored");
-  const restored: SessionState = { session };
+  const { session, modelRuntime } = await createHostedSession(agentId, SessionManager.open(found.path, found.dir, cwd), "restored");
+  const restored: SessionState = { session, modelRuntime };
   state.sessions.set(sessionId, restored);
   state.pending.delete(sessionId);
   return restored;
@@ -287,6 +289,55 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
     state.running.delete(sessionId);
     state.pending.delete(sessionId);   // 首轮消息后 Pi 已落盘，文件列表接管
   }
+}
+
+// —— 会话内的 Pi 原生能力（2026-10-19：全部对接 Pi AgentSession 的公开方法，不自己造）——
+
+/** 打断当前 run（`abort()` 会等 idle；runTurn 的 finally 照常发 done）。 */
+export async function abortSession(agentId: string, sessionId: string): Promise<boolean> {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  await state.session.abort();
+  return true;
+}
+
+/** 生成中投入输入：steer 插进当前思考，followUp 本轮结束后处理（都是 Pi 原生队列）。 */
+export async function queueSessionInput(agentId: string, sessionId: string, text: string, behavior: "steer" | "followUp"): Promise<boolean> {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  if (behavior === "steer") await state.session.steer(text);
+  else await state.session.followUp(text);
+  return true;
+}
+
+/** 压缩上下文（Pi `compact()`：会先 abort 当前 run）。 */
+export async function compactSession(agentId: string, sessionId: string): Promise<{ ok: true; summary: string } | { ok: false; message: string }> {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return { ok: false, message: "找不到这个会话" };
+  try {
+    const result = await state.session.compact();
+    return { ok: true, summary: result.summary };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 会话级切模型（Pi `setModel()`，ModelRuntime 解析出 Model）。 */
+export async function setSessionModel(agentId: string, sessionId: string, provider: string, modelId: string): Promise<boolean> {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  const model = state.modelRuntime.getModel(provider, modelId);
+  if (model === undefined) return false;
+  await state.session.setModel(model);
+  return true;
+}
+
+/** 会话级思考级别（Pi `setThinkingLevel()`）。 */
+export function setSessionThinking(agentId: string, sessionId: string, level: string): boolean {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  state.session.setThinkingLevel(level as Parameters<HostedSession["setThinkingLevel"]>[0]);
+  return true;
 }
 
 /** 删除会话：移除文件与内存态；正在运行的拒绝。 */

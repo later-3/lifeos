@@ -379,6 +379,23 @@ const imeGuard = await page.evaluate(() => {
 });
 check("输入法组字中的 Enter 不发送", imeGuard.ok, String(imeGuard.detail));
 
+// 斜杠命令面板（对齐 Pi CLI / Pi Web）：输入 "/" 列命令，Esc 关闭
+const chatComposer = page.locator("textarea").first();
+await chatComposer.click();
+await chatComposer.type("/");
+await page.waitForTimeout(300);
+const paletteItems = await page.evaluate(() => [...document.querySelectorAll("button")]
+  .map((button) => (button.textContent ?? "").trim())
+  .filter((text) => text.startsWith("/")));
+check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")),
+  paletteItems.slice(0, 6).join(" | "));
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+const paletteClosed = await page.evaluate(() => ![...document.querySelectorAll("button")]
+  .some((button) => (button.textContent ?? "").trim().startsWith("/compact")));
+check("斜杠命令面板：Esc 关闭", paletteClosed);
+await chatComposer.fill("");
+
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
   const row = [...document.querySelectorAll('[role="button"]')].find((el) => el.className.includes("h-8") && el.textContent.includes("welcome"));

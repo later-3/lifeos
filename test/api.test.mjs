@@ -651,3 +651,54 @@ test("旧 uuid 项目目录：懒迁移成可读名（会话跟着搬、旧 URL 
     assert.equal(created.status, 200, "旧 pid 仍可反查到项目");
   } finally { server.close(); }
 });
+
+
+test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切模型（含 404 路径）", async () => {
+  const { server, base, home } = await start();
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  try {
+    // 给测试家一份最小模型清单，才能验证"切模型成功"这条
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(join(home, "config", "models.json"), JSON.stringify({
+      providers: { test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "test-key", models: [{ id: "m1", name: "m1" }] } },
+    }) + "\n");
+    const sid = (await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json()).sessionId;
+
+    // abort：空闲会话也安全；未知会话 404
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/abort`, { method: "POST" })).status, 200);
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/abort`, { method: "POST" })).status, 404);
+
+    // steer / followUp：走 Pi 原生队列，返回 202 + queued 类型
+    for (const behavior of ["steer", "followUp"]) {
+      const response = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/messages`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "插一句", behavior }),
+      });
+      assert.equal(response.status, 202, behavior);
+      assert.equal((await response.json()).queued, behavior);
+    }
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/messages`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x", behavior: "steer" }),
+    })).status, 404);
+
+    // 思考级别：合法 200、未知会话 404
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/thinking`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level: "medium" }),
+    })).status, 200);
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/thinking`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level: "medium" }),
+    })).status, 404);
+
+    // 切模型：清单里有的 → 200；没有的 → 404
+    const okModel = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "test", model: "m1" }),
+    });
+    assert.equal(okModel.status, 200, "清单里的模型应能切");
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "nope", model: "nope" }),
+    })).status, 404);
+
+    // 压缩：接线正确即可（测试家没有可用模型时 Pi 会报错 → 400）
+    const compact = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/compact`, { method: "POST" });
+    assert.ok([200, 400].includes(compact.status), `compact status=${compact.status}`);
+  } finally { server.close(); }
+});

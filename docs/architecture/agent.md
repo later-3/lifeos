@@ -72,6 +72,8 @@
 - 刚建、还没发消息的会话不在磁盘上（Pi 延迟落盘）→ 后端把它们并入列表（pending）。
 - 事件流：`GET /api/agents/:id/events`（SSE）一条流承载该 Agent 的**所有**会话；事件名 = 事件类型：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error`，每条带 `seq`，`?since=` 可续传（映射见 `src/stream-events.ts`）。
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
+- **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别。
+- **前端交互**（对照 Pi CLI / Pi Web，2026-10-19）：生成中 **Esc / 停止按钮 = 打断**；生成中 Enter = **steer 插话**；生成中超过 **60s 无事件 = 判为运行丢失**（清生成态 + 重载消息，尾部空回复给「重新发送」）；SSE 重连快照显示"不在跑"也走同一恢复；斜杠命令面板（`/compact /model /thinking /name /new /copy /export /abort`）；空输入时 **↑/↓ 浏览发送历史**。
 - 模型选择：**优先级 A** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ Pi 回落；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。
 
 ## 5 装配（方案 E，2026-10-18 定稿，现状）

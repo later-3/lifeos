@@ -30,6 +30,7 @@ type SessionItem = { sessionId: string; title: string; updatedAt: string; messag
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
+type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
 type AgentEvent = { seq: number; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" });
 
 const LAST_AGENT = "lifeos.lastAgent";
@@ -85,14 +86,15 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
-  const [queued, setQueued] = useState<{ count: number; text: string } | undefined>();
+
   // 输入法组字：组字中/刚提交 100ms 内的 Enter 不发送（照 Pi Web ChatInput 的判定，见 reference-baseline）
   const composingRef = useRef(false);
   const lastCompositionEndRef = useRef(0);
   const busyRef = useRef(false);          // 供回调读的即时 busy（state 有渲染延迟）
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
-  // 排队是"多条"（连按两次 Enter 不能只留最后一条）；按会话归属，切了会话就退回草稿。
-  const queueRef = useRef<{ sid: string; text: string }[]>([]);
+  const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
+  const sentHistoryRef = useRef<string[]>([]);   // 输入历史（↑/↓ 浏览，本进程内）
+  const historyIndexRef = useRef(-1);
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
   // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
   const sendTextRef = useRef<(raw: string) => void>(() => {});
@@ -222,21 +224,6 @@ export default function App() {
     return [...list].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
   }
 
-  /** 排队内容退回各自会话草稿：切会话/切项目时用，避免"排队中"跨会话悬着（永不触发）。 */
-  function parkQueueAsDrafts() {
-    const pending = queueRef.current;
-    if (pending.length === 0) return;
-    queueRef.current = [];
-    setQueued(undefined);
-    for (const item of pending) {
-      try {
-        const key = `${DRAFT_PREFIX}${item.sid}`;
-        const existing = localStorage.getItem(key) ?? "";
-        localStorage.setItem(key, existing === "" ? item.text : `${existing}\n${item.text}`);
-      } catch { /* 忽略 */ }
-    }
-  }
-
   /** 归档助手 = 从列表移除（数据全留）；当前选中的被删时回落到第一个。 */
   async function removeAgent(item: Agent) {
     const response = await fetch(`/api/agents/${item.id}`, { method: "DELETE" });
@@ -252,7 +239,6 @@ export default function App() {
   }
 
   async function openSession(a: Agent, sid: string) {
-    if (sid !== current.current) parkQueueAsDrafts();
     setHistory(undefined);
     streamRef.current = createStreamState();
     setPhase("waiting");
@@ -286,7 +272,6 @@ export default function App() {
 
   async function selectProject(project: Project) {
     if (agent === undefined) return;
-    parkQueueAsDrafts();
     setHistory(undefined);
     setSelectedProjectId(project.id);
     setShowSessions(true);
@@ -313,7 +298,10 @@ export default function App() {
       const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
       snapshotSeq.current = snapshot.seq;
       setStreamSeq(snapshot.seq);
+      lastEventAtRef.current = Date.now();
       const running = snapshot.running.some((run) => run.sessionId === current.current);
+      // 断线重连时快照说"不在跑"但 UI 还在生成态 → 说明那一轮已丢（后端重启等）→ 收尾并重载
+      if (!running && busyRef.current) recoverLostRun("运行已中断（连接恢复时该会话已不在运行）");
       busyRef.current = running;
       setBusy(running);
     });
@@ -324,6 +312,7 @@ export default function App() {
       if (payload.seq <= snapshotSeq.current) return;
       if (payload.sessionId !== current.current) return;
       if (payload.type === "done" || payload.type === "error" || payload.type === "agents_changed") return;
+      lastEventAtRef.current = Date.now();
       const tailIsStreaming = streaming.current;
       if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
       const next = applyStreamEvent(streamRef.current, payload);
@@ -348,33 +337,11 @@ export default function App() {
       const payload = JSON.parse(event.data) as AgentEvent;
       setStreamSeq(payload.seq);
       void reloadGroups();                                  // 别的会话结束也要更新列表的"运行中"点
-      if (payload.sessionId !== current.current) return;    // 不是当前会话 → 不动 busy/队列（否则会提前补发）
+      if (payload.sessionId !== current.current) return;    // 不是当前会话 → 不动 busy（否则会提前结束生成态）
       streaming.current = false;
       busyRef.current = false;
       setBusy(false);
       if (current.current !== undefined) void loadMessages(agentId, current.current);
-
-      // 生成期间按 Enter 的内容：本轮结束后按顺序补发；不属于当前会话的退回该会话草稿。
-      const pending = queueRef.current;
-      queueRef.current = [];
-      setQueued(undefined);
-      const mine = pending.filter((item) => item.sid === current.current);
-      const others = pending.filter((item) => item.sid !== current.current);
-      for (const item of others) {
-        try {
-          const key = `${DRAFT_PREFIX}${item.sid}`;
-          const existing = localStorage.getItem(key) ?? "";
-          localStorage.setItem(key, existing === "" ? item.text : `${existing}\n${item.text}`);
-        } catch { /* 忽略 */ }
-      }
-      const [first, ...rest] = mine;
-      if (first !== undefined) {
-        sendTextRef.current(first.text);                    // 剩余几条留在队列里，等下一轮 done 再发
-        if (rest.length > 0) {
-          queueRef.current = [...rest, ...queueRef.current];
-          setQueued({ count: rest.length, text: first.text });
-        }
-      }
     };
     stream.addEventListener("done", finish);
     stream.addEventListener("error", finish);
@@ -517,12 +484,19 @@ export default function App() {
         submittingRef.current = false;
       }
     }
-    if (busyRef.current || submittingRef.current) {
-      queueRef.current = [...queueRef.current, { sid, text }];
-      setQueued({ count: queueRef.current.length, text });
-      setInput("");
-      return;
+    if (busyRef.current) {
+      // 生成中投入输入 = Pi 原生 steer（插进当前思考）；失败再退回普通发送
+      const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, behavior: "steer" }),
+      }).catch(() => undefined);
+      if (response?.ok === true) {
+        setInput("");
+        setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }]);
+        toast("已插话（steer，不影响当前轮继续）");
+        return;
+      }
     }
+    if (submittingRef.current) return;
     submittingRef.current = true;
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
     streamRef.current = createStreamState();
@@ -554,8 +528,136 @@ export default function App() {
     }
   }
 
-  sendTextRef.current = sendText;      // 每次渲染刷新，供 finish 里的补发使用（见上面的注释）
-  function send() { void sendText(input); }
+  sendTextRef.current = sendText;      // 每次渲染刷新（跨渲染的回调走 ref，避免拿到旧闭包）
+
+  // —— 斜杠命令（对齐 Pi CLI / Pi Web 的常用项；能力都走 Pi 原生接口） ——
+  const [palette, setPalette] = useState<{ items: PaletteItem[]; index: number } | undefined>();
+
+  const copyLastAssistant = () => {
+    const tail = [...messages].reverse().find((message) => message.role === "assistant" && message.text !== "");
+    if (tail === undefined) { toast("没有可复制的回复", "error"); return; }
+    void navigator.clipboard.writeText(tail.text).then(() => toast("已复制最后一条回复"));
+  };
+
+  const exportMarkdown = () => {
+    const lines = messages.map((message) => `## ${message.role === "user" ? "用户" : "Agent"}\n\n${message.text}`);
+    const blob = new Blob([`# ${sessionTitle || "会话"}\n\n${lines.join("\n\n")}`], { type: "text/markdown" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${sessionTitle || "session"}.md`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
+  async function compactNow() {
+    if (agent === undefined || sessionId === undefined) return;
+    if (busyRef.current) { toast("先打断当前回复再压缩", "error"); return; }
+    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/compact`, { method: "POST" }).catch(() => undefined);
+    const body = response === undefined ? {} : await response.json().catch(() => ({})) as { summary?: string; error?: { message?: string } };
+    if (response?.ok !== true) { toast(body.error?.message ?? "压缩失败", "error"); return; }
+    toast(`已压缩上下文${body.summary === undefined ? "" : "（摘要已写入会话）"}`);
+    void loadMessages(agent.id, sessionId);
+  }
+
+  async function openModelPalette() {
+    const response = await fetch("/api/models-config").catch(() => undefined);
+    if (response?.ok !== true) { toast("读取模型清单失败", "error"); return; }
+    const data = await response.json() as { providers: Array<{ id: string; models: Array<{ id: string }> }> };
+    const items: PaletteItem[] = data.providers.flatMap((provider) => provider.models.map((model) => ({
+      key: `${provider.id}/${model.id}`,
+      label: `${provider.id} / ${model.id}`,
+      hint: "切换本会话模型",
+      run: () => { void applyModel(provider.id, model.id); },
+    })));
+    setPalette(items.length === 0 ? undefined : { items, index: 0 });
+    if (items.length === 0) toast("模型清单是空的", "error");
+  }
+
+  async function applyModel(provider: string, model: string) {
+    if (agent === undefined || sessionId === undefined) return;
+    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider, model }),
+    }).catch(() => undefined);
+    toast(response?.ok === true ? `已切到 ${provider}/${model}` : "切换失败", response?.ok === true ? "success" : "error");
+  }
+
+  async function applyThinking(level: string) {
+    if (agent === undefined || sessionId === undefined) return;
+    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/thinking`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level }),
+    }).catch(() => undefined);
+    toast(response?.ok === true ? `思考级别：${level}` : "切换失败", response?.ok === true ? "success" : "error");
+  }
+
+  const COMMANDS: PaletteItem[] = [
+    { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", run: () => void compactNow() },
+    { key: "/model", label: "/model", hint: "切换本会话模型", run: () => void openModelPalette() },
+    { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "low", "medium", "high"].map((level) => ({ key: level, label: level, hint: "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
+    { key: "/name", label: "/name <名称>", hint: "重命名会话", run: () => setInput("/name ") },
+    { key: "/new", label: "/new", hint: "新建会话", run: () => void newSession() },
+    { key: "/copy", label: "/copy", hint: "复制最后一条回复", run: copyLastAssistant },
+    { key: "/export", label: "/export", hint: "导出为 Markdown", run: exportMarkdown },
+    { key: "/abort", label: "/abort", hint: "打断当前回复（Esc）", run: () => void stop() },
+  ];
+
+  async function runSlash(command: string) {
+    const [name, ...rest] = command.trim().split(/\s+/);
+    const arg = rest.join(" ").trim();
+    if (name === "/name" && arg !== "") {
+      if (agent === undefined || sessionId === undefined) return;
+      const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}`, {
+        method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: arg }),
+      }).catch(() => undefined);
+      toast(response?.ok === true ? "已重命名会话" : "重命名失败", response?.ok === true ? "success" : "error");
+      if (response?.ok === true) { setInput(""); void reloadGroups(); }
+      return;
+    }
+    const hit = COMMANDS.find((item) => item.key === name);
+    if (hit !== undefined) { setInput(""); hit.run(); return; }
+    if (name === "/model" || name === "/thinking") { setInput(""); return; }
+    toast(`未知命令 ${name}（按 / 看列表）`, "error");
+  }
+
+  /** 打断：Pi 原生 abort()；run 的 finally 会发 done，前端据此收尾。 */
+  async function stop() {
+    if (agent === undefined || sessionId === undefined) return;
+    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
+    toast(response?.ok === true ? "已请求打断" : "打断失败", response?.ok === true ? "success" : "error");
+  }
+
+  /** 运行"跑丢了"（后端重启 / 断线）：清生成态、重载消息，尾部空回复处会给重试。 */
+  function recoverLostRun(reason: string) {
+    if (!busyRef.current) return;
+    busyRef.current = false;
+    streaming.current = false;
+    setBusy(false);
+    toast(reason, "error");
+    if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
+  }
+
+  // Esc 打断（不在输入法组字、没有对话框打开时）；生成中每 5s 检查一次心跳
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || composingRef.current || !busyRef.current) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      void stop();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const timer = setInterval(() => {
+      if (!busyRef.current) return;
+      const since = Date.now() - lastEventAtRef.current;
+      if (lastEventAtRef.current > 0 && since > 60_000) recoverLostRun("运行已中断（超过 60 秒没有响应）");
+    }, 5000);
+    return () => { document.removeEventListener("keydown", onKeyDown); clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  function send() {
+    const raw = input.trim();
+    if (raw.startsWith("/")) { void runSlash(raw); return; }
+    if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
+    void sendText(raw);
+  }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
@@ -786,22 +888,77 @@ export default function App() {
               <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true} />
             ))}
             {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} />}
+            {/* 尾部空回复 = 那一轮没跑出结果（后端重启/断线）：给一条明确的"重新发送" */}
+            {!busy && (() => {
+              const tail = messages[messages.length - 1];
+              const lastUser = [...messages].reverse().find((message) => message.role === "user");
+              if (tail?.role !== "assistant" || tail.text !== "" || lastUser === undefined) return null;
+              return (
+                <div className="flex items-center gap-2 text-meta text-ink-500">
+                  <span>本轮没有回复（可能被中断）。</span>
+                  <Button size="sm" onClick={() => void sendText(lastUser.text)}>重新发送</Button>
+                </div>
+              );
+            })()}
             <div ref={endRef} />
           </div>
         </main>
 
         <footer className="shrink-0 px-6 pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {queued !== undefined && (
-              <p className="mb-1.5 px-1 text-micro text-ink-500">
-                已排队 {queued.count} 条（本轮回复完成后按顺序发送）：{queued.text}
-              </p>
+            {palette !== undefined && (
+              <div className="mb-1.5 max-h-56 overflow-y-auto overflow-hidden rounded-panel bg-surface p-1 shadow-sm ring-1 ring-line">
+                {palette.items.map((item, index) => (
+                  <button key={item.key} type="button"
+                    onMouseEnter={() => setPalette({ ...palette, index })}
+                    onClick={() => { setPalette(undefined); item.run(); }}
+                    className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors ${index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"}`}>
+                    <span className="shrink-0 font-mono">{item.label}</span>
+                    {item.hint !== undefined && <span className="ml-auto min-w-0 truncate text-micro text-ink-500">{item.hint}</span>}
+                  </button>
+                ))}
+              </div>
             )}
             <div className="flex items-end gap-2 rounded-panel bg-surface p-1.5 ring-1 ring-line focus-within:ring-accent">
               <textarea ref={inputRef} value={input} rows={1}
-                placeholder="输入消息，Enter 发送 · Shift+Enter 换行"
-                onChange={(event) => setInput(event.target.value)}
+                placeholder="输入消息 · Enter 发送 · 生成中 Enter 插话 · Esc 打断 · / 查看命令"
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setInput(next);
+                  if (next.startsWith("/") && !next.includes(" ") && !next.includes("\n")) {
+                    const items = COMMANDS.filter((item) => item.key.startsWith(next.trim()));
+                    setPalette(items.length === 0 ? undefined : { items, index: 0 });
+                  } else if (palette !== undefined && !next.startsWith("/")) {
+                    setPalette(undefined);
+                  }
+                }}
                 onKeyDown={(event) => {
+                  // 调色板打开时：↑/↓ 选择、Enter 执行、Esc 关闭
+                  if (palette !== undefined) {
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      const delta = event.key === "ArrowDown" ? 1 : -1;
+                      setPalette({ ...palette, index: (palette.index + delta + palette.items.length) % palette.items.length });
+                      return;
+                    }
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      const item = palette.items[palette.index];
+                      setPalette(undefined);
+                      item?.run();
+                      return;
+                    }
+                    if (event.key === "Escape") { event.preventDefault(); setPalette(undefined); return; }
+                  }
+                  // 输入历史：空输入时 ↑/↓ 浏览（对齐 Pi CLI 的 historyPrevious/Next）
+                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && input === "" && sentHistoryRef.current.length > 0) {
+                    event.preventDefault();
+                    const delta = event.key === "ArrowUp" ? -1 : 1;
+                    const next = Math.max(-1, Math.min(sentHistoryRef.current.length - 1, historyIndexRef.current + delta));
+                    historyIndexRef.current = next;
+                    setInput(next === -1 ? "" : sentHistoryRef.current[next] ?? "");
+                    return;
+                  }
                   if (event.key !== "Enter" || event.shiftKey) return;
                   const native = event.nativeEvent;
                   // 组字中（输入法正在选词）不发送：把 Enter 让给输入法去确认候选词
@@ -818,11 +975,16 @@ export default function App() {
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
                 className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
-              <IconButton label={busy ? "生成中" : "发送"} size="lg" tone="solid"
-                disabled={busy || input.trim() === "" || selectedProjectId === undefined}
-                onClick={() => void send()}>
-                <IconArrowUpIcon />
-              </IconButton>
+              {busy ? (
+                <IconButton label="停止（Esc）" size="lg" tone="solid" onClick={() => void stop()}>
+                  <IconPlayerStopIcon />
+                </IconButton>
+              ) : (
+                <IconButton label="发送" size="lg" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
+                  onClick={() => void send()}>
+                  <IconArrowUpIcon />
+                </IconButton>
+              )}
             </div>
           </div>
         </footer>
@@ -893,6 +1055,15 @@ export default function App() {
         </>
       )}
     </div>
+  );
+}
+
+/** 停止按钮图标（方框；与发送箭头同尺寸规范） */
+function IconPlayerStopIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
   );
 }
 

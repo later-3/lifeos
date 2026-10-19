@@ -4,7 +4,11 @@ import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { createSession, deleteSession, getSession, messagesOf, pendingSessions, projectIdOfSession, readSessionEntries, renameSession, runTurn, sessionCwd, snapshotOf, subscribeAgent } from "./agent-host.ts";
+import {
+  abortSession, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
+  projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd,
+  setSessionModel, setSessionThinking, snapshotOf, subscribeAgent,
+} from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { readProjectManifest, readProjectManifests, registerProject } from "./projects.ts";
 import { archiveAgent, createAgent } from "./agents.ts";
@@ -387,7 +391,7 @@ export function createApp() {
   app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const body = await c.req.json().catch(() => undefined) as { text?: unknown } | undefined;
+    const body = await c.req.json().catch(() => undefined) as { text?: unknown; behavior?: unknown } | undefined;
     if (body === undefined || typeof body.text !== "string" || body.text.trim() === "") {
       const error = problem("invalid_request", "需要 text 字段（非空字符串）", 400); return c.json(error.body, error.status);
     }
@@ -395,8 +399,59 @@ export function createApp() {
     if (await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId)) === undefined) {
       const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
     }
+    // 生成中投入输入：对接 Pi 原生 steer / followUp（不自造客户端队列）
+    const behavior = body.behavior === "steer" || body.behavior === "followUp" ? body.behavior : undefined;
+    if (behavior !== undefined) {
+      const queued = await queueSessionInput(agent.id, sessionId, body.text, behavior);
+      if (!queued) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+      return c.json({ queued: behavior }, 202);
+    }
     void runTurn(agent.id, sessionId, body.text);
     return c.json({ accepted: true }, 202);
+  });
+
+  // 打断（Pi abort()）：run 的 finally 会照常发 done，前端据此收尾
+  app.post("/api/agents/:id/sessions/:sessionId/abort", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const aborted = await abortSession(agent.id, c.req.param("sessionId"));
+    if (!aborted) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    return c.json({ aborted: true });
+  });
+
+  // 压缩上下文（Pi compact()；会先 abort 当前 run）
+  app.post("/api/agents/:id/sessions/:sessionId/compact", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const result = await compactSession(agent.id, c.req.param("sessionId"));
+    if (!result.ok) { const error = problem("compact_failed", result.message, 400); return c.json(error.body, error.status); }
+    return c.json({ summary: result.summary });
+  });
+
+  // 会话级切模型（Pi setModel()）：{ provider, model }
+  app.post("/api/agents/:id/sessions/:sessionId/model", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { provider?: unknown; model?: unknown } | undefined;
+    if (body === undefined || typeof body.provider !== "string" || typeof body.model !== "string") {
+      const error = problem("invalid_request", "需要 provider 与 model 字段", 400); return c.json(error.body, error.status);
+    }
+    const ok = await setSessionModel(agent.id, c.req.param("sessionId"), body.provider, body.model);
+    if (!ok) { const error = problem("model_not_found", "找不到这个会话，或模型不在清单里", 404); return c.json(error.body, error.status); }
+    return c.json({ provider: body.provider, model: body.model });
+  });
+
+  // 会话级思考级别（Pi setThinkingLevel()）：{ level }
+  app.post("/api/agents/:id/sessions/:sessionId/thinking", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { level?: unknown } | undefined;
+    if (body === undefined || typeof body.level !== "string") {
+      const error = problem("invalid_request", "需要 level 字段", 400); return c.json(error.body, error.status);
+    }
+    const ok = setSessionThinking(agent.id, c.req.param("sessionId"), body.level);
+    if (!ok) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    return c.json({ level: body.level });
   });
 
   // 一条流承载该 Agent 的所有会话：先快照，再按序号推事件（since 可续传）。

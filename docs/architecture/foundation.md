@@ -61,7 +61,11 @@ install-receipt.json    安装收据
 | `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd：workspace = `~/.lifeos`；外部项目 = 项目 path**） |
 | `POST /api/agents/:id/sessions` | 在默认 project（workspace）下新建会话（前端「＋新建会话」入口） |
 | `GET /api/agents/:id/sessions/:sid` | 读消息（含 `thinking` / `toolCall` / `toolResult` 块） |
-| `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE） |
+| `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE）；**`behavior: "steer"\|"followUp"`** = 生成中投入输入，直接走 Pi 原生 `steer()`/`followUp()` 队列 |
+| `POST /api/agents/:id/sessions/:sid/abort` | **打断**当前 run（Pi `abort()`；run 的 finally 照常发 `done`） |
+| `POST /api/agents/:id/sessions/:sid/compact` | **压缩上下文**（Pi `compact()`；会先 abort 当前 run） |
+| `POST /api/agents/:id/sessions/:sid/model` | **会话级切模型** `{provider, model}`（Pi `setModel()`：校验 provider 有 key、写 `model_change`、不动全局默认） |
+| `POST /api/agents/:id/sessions/:sid/thinking` | **会话级思考级别** `{level}`（Pi `setThinkingLevel()`） |
 | `GET /api/agents/:id/events`（SSE） | 一条流承载该 Agent 的全部会话：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error` / **`agents_changed`**（助手创建/归档后广播，前端据此自动重取列表）；每条带 `seq`，`?since=` 可续传；**事件名 = 事件类型**（映射见 `src/stream-events.ts`） |
 | `GET /api/agents/:id/sessions/:sid/entries` | **会话历史**：原始条目只读直出（`offset/limit` 分页、`labels`、`leafId`）；不投影、不改写，与会话 JSONL 逐条一致 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
