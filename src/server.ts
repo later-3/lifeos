@@ -77,6 +77,10 @@ async function resolveProject(agent: AgentDefinition, pid: string): Promise<Reso
   if (pid === "workspace") return { id: "workspace", name: "workspace" };
   const manifest = await readProjectManifest(agent.id, pid);
   if (manifest !== undefined) return { id: manifest.id, name: basename(manifest.path) || manifest.name, path: manifest.path };
+  // 旧 URL（?project=<uuid>）兼容：目录名已迁移为可读名，按 legacyId/id 反查
+  for (const entry of (await readProjectManifests(agent.id)).values()) {
+    if (entry.id === pid || entry.legacyId === pid) return { id: entry.id, name: basename(entry.path) || entry.name, path: entry.path };
+  }
   const info = await stat(join(agentProjectsRoot(agent.id), pid)).catch(() => undefined);
   if (info?.isDirectory() === true) return { id: pid, name: pid, path: join(agentProjectsRoot(agent.id), pid) };
   return undefined;

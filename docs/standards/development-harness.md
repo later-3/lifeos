@@ -10,7 +10,7 @@
 | 层 | 物理位置 | 放什么 |
 |---|---|---|
 | **通用层**（所有 Agent 共用） | `~/.lifeos/interaction-harness/` | 协议正文 `protocol.md` · 本层指引 `AGENTS.md` · 飞轮 `flywheel.md` · 概念空间 `concept-space.md` + `concept-space/` · 通用案例 `cases/` · 任务类型 `task-types/development/*` |
-| **Agent × 项目私有层**（记录跟当前工作项目走） | `~/.lifeos/agents/<id>/projects/<pid>/`，**默认 = `workspace/`** | 任务 `tasks/` · 日报 `daily/` · 案例 `cases/` · `todo/` · 项目指引 `AGENTS.md` ·（外部项目）`project.json` |
+| **Agent × 项目私有层**（记录跟当前工作项目走） | `~/.lifeos/agents/<id>/projects/<项目名>/`，**默认 = `workspace/`** | 任务 `tasks/` · 日报 `daily/` · 案例 `cases/` · `todo/` · 项目指引 `AGENTS.md` ·（外部项目）`project.json` |
 
 **方向**：主体是 **Agent**，项目是它工作范围里的一部分——记录落在 Agent 目录内。项目只属于一个 Agent（多 Agent 共享 = 未实现，登记在 [`../todo.md`](../todo.md)）。
 
@@ -23,7 +23,7 @@
 | 可复用结论回填飞轮 | `~/.lifeos/interaction-harness/flywheel.md` |
 | 当天记录（追加，含时间戳） | `agents/<id>/projects/<pid>/daily/<日期>.md` |
 | 遗留事项 | `agents/<id>/projects/<pid>/todo/` |
-| 任务目录与 `task.md` | `agents/<id>/projects/<pid>/tasks/` |
+| 任务目录与 `task.md` | `agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（用 `lifeos_task_create` 建，编号连续；`task.md` 是唯一状态源） |
 
 ## 3 这些内容怎么进入 Agent 的 prompt（现状，代码依据）
 

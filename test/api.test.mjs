@@ -242,7 +242,7 @@ test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Age
     });
     assert.equal(first.status, 201);
     const { project } = await first.json();
-    assert.match(project.id, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "pid 必须是 uuidv7");
+    assert.equal(project.id, ext.slice(ext.lastIndexOf("/") + 1), "id = 可读目录名（项目名），不再是 uuid");
     assert.equal(project.path, ext);
     assert.equal(project.name, ext.slice(ext.lastIndexOf("/") + 1));
 
@@ -257,7 +257,7 @@ test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Age
     assert.equal(list.items[1].isDefault, false);
 
     // manifest 落在 Agent 私有层：目录 0700、文件 0600；顶层不再有共用层；不写用户目录
-    const manifestPath = join(privateRoot, project.id, "project.json");
+    const manifestPath = join(privateRoot, project.id, "project.json");   // 目录名 = 项目名
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     assert.equal(manifest.path, ext);
     assert.equal((await stat(join(privateRoot, project.id))).mode & 0o777, 0o700, "项目目录必须 0700");
@@ -340,13 +340,15 @@ test("旧数据迁移：顶层共用层 manifest → 搬进 Agent 私有层并�
     await writeFile(join(home, "projects", pid, "project.json"), JSON.stringify({ schemaVersion: 1, id: pid, name: "legacy", path: "/tmp/legacy-proj" }) + "\n");
 
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
-    const item = list.items.find((entry) => entry.id === pid);
+    const item = list.items.find((entry) => entry.path === "/tmp/legacy-proj");
     assert.ok(item, "迁移后项目应出现在列表里");
-    assert.equal(item.path, "/tmp/legacy-proj", "path 来自 manifest");
     assert.equal(item.name, "legacy-proj", "显示名 = basename(path)（manifest.name 不参与显示）");
+    assert.equal(item.id, "legacy", "目录名迁成可读名（manifest.name）");
 
-    const moved = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", pid, "project.json"), "utf8"));
+    const moved = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", "legacy", "project.json"), "utf8"));
     assert.equal(moved.path, "/tmp/legacy-proj");
+    assert.equal(moved.id, "legacy");
+    assert.equal(moved.legacyId, pid, "旧 pid 记在 legacyId（旧 URL 可反查）");
     await access(join(home, "projects")).then(() => assert.fail("旧顶层共用层应被清掉")).catch(() => {});
   } finally { server.close(); }
 });
@@ -620,4 +622,32 @@ test("创建/归档助手会广播 agents_changed（前端据此自动刷新列�
     assert.equal((await fetch(`${base}/api/agents/${probe.id}`, { method: "DELETE" })).status, 200);
     assert.ok(await readUntil("event: agents_changed", 3000), "归档后必须再广播一次");
   } finally { controller.abort(); server.close(); }
+});
+
+
+test("旧 uuid 项目目录：懒迁移成可读名（会话跟着搬、旧 URL 仍可反查）", async () => {
+  const { server, base, home } = await start();
+  const { mkdir, writeFile, readFile, access } = await import("node:fs/promises");
+  try {
+    const pid = "01a15461-d58e-7cb0-baeb-53393398557c";
+    const dir = join(home, "agents", "lifeosagent", "projects", pid);
+    await mkdir(join(dir, "sessions"), { recursive: true });
+    await writeFile(join(dir, "project.json"), JSON.stringify({ schemaVersion: 1, id: pid, name: "我的项目", path: "/tmp/我的项目" }) + "\n");
+    await writeFile(join(dir, "sessions", "2026-10-19T00-00-00-000Z_abc.jsonl"), JSON.stringify({ type: "session", version: 3, id: "abc", cwd: "" }) + "\n");
+
+    const list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    const item = list.items.find((entry) => entry.path === "/tmp/我的项目");
+    assert.ok(item, "迁移后的项目出现在列表里");
+    assert.equal(item.id, "我的项目", "目录名 = 可读名（允许中文）");
+    await access(join(home, "agents", "lifeosagent", "projects", "我的项目", "project.json"));
+    await access(join(home, "agents", "lifeosagent", "projects", "我的项目", "sessions", "2026-10-19T00-00-00-000Z_abc.jsonl"));   // 会话文件跟着目录搬
+    const manifest = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", "我的项目", "project.json"), "utf8"));
+    assert.equal(manifest.id, "我的项目");
+    assert.equal(manifest.legacyId, pid);
+    await access(join(home, "agents", "lifeosagent", "projects", pid)).then(() => assert.fail("旧 uuid 目录应已搬走")).catch(() => {});
+
+    // 旧 URL（?project=<uuid>）仍能解析并建会话
+    const created = await fetch(`${base}/api/agents/lifeosagent/projects/${pid}/sessions`, { method: "POST" });
+    assert.equal(created.status, 200, "旧 pid 仍可反查到项目");
+  } finally { server.close(); }
 });

@@ -6,7 +6,7 @@ import { mkdtemp, readFile, access, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
-import { AGENT_TOOL_NAMES, createAgentTools } from "../src/agent-tools.ts";
+import { LIFEOS_TOOL_NAMES, createAgentTools } from "../src/agent-tools.ts";
 
 async function freshHome() {
   const home = await mkdtemp(join(tmpdir(), "lifeos-tools-"));
@@ -18,8 +18,8 @@ async function freshHome() {
 const run = async (tool, params) => await tool.execute("test-call", params);
 
 test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除工具带 destructive 标注", () => {
-  const tools = createAgentTools();
-  assert.deepEqual(tools.map((tool) => tool.name), [...AGENT_TOOL_NAMES]);
+  const tools = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+  assert.deepEqual(tools.map((tool) => tool.name), [...LIFEOS_TOOL_NAMES]);
   for (const tool of tools) {
     assert.ok(tool.description.length > 60, `${tool.name} 描述要让模型知道能干什么`);
     assert.ok(typeof tool.promptSnippet === "string", `${tool.name} 要有 promptSnippet（进默认 prompt 的工具清单）`);
@@ -30,7 +30,7 @@ test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除
 
 test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨架齐、同名幂等", async () => {
   const home = await freshHome();
-  const [create] = createAgentTools();
+  const [create] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
 
   const result = await run(create, { name: "Code Reviewer", description: "评审助手" });
   const id = result.details.id;
@@ -96,7 +96,7 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
 
 test("lifeos_agent_delete：归档可恢复、数据全留；最后一个与不存在的都拒绝", async () => {
   await freshHome();
-  const [create, remove] = createAgentTools();
+  const [create, remove] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
 
   const a = await run(create, { name: "A" });
   const b = await run(create, { name: "B" });
@@ -124,4 +124,61 @@ test("lifeos_agent_delete：归档可恢复、数据全留；最后一个与不�
   // 其余全是归档状态（isAlive 口径：只有 lifeosagent 一个）
   const recordB = JSON.parse(await readFile(join(home, "agents", b.details.id, "agent.json"), "utf8"));
   assert.ok(typeof recordB.archivedAt === "string");
+});
+
+
+test("lifeos_task_create：编号连续、中文标题、按类别生成文档、task.md 是唯一状态源", async () => {
+  const home = await freshHome();
+  const [, , taskCreate] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+
+  const first = await taskCreate.execute("t1", { title: "删除已注册根", category: "A" });
+  assert.equal(first.details.number, 1);
+  assert.equal(first.details.id, "0001-删除已注册根", "编号 + 中文标题（用户会翻文件系统）");
+  const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0001-删除已注册根");
+  for (const file of ["task.md", "01-background.md", "02-design.md", "03-phase.md", "04-plan.md"]) await access(join(dir, file));
+  await access(join(dir, "phases"));
+  const taskMd = await readFile(join(dir, "task.md"), "utf8");
+  assert.match(taskMd, /类型：development/, "任务类型自动填");
+  assert.match(taskMd, /类别：A 改产品行为/);
+  assert.match(taskMd, /状态：进行中/);
+  assert.match(taskMd, /负责人：lifeosagent/);
+  assert.match(taskMd, /目标：删除已注册根/, "goal 没给时先用 title");
+  assert.match(taskMd, /## 本任务遵守/, "引用规范区块");
+  assert.match(taskMd, /interaction-harness\/protocol\.md/);
+  assert.match(taskMd, /本项目指引/, "指向项目私有层 AGENTS.md");
+  assert.match(taskMd, /## 引用的案例/, "案例位留给模型补");
+
+  // 编号递增；B/C 类别只生成各自的必需文档
+  const second = await taskCreate.execute("t2", { title: "改协作规范", category: "B", goal: "规范里写清任务编号" });
+  assert.equal(second.details.id, "0002-改协作规范");
+  const bDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0002-改协作规范");
+  await access(join(bDir, "01-background.md"));
+  await access(join(bDir, "02-plan.md"));
+  await access(join(bDir, "02-design.md")).then(() => assert.fail("B 类不该有 02-design")).catch(() => {});
+  assert.match(await readFile(join(bDir, "task.md"), "utf8"), /目标：规范里写清任务编号/);
+
+  const third = await taskCreate.execute("t3", { title: "只出结论", category: "C" });
+  const cDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0003-只出结论");
+  await access(join(cDir, "01-background.md"));
+  await access(join(cDir, "02-plan.md")).then(() => assert.fail("C 类不该有 02-plan")).catch(() => {});
+  assert.equal(third.details.number, 3);
+
+  // 非法输入
+  await assert.rejects(() => taskCreate.execute("x", { title: "  ", category: "A" }), /title 不能为空/);
+  await assert.rejects(() => taskCreate.execute("x", { title: "t", category: "D" }), /category 必须是/);
+});
+
+test("lifeos_task_list：按编号列出任务的状态/类别/目标", async () => {
+  await freshHome();
+  const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+  const empty = await taskList.execute("l0", {});
+  assert.match(empty.content[0].text, /No tasks/);
+
+  await taskCreate.execute("t1", { title: "第二个", category: "B" });
+  await taskCreate.execute("t2", { title: "第一个", category: "A", goal: "可验收的目标" });
+  const listed = await taskList.execute("l1", {});
+  assert.equal(listed.details.tasks.length, 2);
+  assert.deepEqual(listed.details.tasks.map((task) => task.number), [1, 2], "按编号排序");
+  assert.equal(listed.details.tasks[1].goal, "可验收的目标");
+  assert.match(listed.content[0].text, /0002-第一个/);
 });

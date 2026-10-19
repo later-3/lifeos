@@ -189,7 +189,7 @@
 
 - **目录即项目**：私有层目录存在即可用；外部项目必须有 `project.json`（cwd = 它的 `path`）。
 - **术语**：界面上说"打开目录 / 从列表移除"；"注册 / 绑定 / 解绑"是旧设计的词，**不再使用**。
-- 任务现状：只有目录约定 `tasks/<slug>-<id8>/task.md`；把任务落成结构化事实的工具**未实现**（登记在仓库 `docs/todo.md`）。
+- 任务现状：已由工具落地——`lifeos_task_create`（建 `tasks/<NNNN>-<标题>/`，编号按项目连续、中文标题允许，按类别 A/B/C 生成必需文档）与 `lifeos_task_list`（按编号列状态）；`task.md` 是唯一状态源，含「本任务遵守」与「引用的案例」。**定时任务（第二类）仍未实现**（登记在仓库 `docs/todo.md`）。
 
 ## 10 协议怎么进入 Agent 的 prompt（现状）
 
@@ -227,6 +227,7 @@
 |---|---|
 | 读案例 / 概念 / 知识 / 项目规范正文 | Pi 的 `read`（按需，路径见常驻索引） |
 | 创建 / 归档助手（多 Agent） | `lifeos_agent_create` / `lifeos_agent_delete`（Pi 工具，英文描述；归档 = 保留全部数据）；界面同语义为 `POST` / `DELETE /api/agents` |
+| 创建 / 查看任务 | `lifeos_task_create`（编号 `NNNN-标题`、类别 A/B/C 决定必需文档）/ `lifeos_task_list`（按编号列状态） |
 | 写日报 / 案例 / todo / 任务目录与 `task.md` | Pi 的 `write` / `edit`，落在 `agents/<id>/projects/<pid>/{daily,cases,todo,tasks}`（现在没有专用工具） |
 | 打开目录 / 从列表移除项目 | 界面（接口见 §9） |
 | 找方法（Skill 描述进 prompt、正文按需） | Pi Skill |
@@ -277,7 +278,7 @@
 | `project.json` | project 身份（**仅外部项目**） | `{schemaVersion, id, name, path}`；cwd = 它的 `path` |
 | `AGENTS.md` | 项目指引（§7 作用域：Agent × 项目） | 本目录的规矩与指引；不复制协议正文 |
 | `sessions/` | 会话（§15.1/§15.2） | 会话 JSONL；**出厂默认会话预置于此** |
-| `tasks/<slug>-<id8>/` | 任务（§3.8） | 一个任务一个目录 + `task.md`（需要时才创建，不预建） |
+| `tasks/<NNNN>-<标题>/` | 任务（§3.8） | 一个任务一个目录 + `task.md`（用 `lifeos_task_create` 建，编号按项目连续） |
 | `daily/<日期>.md` | 日记（§3.5） | 按日期追加 |
 | `cases/<日期>.md` | 案例（§3.4） | 按日期追加，编号引用 |
 | `todo/` | Todo（§2.11） | 一句话级待办；不是任务，不进 prompt、按需读 |

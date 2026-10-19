@@ -21,6 +21,7 @@ pi/         Pi SDK（子模块，固定 commit；Agent 运行时）
 - 用 Pi SDK：`@earendil-works/pi-coding-agent`（`createAgentSession` / `SessionManager` / `SettingsManager` / `DefaultResourceLoader` / `ModelRuntime`）+ `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai`。
 - Life OS 只负责：**配置装配、交互 harness 注入、会话托管、事件转发**；不自己实现 Agent 循环。
 - 运行时宿主在 `src/agent-host.ts`（**不 import HTTP 框架**）；HTTP 层（`src/server.ts`）只是薄适配。
+- 工具 = 8 个 Pi 内置（`read/bash/edit/write/grep/find/ls/powershell`）+ 4 个 Life OS 自有（`lifeos_agent_create` / `lifeos_agent_delete` / `lifeos_task_create` / `lifeos_task_list`）；**名字必须显式写进 `tools` 白名单**（Pi 的语义是 allowlist：不写就不启用）。
 - 装配细节（agentDir / 模型优先级 / 注入方案 E）见 [`agent.md` §5](./agent.md)。
 
 ## 3 会话事实
@@ -52,7 +53,7 @@ install-receipt.json    安装收据
 | `GET·PUT /api/agents/:id/config` | **Agent 个人模型默认**（`agents/<id>/projects/workspace/config.json`） |
 | `GET /api/models-config` | 解析用户 `config/models.json` 为 provider/模型清单（**响应剔除一切密钥字段**；只读） |
 | `POST·GET /api/agents/:id/avatar` | 头像：上传（png/jpg/webp≤2MB 魔数校验）/ reset 回自动 / 读图 |
-| `GET /api/agents/:id/projects` | 项目列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；显示名：外部项目 = `basename(path)`，内部项目 = 目录名；默认项目在前 |
+| `GET /api/agents/:id/projects` | 项目列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；**目录名 = 项目名**（可读、允许中文；旧 uuid 目录懒迁移，`legacyId` 供旧 URL 反查）；默认项目在前 |
 | `POST /api/agents/:id/projects` | **打开目录**（校验目录 → 同 path 幂等复用 → 否则 `pid=uuidv7`、建私有层目录并写 `project.json`） |
 | `DELETE /api/agents/:id/projects/:pid` | **从列表移除**（写 `hiddenProjectIds`；目录、manifest、会话、记录全部保留；`workspace` 不可移除 400） |
 | `GET /api/agents/:id/sessions` | 该 Agent 的会话列表（带 `running` 标记；未落盘的新会话按 pending 计入） |

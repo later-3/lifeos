@@ -17,6 +17,16 @@
 - **id**：由 `name` 生成 slug（ASCII）；**非 ASCII 名得到不透明的随机后缀 `agent-3f9a`**（Kubernetes generateName 同款，不要生成过通用的 `agent`）。id 生成后**稳定**：改显示名不改 id；**创建按 name 幂等**——同名且未归档时返回已有 Agent（`POST` 200 / 工具结果 `created:false`），不会造出第二个实体。
 - **归档（= 删除，可恢复）**：`agent.json` 写 `archivedAt` → 列表与详情都不再返回它；**目录、会话、记录全部保留**（恢复 = 删掉该字段）。护栏：有会话运行中 → 409；非归档只剩 1 个 → 400 `last_agent`。
 
+## 1.2 任务（现状，2026-10-19 用户拍板）
+
+**任务 = 有目标、需落盘、可追溯的工作单元**（协议 §3.8）；现在实现的是**用户下达任务**（定时任务未实现，见 todo）。
+
+- **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。
+- **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**）。
+- **`task.md` 是唯一状态源**：类型（自动 `development`）/ 类别 / 状态 / 负责人 / 目标（没给先用标题）/ 必需文档 / 当前指针 + **「本任务遵守」**（协议 · 本层指引 · 任务类型细则 · 本项目指引 · 项目仓库 `AGENTS.md` 存在才写）+ **「引用的案例」**占位（模型随后补 `cases/<日期>.md#Cxxx`）。
+- **类别决定必需文档**（照 `task-types/development/TEMPLATE.md`）：`A` 改产品行为 → `01-background · 02-design · 03-phase · 04-plan · phases/`；`B` 改协作规范 → `01-background · 02-plan`；`C` 只出结论 → `01-background`。
+- **列举 = 扫描 `tasks/` 读 `task.md`**（不维护索引文件）。
+
 ## 2 目录与文件（现状）
 
 ```
@@ -26,6 +36,8 @@
 ├─ avatar/        图片头像（avatar.png|jpg|webp，0600；文件不存在 = 自动头像）
 └─ projects/<pid>/  每个项目一份：AGENTS.md · sessions/ · daily/ · cases/ · todo/ ·（外部项目）project.json
 ```
+
+**项目目录命名（2026-10-19 用户定）**：目录名 = 项目名（用户会直接翻文件系统，不能是 UUID）；`manifest.id` 与目录名一致；旧 uuid 目录在读取时**懒迁移**成可读名（`legacyId` 记住旧 pid，旧 `?project=<uuid>` URL 仍可反查）。
 
 `agent.json` 字段（`src/server.ts`）：`schemaVersion` · `id` · `name` · `description` · `defaultProjectId` · `defaultSessionId` · `hiddenProjectIds` · `avatar?{kind,file,revision}` · `archivedAt?`（归档标记）。
 
@@ -39,7 +51,7 @@
 | 层 | 位置 | 放什么 |
 |---|---|---|
 | **工作区**（真实目录） | 用户自己的目录（如 `~/Code/my-project`）；内置 `workspace` 例外 → `~/.lifeos` | 用户的代码/文档。我们只把它当 cwd（Agent 工具作用域），**不写任何自己的数据进去** |
-| **Agent 私有层** | `~/.lifeos/agents/<id>/projects/<pid>/` | 记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ 外部项目的身份 `project.json {schemaVersion,id,name,path}` |
+| **Agent 私有层** | `~/.lifeos/agents/<id>/projects/<项目名>/`（**目录名 = 项目名，可读、允许中文**） | 记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ 外部项目的身份 `project.json {schemaVersion,id(=目录名),name,path,legacyId?}` |
 
 接口与语义（`src/projects.ts` + `src/server.ts`）：
 

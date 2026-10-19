@@ -9,11 +9,33 @@
 //
 // 待实现（只登记，不实现）：多 Agent 共用项目信息/资源——见 agent.md §5.6。
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 
-export type ProjectManifest = { schemaVersion: 1; id: string; name: string; path: string };
+// id = 目录名 = **可读名**（用户会直接翻文件系统，2026-10-19 定）：中文允许；
+// 旧设计的 uuid 目录在读取时懒迁移成可读名（manifest 里留 legacyId 供旧 URL 反查）。
+export type ProjectManifest = { schemaVersion: 1; id: string; name: string; path: string; legacyId?: string };
+
+/** 目录名清洗（项目名 / 任务名共用）：允许中文；去掉路径分隔符与控制字符，空白折成 `-`，最长 60。 */
+export function sanitizeSegment(name: string): string {
+  const cleaned = name
+    .replace(/[\/\:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, "-")
+    .replace(/^[.\-]+|[.\-]+$/g, "")
+    .slice(0, 60);
+  return cleaned === "" ? "unnamed" : cleaned;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 在某个 Agent 的 projects/ 下取一个不冲突的目录名（同名就 -2/-3）。 */
+export async function uniqueSegment(agentId: string, base: string): Promise<string> {
+  const taken = new Set(await readdir(agentProjectsRoot(agentId)).catch(() => [] as string[]));
+  let candidate = base;
+  for (let n = 2; taken.has(candidate); n += 1) candidate = `${base.slice(0, 55)}-${n}`;
+  return candidate;
+}
 export type ProjectError = { code: string; message: string; status: 400 | 404 };
 
 const agentProjectsRoot = (agentId: string) => join(resolveHome(), "agents", agentId, "projects");
@@ -38,7 +60,10 @@ const parseManifest = (raw: string): ProjectManifest | undefined => {
   try {
     const parsed = JSON.parse(raw) as Partial<ProjectManifest>;
     return typeof parsed.id === "string" && typeof parsed.path === "string" && typeof parsed.name === "string"
-      ? { schemaVersion: 1, id: parsed.id, name: parsed.name, path: parsed.path }
+      ? {
+          schemaVersion: 1, id: parsed.id, name: parsed.name, path: parsed.path,
+          ...(typeof parsed.legacyId === "string" ? { legacyId: parsed.legacyId } : {}),   // 旧 pid 反查要用
+        }
       : undefined;
   } catch { return undefined; }
 };
@@ -53,14 +78,16 @@ async function migrateLegacy(agentId: string, pid: string): Promise<ProjectManif
   if (raw === undefined) return undefined;
   const manifest = parseManifest(raw);
   if (manifest === undefined) return undefined;
-  const target = manifestPath(agentId, pid);
+  const readable = await uniqueSegment(agentId, sanitizeSegment(manifest.name));
+  const target = manifestPath(agentId, readable);
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  await writeFile(target, JSON.stringify(manifest, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  const migrated: ProjectManifest = { ...manifest, id: readable, legacyId: pid };
+  await writeFile(target, JSON.stringify(migrated, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   await rm(legacyFile, { force: true });
   // 只用 rmdir：目录空才删得掉。非空说明还有别的东西，宁可留着也不误删。
   await rmdir(join(legacyRoot(), pid)).catch(() => { /* 非空就留着 */ });
   await rmdir(legacyRoot()).catch(() => { /* 还有别的项目就留着 */ });
-  return manifest;
+  return migrated;   // 返回迁移后的（id = 可读名），否则外层会把旧 uuid 目录再搬一次
 }
 
 /** 读一个项目的 manifest（外部项目才有）；顺带完成旧数据迁移。 */
@@ -81,10 +108,34 @@ export async function readProjectManifests(agentId: string): Promise<Map<string,
   const entries = await readdir(agentProjectsRoot(agentId), { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    if (UUID_RE.test(entry.name)) {
+      // 旧目录（uuid 名）→ 懒迁移成可读名；会话文件跟着目录一起搬
+      const migrated = await migrateUuidDir(agentId, entry.name);
+      if (migrated !== undefined) out.set(migrated.id, migrated);
+      continue;
+    }
     const manifest = await readProjectManifest(agentId, entry.name);
     if (manifest !== undefined) out.set(manifest.id, manifest);
   }
   return out;
+}
+
+/** 旧 uuid 目录 → 可读名（幂等；目录名与 manifest.id 一起改，legacyId 记住旧名字）。 */
+async function migrateUuidDir(agentId: string, dirName: string): Promise<ProjectManifest | undefined> {
+  const manifest = await readProjectManifest(agentId, dirName);   // 可能顺带触发 legacy 迁移（落到可读目录）
+  if (manifest === undefined) return undefined;
+  if (manifest.id !== dirName) {
+    // 已经被 legacy 迁移搬到可读目录：旧 uuid 目录若已空就删掉，不要再改一次名
+    await rmdir(join(agentProjectsRoot(agentId), dirName)).catch(() => { /* 非空就留着 */ });
+    return manifest;
+  }
+  const target = await uniqueSegment(agentId, sanitizeSegment(manifest.name));
+  const from = join(agentProjectsRoot(agentId), dirName);
+  const to = join(agentProjectsRoot(agentId), target);
+  await rename(from, to).catch(() => { /* 并发迁移/已搬走：按现状读取 */ });
+  const migrated: ProjectManifest = { ...manifest, id: target, legacyId: dirName };
+  await writeFile(join(to, "project.json"), JSON.stringify(migrated, null, 2) + "\n", { encoding: "utf8", mode: 0o600 }).catch(() => {});
+  return migrated;
 }
 
 /**
@@ -100,8 +151,8 @@ export async function registerProject(agentId: string, path: string): Promise<{ 
   for (const project of existing.values()) {
     if (project.path === target) return { project, created: false };
   }
-  const pid = uuidv7();
   const name = basename(target) || target;
+  const pid = await uniqueSegment(agentId, sanitizeSegment(name));   // 目录名 = 项目名（可读）
   const project: ProjectManifest = { schemaVersion: 1, id: pid, name, path: target };
   const dir = join(agentProjectsRoot(agentId), pid);
   await mkdir(dir, { recursive: true, mode: 0o700 });          // 私有层目录：0700（与家目录其余部分一致）
