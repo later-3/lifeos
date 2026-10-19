@@ -10,20 +10,30 @@ import { Button, IconButton } from "./ui";
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-export function Modal({ title, subtitle, icon, onClose, children, footer, width = 640 }: {
+export function Modal({ title, subtitle, icon, onClose, children, footer, width = 640, initialFocus }: {
   title: string; subtitle?: string; icon?: ReactNode; onClose: () => void;
   children: ReactNode; footer?: ReactNode; width?: number;
+  /** 打开时聚焦的控件（如目录选择器的路径输入框）。不传则兜底到第一个可聚焦元素。 */
+  initialFocus?: { current: HTMLElement | null };
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  // onClose 每次渲染都是新函数：放进 ref，effect 只在挂载时跑一次。
+  // 否则每次按键/渲染都会重跑 effect → 把焦点从输入框拽回第一个可聚焦元素（之前退回"关闭按钮"，
+  // 导致在目录选择器里打字/退格都落到 X 上）。参照 Pi Web DirectoryPicker：输入框 autoFocus、陷阱只处理 Tab。
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const node = panel.current;
     const list = () => [...(node?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
-    (list()[0] ?? node)?.focus();
+    // 初始焦点：显式指定 > 子元素自带的 autoFocus（焦点已在面板内）> 兜底第一个可聚焦元素。
+    const preferred = initialFocus?.current;
+    if (preferred !== undefined && preferred !== null) preferred.focus();
+    else if (node !== null && !node.contains(document.activeElement)) (list()[0] ?? node)?.focus();
 
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); return; }
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseRef.current(); return; }
       if (event.key !== "Tab") return;
       const items = list();
       if (items.length === 0) return;
@@ -37,7 +47,8 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
       document.removeEventListener("keydown", onKeyDown, true);
       previous?.focus();
     };
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/35 p-3 backdrop-blur-[2px]"

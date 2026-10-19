@@ -282,6 +282,25 @@ const switcher = await page.evaluate(() => {
   return { listed: text.includes("切换目录") && text.includes("打开过的目录"), hasHome: text.includes(".lifeos") };
 });
 check("文件根切换框：能打开并列出打开过的目录", switcher.listed, String(switcher.listed));
+
+// 目录选择器：打开即聚焦路径输入框；Backspace 是删字符（不是关闭/触发 X）——用户 2026-10-19 点名的 bug
+await page.getByText("浏览其他目录…").click();
+await page.waitForTimeout(800);
+const pickerFocus = await page.evaluate(() => {
+  const el = document.querySelector('input[placeholder="输入路径后回车跳转"]');
+  return { focused: document.activeElement === el, tag: document.activeElement?.tagName ?? null };
+});
+check("目录选择器：打开即聚焦路径输入框（不是关闭按钮）", pickerFocus.focused === true, `焦点在 ${pickerFocus.tag}`);
+const beforeBackspace = await page.locator('input[placeholder="输入路径后回车跳转"]').inputValue();
+await page.keyboard.type("xyz");
+await page.keyboard.press("Backspace");
+await page.waitForTimeout(200);
+const afterBackspace = await page.evaluate(() => ({
+  value: document.querySelector('input[placeholder="输入路径后回车跳转"]')?.value ?? null,
+  open: document.querySelector('[role="dialog"]') !== null,
+}));
+check("目录选择器：Backspace 删除字符且模态不关闭", afterBackspace.open && afterBackspace.value === `${beforeBackspace}xy`,
+  `value=${afterBackspace.value} open=${afterBackspace.open}`);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
 

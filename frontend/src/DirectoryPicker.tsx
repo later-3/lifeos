@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IconArrowUp, IconFolder } from "@tabler/icons-react";
 import { Modal } from "./design/overlay";
 import { Button, EmptyState, IconButton, Skeleton, controlClass } from "./design/ui";
@@ -20,6 +20,7 @@ export function DirectoryPicker({ onCancel, onSelect }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const pathRef = useRef<HTMLInputElement>(null);   // 打开即聚焦路径输入框（Pi Web DirectoryPicker 同款）
 
   async function navigate(path?: string) {
     setLoading(true);
@@ -47,7 +48,8 @@ export function DirectoryPicker({ onCancel, onSelect }: {
   }
 
   return (
-    <Modal title="选择目录" subtitle="注册为一个项目（不复制文件，只记录路径）" width={560} onClose={() => { if (!busy) onCancel(); }}
+    // 不写死用途：这个选择器同时用于「注册项目」与「切换文件根」。
+    <Modal title="选择目录" width={560} initialFocus={pathRef} onClose={() => { if (!busy) onCancel(); }}
       footer={<>
         <span className="mr-auto flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate font-mono text-micro text-ink-500" title={currentPath}>{currentPath || "—"}</span>
@@ -64,7 +66,8 @@ export function DirectoryPicker({ onCancel, onSelect }: {
           onClick={() => { if (parent !== null) void navigate(parent); }}>
           <IconArrowUp size={16} />
         </IconButton>
-        <input value={pathInput} onChange={(event) => setPathInput(event.target.value)}
+        <input ref={pathRef} value={pathInput} onChange={(event) => setPathInput(event.target.value)}
+          autoComplete="off" spellCheck={false}
           placeholder="输入路径后回车跳转"
           className={`${controlClass} h-9 font-mono text-meta`} />
       </form>
