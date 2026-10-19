@@ -48,7 +48,7 @@ async function allAgents(): Promise<Array<{ id: string; record: AgentRecord }>> 
   return out;
 }
 
-export type CreateAgentInput = { name: string; description?: string; identity?: string };
+export type CreateAgentInput = { name: string; description?: string };
 
 const identitySkeleton = (name: string) => `# ${name}
 
@@ -59,6 +59,16 @@ const identitySkeleton = (name: string) => `# ${name}
 ## 人格与性格
 
 （口吻、风格、与用户协作的边界。）
+`;
+
+// 与出厂模板同构（模板 = 当前 Agent 结构的唯一事实源）：concept-space.md 的开头也照模板写。
+const workspaceConceptSpace = `# 概念空间（workspace 项目层 · 索引）
+
+规则同通用层（协议 §3.2 / §4）：一词一义、先定义再使用、索引与正文分开。
+本层只收**本项目特有**的词；通用词在 \`~/.lifeos/interaction-harness/concept-space/\`，不在此重复。
+
+| 编号 | 词 | 一句话 | 正文 |
+|---|---|---|---|
 `;
 
 const workspaceAgentsMd = `# 工作区（本 Agent 的默认项目）
@@ -84,21 +94,23 @@ export async function createAgent(input: CreateAgentInput): Promise<
     if (await stat(dir).catch(() => undefined) !== undefined) {
       return { code: "id_taken", message: `目录已存在：${id}`, status: 400 };
     }
-    await mkdir(join(dir, "projects", "workspace", "daily"), { recursive: true, mode: 0o700 });
-    await mkdir(join(dir, "projects", "workspace", "cases"), { recursive: true, mode: 0o700 });
-    await mkdir(join(dir, "projects", "workspace", "todo"), { recursive: true, mode: 0o700 });
+    // workspace 骨架 = 出厂模板同构（agent.json / identity.md / AGENTS.md / concept-space.md /
+    // project.json / sessions / daily / cases / todo），只差"预置会话文件"（协议 §12.2：只随出厂模板）
+    for (const sub of ["daily", "cases", "todo", "sessions"]) {
+      await mkdir(join(dir, "projects", "workspace", sub), { recursive: true, mode: 0o700 });
+    }
     const record: AgentRecord = {
       schemaVersion: 1, id, name,
       ...(input.description !== undefined && input.description.trim() !== "" ? { description: input.description.trim() } : {}),
       defaultProjectId: "workspace",
     };
     await writeJson(join(dir, "agent.json"), record);
-    await writeFile(join(dir, "identity.md"),
-      input.identity !== undefined && input.identity.trim() !== "" ? input.identity.trim() : identitySkeleton(name),
-      { encoding: "utf8", mode: 0o600 });
+    // identity.md = Agent 结构的一部分，**只装骨架**（用户没批准过"传身份内容"的入口——见 C029）
+    await writeFile(join(dir, "identity.md"), identitySkeleton(name), { encoding: "utf8", mode: 0o600 });
     const workspace = join(dir, "projects", "workspace");
     await writeJson(join(workspace, "project.json"), { schemaVersion: 1, id: "workspace", name: "工作区" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceAgentsMd, { encoding: "utf8", mode: 0o600 });
+    await writeFile(join(workspace, "concept-space.md"), workspaceConceptSpace, { encoding: "utf8", mode: 0o600 });
     return { id, name, dir };
   } catch (error) {
     await rm(dir, { recursive: true, force: true }).catch(() => { /* 尽力回滚半成品 */ });

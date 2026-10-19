@@ -2,7 +2,7 @@
 // 依据：pi/packages/coding-agent/docs/extensions.md §Tools（throw = 失败结果；content + details 必填）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, access, stat } from "node:fs/promises";
+import { mkdtemp, readFile, access, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
@@ -57,11 +57,18 @@ test("lifeos_agent_create：id 由 name 自动生成、骨架齐、不写预置�
   const zh = await run(create, { name: "评审助手" });
   assert.match(zh.details.id, /^[a-z0-9][a-z0-9-]{0,63}$/, `中文名也要得到合法 id：${zh.details.id}`);
 
-  // identity 参数：给了就写入，不给就是骨架
-  const withIdentity = await run(create, { name: "带身份", identity: "# 评审官\n\n- 只挑毛病" });
-  assert.equal(await readFile(join(home, "agents", withIdentity.details.id, "identity.md"), "utf8"), "# 评审官\n\n- 只挑毛病");
+  // 骨架 = 出厂模板同构（模板是「当前 Agent 包含啥」的唯一事实源；只差预置会话文件，协议 §12.2）
+  const templateAgent = join(process.cwd(), ".lifeos", "agents", "lifeosagent");
+  assert.deepEqual((await readdir(join(home, "agents", zh.details.id))).sort(), (await readdir(templateAgent)).sort(),
+    "Agent 顶层与模板同构（agent.json / identity.md / projects）");
+  assert.deepEqual(
+    (await readdir(join(home, "agents", zh.details.id, "projects", "workspace"))).sort(),
+    (await readdir(join(templateAgent, "projects", "workspace"))).sort(),
+    "workspace 骨架与模板同构（AGENTS/concept-space/project/sessions/daily/cases/todo）");
+
+  // identity.md：只有骨架（用户没批准过传身份内容的入口，见 C029）
   const skeleton = await readFile(join(home, "agents", zh.details.id, "identity.md"), "utf8");
-  assert.match(skeleton, /## 身份与职责/, "没给 identity 时装骨架");
+  assert.match(skeleton, /## 身份与职责/, "identity.md 装骨架");
   assert.match(skeleton, /评审助手/, "骨架标题用 name");
 
   // 空 name → 失败（throw = 失败的工具结果）
@@ -76,7 +83,7 @@ test("lifeos_agent_delete：归档可恢复、数据全留；最后一个与不�
   const b = await run(create, { name: "B" });
   const home = process.env.LIFEOS_HOME;
 
-  const result = await run(remove, { id: a.details.id, reason: "不需要了" });
+  const result = await run(remove, { id: a.details.id });
   assert.ok(result.content[0].text.includes(a.details.id));
   const record = JSON.parse(await readFile(join(home, "agents", a.details.id, "agent.json"), "utf8"));
   assert.ok(typeof record.archivedAt === "string", "归档 = 写 archivedAt（可恢复）");

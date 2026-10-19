@@ -13,7 +13,7 @@
 
 **两个入口共用一份实现**（`src/agents.ts`，业务下沉、HTTP 只是薄适配）：**Pi 工具**（模型可调）`lifeos_agent_create` / `lifeos_agent_delete`（`src/agent-tools.ts`，英文描述、名字进白名单，见 reference-baseline「自有工具」行）与 **HTTP**（`POST /api/agents` · `DELETE /api/agents/:id`）。界面暂无「新建助手」按钮；**删除入口 = 助手行悬停出现的 ✕**（点击 → 确认对话框）。
 
-- **创建**：`name` 必填（`description`/`identity` 可选）→ id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/` + `agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（给了就写、没给装骨架）+ workspace 骨架（`project.json` / `AGENTS.md` / `daily/` `cases/` `todo/`）；不建 `avatar/`、不建 `sessions/`（Pi 按需）。
+- **创建**：参数**只有 `name`（必填）与 `description`（可选）**——不开放「传身份内容」之类的入口（用户 2026-10-19 定，见 harness 案例 C029）。id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/`：`agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（**只装骨架**）+ workspace 骨架，**与出厂模板同构**：`project.json` / `AGENTS.md` / `concept-space.md` / `sessions/` / `daily/` / `cases/` / `todo/`（不建 `avatar/`；只差预置会话文件）。
 - **归档（= 删除，可恢复）**：`agent.json` 写 `archivedAt` → 列表与详情都不再返回它；**目录、会话、记录全部保留**（恢复 = 删掉该字段）。护栏：有会话运行中 → 409；非归档只剩 1 个 → 400 `last_agent`。
 
 ## 2 目录与文件（现状）

@@ -17,7 +17,8 @@ export function createAgentTools() {
     label: "Create Life OS agent",
     description:
       "Create a new Life OS agent (a long-lived assistant with its own identity, workspace project, daily/cases/todo records and sessions). "
-      + "The id is generated from the name automatically. Nothing is written outside ~/.lifeos/agents/<id>/, and other agents are untouched.",
+      + "The id is generated from the name automatically, and the agent gets its standard skeleton (agent.json, identity.md, workspace project with AGENTS.md/concept-space.md/sessions/daily/cases/todo). "
+      + "Nothing is written outside ~/.lifeos/agents/<id>/, and other agents are untouched.",
     promptSnippet: "Create a new Life OS agent (multi-agent)",
     promptGuidelines: [
       "Use lifeos_agent_create when the user asks for a second assistant with a different role or focus; report the returned id so they can switch with ?agent=<id>.",
@@ -25,16 +26,15 @@ export function createAgentTools() {
     parameters: Type.Object({
       name: Type.String({ description: "Display name of the new agent, e.g. 'Code Reviewer'. Used to generate the id." }),
       description: Type.Optional(Type.String({ description: "One-line summary shown in the agent list (not injected into the prompt)." })),
-      identity: Type.Optional(Type.String({ description: "Full identity.md content: who this agent is, its duties, tone and boundaries. Omit to install a skeleton the user fills in later." })),
     }),
     async execute(_toolCallId, params) {
-      const result = await createAgent({ name: params.name, ...(params.description !== undefined ? { description: params.description } : {}), ...(params.identity !== undefined ? { identity: params.identity } : {}) });
+      const result = await createAgent({ name: params.name, ...(params.description !== undefined ? { description: params.description } : {}) });
       if ("code" in result) throw new Error(result.message);
       return {
         content: [{
           type: "text" as const,
           text: `Created agent "${result.name}" (id: ${result.id}).\n`
-            + `Files: ${result.dir}/agent.json · identity.md · projects/workspace/{project.json,AGENTS.md,daily,cases,todo}\n`
+            + `Files: ${result.dir}/agent.json · identity.md (skeleton) · projects/workspace/{project.json,AGENTS.md,concept-space.md,sessions,daily,cases,todo}\n`
             + `No preset session: the first message starts a new session.`,
         }],
         details: { id: result.id, dir: result.dir },
@@ -56,14 +56,12 @@ export function createAgentTools() {
     annotations: { destructiveHint: true, readOnlyHint: false, idempotentHint: false, openWorldHint: false },
     parameters: Type.Object({
       id: Type.String({ description: "Agent id (the directory name under ~/.lifeos/agents/)." }),
-      reason: Type.Optional(Type.String({ description: "Why it is being archived (recorded nowhere, shown back to the user)." })),
     }),
     async execute(_toolCallId, params) {
       const result = await archiveAgent(params.id);
       if ("code" in result) throw new Error(result.message);
-      const suffix = params.reason !== undefined && params.reason.trim() !== "" ? ` Reason: ${params.reason.trim()}` : "";
       return {
-        content: [{ type: "text" as const, text: `Archived agent ${result.archived} (hidden from lists; sessions and records kept).${suffix}` }],
+        content: [{ type: "text" as const, text: `Archived agent ${result.archived} (hidden from lists; sessions and records kept).` }],
         details: { archived: result.archived },
       };
     },

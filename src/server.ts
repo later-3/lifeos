@@ -175,14 +175,13 @@ export function createApp() {
 
   // 创建助手（模型侧走 lifeos_agent_create 工具，界面暂无入口——用户 2026-10-19 定）
   app.post("/api/agents", async (c) => {
-    const body = await c.req.json().catch(() => undefined) as { name?: unknown; description?: unknown; identity?: unknown } | undefined;
+    const body = await c.req.json().catch(() => undefined) as { name?: unknown; description?: unknown } | undefined;
     if (body === undefined || typeof body.name !== "string" || body.name.trim() === "") {
       const error = problem("invalid_request", "需要 name 字段（非空字符串）", 400); return c.json(error.body, error.status);
     }
     const created = await createAgent({
       name: body.name,
       ...(typeof body.description === "string" ? { description: body.description } : {}),
-      ...(typeof body.identity === "string" ? { identity: body.identity } : {}),
     });
     if ("code" in created) { const error = problem(created.code, created.message, created.status); return c.json(error.body, error.status); }
     return c.json({ agent: created }, 201);
