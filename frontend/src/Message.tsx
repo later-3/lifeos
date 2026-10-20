@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { IconCheck, IconCopy, IconTool } from "@tabler/icons-react";
+import { IconCheck, IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
 import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
@@ -96,8 +96,8 @@ function useNoHover(): boolean {
 
 type CopyState = "idle" | "copied" | "failed";
 
-/** 消息动作条（目前只有"复制"）：复制失败也要说出来，不静默。 */
-function MessageActions({ text, reveal }: { text: string; reveal: boolean }) {
+/** 消息动作条：复制（有文本时）+ 重新发送（这一轮失败时）。复制失败也要说出来，不静默。 */
+function MessageActions({ text, reveal, onRetry }: { text: string; reveal: boolean; onRetry?: () => void }) {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => { if (timer.current !== undefined) clearTimeout(timer.current); }, []);
@@ -111,30 +111,45 @@ function MessageActions({ text, reveal }: { text: string; reveal: boolean }) {
       });
   };
   const label = state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制";
+  const retryAction = onRetry === undefined ? null : (
+    <button type="button" onClick={onRetry} title="重新发送这一轮"
+      data-testid="resend-message"
+      className="flex min-h-7 items-center gap-1 rounded-control px-2 text-micro text-ink-500 transition-colors hover:text-ink-900">
+      <IconRefresh size={12} />
+      <span>重新发送</span>
+    </button>
+  );
   // 反馈期间保持可见：否则鼠标一移开，"已复制"就随悬停态一起消失了
   const visible = reveal || state !== "idle";
   return (
     <div data-testid="message-actions"
       className={`flex justify-end transition-opacity duration-150 ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      {text !== "" && (
       <button type="button" onClick={copy} title="复制这条消息" data-testid="copy-message"
         className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${state === "failed" ? "text-danger" : state === "copied" ? "text-accent" : "text-ink-500 hover:text-ink-900"}`}>
         {state === "copied" ? <IconCheck size={12} /> : <IconCopy size={12} />}
         <span aria-live="polite">{label}</span>
       </button>
+      )}
+      {retryAction}
     </div>
   );
 }
 
-export function MessageView({ role, blocks, busy, error, align = "end" }: {
+export function MessageView({ role, blocks, busy, error, align = "end", onRetry, failureNote }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
+  /** 这一轮失败时的"重新发送"（动作挂在失败的那条消息上，不另起一行） */
+  onRetry?: () => void;
+  /** 失败但气泡里没有原因时的一句说明（空回复/尾部是用户消息） */
+  failureNote?: string;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
   const noHover = useNoHover();
-  // 流式中的回复不给复制（Pi Web 同款：textContent && !isStreaming）
-  const showActions = text !== "" && !(role === "assistant" && busy);
+  // 流式中的回复不给复制（Pi Web 同款：textContent && !isStreaming）；失败重发同理
+  const showActions = (text !== "" || onRetry !== undefined) && !(role === "assistant" && busy);
   const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   if (role === "user") {
     return (
@@ -143,7 +158,8 @@ export function MessageView({ role, blocks, busy, error, align = "end" }: {
         <div className="max-w-bubble rounded-bubble rounded-br-md bg-ink-900 px-4 py-2.5 text-white" data-testid="message-text">
           <Markdown text={text} inverse />
         </div>
-        {showActions && <MessageActions text={text} reveal={hovered || noHover} />}
+        {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
+        {showActions && <MessageActions text={text} reveal={hovered || noHover} {...(onRetry !== undefined ? { onRetry } : {})} />}
       </div>
     );
   }
@@ -153,7 +169,8 @@ export function MessageView({ role, blocks, busy, error, align = "end" }: {
         <BlockView key={index} block={block} live={busy} />
       ))}
       {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
-      {showActions && <MessageActions text={text} reveal={hovered || noHover} />}
+      {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
+      {showActions && <MessageActions text={text} reveal={hovered || noHover} {...(onRetry !== undefined ? { onRetry } : {})} />}
     </div>
   );
 }

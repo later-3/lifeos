@@ -493,6 +493,10 @@ if (await firstMessage.count() === 0) {
   const label = (await copy.innerText()).trim();
   check("复制后按钮显示「已复制」", label.includes("已复制"), label);
 
+  // 正常完成的会话里只有"复制"：重发动作只属于失败的那一轮（不能到处挂）
+  const retryInMessage = await firstMessage.locator('[data-testid="resend-message"]').count();
+  check("正常一轮不出现「重新发送」（只在失败消息的动作条里）", retryInMessage === 0, `${retryInMessage} 个`);
+
   const clipboard = (await page.evaluate(() => navigator.clipboard.readText())).trim();
   const expected = (await firstMessage.locator('[data-testid="message-text"]').first().innerText()).trim();
   const plain = !/[*`#_[\]()<>]/.test(expected);   // 有 Markdown 记号时只断言"有内容"，否则逐字相等

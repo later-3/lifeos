@@ -15,6 +15,7 @@ import { useColumnWidth } from "./useColumnWidth";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, WorkingRow, type Block } from "./Message";
+import { resendPlan } from "./resend";
 import { applyStreamEvent, blocksOfStream, createStreamState, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
@@ -923,28 +924,17 @@ export default function App() {
               ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
               : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
             {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
-            {messages.map((message, index) => (
-              <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
-                {...(message.error !== undefined ? { error: message.error } : {})} />
-            ))}
-            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} {...(retry !== undefined ? { retry } : {})} />}
-            {/* 尾部空回复 = 那一轮没跑出结果（后端重启/断线）：给一条明确的"重新发送" */}
-            {!busy && (() => {
-              const tail = messages[messages.length - 1];
-              const lastUser = [...messages].reverse().find((message) => message.role === "user");
-              // assistant 空回复/失败 → 重发；尾部是 user（那一轮连 assistant 条目都没写出来）→ 同样是丢了，也给重发
-              const failed = tail?.role === "assistant"
-                ? (tail.text === "" || tail.error !== undefined)
-                : tail?.role === "user";
-              if (!failed || lastUser === undefined) return null;
-              // 失败原因已经在气泡里显示过了，这里只留动作，不重复说一遍
+            {messages.map((message, index) => {
+              // 失败属于那一轮：动作挂在最后那条消息的动作条里，不另起一行（否则位置随列表浮动、和消息脱开）
+              const plan = index === messages.length - 1 ? resendPlan(messages, busy) : undefined;
               return (
-                <div className="flex flex-wrap items-center gap-2 text-meta text-ink-500">
-                  {tail.error === undefined && <span>本轮没有回复（可能被中断）。</span>}
-                  <Button size="sm" onClick={() => void sendText(lastUser.text)}>重新发送</Button>
-                </div>
+                <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
+                  {...(message.error !== undefined ? { error: message.error } : {})}
+                  {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})}
+                  {...(plan?.note !== undefined ? { failureNote: plan.note } : {})} />
               );
-            })()}
+            })}
+            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} {...(retry !== undefined ? { retry } : {})} />}
             <div ref={endRef} />
           </div>
         </main>
