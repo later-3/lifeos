@@ -1,5 +1,5 @@
 // 项目绑定目录的骨架（协议 §15.3）：每个项目目录都应有 AGENTS.md / concept-space.md /
-// sessions/ · daily/ · cases/ · todo/（tasks/ 按需建，不预建）。
+// sessions/ · daily/ · cases/ · todo/ · memory/（tasks/ 按需建，不预建）。
 // create-only：已存在的文件绝不覆盖（用户的记录不能被初始化逻辑冲掉）。
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -39,7 +39,7 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
 
 /** 补齐一个项目绑定目录的骨架（幂等、create-only）。 */
 export async function ensureProjectSkeleton(dir: string, input: { name: string; path: string }): Promise<void> {
-  for (const sub of ["sessions", "daily", "cases", "todo"]) {
+  for (const sub of ["sessions", "daily", "cases", "todo", "memory"]) {
     await mkdir(join(dir, sub), { recursive: true, mode: 0o700 });
   }
   await writeIfMissing(join(dir, "AGENTS.md"), agentsMd(input.name, input.path));

@@ -27,7 +27,10 @@ export async function listGlobalProjects(): Promise<Map<string, GlobalProject>> 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const project = await readGlobalProject(entry.name);
-    if (project !== undefined) out.set(project.id, project);
+    if (project !== undefined) {
+      await mkdir(join(registryRoot(), project.id, "memory"), { recursive: true, mode: 0o700 });
+      out.set(project.id, project);
+    }
   }
   return out;
 }
@@ -52,14 +55,17 @@ export async function registerGlobalProject(path: string, preferredName?: string
   const canonicalTarget = await canonical(target);    // 匹配用 canonical（符号链接也视为同一目录）
   const projects = [...(await listGlobalProjects()).values()];
   for (const project of projects) {
-    if (await canonical(project.path) === canonicalTarget) return project;
+    if (await canonical(project.path) === canonicalTarget) {
+      await mkdir(join(registryRoot(), project.id, "memory"), { recursive: true, mode: 0o700 });
+      return project;
+    }
   }
   const base = sanitizeSegment(preferredName !== undefined && preferredName !== "" ? preferredName : basename(target));
   const taken = new Set((await readdir(registryRoot()).catch(() => [] as string[])).filter((name) => !name.startsWith(".")));
   let id = base;
   for (let n = 2; taken.has(id); n += 1) id = `${base.slice(0, 55)}-${n}`;
   const project: GlobalProject = { schemaVersion: 1, id, name: basename(target) || id, path: target };
-  await mkdir(join(registryRoot(), id), { recursive: true, mode: 0o700 });
+  await mkdir(join(registryRoot(), id, "memory"), { recursive: true, mode: 0o700 });
   await writeFile(manifestPath(id), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   return project;
 }

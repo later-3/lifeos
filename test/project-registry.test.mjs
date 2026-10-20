@@ -51,6 +51,7 @@ test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一�
   const binding = join(home, "agents", "lifeosagent", "projects", one.project.id, "project.json");
   assert.equal(JSON.parse(await readFile(binding, "utf8")).id, one.project.id);
   assert.ok((await stat(join(home, "projects", one.project.id, "project.json"))).isFile());
+  assert.ok((await stat(join(home, "projects", one.project.id, "memory"))).isDirectory(), "项目共享记忆目录应存在");
 
   const again = await registerProject("lifeosagent", dir);
   assert.ok(!("code" in again));
@@ -69,7 +70,7 @@ test("项目绑定目录带 harness 骨架；老绑定在列出时补齐；不�
   for (const file of ["AGENTS.md", "concept-space.md"]) {
     assert.ok((await stat(join(bindDir, file))).isFile(), `${file} 应存在`);
   }
-  for (const sub of ["sessions", "daily", "cases", "todo"]) {
+  for (const sub of ["sessions", "daily", "cases", "todo", "memory"]) {
     assert.ok((await stat(join(bindDir, sub))).isDirectory(), `${sub}/ 应存在`);
   }
   await assert.rejects(stat(join(bindDir, "tasks")), "tasks/ 按需建，不预建");

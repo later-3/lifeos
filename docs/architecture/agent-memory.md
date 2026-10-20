@@ -28,6 +28,8 @@
 | 3 | **Agent 记忆** | Agent（跨项目） | `~/.lifeos/agents/<agentId>/memory/` |
 | 4 | **agent 的项目记忆**（私有） | Agent（在某项目内） | `~/.lifeos/agents/<agentId>/projects/<projectId>/memory/` |
 
+以上 `memory/` 目录由初始化骨架预建：绑定层走 `ensureProjectSkeleton`（含 `memory/`），全局项目层在注册/列出时建 `memory/`。MemOS 首次写入时才在目录里建 SQLite，所以空目录是正常的。
+
 第 4 种放在 **Agent 自己的层级**、而不是公用的 project 目录里：外面那个 project 是所有 Agent 共用的，私有经验不能写进去。
 
 **隔离方式**：一个角色 = 一个 MemOS 本地核心 = 一个 SQLite（物理隔离），不是靠查询过滤。
