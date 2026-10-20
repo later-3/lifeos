@@ -12,6 +12,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
+import { broadcast } from "./events.ts";
+import { runningOf } from "./session-runtime.ts";
 
 /** agent.json 的唯一形状（读/写共用；旧的 boundProjectIds 读到就清掉，不再写回）。 */
 export type AgentDefinition = {
@@ -158,8 +160,7 @@ export async function createAgent(input: CreateAgentInput): Promise<
     await writeJson(join(workspace, "project.json"), { schemaVersion: 1, id: "workspace", name: "工作区" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceAgentsMd, { encoding: "utf8", mode: 0o600 });
     await writeFile(join(workspace, "concept-space.md"), workspaceConceptSpace, { encoding: "utf8", mode: 0o600 });
-    // 写操作必须闭环到 UI（用户 2026-10-19 点名）：广播后前端自动重取助手列表，不需要手动刷新
-    const { broadcast } = await import("./agent-host.ts");
+    // 写操作必须闭环到 UI（用户 2026-10-19 点名）：在**共享写实现**里广播，工具/HTTP 两条入口都自动生效
     broadcast({ type: "agents_changed" });
     return { id, name, dir, created: true };
   } catch (error) {
@@ -193,13 +194,10 @@ export async function archiveAgent(id: string): Promise<{ archived: string } | A
   const raw = await readJson(path);
   if (raw === undefined || typeof raw.id !== "string") return { code: "not_found", message: "找不到这个 Agent", status: 404 };
   if (raw.archivedAt !== undefined) return { code: "not_found", message: "该 Agent 已归档", status: 404 };
-  // 运行状态在 agent-host 里；动态引入只为避免 agent-host → agent-tools → agents 的静态循环
-  const { snapshotOf } = await import("./agent-host.ts");
-  if (snapshotOf(id).running.length > 0) return { code: "agent_running", message: "该 Agent 有会话正在运行，先等它结束", status: 409 };
+  if (runningOf(id).length > 0) return { code: "agent_running", message: "该 Agent 有会话正在运行，先等它结束", status: 409 };
   const alive = (await allAgents()).filter((entry) => entry.record.archivedAt === undefined);
   if (alive.length <= 1) return { code: "last_agent", message: "至少保留一个 Agent", status: 400 };
   await writeJson(path, { ...raw, archivedAt: new Date().toISOString() });
-  const { broadcast } = await import("./agent-host.ts");
   broadcast({ type: "agents_changed" });
   return { archived: id };
 }

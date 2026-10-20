@@ -60,7 +60,7 @@
 
 ## 7 存量已知缺口（写在明处，不藏在心里）
 
-- `src/agents.ts` 3 处内联 `await import()`：与 `agent-host.ts` 的循环依赖（应把事件总线抽成独立模块）。
-- 24 处静默 `catch`（`src`）：按模块逐步改成"错误可见"；新代码不得新增静默吞错。
+- ~~`src/agents.ts` 3 处内联 `await import()`~~：已修（事件总线 `src/events.ts` + 运行态 `src/session-runtime.ts` 拆出，循环依赖消失）。
+- 静默 `catch`（`src`）：按模块逐步改成"错误可见"；新代码不得新增静默吞错。
 - `src/server.ts` 35 条路由单文件；`frontend/src/App.tsx` 1120 行 / 21 个 `useState`：
   按资源/职责拆分（下一批，不夹带功能改动）。

@@ -18,12 +18,7 @@ export const LIFEOS_TOOL_NAMES = [
 ] as const;
 
 /** 工具要绑定"当前会话是谁、在哪个项目"——都由会话自身推导，模型不用传（也不会传错）。 */
-export type ToolContext = {
-  agentId: string;
-  projectId: string;
-  /** 写操作要闭环到界面：由宿主注入（工具不能反向 import agent-host，会成循环） */
-  notify?: () => void;
-};
+export type ToolContext = { agentId: string; projectId: string };
 
 export function createAgentTools(ctx: ToolContext) {
   const create = defineTool({
@@ -162,7 +157,7 @@ export function createAgentTools(ctx: ToolContext) {
     async execute(_toolCallId, params) {
       const result = await bindProject(ctx.agentId, params.path);
       if ("code" in result) throw new Error(result.message);
-      if (result.changed) ctx.notify?.();   // 界面自动重取项目列表（幂等重复添加不打扰）
+      // 界面刷新由写实现（src/projects.ts）广播，工具不负责通知
       return {
         content: [{
           type: "text" as const,
@@ -194,7 +189,6 @@ export function createAgentTools(ctx: ToolContext) {
     async execute(_toolCallId, params) {
       const result = await unbindProject(ctx.agentId, params.id);
       if (result !== "unbound") throw new Error(result.message);
-      ctx.notify?.();
       return {
         content: [{
           type: "text" as const,

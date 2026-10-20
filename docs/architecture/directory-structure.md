@@ -13,7 +13,11 @@ lifeos/
 ├─ src/                     后端（Hono + Pi SDK）
 │  ├─ main.ts               进程入口：起 HTTP 服务（--port，默认 43120）
 │  ├─ server.ts             路由表（Agent / 项目 / 会话 / 事件流 / 文件浏览 / 配置）
-│  ├─ agent-host.ts         会话宿主：创建/加载会话、跑一轮、事件流、条目读取
+│  ├─ agent-host.ts         会话宿主：创建/加载会话、跑一轮、条目读取、Pi 能力代理
+│  ├─ events.ts             SSE 事件总线（按 Agent 的序号/缓冲/订阅；写操作在这里广播）
+│  ├─ session-runtime.ts    运行态登记（哪些会话在跑）：agents/host 共用，避免循环依赖
+│  ├─ failure.ts            失败归因（stopReason + errorMessage → 可显示的九类）
+│  ├─ model-follow.ts       "默认 vs /model 覆盖"的判定（纯函数）
 │  ├─ assembly.ts           提示装配（方案 E：identity + harness 区 + Pi 的 tools/rules 回填）
 │  ├─ stream-events.ts      Pi 会话事件 → SSE 流事件的唯一映射
 │  ├─ projects.ts           项目 manifest 的读写与旧数据迁移
@@ -27,7 +31,7 @@ lifeos/
 │     ├─ FileTree.tsx / FilePanel.tsx / DirectoryPicker.tsx
 │     ├─ AgentConfig.tsx · agent-avatar.tsx
 │     └─ design/            tokens.css（唯一数值来源）· ui.tsx（primitive）· layout.ts（布局数学）· fold/rail/overlay/toast
-├─ test/                    node:test：api / assembly / fs / home / ui-layout / stream-events / stream-blocks / prompt-patches
+├─ test/                    node:test：api / assembly / fs / home / ui-layout / stream-events / stream-blocks / prompt-patches / failure / tool-state / working / model-follow / resend / action-bar
 ├─ frontend/test/           UI 契约（ui-contract.mjs + 截图基线；基线本地生成、不进 Git）
 ├─ scripts/                 lint-tokens.mjs（视觉 token 闸）· stop.mjs（按端口优雅结束）· audit-ui.mjs
 ├─ docs/                    文档唯一准绳；入口 docs/README.md；未实现登记 docs/todo.md

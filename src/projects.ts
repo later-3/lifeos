@@ -13,6 +13,7 @@ import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "no
 import { basename, dirname, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readAgent, writeAgent } from "./agents.ts";
+import { broadcast } from "./events.ts";
 
 // id = 目录名 = **可读名**（用户会直接翻文件系统，2026-10-19 定）：中文允许；
 // 旧设计的 uuid 目录在读取时懒迁移成可读名（manifest 里留 legacyId 供旧 URL 反查）。
@@ -185,7 +186,10 @@ export async function bindProject(agentId: string, path: string): Promise<{ proj
   const hidden = (agent.hiddenProjectIds ?? []).filter((item) => item !== project.id);
   const unhidden = hidden.length !== (agent.hiddenProjectIds ?? []).length;
   if (unhidden) await writeAgent({ ...agent, hiddenProjectIds: hidden });
-  return { project, created: registered.created, changed: registered.created || unhidden };
+  const changed = registered.created || unhidden;
+  // 写操作在共享实现里广播：工具与 HTTP 两条入口都会闭环，不依赖调用方记得 notify
+  if (changed) broadcast({ type: "agents_changed" });
+  return { project, created: registered.created, changed };
 }
 
 /** 从该 Agent 的列表移除：写 hiddenProjectIds；目录、manifest、会话全部保留；默认项目不可移除。 */
@@ -198,6 +202,7 @@ export async function unbindProject(agentId: string, pid: string): Promise<"unbo
   if (hidden.includes(pid)) return { code: "project_not_found", message: "该 Agent 下没有这个项目", status: 404 };
   if (!(await scanProjectDirs(agentId)).includes(pid)) return { code: "project_not_found", message: "该 Agent 下没有这个项目", status: 404 };
   await writeAgent({ ...agent, hiddenProjectIds: [...hidden, pid] });
+  broadcast({ type: "agents_changed" });
   return "unbound";
 }
 

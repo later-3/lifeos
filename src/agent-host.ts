@@ -9,28 +9,19 @@ import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { decideRestoreModel, type ModelRef } from "./model-follow.ts";
-
-// 流事件（思考/文本/工具）来自 stream-events.ts 的唯一映射；done/error 是本层的运行边界。
-type AgentEventPayload =
-  | ({ sessionId: string } & StreamEvent)
-  | { sessionId: string; type: "done" }
-  | { sessionId: string; type: "error"; message: string; kind: FailureKind }
-  // 助手列表变了（创建/归档，工具与 HTTP 都会触发）：前端收到后重取 /api/agents，无需手动刷新
-  | { type: "agents_changed" };
-
-export type AgentEvent = AgentEventPayload & { seq: number };
-
-export type RunSnapshot = { sessionId: string; startedAt: string };
+// 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
+// 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
+import { broadcast, eventsSeq, publish, subscribeAgent, type AgentEvent } from "./events.ts";
+import { clearRunning, isRunning, markRunning, runningOf, type RunSnapshot } from "./session-runtime.ts";
+export { broadcast, subscribeAgent } from "./events.ts";
+export type { AgentEvent } from "./events.ts";
+export type { RunSnapshot } from "./session-runtime.ts";
 
 type HostedSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 type ModelRuntimeInstance = Awaited<ReturnType<typeof ModelRuntime.create>>;
 type SessionState = { session: HostedSession; modelRuntime: ModelRuntimeInstance };
 type AgentState = {
-  seq: number;
-  recent: AgentEvent[];                       // 环形缓冲，供 since 续传
-  listeners: Set<(event: AgentEvent) => void>;
   sessions: Map<string, SessionState>;
-  running: Map<string, RunSnapshot>;
   /** 已创建但尚未落盘的会话（Pi 对无消息会话延迟写文件）——列表必须包含它们，否则“新建会话”隐身。 */
   pending: Map<string, { projectId: string; at: string }>;
 };
@@ -43,46 +34,14 @@ function stateOf(agentId: string): AgentState {
   const key = stateKey(agentId);
   const existing = agents.get(key);
   if (existing !== undefined) return existing;
-  const created: AgentState = { seq: 0, recent: [], listeners: new Set(), sessions: new Map(), running: new Map(), pending: new Map() };
+  const created: AgentState = { sessions: new Map(), pending: new Map() };
   agents.set(key, created);
   return created;
 }
 
-/** 发布一条事件：分配序号、进缓冲、推给订阅者。 */
-function publish(agentId: string, event: AgentEventPayload): AgentEvent {
-  const state = stateOf(agentId);
-  const full: AgentEvent = { ...event, seq: ++state.seq };
-  state.recent.push(full);
-  if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
-  for (const listener of state.listeners) listener(full);
-  return full;
-}
-
-/**
- * 全局广播（不绑定某个会话）：目前用于 "助手列表变了"。
- * 助手是跨 Agent 的实体——不管用户此刻正在看哪个 Agent，都要收到，所以逐条 state 推一遍。
- */
-export function broadcast(event: { type: "agents_changed" }): void {
-  for (const state of agents.values()) {
-    const full: AgentEvent = { ...event, seq: ++state.seq };
-    state.recent.push(full);
-    if (state.recent.length > 1000) state.recent.splice(0, state.recent.length - 1000);
-    for (const listener of state.listeners) listener(full);
-  }
-}
-
-/** 订阅某 Agent 的事件流：先回放 seq > since 的事件，再持续推新的。 */
-export function subscribeAgent(agentId: string, since: number, listener: (event: AgentEvent) => void): () => void {
-  const state = stateOf(agentId);
-  for (const event of state.recent) if (event.seq > since) listener(event);
-  state.listeners.add(listener);
-  return () => state.listeners.delete(listener);
-}
-
 /** 快照：当前序号 + 正在跑的会话（订阅时先给，保证不丢状态）。 */
 export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot[] } {
-  const state = stateOf(agentId);
-  return { seq: state.seq, running: [...state.running.values()] };
+  return { seq: eventsSeq(agentId), running: runningOf(agentId) };
 }
 
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
@@ -163,7 +122,7 @@ async function createHostedSession(
     resourceLoader,
     tools: [...ALL_TOOL_NAMES],
     // 工具绑定会话上下文（谁 / 哪个项目），模型不用传：agentId + projectId 都从会话自身推导
-    customTools: createAgentTools({ agentId, projectId, notify: () => broadcast({ type: "agents_changed" }) }),
+    customTools: createAgentTools({ agentId, projectId }),
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
@@ -280,7 +239,7 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   const state = stateOf(agentId);
   const target = state.sessions.get(sessionId);
   if (target === undefined) return;
-  state.running.set(sessionId, { sessionId, startedAt: new Date().toISOString() });
+  markRunning(agentId, { sessionId, startedAt: new Date().toISOString() });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
     if (mapped !== undefined) publish(agentId, { sessionId, ...mapped });
@@ -293,7 +252,7 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
     publish(agentId, { sessionId, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown" });
   } finally {
     unsubscribe();
-    state.running.delete(sessionId);
+    clearRunning(agentId, sessionId);
     state.pending.delete(sessionId);   // 首轮消息后 Pi 已落盘，文件列表接管
   }
 }
@@ -311,7 +270,7 @@ export function sessionMeta(agentId: string, state: SessionState): {
   return {
     model: model === undefined ? null : { provider: model.provider, id: model.id },
     thinkingLevel: state.session.thinkingLevel,
-    running: stateOf(agentId).running.has(state.session.sessionManager.getSessionId()),
+    running: isRunning(agentId, state.session.sessionManager.getSessionId()),
     modelOverridden: hasModelOverride(state.session),
   };
 }
@@ -407,7 +366,7 @@ export async function applyAgentDefaultModel(agentId: string, provider: string, 
   for (const [sessionId, state] of stateOf(agentId).sessions) {
     if (hasModelOverride(state.session)) continue;
     // 正在跑的会话不在半路换模型（下一轮/重开时再跟随），避免一轮之内模型突变
-    if (stateOf(agentId).running.has(sessionId)) continue;
+    if (isRunning(agentId, sessionId)) continue;
     const model = state.modelRuntime.getModel(provider, modelId);
     if (model === undefined) continue;
     try {
@@ -491,7 +450,7 @@ export function setSessionThinking(agentId: string, sessionId: string, level: Th
 /** 删除会话：移除文件与内存态；正在运行的拒绝。 */
 export async function deleteSession(agentId: string, sessionId: string): Promise<"deleted" | "not_found" | "running"> {
   const state = stateOf(agentId);
-  if (state.running.has(sessionId)) return "running";
+  if (isRunning(agentId, sessionId)) return "running";
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined && !state.sessions.has(sessionId)) return "not_found";
   if (found !== undefined) await rm(found.path, { force: true });
