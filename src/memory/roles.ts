@@ -25,10 +25,10 @@ export function roleKey(role: MemoryRole): string {
 
 /**
  * 四个角色各自的存储根：
- * - 用户：跟人走，跨项目/跨 Agent；
- * - Agent：跟 Agent 走，跨项目；
+ * - 用户记忆：跟人走，跨项目/跨 Agent；
+ * - Agent 记忆：跟 Agent 走，跨项目；
  * - agent 的项目记忆（私有）：跟 Agent 走（放在 Agent 的树里，不写进公用项目）；
- * - 项目共享：跟项目走（项目是全局实体）。
+ * - 项目共享记忆：跟项目走（项目是全局实体）。
  */
 export function storeRoot(role: MemoryRole): string {
   const home = resolveHome();
@@ -45,11 +45,11 @@ export function roleLabel(role: MemoryRole): string {
     case "user": return `用户记忆（${role.userId ?? DEFAULT_USER_ID}）`;
     case "agent": return `Agent 记忆（${role.agentId}）`;
     case "agent_project": return `agent 的项目记忆（${role.agentId} @ ${role.projectId}）`;
-    case "project": return `项目共享（${role.projectId}）`;
+    case "project": return `项目共享记忆（${role.projectId}）`;
   }
 }
 
-/** 一次检索默认覆盖的角色（越具体越靠前：agent 的项目记忆 → 项目共享 → Agent → 用户）。 */
+/** 一次检索默认覆盖的角色（越具体越靠前：agent 的项目记忆 → 项目共享记忆 → Agent 记忆 → 用户记忆）。 */
 export function defaultReadOrder(input: { agentId: string; projectId: string; userId?: string }): MemoryRole[] {
   return [
     { kind: "agent_project", agentId: input.agentId, projectId: input.projectId },

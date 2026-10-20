@@ -68,7 +68,7 @@ lifeos/
 |---|---|
 | 会话（JSONL） · 每日记录 · 案例 · Todo · 任务 | `agents/<id>/projects/<pid>/`（默认 `workspace/`；打开外部项目后随该项目 pid） |
 | 通用案例 · 协议正文 · 任务类型细则 | `interaction-harness/`（通用层） |
-| 记忆：项目共享 / 用户 / Agent / agent 的项目记忆 | `projects/<pid>/memory/` · `memory/user/<uid>/` · `agents/<id>/memory/` · `agents/<id>/projects/<pid>/memory/`（各自一个 SQLite） |
+| 记忆：项目共享记忆 / 用户记忆 / Agent 记忆 / agent 的项目记忆 | `projects/<pid>/memory/` · `memory/user/<uid>/` · `agents/<id>/memory/` · `agents/<id>/projects/<pid>/memory/`（各自一个 SQLite） |
 | 项目身份（外部项目） | `agents/<id>/projects/<pid>/project.json` |
 
 ## 4 明确**不建**（现在没有；真要写时再建并说明用途）

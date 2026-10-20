@@ -21,9 +21,9 @@
 
 | # | 记忆 | 归属 | 落点 |
 |---|---|---|---|
-| 1 | **项目共享** | 项目（全局实体，不挂在某个 Agent 下） | `~/.lifeos/projects/<projectId>/memory/` |
-| 2 | **用户** | 用户 | `~/.lifeos/memory/user/<userId>/` |
-| 3 | **Agent** | Agent（跨项目） | `~/.lifeos/agents/<agentId>/memory/` |
+| 1 | **项目共享记忆** | 项目（全局实体，不挂在某个 Agent 下） | `~/.lifeos/projects/<projectId>/memory/` |
+| 2 | **用户记忆** | 用户 | `~/.lifeos/memory/user/<userId>/` |
+| 3 | **Agent 记忆** | Agent（跨项目） | `~/.lifeos/agents/<agentId>/memory/` |
 | 4 | **agent 的项目记忆**（私有） | Agent（在某项目内） | `~/.lifeos/agents/<agentId>/projects/<projectId>/memory/` |
 
 第 4 种放在 **Agent 自己的层级**、而不是公用的 project 目录里：外面那个 project 是所有 Agent 共用的，私有经验不能写进去。
@@ -35,9 +35,9 @@
 - **默认隔离**：Agent 在项目 P 里工作时，默认不加载、不搜索其它项目的记忆。
 - **读取顺序**（越具体越优先）：
   1. **agent 的项目记忆**（当前 Agent + 当前项目）
-  2. **项目共享**（当前项目）
-  3. **Agent**（当前 Agent，跨项目）
-  4. **用户**
+  2. **项目共享记忆**（当前项目）
+  3. **Agent 记忆**（当前 Agent，跨项目）
+  4. **用户记忆**
 - 跨项目读取不是禁止，但不是默认：必须显式 `projectId`，结果标注来源（具体规则见需求文档 FR-2/FR-5）。
 
 ## 4 组件与接口
@@ -111,7 +111,7 @@ MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**，所以�
 
 | 文件 | 作用 |
 |---|---|
-| `src/memory/roles.ts` | 四角色与落点；`defaultReadOrder` = agent 的项目记忆 → 项目共享 → Agent → 用户 |
+| `src/memory/roles.ts` | 四角色与落点；`defaultReadOrder` = agent 的项目记忆 → 项目共享记忆 → Agent 记忆 → 用户记忆 |
 | `src/memory/config.ts` | LLM/embedding 配置；默认 embedding = Ollama nomic；密钥只进 env，写盘用 `${LIFEOS_MEMORY_API_KEY}` |
 | `src/memory/store.ts` | 每角色一个 MemOS core（一 SQLite），懒启动/统一关闭 |
 | `src/memory/index.ts` | `recordMemory` / `searchMemory` / `searchMemoryScopes` / `deleteMemory`（硬删除） |
