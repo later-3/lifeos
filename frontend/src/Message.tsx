@@ -8,6 +8,8 @@ import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
 import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
+import { failureLabel, type FailureKind } from "./failure-text";
+import { toolState } from "./tool-state";
 
 /**
  * 消息渲染（Markdown + 结构化块）。
@@ -29,8 +31,10 @@ export type Block =
     };
 export type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[];
-  /** Pi 的失败原因（stopReason=error）：显示在气泡里，并让"重新发送"可用 */
+  /** Pi 的原始失败信息（errorMessage）：作为证据小字显示 */
   error?: string;
+  /** 失败归类（超时/连不上/鉴权/限流/服务端/空回复/中断/截断）：决定显示哪句话 */
+  failure?: FailureKind;
   /** 仅客户端：这条正在被流事件更新（工作指示与块自动展开都只认它）。loadMessages 重建后自然清掉。 */
   streaming?: boolean;
 };
@@ -103,8 +107,8 @@ function actionsOf(text: string, onRetry: (() => void) | undefined): MessageActi
   return actions;
 }
 
-export function MessageView({ role, blocks, busy, error, align = "end", onRetry, failureNote }: {
-  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, failureNote }: {
+  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
   /** 这一轮失败时的"重新发送"（动作挂在失败的那条消息上，不另起一行） */
@@ -136,7 +140,12 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
       {blocks.map((block, index) => (
         <BlockView key={index} block={block} live={busy} />
       ))}
-      {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
+      {(failure !== undefined || error !== undefined) && (
+        <div data-testid="failure-reason">
+          <p className="text-meta text-danger">{failureLabel(failure)}</p>
+          {error !== undefined && <p className="text-micro text-ink-500">{error}</p>}
+        </div>
+      )}
       {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
       {bar}
     </div>
@@ -177,12 +186,13 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
 }
 
 function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCall" }>; live: boolean }) {
-  const running = block.result === undefined;
+  const state = toolState({ hasResult: block.result !== undefined, ...(block.isError !== undefined ? { isError: block.isError } : {}), live });
+  const running = state === "running";
   const [open, toggle] = useAutoOpen(running, false);
   const preview = argPreview(block.name, block.arguments);
-  const tone = block.isError === true ? "text-danger" : running ? "text-ink-500" : "text-success";
-  const status = block.isError === true ? "出错" : running ? "执行中" : "完成";
-  const seconds = running && live ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
+  const tone = state === "error" ? "text-danger" : state === "done" ? "text-success" : "text-ink-500";
+  const status = state === "error" ? "出错" : state === "done" ? "完成" : state === "running" ? "执行中" : "未完成";
+  const seconds = running ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
   return (
     <div className="max-w-bubble overflow-hidden rounded-panel ring-1 ring-line">
       <button type="button" onClick={toggle}
@@ -190,7 +200,8 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
         {running ? <Spinner size={12} className="text-accent" /> : <IconTool size={14} className="shrink-0 text-ink-300" />}
         <span className="shrink-0 font-medium">{block.name}</span>
         {preview !== "" && <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-500">{preview}</span>}
-        <span className={`ml-auto shrink-0 text-micro ${tone}`}>{status}</span>
+        <span className={`ml-auto shrink-0 text-micro ${tone}`}
+          {...(state === "missing" ? { title: "这一轮已结束，但没有拿到工具结果（可能被中断）" } : {})}>{status}</span>
         {seconds !== undefined && <span className="shrink-0 tabular-nums text-micro text-ink-500">{seconds}</span>}
       </button>
       {open && (

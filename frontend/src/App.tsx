@@ -16,6 +16,7 @@ import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, WorkingRow, type Block } from "./Message";
 import { resendPlan } from "./resend";
+import { failureLabel, type FailureKind } from "./failure-text";
 import { applyStreamEvent, blocksOfStream, createStreamState, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
@@ -28,7 +29,7 @@ import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/u
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
-type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string };
+type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string; failure?: FailureKind };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
@@ -367,7 +368,14 @@ export default function App() {
       if (current.current !== undefined) void loadMessages(agentId, current.current);
     };
     stream.addEventListener("done", finish);
-    stream.addEventListener("error", finish);
+    // 运行边界错误（prompt 抛出）：按分类给出人能读懂的原因，再收尾
+    stream.addEventListener("error", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; message?: string; kind?: FailureKind };
+      if (payload.sessionId === undefined || payload.sessionId === current.current) {
+        toast(`${failureLabel(payload.kind)}${payload.message === undefined ? "" : ` · ${payload.message}`}`, "error");
+      }
+      finish(event as MessageEvent);
+    });
     // 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新
     stream.addEventListener("agents_changed", () => {
       void (async () => {
@@ -934,6 +942,7 @@ export default function App() {
               return (
                 <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
                   {...(message.error !== undefined ? { error: message.error } : {})}
+                  {...(message.failure !== undefined ? { failure: message.failure } : {})}
                   {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})}
                   {...(plan?.note !== undefined ? { failureNote: plan.note } : {})} />
               );

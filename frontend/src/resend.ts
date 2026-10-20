@@ -25,7 +25,7 @@ export function resendPlan(messages: Message[], busy: boolean): ResendPlan | und
   // 最后一轮是否失败（tail=user 说明连 assistant 条目都没写出来）
   const failed = tail.role === "assistant" ? (tail.text === "" || tail.error !== undefined) : true;
   if (!failed) return undefined;
-  // 助手已经有错误原因时不再重复解释；空回复/整轮缺失才需要说明一句
-  const hasReason = tail.role === "assistant" && tail.error !== undefined;
+  // 已经能说出具体原因（error/failure）就不再重复；完全查不到原因才加通用说明
+  const hasReason = tail.role === "assistant" && (tail.error !== undefined || tail.failure !== undefined);
   return { index, text: lastUser.text, ...(hasReason ? {} : { note: "本轮没有回复（可能被中断）。" }) };
 }

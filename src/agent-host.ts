@@ -7,12 +7,13 @@ import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
+import { classifyFailure, type FailureKind } from "./failure.ts";
 
 // 流事件（思考/文本/工具）来自 stream-events.ts 的唯一映射；done/error 是本层的运行边界。
 type AgentEventPayload =
   | ({ sessionId: string } & StreamEvent)
   | { sessionId: string; type: "done" }
-  | { sessionId: string; type: "error"; message: string }
+  | { sessionId: string; type: "error"; message: string; kind: FailureKind }
   // 助手列表变了（创建/归档，工具与 HTTP 都会触发）：前端收到后重取 /api/agents，无需手动刷新
   | { type: "agents_changed" };
 
@@ -283,7 +284,8 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
     await target.session.prompt(text);
     publish(agentId, { sessionId, type: "done" });
   } catch (error) {
-    publish(agentId, { sessionId, type: "error", message: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    publish(agentId, { sessionId, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown" });
   } finally {
     unsubscribe();
     state.running.delete(sessionId);
@@ -396,7 +398,7 @@ type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock;
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
-  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; error?: string }> = [];
+  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; error?: string; failure?: FailureKind }> = [];
   for (const message of state.session.sessionManager.buildSessionProjection().messages) {
     if (message.role === "user") {
       const text = textOf(message);
@@ -409,21 +411,28 @@ export function messagesOf(state: SessionState) {
         else if (part.type === "toolCall") blocks.push({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments });
       }
       const text = blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
-      const failure = message as { stopReason?: string; errorMessage?: string };
+      const raw = message as { stopReason?: string; errorMessage?: string };
+      const errorText = typeof raw.errorMessage === "string" && raw.errorMessage.trim() !== "" ? raw.errorMessage.trim() : undefined;
+      // 失败分类：区分超时 / 连不上 / 鉴权 / 限流 / 服务端错误 / 空回复 / 中断 / 截断
+      const kind = classifyFailure({ ...(raw.stopReason !== undefined ? { stopReason: raw.stopReason } : {}), ...(errorText !== undefined ? { errorMessage: errorText } : {}), hasContent: blocks.length > 0 || text.trim() !== "" });
       out.push({
         role: "assistant", text, blocks,
-        ...(failure.stopReason === "error" ? { error: failure.errorMessage ?? "模型调用失败（未返回原因）" } : {}),
+        ...(kind !== undefined ? { failure: kind } : {}),
+        ...(errorText !== undefined ? { error: errorText } : {}),
       });
     } else if (message.role === "toolResult") {
       const result = textOf(message);
+      const callId = message.toolCallId;
+      // 只按 toolCallId 精确配对：Pi 每个 toolCall 都有 id。曾用"最后一个没有结果的调用"兜底，
+      // 结果把同一条消息里两个调用的结果配错（实测：ls 的结果挂到 bash 上，ls 永远"执行中"）。
+      if (callId === undefined) continue;
       for (let i = out.length - 1; i >= 0; i--) {
         const item = out[i];
         if (item === undefined || item.role !== "assistant") continue;
-        const call = [...item.blocks].reverse().find((block): block is ToolCallBlock => block.type === "toolCall");
-        if (call !== undefined && (call.id === message.toolCallId || call.result === undefined)) {
-          call.result = result;
-          call.isError = message.isError;
-        }
+        const call = item.blocks.find((block): block is ToolCallBlock => block.type === "toolCall" && block.id === callId);
+        if (call === undefined) continue;
+        call.result = result;
+        call.isError = message.isError;
         break;
       }
     }

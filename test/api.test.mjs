@@ -176,19 +176,24 @@ test("消息块：thinking / toolCall / toolResult 按 Pi 真实结构返回", a
     const entries = [
       { type: "session", version: 3, id: sid, timestamp: "2026-10-17T01:00:00.000Z", cwd: "" },
       { type: "message", id: "m1", parentId: sid, timestamp: "2026-10-17T01:00:00.001Z", message: { role: "user", content: "查".repeat(60) } },
+      // 一条 assistant 里两个工具调用：结果必须按 toolCallId 各归各位（曾经的 bug：ls 的结果挂到 bash 上）
       { type: "message", id: "m2", parentId: "m1", timestamp: "2026-10-17T01:00:00.002Z", message: { role: "assistant", content: [
         { type: "thinking", thinking: "先看目录" },
-        { type: "toolCall", id: "c1", name: "ls", arguments: { path: "." } } ] } },
+        { type: "toolCall", id: "c1", name: "ls", arguments: { path: "." } },
+        { type: "toolCall", id: "c2", name: "bash", arguments: { command: "pwd" } } ] } },
       { type: "message", id: "m3", parentId: "m2", timestamp: "2026-10-17T01:00:00.003Z", message: { role: "toolResult", toolCallId: "c1", toolName: "ls", content: [{ type: "text", text: "a.ts" }], isError: false, timestamp: 0 } },
-      { type: "message", id: "m4", parentId: "m3", timestamp: "2026-10-17T01:00:00.004Z", message: { role: "assistant", content: [{ type: "text", text: "有一个文件" }] } },
+      { type: "message", id: "m3b", parentId: "m3", timestamp: "2026-10-17T01:00:00.0035Z", message: { role: "toolResult", toolCallId: "c2", toolName: "bash", content: [{ type: "text", text: "/tmp/demo" }], isError: false, timestamp: 0 } },
+      { type: "message", id: "m4", parentId: "m3b", timestamp: "2026-10-17T01:00:00.004Z", message: { role: "assistant", content: [{ type: "text", text: "有一个文件" }] } },
     ];
     await writeFile(join(dir, `2026-10-17T01-00-00-000Z_${sid}.jsonl`), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
     assert.deepEqual(messages.map((m) => m.role), ["user", "assistant", "assistant"]);
     const blocks = messages[1].blocks;
-    assert.deepEqual(blocks.map((b) => b.type), ["thinking", "toolCall"]);
+    assert.deepEqual(blocks.map((b) => b.type), ["thinking", "toolCall", "toolCall"]);
     assert.equal(blocks[1].name, "ls");
-    assert.equal(blocks[1].result, "a.ts", "toolResult 应挂回对应 toolCall");
+    assert.equal(blocks[1].result, "a.ts", "ls 的结果必须挂回 ls（不能落到同条消息的另一个调用上）");
+    assert.equal(blocks[2].name, "bash");
+    assert.equal(blocks[2].result, "/tmp/demo", "bash 的结果挂回 bash");
     assert.equal(blocks[1].isError, false);
     assert.equal(messages[2].text, "有一个文件");
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
@@ -744,5 +749,35 @@ test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切
     // 压缩：接线正确即可（测试家没有可用模型时 Pi 会报错 → 400）
     const compact = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/compact`, { method: "POST" });
     assert.ok([200, 400].includes(compact.status), `compact status=${compact.status}`);
+  } finally { server.close(); }
+});
+
+test("失败分类：超时/网络/鉴权/中断/截断/空回复各有 kind（界面据此说人话）", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const sid = "22222222-3333-4444-8555-666666666666";
+    const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+    // 必须串成一条链（parentId 指向上一环）：分支结构下投影只保留叶子路径，会误判"消息丢了"
+    const entries = [
+      { type: "session", version: 3, id: sid, timestamp: "2026-10-17T02:00:00.000Z", cwd: "" },
+      { type: "message", id: "m1", parentId: sid, timestamp: "2026-10-17T02:00:00.001Z", message: { role: "user", content: "hi" } },
+    ];
+    const failures = [
+      { content: [{ type: "text", text: "部分" }], stopReason: "error", errorMessage: "Request timed out." },
+      { content: [], stopReason: "aborted" },
+      { content: [], stopReason: "stop" },
+      { content: [], stopReason: "error", errorMessage: "fetch failed" },
+      { content: [], stopReason: "error", errorMessage: "401 Unauthorized" },
+      { content: [{ type: "text", text: "被截断" }], stopReason: "length" },
+    ];
+    failures.forEach((message, index) => {
+      entries.push({ type: "message", id: `m${index + 2}`, parentId: index === 0 ? "m1" : `m${index + 1}`, timestamp: "2026-10-17T02:00:00.002Z", message: { role: "assistant", ...message } });
+    });
+    await writeFile(join(dir, `2026-10-17T02-00-00-000Z_${sid}.jsonl`), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
+    const kinds = messages.filter((m) => m.role === "assistant").map((m) => m.failure);
+    assert.deepEqual(kinds, ["timeout", "aborted", "empty", "network", "auth", "truncated"]);
+    assert.equal(messages[1].error, "Request timed out.", "原始原因保留给界面展示");
   } finally { server.close(); }
 });
