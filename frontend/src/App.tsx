@@ -95,6 +95,7 @@ export default function App() {
   const busyRef = useRef(false);          // 供回调读的即时 busy（state 有渲染延迟）
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
+  const lostCheckRef = useRef(false);    // 判丢检查互斥（异步查 running 时不要重入）
   const sentHistoryRef = useRef<string[]>([]);   // 输入历史（↑/↓ 浏览，本进程内）
   const historyIndexRef = useRef(-1);
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
@@ -103,8 +104,10 @@ export default function App() {
   const [streamSeq, setStreamSeq] = useState(0);
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
-  const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string } | undefined>();
-  const [meta, setMeta] = useState<{ model: { provider: string; id: string } | null; thinkingLevel: string } | undefined>();
+  const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
+  /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
+  const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
+  const [meta, setMeta] = useState<{ model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean } | undefined>();
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
@@ -220,10 +223,18 @@ export default function App() {
 
   async function loadMessages(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
-      messages: Message[]; meta?: { model: { provider: string; id: string } | null; thinkingLevel: string };
+      messages: Message[]; meta?: { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean };
     };
     followTail.current = true;
     setMessages(data.messages ?? []);
+    if (data.meta !== undefined) setMeta(data.meta);
+  }
+
+  /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
+  async function refreshMeta(id: string, sid: string) {
+    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
+      meta?: { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean };
+    };
     if (data.meta !== undefined) setMeta(data.meta);
   }
 
@@ -250,6 +261,7 @@ export default function App() {
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
+    setTurnStatus(undefined);
     setActiveTool(undefined);
     setSessionId(sid);
     streaming.current = false;
@@ -346,7 +358,7 @@ export default function App() {
       const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; attempt: number; maxAttempts: number; delayMs: number; message: string };
       if (payload.sessionId !== undefined && payload.sessionId !== current.current) return;
       lastEventAtRef.current = Date.now();
-      setRetry({ attempt: payload.attempt, maxAttempts: payload.maxAttempts, delayMs: payload.delayMs, message: payload.message });
+      setRetry({ attempt: payload.attempt, maxAttempts: payload.maxAttempts, delayMs: payload.delayMs, message: payload.message, startedAt: Date.now() });
       busyRef.current = true;
       setBusy(true);
     });
@@ -385,6 +397,8 @@ export default function App() {
           await selectAgent(data.items[0]);
         } else {
           await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
+          // 默认模型可能变了（配置保存）→ 刷新头部 meta；不动消息，避免把正在流的这一轮冲掉
+          if (!busyRef.current && ctx.current.agentId !== undefined && current.current !== undefined) void refreshMeta(ctx.current.agentId, current.current);
         }
       })();
     });
@@ -541,7 +555,10 @@ export default function App() {
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
     streamRef.current = createStreamState();
     setPhase("waiting");
+    setRetry(undefined);
+    setTurnStatus(undefined);
     setActiveTool(undefined);
+    lastEventAtRef.current = Date.now();   // 发送即重置心跳：否则"页面静置>60s 后发送"会被误判成丢轮
     busyRef.current = true;
     setBusy(true);
     streaming.current = true;
@@ -680,6 +697,7 @@ export default function App() {
     streaming.current = false;
     setBusy(false);
     setRetry(undefined);
+    setTurnStatus({ text: reason });
     toast(reason, "error");
     if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
   }
@@ -694,9 +712,26 @@ export default function App() {
     };
     document.addEventListener("keydown", onKeyDown);
     const timer = setInterval(() => {
-      if (!busyRef.current) return;
-      const since = Date.now() - lastEventAtRef.current;
-      if (lastEventAtRef.current > 0 && since > 60_000) recoverLostRun("运行已中断（超过 60 秒没有响应）");
+      if (!busyRef.current || lostCheckRef.current) return;
+      if (lastEventAtRef.current === 0) return;
+      if (Date.now() - lastEventAtRef.current <= 60_000) return;
+      // 判丢前先问后端"这一轮还在跑吗"：模型很慢/无流式时，60 秒没有事件不等于丢了
+      const agentId = ctx.current.agentId;
+      const sid = current.current;
+      if (agentId === undefined || sid === undefined) return;
+      lostCheckRef.current = true;
+      void (async () => {
+        try {
+          const response = await fetch(`/api/agents/${agentId}/sessions/${sid}`);
+          const data = await response.json() as { meta?: { running?: boolean } };
+          if (data.meta?.running === true) { lastEventAtRef.current = Date.now(); return; }   // 还活着：再给一个窗口
+          recoverLostRun("受理之后中断：后端已不再运行这一轮（进程重启或连接断开）");
+        } catch {
+          lastEventAtRef.current = Date.now();   // 连后端都查不到：先不判丢，等下一个窗口
+        } finally {
+          lostCheckRef.current = false;
+        }
+      })();
     }, 5000);
     return () => { document.removeEventListener("keydown", onKeyDown); clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -943,11 +978,14 @@ export default function App() {
                 <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
                   {...(message.error !== undefined ? { error: message.error } : {})}
                   {...(message.failure !== undefined ? { failure: message.failure } : {})}
-                  {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})}
-                  {...(plan?.note !== undefined ? { failureNote: plan.note } : {})} />
+                  {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
               );
             })}
             {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} {...(retry !== undefined ? { retry } : {})} />}
+            {/* 这一轮的结果说明在左侧（失败/中断也是回复）：不属于用户消息 */}
+            {!busy && turnStatus !== undefined && (
+              <p className="text-meta text-ink-500" data-testid="turn-status">{turnStatus.text}</p>
+            )}
             <div ref={endRef} />
           </div>
         </main>

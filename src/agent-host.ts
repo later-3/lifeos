@@ -8,6 +8,7 @@ import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
+import { decideRestoreModel, type ModelRef } from "./model-follow.ts";
 
 // 流事件（思考/文本/工具）来自 stream-events.ts 的唯一映射；done/error 是本层的运行边界。
 type AgentEventPayload =
@@ -138,19 +139,17 @@ async function createHostedSession(
   const parts = await buildPromptParts(agentId, projectId);
   const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts });
 
+  const resolution = await resolveModelChoice(agentId);
   let model: ModelOption | undefined;
   let thinkingLevel: ThinkingOption | undefined;
   let modelLabel: string | undefined;
-  if (mode === "new") {
-    const resolution = await resolveModelChoice(agentId);
-    if (resolution !== undefined) {
-      const found = modelRuntime.getModel(resolution.choice.defaultProvider, resolution.choice.defaultModel);
-      if (found !== undefined) {
-        model = found;
-        modelLabel = `${resolution.choice.defaultProvider}/${resolution.choice.defaultModel}（来源 ${resolution.source === "agent" ? "Agent 个人配置" : "系统 settings"}）`;
-        if (resolution.choice.defaultThinkingLevel !== undefined) {
-          thinkingLevel = resolution.choice.defaultThinkingLevel as ThinkingOption;
-        }
+  if (mode === "new" && resolution !== undefined) {
+    const found = modelRuntime.getModel(resolution.choice.defaultProvider, resolution.choice.defaultModel);
+    if (found !== undefined) {
+      model = found;
+      modelLabel = `${resolution.choice.defaultProvider}/${resolution.choice.defaultModel}（来源 ${resolution.source === "agent" ? "Agent 个人配置" : "系统 settings"}）`;
+      if (resolution.choice.defaultThinkingLevel !== undefined) {
+        thinkingLevel = resolution.choice.defaultThinkingLevel as ThinkingOption;
       }
     }
   }
@@ -168,6 +167,12 @@ async function createHostedSession(
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
+  if (mode === "new") {
+    // 记录"创建时的默认"：以后默认变了，靠它区分"该跟随"还是"用户自己换过"
+    if (session.model !== undefined) appendDefaultRecord(sessionManager, { provider: session.model.provider, id: session.model.id });
+  } else {
+    await adoptAgentDefault(session, sessionManager, modelRuntime, agentId);
+  }
   return { session, modelRuntime, modelLabel };
 }
 
@@ -294,12 +299,126 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
 }
 
 /** 会话当前用的模型与思考级别（内存态才有；界面用来显示"到底在用哪个模型"）。 */
-export function sessionMeta(state: SessionState): { model: { provider: string; id: string } | null; thinkingLevel: string } {
+export function sessionMeta(agentId: string, state: SessionState): {
+  model: { provider: string; id: string } | null;
+  thinkingLevel: string;
+  /** 这一轮是否正在跑：前端判断"跑丢了"之前先看它（避免把"模型很慢"误判成中断） */
+  running: boolean;
+  /** 是否用过 `/model`（显式覆盖）：决定默认模型变更后要不要跟随 */
+  modelOverridden: boolean;
+} {
   const model = state.session.model;
   return {
     model: model === undefined ? null : { provider: model.provider, id: model.id },
     thinkingLevel: state.session.thinkingLevel,
+    running: stateOf(agentId).running.has(state.session.sessionManager.getSessionId()),
+    modelOverridden: hasModelOverride(state.session),
   };
+}
+
+/** 会话文件里最后一次 model_change（恢复时用它判断"模型是不是还是默认"）。 */
+function sessionModelOf(manager: SessionManager): { provider: string; id: string } | undefined {
+  const branch = manager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i -= 1) {
+    const entry = branch[i];
+    if (entry?.type === "model_change") return { provider: entry.provider, id: entry.modelId };
+  }
+  return undefined;
+}
+
+/** 标记"用户显式换过模型"的 Pi 自定义条目（不参与模型上下文；只用于区分默认/覆盖）。 */
+const MODEL_OVERRIDE_ENTRY = "lifeos_model_override";
+/** 记录"创建时/上次跟随的默认模型"，用于区分"默认后来变了"与"用户自己换过"。 */
+const DEFAULT_MODEL_ENTRY = "lifeos_default_model";
+
+type SessionManagerLike = ReturnType<typeof SessionManager.create>;
+
+function customEntryData(manager: SessionManagerLike, customType: string): ModelRef | undefined {
+  const branch = manager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i -= 1) {
+    const entry = branch[i];
+    if (entry?.type !== "custom" || entry.customType !== customType) continue;
+    const data = entry.data as { provider?: unknown; id?: unknown } | undefined;
+    if (typeof data?.provider === "string" && typeof data.id === "string") return { provider: data.provider, id: data.id };
+  }
+  return undefined;
+}
+
+const sameModelRef = (a: ModelRef | undefined, b: ModelRef | undefined): boolean =>
+  a !== undefined && b !== undefined && a.provider === b.provider && a.id === b.id;
+
+function hasOverrideIn(manager: SessionManagerLike): boolean {
+  return manager.getBranch().some((entry) => entry.type === "custom" && entry.customType === MODEL_OVERRIDE_ENTRY);
+}
+
+function hasModelOverride(session: HostedSession): boolean {
+  return hasOverrideIn(session.sessionManager);
+}
+
+function appendDefaultRecord(manager: SessionManagerLike, model: ModelRef): void {
+  manager.appendCustomEntry(DEFAULT_MODEL_ENTRY, { provider: model.provider, id: model.id });
+}
+
+/**
+ * 恢复会话时处理"默认 vs 覆盖"（用户 2026-10-20 规则）：
+ * 没被 `/model` 覆盖过的会话，重开时也要跟随最新默认；覆盖过的保留用户选择。
+ * 旧会话（没有默认记录）若模型与当前默认不同，视为"以前用 `/model` 换过"→ 补标记保护。
+ */
+async function adoptAgentDefault(
+  session: HostedSession,
+  manager: SessionManagerLike,
+  modelRuntime: ModelRuntimeInstance,
+  agentId: string,
+): Promise<void> {
+  const resolution = await resolveModelChoice(agentId);
+  const agentDefault: ModelRef | undefined = resolution === undefined ? undefined
+    : { provider: resolution.choice.defaultProvider, id: resolution.choice.defaultModel };
+  const stored = sessionModelOf(manager);
+  const recordedDefault = customEntryData(manager, DEFAULT_MODEL_ENTRY);
+  const decision = decideRestoreModel({
+    ...(stored !== undefined ? { stored } : {}),
+    ...(recordedDefault !== undefined ? { recordedDefault } : {}),
+    ...(agentDefault !== undefined ? { agentDefault } : {}),
+    overridden: hasOverrideIn(manager),
+  });
+  if (decision === "follow" && agentDefault !== undefined) {
+    const target = modelRuntime.getModel(agentDefault.provider, agentDefault.id);
+    if (target !== undefined) {
+      try {
+        await session.setModel(target);
+        appendDefaultRecord(manager, agentDefault);
+      } catch { /* 默认模型此刻不可用（缺 key 等）：保持原样，下次再试 */ }
+    }
+    return;
+  }
+  if (decision === "mark_override") {
+    manager.appendCustomEntry(MODEL_OVERRIDE_ENTRY, { legacy: true, at: new Date().toISOString() });
+    return;
+  }
+  // 已经是默认但记录缺失/过期：补记录，避免下次被误判成"覆盖"
+  if (stored !== undefined && agentDefault !== undefined && sameModelRef(stored, agentDefault) && !sameModelRef(recordedDefault, agentDefault)) {
+    appendDefaultRecord(manager, agentDefault);
+  }
+}
+
+/** 把 Agent 的新默认模型同步给"没被 `/model` 覆盖过"的会话；返回实际改了几个。 */
+export async function applyAgentDefaultModel(agentId: string, provider: string, modelId: string): Promise<number> {
+  let applied = 0;
+  for (const [sessionId, state] of stateOf(agentId).sessions) {
+    if (hasModelOverride(state.session)) continue;
+    // 正在跑的会话不在半路换模型（下一轮/重开时再跟随），避免一轮之内模型突变
+    if (stateOf(agentId).running.has(sessionId)) continue;
+    const model = state.modelRuntime.getModel(provider, modelId);
+    if (model === undefined) continue;
+    try {
+      await state.session.setModel(model);
+      appendDefaultRecord(state.session.sessionManager, { provider, id: modelId });
+      applied += 1;
+    } catch {
+      // 不能切（比如 key 缺失）就保持原样：配置保存本身不应因为某个会话失败而失败
+    }
+  }
+  return applied;
 }
 
 // —— 会话内的 Pi 原生能力（2026-10-19：全部对接 Pi AgentSession 的公开方法，不自己造）——
@@ -352,6 +471,8 @@ export async function setSessionModel(agentId: string, sessionId: string, provid
   if (model === undefined) return { ok: false, reason: "model_not_found" };
   try {
     await state.session.setModel(model);
+    // 显式覆盖标记：之后 Agent 默认变化时，这个会话不跟随（Pi 的 model_change 不区分"默认/覆盖"）
+    state.session.sessionManager.appendCustomEntry(MODEL_OVERRIDE_ENTRY, { provider, modelId, at: new Date().toISOString() });
     return { ok: true };
   } catch (error) {
     // Pi 在 provider 没配 key 时抛 "No API key for provider/model"：原样带回界面，不吞成"找不到"

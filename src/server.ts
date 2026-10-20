@@ -5,7 +5,7 @@ import { streamSSE } from "hono/streaming";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
-  abortSession, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
+  abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
   projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
@@ -342,7 +342,7 @@ export function createApp() {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const state = await getSession(agent.id, c.req.param("sessionId"), await cwdOfSession(agent, c.req.param("sessionId")));
     if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-    return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(state) });
+    return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(agent.id, state) });
   });
 
   app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {
@@ -557,7 +557,11 @@ export function createApp() {
     };
     await mkdir(join(agentsRoot(), agent.id, "projects", "workspace"), { recursive: true });
     await writeTextAtomic(agentConfigPath(agent.id), JSON.stringify(config, null, 2) + "\n");
-    return c.json({ config });
+    // 未用 `/model` 覆盖过的会话跟随新默认（用户 2026-10-20：默认变了，顶部/实际模型都要跟着变）
+    const applied = await applyAgentDefaultModel(agent.id, config.defaultProvider, config.defaultModel);
+    // 头部模型可能因此变化（未覆盖的会话跟随默认）→ 广播让前端刷新 meta（写操作必须闭环到界面）
+    broadcast({ type: "agents_changed" });
+    return c.json({ config, applied });
   });
 
   // —— 文件浏览器（docs/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——

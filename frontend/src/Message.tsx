@@ -6,6 +6,7 @@ import { Spinner } from "./design/ui";
 import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
+import { retryRemainingSeconds } from "./working";
 import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
@@ -60,6 +61,18 @@ function useWorkingSeconds(active: boolean): number {
   return seconds;
 }
 
+/** 单步秒表：阶段/工具变化时归零（"这一步等了多久"与"总共多久"分开看）。 */
+function useStepSeconds(key: string): number {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    setSeconds(0);
+    const timer = setInterval(() => setSeconds(Math.round((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [key]);
+  return seconds;
+}
+
 const PHASE_LABEL: Record<Phase, string> = {
   waiting: "等待模型响应…",
   thinking: "思考中…",
@@ -70,19 +83,22 @@ const PHASE_LABEL: Record<Phase, string> = {
 /** 工作指示行：转圈 + 现在在干什么 + 已用秒数。 */
 export function WorkingRow({ phase, activeTool, retry }: {
   phase: Phase; activeTool?: string;
-  retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string };
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number };
 }) {
-  const seconds = useWorkingSeconds(true);
+  const total = useWorkingSeconds(true);
+  const step = useStepSeconds(retry !== undefined ? "retry" : phase === "tool" ? `tool:${activeTool ?? ""}` : phase);
   // 状态区分（2026-10-19）：请求刚发出 = 连接中；超过 3s 还没首个事件 = 等待模型响应
+  // 重试（2026-10-20）：倒计时逐秒减少（Pi CLI 的 RetryStatusIndicator 同款），不再是静态 "Ns"
   const label = retry !== undefined
-    ? `模型调用失败，${Math.max(1, Math.round(retry.delayMs / 1000))}s 后重试（${retry.attempt}/${retry.maxAttempts}）：${retry.message}`
+    ? `模型调用失败，${retryRemainingSeconds(retry.delayMs, Date.now() - retry.startedAt)}s 后重试（${retry.attempt}/${retry.maxAttempts}）：${retry.message}`
     : phase === "tool" && activeTool !== undefined && activeTool !== "" ? `正在执行 ${activeTool}…`
-    : phase === "waiting" && seconds < 3 ? "正在连接模型…" : PHASE_LABEL[phase];
+    : phase === "waiting" && total < 3 ? "正在连接模型…" : PHASE_LABEL[phase];
   return (
     <div className={`flex flex-wrap items-center gap-2 py-0.5 text-meta ${retry !== undefined ? "text-danger" : "text-ink-500"}`}>
       <Spinner size={14} className={retry !== undefined ? "text-danger" : "text-accent"} />
       <span className="animate-pulse">{label}</span>
-      <span className="tabular-nums text-micro text-ink-500">{seconds}s</span>
+      {/* 两个时间分开看：这一步多久 / 这一轮总共多久 */}
+      <span className="tabular-nums text-micro text-ink-500">{step}s（本步）· 共 {total}s</span>
     </div>
   );
 }
@@ -107,14 +123,12 @@ function actionsOf(text: string, onRetry: (() => void) | undefined): MessageActi
   return actions;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, failureNote }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
-  /** 这一轮失败时的"重新发送"（动作挂在失败的那条消息上，不另起一行） */
+  /** 这一轮失败时的"重新发送"（动作挂在被重发的那条用户消息上） */
   onRetry?: () => void;
-  /** 失败但气泡里没有原因时的一句说明（空回复/尾部是用户消息） */
-  failureNote?: string;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -130,7 +144,6 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
         <div className="max-w-bubble rounded-bubble rounded-br-md bg-ink-900 px-4 py-2.5 text-white" data-testid="message-text">
           <Markdown text={text} inverse />
         </div>
-        {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
         {bar}
       </div>
     );
@@ -138,7 +151,8 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   return (
     <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" {...hover}>
       {blocks.map((block, index) => (
-        <BlockView key={index} block={block} live={busy} />
+        // 这一轮失败时把过程展开（思考/工具都看得见）：失败也要能解释"它做了什么"
+        <BlockView key={index} block={block} live={busy} forceOpen={failure !== undefined} />
       ))}
       {(failure !== undefined || error !== undefined) && (
         <div data-testid="failure-reason">
@@ -146,7 +160,6 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
           {error !== undefined && <p className="text-micro text-ink-500">{error}</p>}
         </div>
       )}
-      {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
       {bar}
     </div>
   );
@@ -156,8 +169,8 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
  * 流式期自动展开；用户手动点过之后不再强扭。
  * `closeOnEnd`：思考块跑完要收起（否则一屏思考噪音），工具块跑完**不收起**（结果要让人看见）。
  */
-function useAutoOpen(live: boolean, closeOnEnd: boolean): [boolean, () => void] {
-  const [open, setOpen] = useState(live);
+function useAutoOpen(live: boolean, closeOnEnd: boolean, initialOpen = live): [boolean, () => void] {
+  const [open, setOpen] = useState(initialOpen || live);
   const touched = useRef(false);
   useEffect(() => {
     if (touched.current) return;
@@ -168,8 +181,9 @@ function useAutoOpen(live: boolean, closeOnEnd: boolean): [boolean, () => void] 
   return [open, toggle];
 }
 
-function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
-  const [open, toggle] = useAutoOpen(live, true);
+function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: boolean; forceOpen?: boolean }) {
+  // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
+  const [open, toggle] = useAutoOpen(live, !forceOpen, forceOpen);
   return (
     <div className="max-w-bubble overflow-hidden rounded-panel bg-sunken">
       <button type="button" onClick={toggle}
@@ -216,11 +230,11 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
   );
 }
 
-function BlockView({ block, live }: { block: Block; live: boolean }) {
+function BlockView({ block, live, forceOpen = false }: { block: Block; live: boolean; forceOpen?: boolean }) {
   if (block.type === "text") {
     if (block.text === "" && live) return null;
     return <div data-testid="message-text"><Markdown text={block.text} /></div>;
   }
-  if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} />;
+  if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
   return <ToolCallBlock block={block} live={live} />;
 }

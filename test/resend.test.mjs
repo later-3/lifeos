@@ -20,12 +20,12 @@ test("模型失败：动作挂在**用户消息**上（不是助手的错误提�
   assert.deepEqual(resendPlan([user("hi"), assistant("", "Request timed out.")], false), { index: 0, text: "hi" });
 });
 
-test("空回复（进程被杀）：挂用户消息并带一句说明", () => {
-  assert.deepEqual(resendPlan([user("hi"), assistant("")], false), { index: 0, text: "hi", note: "本轮没有回复（可能被中断）。" });
+test("空回复（进程被杀）：仍挂用户消息，但不再带推断性说明（说明属于左侧本轮槽）", () => {
+  assert.deepEqual(resendPlan([user("hi"), assistant("")], false), { index: 0, text: "hi" });
 });
 
 test("尾部是用户消息（整轮没落结果）：挂在这条用户消息上", () => {
-  assert.deepEqual(resendPlan([user("hi")], false), { index: 0, text: "hi", note: "本轮没有回复（可能被中断）。" });
+  assert.deepEqual(resendPlan([user("hi")], false), { index: 0, text: "hi" });
 });
 
 test("多轮对话：挂到**最后一条用户消息**，不是第一条", () => {

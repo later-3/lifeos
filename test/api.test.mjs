@@ -8,14 +8,18 @@ import { serve } from "@hono/node-server";
 import { installHome } from "../src/home.ts";
 import { createApp } from "../src/server.ts";
 
-async function start() {
-  const home = await mkdtemp(join(tmpdir(), "lifeos-test-"));
-  await installHome(process.cwd(), home);
+async function startOn(home) {
   process.env.LIFEOS_HOME = home;
   const server = serve({ fetch: createApp().fetch, port: 0 });
   await new Promise((resolve) => server.once("listening", resolve));
   const { port } = server.address();
   return { server, base: `http://127.0.0.1:${port}`, home };
+}
+
+async function start() {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-test-"));
+  await installHome(process.cwd(), home);
+  return startOn(home);
 }
 
 test("GET /api/agents 列出默认 Agent", async () => {
@@ -642,6 +646,17 @@ test("创建/归档助手会广播 agents_changed（前端据此自动刷新列�
     buffer = "";
     assert.equal((await fetch(`${base}/api/agents/${probe.id}`, { method: "DELETE" })).status, 200);
     assert.ok(await readUntil("event: agents_changed", 3000), "归档后必须再广播一次");
+
+    // 保存默认模型也可能改变头部显示（未覆盖会话跟随默认）→ 同样要广播
+    buffer = "";
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const home = process.env.LIFEOS_HOME;
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(join(home, "config", "models.json"), JSON.stringify({ providers: { test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "k", models: [{ id: "m1" }] } } }) + "\n");
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/config`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaultProvider: "test", defaultModel: "m1" }),
+    })).status, 200);
+    assert.ok(await readUntil("event: agents_changed", 3000), "保存默认模型后必须广播");
   } finally { controller.abort(); server.close(); }
 });
 
@@ -780,4 +795,97 @@ test("失败分类：超时/网络/鉴权/中断/截断/空回复各有 kind（�
     assert.deepEqual(kinds, ["timeout", "aborted", "empty", "network", "auth", "truncated"]);
     assert.equal(messages[1].error, "Request timed out.", "原始原因保留给界面展示");
   } finally { server.close(); }
+});
+
+test("默认模型跟随：没被 /model 覆盖过的会话跟随 Agent 默认；覆盖过的不跟随", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(join(home, "config", "models.json"), JSON.stringify({
+      providers: { test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "k", models: [{ id: "m1" }, { id: "m2" }, { id: "m3" }] } },
+    }) + "\n");
+
+    const save = async (model) => {
+      const response = await fetch(`${base}/api/agents/lifeosagent/config`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaultProvider: "test", defaultModel: model }),
+      });
+      assert.equal(response.status, 200);
+      return await response.json();
+    };
+    await save("m1");
+    const sid = (await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json()).sessionId;
+    const meta = async () => (await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json()).meta;
+
+    assert.equal((await meta()).model.id, "m1", "新会话用默认模型");
+    assert.equal((await meta()).modelOverridden, false);
+    assert.equal((await meta()).running, false, "meta 要带 running（前端判丢前先查它）");
+
+    const followed = await save("m2");
+    assert.equal(followed.applied, 1, "未覆盖的打开中会话要跟随新默认");
+    assert.equal((await meta()).model.id, "m2");
+
+    const switched = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "test", model: "m3" }),
+    });
+    assert.equal(switched.status, 200);
+    assert.equal((await meta()).modelOverridden, true, "/model 后要有覆盖标记");
+
+    const kept = await save("m1");
+    assert.equal(kept.applied, 0, "覆盖过的会话不跟随默认");
+    assert.equal((await meta()).model.id, "m3", "用户的选择不能被默认改掉");
+  } finally { server.close(); }
+});
+
+test("重开会话（跨进程重启）：未覆盖的跟随最新默认；覆盖的/旧会话保留选择", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-restart-"));
+  await installHome(process.cwd(), home);
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(join(home, "config"), { recursive: true });
+  await writeFile(join(home, "config", "models.json"), JSON.stringify({
+    providers: { test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "k", models: [{ id: "m1" }, { id: "m2" }, { id: "m3" }] } },
+  }) + "\n");
+
+  const sessionsDir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+  await mkdir(sessionsDir, { recursive: true });
+  const write = async (sid, extra) => {
+    const entries = [
+      { type: "session", version: 3, id: sid, timestamp: "2026-10-20T03:00:00.000Z", cwd: "" },
+      { type: "model_change", id: "e1", parentId: sid, timestamp: "2026-10-20T03:00:00.001Z", provider: "test", modelId: extra.model },
+      ...(extra.entries ?? []),
+      { type: "message", id: "e-user", parentId: "e-chain", timestamp: "2026-10-20T03:00:00.009Z", message: { role: "user", content: "hi" } },
+    ];
+    // 把 parentId 串成一条链（避免分支：投影只保留叶子路径）
+    let parent = "e1";
+    for (const entry of entries.slice(2, -1)) { entry.parentId = parent; parent = entry.id; }
+    entries[entries.length - 1].parentId = parent;
+    const timestamped = `2026-10-20T03-00-00-000Z_${sid}.jsonl`;
+    await writeFile(join(sessionsDir, timestamped), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  };
+
+  const plain = "33333333-4444-4555-8666-777777777777";
+  const overridden = "44444444-5555-4666-8777-888888888888";
+  const legacy = "55555555-6666-4777-8888-999999999999";
+  await write(plain, { model: "m1", entries: [{ type: "custom", id: "e2", customType: "lifeos_default_model", data: { provider: "test", id: "m1" } }] });
+  await write(overridden, {
+    model: "m2",
+    entries: [
+      { type: "custom", id: "e2", customType: "lifeos_default_model", data: { provider: "test", id: "m1" } },
+      { type: "custom", id: "e3", customType: "lifeos_model_override", data: { provider: "test", id: "m2" } },
+    ],
+  });
+  await write(legacy, { model: "m2" });
+
+  // 默认改成 m3（此时三个会话都不在内存里）
+  await writeFile(join(home, "agents", "lifeosagent", "projects", "workspace", "config.json"),
+    JSON.stringify({ schemaVersion: 1, defaultProvider: "test", defaultModel: "m3" }) + "\n");
+
+  const server = await startOn(home);
+  try {
+    const metaOf = async (sid) => (await (await fetch(`${server.base}/api/agents/lifeosagent/sessions/${sid}`)).json()).meta;
+    assert.equal((await metaOf(plain)).model.id, "m3", "未覆盖的会话重开后跟随最新默认");
+    assert.equal((await metaOf(overridden)).model.id, "m2", "覆盖过的会话保留用户选择");
+    assert.equal((await metaOf(legacy)).model.id, "m2", "旧会话无法判断，按覆盖保护（不擅自改）");
+  } finally { server.server.close(); }
 });
