@@ -11,6 +11,15 @@ import type { Message } from "./Message.tsx";
  */
 export type ResendPlan = { index: number; text: string; note?: string };
 
+/**
+ * 动作条是否可见：悬停 / 无悬停设备 / **这一轮失败（有重发动作）**。
+ * 失败动作必须常显——它藏在悬停后面时，用户扫一眼根本找不到（实测：opacity 0）。
+ * 复制这类内容动作仍按悬停规则；失败动作把整条动作条点亮。
+ */
+export function revealActions(hovered: boolean, noHover: boolean, hasRetry: boolean): boolean {
+  return hovered || noHover || hasRetry;
+}
+
 export function resendPlan(messages: Message[], busy: boolean): ResendPlan | undefined {
   if (busy) return undefined;                       // 生成中不给"重发"（与动作条规则一致）
   const index = messages.length - 1;

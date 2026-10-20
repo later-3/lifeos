@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resendPlan } from "../frontend/src/resend.ts";
+import { resendPlan, revealActions } from "../frontend/src/resend.ts";
 
 const user = (text) => ({ role: "user", text, blocks: [{ type: "text", text }] });
 const assistant = (text, error) => ({
@@ -32,4 +32,11 @@ test("没有用户消息 / 用户消息为空：不出现重发", () => {
   assert.equal(resendPlan([assistant("")], false), undefined);
   assert.equal(resendPlan([user("   ")], false), undefined);
   assert.equal(resendPlan([], false), undefined);
+});
+
+test("动作条可见性：失败动作常显，复制靠悬停", () => {
+  assert.equal(revealActions(false, false, false), false, "普通消息不悬停 → 不显示");
+  assert.equal(revealActions(true, false, false), true, "悬停 → 显示");
+  assert.equal(revealActions(false, true, false), true, "无悬停设备 → 常显");
+  assert.equal(revealActions(false, false, true), true, "这一轮失败 → 常显（实测过藏起来用户找不到）");
 });

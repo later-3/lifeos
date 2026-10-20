@@ -6,6 +6,7 @@ import { Spinner } from "./design/ui";
 import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
+import { revealActions } from "./resend";
 
 /**
  * 消息渲染（Markdown + 结构化块）。
@@ -150,6 +151,8 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
   const noHover = useNoHover();
   // 流式中的回复不给复制（Pi Web 同款：textContent && !isStreaming）；失败重发同理
   const showActions = (text !== "" || onRetry !== undefined) && !(role === "assistant" && busy);
+  // 失败动作常显（不靠悬停）：用户刚遇到失败，必须一眼看到"重新发送"
+  const reveal = revealActions(hovered, noHover, onRetry !== undefined);
   const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   if (role === "user") {
     return (
@@ -159,7 +162,7 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
           <Markdown text={text} inverse />
         </div>
         {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
-        {showActions && <MessageActions text={text} reveal={hovered || noHover} {...(onRetry !== undefined ? { onRetry } : {})} />}
+        {showActions && <MessageActions text={text} reveal={reveal} {...(onRetry !== undefined ? { onRetry } : {})} />}
       </div>
     );
   }
@@ -170,7 +173,7 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
       ))}
       {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
       {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
-      {showActions && <MessageActions text={text} reveal={hovered || noHover} {...(onRetry !== undefined ? { onRetry } : {})} />}
+      {showActions && <MessageActions text={text} reveal={reveal} {...(onRetry !== undefined ? { onRetry } : {})} />}
     </div>
   );
 }
