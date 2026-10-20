@@ -8,7 +8,7 @@ import {
 /**
  * 动作条容器：功能往这里**注册描述**（`MessageAction[]`），容器负责其余一切。
  *
- * 容器独占：对齐（按消息一侧）、间距与命中区、可见性（悬停/触屏/pinned/反馈期间）、
+ * 容器独占：对齐（按消息一侧）、间距与命中区、可见性（悬停/触屏/反馈期间）、
  * 点击反馈状态机与自动复原（1.5s）。功能侧不写样式、不写 timer、不判可见性。
  */
 
@@ -78,9 +78,8 @@ export function MessageActionBar({ side, actions, hovered, suppressed = false }:
 
   const shown = visibleActions(actions, suppressed);
   if (shown.length === 0) return null;
-  const pinned = shown.some((action) => action.pinned === true);
   const hasFeedback = shown.some((action) => feedback[action.key] !== undefined);
-  const visible = revealActions({ hovered, noHover, pinned, feedback: hasFeedback });
+  const visible = revealActions({ hovered, noHover, feedback: hasFeedback });
 
   return (
     <div data-testid="message-actions"

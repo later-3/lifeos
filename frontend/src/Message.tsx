@@ -96,7 +96,7 @@ function actionsOf(text: string, onRetry: (() => void) | undefined): MessageActi
   if (onRetry !== undefined) {
     actions.push({
       key: "resend", label: "重新发送", icon: <IconRefresh size={12} />, title: "重新发送这一轮",
-      testId: "resend-message", pinned: true,   // 状态动作：这一轮失败必须常显
+      testId: "resend-message",   // 与复制同一条规则：悬停出现（成败都不例外）
       run: onRetry,
     });
   }

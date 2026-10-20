@@ -19,8 +19,6 @@ export type MessageAction = {
   title?: string;
   /** 契约测试用的选择器（如 copy-message） */
   testId?: string;
-  /** 状态动作：这一轮失败之类，**常显**（不受悬停控制） */
-  pinned?: boolean;
   /** 成功后的短暂反馈文案（如"已复制"）；不填则成功无反馈 */
   doneLabel?: string;
   /** 失败时的文案；不填用"失败"，总是危险色 */
@@ -48,14 +46,16 @@ export function actionTone(feedback: ActionFeedback | undefined): ActionTone {
 }
 
 /**
- * 动作条是否可见。四条任一成立：
+ * 动作条是否可见（统一规则，不按"动作种类"开特例）：
  * - 指针停在这条消息上；
  * - 设备没有悬停能力（触屏）；
- * - 有状态动作（`pinned`：这一轮失败，必须一眼看到）；
  * - 正在展示点击反馈（"已复制"不能因为鼠标移开就消失）。
+ *
+ * 失败重发也走同一条规则：失败原因在气泡里一直可见，悬停这条消息才出现"重新发送"。
+ * （曾经给失败动作加过"常显"特例，用户指出破坏了统一的悬停手感，已删除。）
  */
-export function revealActions(state: { hovered: boolean; noHover: boolean; pinned: boolean; feedback: boolean }): boolean {
-  return state.hovered || state.noHover || state.pinned || state.feedback;
+export function revealActions(state: { hovered: boolean; noHover: boolean; feedback: boolean }): boolean {
+  return state.hovered || state.noHover || state.feedback;
 }
 
 /** 这一轮被抑制（如助手正在流式输出）时，一条动作都不出现。 */

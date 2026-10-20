@@ -4,17 +4,16 @@ import { actionLabel, actionTone, revealActions, visibleActions } from "../front
 
 const action = { key: "copy", label: "复制", doneLabel: "已复制", failedLabel: "复制失败", run: () => undefined };
 
-test("动作条可见性：悬停 / 触屏 / 状态动作 / 反馈期间 任一成立", () => {
-  const base = { hovered: false, noHover: false, pinned: false, feedback: false };
-  assert.equal(revealActions(base), false, "普通消息不悬停 → 不显示");
+test("动作条可见性：悬停 / 触屏 / 反馈期间（不给任何动作开常显特例）", () => {
+  const base = { hovered: false, noHover: false, feedback: false };
+  assert.equal(revealActions(base), false, "不悬停 → 隐藏（失败重发也一样）");
   assert.equal(revealActions({ ...base, hovered: true }), true, "悬停 → 显示");
   assert.equal(revealActions({ ...base, noHover: true }), true, "无悬停设备 → 常显");
-  assert.equal(revealActions({ ...base, pinned: true }), true, "失败重发（pinned）→ 常显");
   assert.equal(revealActions({ ...base, feedback: true }), true, "展示反馈期间 → 保持可见，不随鼠标移开消失");
 });
 
 test("流式抑制：一条动作都不出现（不论是否 pinned）", () => {
-  const actions = [action, { key: "resend", label: "重新发送", pinned: true, run: () => undefined }];
+  const actions = [action, { key: "resend", label: "重新发送", run: () => undefined }];
   assert.deepEqual(visibleActions(actions, true), [], "流式中整体抑制");
   assert.deepEqual(visibleActions(actions, false), actions, "非流式原样返回");
 });

@@ -462,6 +462,13 @@ const noName = () => page.evaluate(() => [...document.querySelectorAll("button")
   .filter((button) => button.offsetParent !== null)
   .map((button) => ({ text: (button.innerText || "").trim(), aria: button.getAttribute("aria-label") ?? "", title: button.getAttribute("title") ?? "" }))
   .filter((button) => button.text === "" && button.aria === "" && button.title === ""));
+// 动作条统一规则：未悬停时全部隐藏（不给任何动作开"常显"特例；触屏与反馈另有规则）
+await page.mouse.move(0, 0);
+await page.waitForTimeout(150);
+const idleBars = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-actions"]')]
+  .map((el) => getComputedStyle(el).opacity));
+check("未悬停时动作条全部隐藏", idleBars.every((opacity) => opacity === "0"), `实际 ${idleBars.join("/")}`);
+
 const unnamedChrome = await noName();
 check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
 
