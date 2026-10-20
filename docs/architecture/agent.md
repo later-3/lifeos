@@ -111,7 +111,7 @@
 | 区 | 内容 |
 |---|---|
 | `preamble` | `identity.md`（包 `<lifeos_identity>`）→ **替换** Pi 默认的"编码 agent"前言 |
-| `lifeos_interaction_harness` | 协议正文 · 本层指引 · 飞轮 · 概念空间索引 · 任务类型 · **本项目 `AGENTS.md`**（内容全部来自 `~/.lifeos` 下的文件） |
+| `lifeos_interaction_harness` | 协议正文 · 本层指引 · 飞轮 · 概念空间索引 · **记忆规则（`memory.md`）** · 任务类型 · **本项目 `AGENTS.md`**（内容全部来自 `~/.lifeos` 下的文件） |
 | `tools` / `rules` | Pi 默认渲染结果**原样回填**（不手写，自动跟随 Pi 更新）；`<docs>` 有意舍弃 |
 
 实测（2026-10-18，真实家 + 真实一轮的落盘 system 条目）：sections = `preamble(identity) · skills · cwd · tools · rules · lifeos_interaction_harness`。

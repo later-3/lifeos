@@ -49,7 +49,7 @@ lifeos/
 ├─ memory/user/<uid>/        用户记忆（MemOS store；跨项目、跨 Agent）
 ├─ projects/<name>/          全局项目注册表：project.json（全局身份）+ memory/（项目共享记忆，MemOS store）
 ├─ interaction-harness/      通用层（所有 Agent 共用）
-│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/<type>/
+│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · memory.md · cases/ · task-types/<type>/
 ├─ agents/<id>/              每个 Agent 私有（目录名 = id）
 │  ├─ agent.json             身份与默认值（唯一来源）
 │  ├─ identity.md            身份正文（注入 preamble）

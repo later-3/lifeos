@@ -22,7 +22,7 @@ export const PROMPT_REGIONS: Record<string, RegionSpec> = {
   lifeos_interaction_harness: {
     label: "交互 harness 区",
     owner: "lifeos",
-    assembledBy: "按固定顺序拼 6 类文件（协议正文 / 本层指引 / 飞轮 / 概念索引 / 任务类型 / 本项目 AGENTS.md）",
+    assembledBy: "按固定顺序拼文件（协议正文 / 本层指引 / 飞轮 / 概念空间 / 记忆规则 / 任务类型 / 本项目 AGENTS.md）",
     code: "src/assembly.ts · buildPromptParts → harnessSection",
     editable: "~/.lifeos/interaction-harness/** ＋ agents/<id>/projects/<pid>/AGENTS.md",
   },

@@ -65,8 +65,8 @@ src/memory/merge.ts   多角色合并（顺序、去重、截断）
 
 **接入点**（P2/P3，具体功能与权限契约见需求文档）：
 
-- 工具：`src/agent-tools.ts` 新增 3 个工具，调用上面的函数；
-- Prompt：装配层把"默认隔离 / 落层规则 / 跨项目条件 / 删除规则"写进系统提示；
+- 工具：`src/agent-tools.ts` 新增 3 个工具（search / record / delete；**没有编辑/撤销**），调用上面的函数；
+- Prompt：`~/.lifeos/interaction-harness/memory.md`（四类记忆与策略）由 `src/assembly.ts` 装配进 harness 区——**不写死在代码里**；
 - 面板：新 HTTP 路由读同一批 SQLite，前端按角色分组展示。
 
 ## 5 底座验证（2026-10-20，`/tmp` 内完成，未动仓库）
@@ -132,4 +132,4 @@ MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**，所以�
 
 - P2 工具 + prompt（需求文档 FR-5/FR-6）；
 - P3 面板（FR-7）；
-- P4 提升 / 跨项目检索（依赖全局项目 id；自动捕获暂不做）。
+- P4 导出/备份、审计（可选；自动捕获暂不做）。

@@ -77,6 +77,7 @@ export async function buildPromptParts(agentId: string, projectId: string): Prom
   await pushFile("本层指引 · AGENTS.md", join(harnessRoot, "AGENTS.md"));
   await pushFile("飞轮 · flywheel.md", join(harnessRoot, "flywheel.md"));
   await pushFile("概念空间元规则 · concept-space.md", join(harnessRoot, "concept-space.md"));
+  await pushFile("记忆规则 · memory.md", join(harnessRoot, "memory.md"));
   for (const rel of ["concept-space/00-索引.md", "concept-space/harness/00-索引.md"]) {
     await pushFile(`概念索引 · ${rel}`, join(harnessRoot, rel));
   }
