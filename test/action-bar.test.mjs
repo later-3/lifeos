@@ -1,19 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { revealActions, visibleActions } from "../frontend/src/action-bar.ts";
+import { actionLabel, actionTone, revealActions, visibleActions } from "../frontend/src/action-bar.ts";
 
-test("动作条可见性：状态动作常显，内容动作靠悬停", () => {
-  assert.equal(revealActions(false, false, false), false, "普通消息不悬停 → 不显示");
-  assert.equal(revealActions(true, false, false), true, "悬停 → 显示");
-  assert.equal(revealActions(false, true, false), true, "无悬停设备 → 常显");
-  assert.equal(revealActions(false, false, true), true, "有 pinned（失败重发）→ 常显");
+const action = { key: "copy", label: "复制", doneLabel: "已复制", failedLabel: "复制失败", run: () => undefined };
+
+test("动作条可见性：悬停 / 触屏 / 状态动作 / 反馈期间 任一成立", () => {
+  const base = { hovered: false, noHover: false, pinned: false, feedback: false };
+  assert.equal(revealActions(base), false, "普通消息不悬停 → 不显示");
+  assert.equal(revealActions({ ...base, hovered: true }), true, "悬停 → 显示");
+  assert.equal(revealActions({ ...base, noHover: true }), true, "无悬停设备 → 常显");
+  assert.equal(revealActions({ ...base, pinned: true }), true, "失败重发（pinned）→ 常显");
+  assert.equal(revealActions({ ...base, feedback: true }), true, "展示反馈期间 → 保持可见，不随鼠标移开消失");
 });
 
 test("流式抑制：一条动作都不出现（不论是否 pinned）", () => {
-  const actions = [
-    { key: "copy", label: "复制", run: () => undefined },
-    { key: "resend", label: "重新发送", pinned: true, run: () => undefined },
-  ];
+  const actions = [action, { key: "resend", label: "重新发送", pinned: true, run: () => undefined }];
   assert.deepEqual(visibleActions(actions, true), [], "流式中整体抑制");
   assert.deepEqual(visibleActions(actions, false), actions, "非流式原样返回");
+});
+
+test("按钮文案：反馈期间换文案，没配 doneLabel 的动作不假装完成", () => {
+  assert.equal(actionLabel(action, undefined), "复制");
+  assert.equal(actionLabel(action, "done"), "已复制");
+  assert.equal(actionLabel(action, "failed"), "复制失败");
+  const silent = { key: "x", label: "执行", run: () => undefined };
+  assert.equal(actionLabel(silent, "done"), "完成", "没有 doneLabel 时用兜底文案（调用方不会进 done 态，这条只保证不崩）");
+});
+
+test("语气：done=accent / failed=danger / 其余默认", () => {
+  assert.equal(actionTone(undefined), "default");
+  assert.equal(actionTone("done"), "accent");
+  assert.equal(actionTone("failed"), "danger");
 });

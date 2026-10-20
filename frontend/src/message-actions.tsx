@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { IconCheck } from "@tabler/icons-react";
-import { revealActions, visibleActions, type MessageAction } from "./action-bar";
+import {
+  actionLabel, actionTone, revealActions, visibleActions,
+  type ActionFeedback, type ActionTone, type MessageAction,
+} from "./action-bar";
 
 /**
- * 动作条容器：**功能往这里注册**（`MessageAction[]`），容器负责其余一切。
- * 新增动作只需要在 Message.tsx 里 push 一条描述，不用碰对齐/间距/可见性/反馈逻辑。
+ * 动作条容器：功能往这里**注册描述**（`MessageAction[]`），容器负责其余一切。
+ *
+ * 容器独占：对齐（按消息一侧）、间距与命中区、可见性（悬停/触屏/pinned/反馈期间）、
+ * 点击反馈状态机与自动复原（1.5s）。功能侧不写样式、不写 timer、不判可见性。
  */
 
 /** 触屏/无悬停设备：动作常显（悬停设备：悬停才显示）。 */
@@ -20,34 +25,13 @@ function useNoHover(): boolean {
   return noHover;
 }
 
-const IDLE_MS = 1500;
+const TONE_CLASS: Record<ActionTone, string> = {
+  default: "text-ink-500 hover:text-ink-900",
+  accent: "text-accent",
+  danger: "text-danger",
+};
 
-/** 单个动作按钮：容器负责视觉与反馈状态机（idle → done/failed → 自动复原）。 */
-function ActionButton({ action }: { action: MessageAction }) {
-  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => { if (timer.current !== undefined) clearTimeout(timer.current); }, []);
-
-  const activate = () => {
-    if (timer.current !== undefined) clearTimeout(timer.current);
-    Promise.resolve()
-      .then(() => action.run())
-      .then(() => setState("done"))
-      .catch(() => setState("failed"))
-      .finally(() => { timer.current = setTimeout(() => setState("idle"), IDLE_MS); });
-  };
-
-  const label = state === "done" ? (action.doneLabel ?? "完成") : state === "failed" ? (action.failedLabel ?? "失败") : action.label;
-  const tone = state === "failed" ? "text-danger" : state === "done" ? "text-accent" : "text-ink-500 hover:text-ink-900";
-  return (
-    <button type="button" onClick={activate} title={action.title ?? action.label}
-      {...(action.testId !== undefined ? { "data-testid": action.testId } : {})}
-      className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${tone}`}>
-      {state === "done" ? <IconCheck size={12} /> : action.icon}
-      <span aria-live="polite">{label}</span>
-    </button>
-  );
-}
+const FEEDBACK_MS = 1500;
 
 export function MessageActionBar({ side, actions, hovered, suppressed = false }: {
   /** 消息一侧：用户贴右、助手贴左（对齐是容器的决定，调用方不传样式） */
@@ -59,14 +43,60 @@ export function MessageActionBar({ side, actions, hovered, suppressed = false }:
   suppressed?: boolean;
 }) {
   const noHover = useNoHover();
+  // 反馈状态机在容器里：一条动作一个状态 + 一个定时器；卸载时统一清理
+  const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  useEffect(() => () => {
+    for (const timer of timers.current.values()) clearTimeout(timer);
+    timers.current.clear();
+  }, []);
+
+  const clear = (key: string) => setFeedback((prev) => {
+    if (prev[key] === undefined) return prev;
+    const { [key]: _removed, ...rest } = prev;
+    return rest;
+  });
+
+  const settle = (action: MessageAction, next: ActionFeedback | undefined) => {
+    const previous = timers.current.get(action.key);
+    if (previous !== undefined) { clearTimeout(previous); timers.current.delete(action.key); }
+    if (next === undefined) { clear(action.key); return; }          // 成功但这动作不需要反馈
+    setFeedback((prev) => ({ ...prev, [action.key]: next }));
+    timers.current.set(action.key, setTimeout(() => {
+      timers.current.delete(action.key);
+      clear(action.key);
+    }, FEEDBACK_MS));
+  };
+
+  const activate = (action: MessageAction) => {
+    // 失败一律给可见反馈（failedLabel），成功则看这个动作要不要 doneLabel
+    Promise.resolve()
+      .then(() => action.run())
+      .then(() => settle(action, action.doneLabel === undefined ? undefined : "done"))
+      .catch(() => settle(action, "failed"));
+  };
+
   const shown = visibleActions(actions, suppressed);
   if (shown.length === 0) return null;
   const pinned = shown.some((action) => action.pinned === true);
-  const visible = revealActions(hovered, noHover, pinned);
+  const hasFeedback = shown.some((action) => feedback[action.key] !== undefined);
+  const visible = revealActions({ hovered, noHover, pinned, feedback: hasFeedback });
+
   return (
     <div data-testid="message-actions"
       className={`flex gap-1 pt-0.5 transition-opacity duration-150 ${side === "user" ? "justify-end" : "justify-start"} ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
-      {shown.map((action) => <ActionButton key={action.key} action={action} />)}
+      {shown.map((action) => {
+        const state = feedback[action.key];
+        return (
+          <button key={action.key} type="button" onClick={() => activate(action)}
+            title={action.title ?? action.label}
+            {...(action.testId !== undefined ? { "data-testid": action.testId } : {})}
+            className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${TONE_CLASS[actionTone(state)]}`}>
+            {state === "done" ? <IconCheck size={12} /> : action.icon}
+            <span aria-live="polite">{actionLabel(action, state)}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

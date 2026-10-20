@@ -886,6 +886,8 @@ export default function App() {
   );
   const anyLeftOpen = showNav || showProjects || showSessions;
   const closeAllLeft = () => { setShowNav(false); setShowProjects(false); setShowSessions(false); };
+  // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
+  const resend = resendPlan(messages, busy);
 
   return (
     <div className="relative flex h-dvh bg-surface text-ink-900">
@@ -927,8 +929,8 @@ export default function App() {
               : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
             {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
             {messages.map((message, index) => {
-              // 失败属于那一轮：动作挂在最后那条消息的动作条里，不另起一行（否则位置随列表浮动、和消息脱开）
-              const plan = index === messages.length - 1 ? resendPlan(messages, busy) : undefined;
+              // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
+              const plan = resend?.index === index ? resend : undefined;
               return (
                 <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
                   {...(message.error !== undefined ? { error: message.error } : {})}

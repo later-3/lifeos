@@ -518,11 +518,27 @@ if (await firstMessage.count() === 0) {
   const retryInMessage = await firstMessage.locator('[data-testid="resend-message"]').count();
   check("正常一轮不出现「重新发送」（只在失败消息的动作条里）", retryInMessage === 0, `${retryInMessage} 个`);
 
+  // 反馈期间动作条不能被悬停规则收走：鼠标移开也必须还看得见"已复制"
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(150);
+  const feedbackOpacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  const feedbackLabel = (await copy.innerText()).trim();
+  check("反馈期间动作条保持可见（鼠标移开不消失）",
+    feedbackOpacity === "1" && feedbackLabel.includes("已复制"), `opacity=${feedbackOpacity} label=${feedbackLabel}`);
+
   const clipboard = (await page.evaluate(() => navigator.clipboard.readText())).trim();
   const expected = (await firstMessage.locator('[data-testid="message-text"]').first().innerText()).trim();
   const plain = !/[*`#_[\]()<>]/.test(expected);   // 有 Markdown 记号时只断言"有内容"，否则逐字相等
   check("剪贴板内容 = 消息文本", clipboard !== "" && (!plain || clipboard === expected),
     `clipboard=${clipboard.slice(0, 30)} expected=${expected.slice(0, 30)}`);
+
+  // 1.5s 后自动复原：文案回到"复制"，动作条随悬停收起（不残留高亮）
+  await page.waitForTimeout(1400);
+  const resetLabel = (await copy.innerText()).trim();
+  const resetOpacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  check("反馈 1.5s 后复原（文案回「复制」、动作条随悬停收起）",
+    resetLabel.includes("复制") && !resetLabel.includes("已复制") && resetOpacity === "0",
+    `label=${resetLabel} opacity=${resetOpacity}`);
 }
 
 // 列头语义：列头只写"这一列是什么"，"默认"这类徽标属于行内数据，不许重复出现在列头
