@@ -78,7 +78,7 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
   assert.deepEqual(
     (await readdir(join(home, "agents", zh.details.id, "projects", "workspace"))).sort(),
     (await readdir(join(templateAgent, "projects", "workspace"))).sort(),
-    "workspace 骨架与模板同构（AGENTS/concept-space/project/sessions/daily/cases/todo）");
+    "workspace 骨架与模板同构（AGENTS/concept-space/project/sessions/tasks/daily/cases/todo/memory）");
 
   // identity.md：只有骨架，且标题结构与模板同构（## 身份 / ## 人格）
   const skeleton = await readFile(join(home, "agents", zh.details.id, "identity.md"), "utf8");

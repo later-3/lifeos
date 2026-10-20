@@ -284,7 +284,7 @@
 | `todo/` | Todo（§2.11） | 一句话级待办；不是任务，不进 prompt、按需读 |
 | `concept-space.md` | 概念空间（§3.2） | 本项目层的词索引（正文按需读） |
 
-- **按需建**：`tasks/` 不预建（只放现在要用的）；`daily/ cases/ todo/` 由模板带占位保证存在，`sessions/` 由出厂默认会话天然存在。
+- **按需建**：`tasks/` 预建（含 `AGENTS.md`），任务目录按需建；每个预建子目录都有自己的 `AGENTS.md`；`daily/ cases/ todo/` 由模板带占位保证存在，`sessions/` 由出厂默认会话天然存在。
 - 项目只属于一个 Agent：会话、案例、todo、manifest 全在这个私有层里（跨 Agent 共享未实现，见仓库 `docs/todo.md`）。
 
 ### 12.4 加载方式（现状）

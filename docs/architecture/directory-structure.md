@@ -55,7 +55,7 @@ lifeos/
 │  ├─ identity.md            身份正文（注入 preamble）
 │  ├─ avatar/                图片头像（可选）
 │  ├─ memory/                Agent 记忆（MemOS store：config.yaml + data/memos.db）
-│  └─ projects/<pid>/        一项目一份：AGENTS.md · concept-space.md · sessions/ · daily/ · cases/ · todo/ · memory/ ·（外部项目）project.json
+│  └─ projects/<pid>/        一项目一份：AGENTS.md · concept-space.md · sessions/ · tasks/ · daily/ · cases/ · todo/ · memory/ ·（外部项目）project.json（每个子目录带自己的 AGENTS.md）
 │     └─ memory/             agent 的项目记忆（私有；MemOS store）
 └─ install-receipt.json      安装收据
 ```

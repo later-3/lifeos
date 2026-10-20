@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
@@ -52,6 +52,7 @@ test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一�
   assert.equal(JSON.parse(await readFile(binding, "utf8")).id, one.project.id);
   assert.ok((await stat(join(home, "projects", one.project.id, "project.json"))).isFile());
   assert.ok((await stat(join(home, "projects", one.project.id, "memory"))).isDirectory(), "项目共享记忆目录应存在");
+  assert.ok((await stat(join(home, "projects", one.project.id, "memory", "AGENTS.md"))).isFile(), "共享记忆目录带 AGENTS.md");
 
   const again = await registerProject("lifeosagent", dir);
   assert.ok(!("code" in again));
@@ -73,7 +74,12 @@ test("项目绑定目录带 harness 骨架；老绑定在列出时补齐；不�
   for (const sub of ["sessions", "daily", "cases", "todo", "memory"]) {
     assert.ok((await stat(join(bindDir, sub))).isDirectory(), `${sub}/ 应存在`);
   }
-  await assert.rejects(stat(join(bindDir, "tasks")), "tasks/ 按需建，不预建");
+  assert.ok((await stat(join(bindDir, "tasks"))).isDirectory(), "tasks/ 预建");
+  assert.ok((await stat(join(bindDir, "tasks", "AGENTS.md"))).isFile(), "tasks/AGENTS.md 预建");
+  assert.deepEqual((await readdir(join(bindDir, "tasks"))), ["AGENTS.md"], "不预建具体任务目录");
+  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "tasks"]) {
+    assert.ok((await stat(join(bindDir, sub, "AGENTS.md"))).isFile(), `${sub}/AGENTS.md 应存在`);
+  }
 
   await writeFile(join(bindDir, "AGENTS.md"), "自定义内容\n");
   await listAgentProjects("lifeosagent");

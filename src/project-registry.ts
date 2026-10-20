@@ -11,6 +11,31 @@ export type GlobalProject = { schemaVersion: 1; id: string; name: string; path: 
 const registryRoot = () => join(resolveHome(), "projects");
 const manifestPath = (id: string) => join(registryRoot(), id, "project.json");
 
+const projectAgentsMd = `# 全局项目层
+
+这里是项目的全局身份（\`project.json\`）与**项目共享记忆**（\`memory/\`）。
+
+- 同一个目录无论被多少个 Agent 打开，都只有一个全局 id；
+- 项目共享记忆所有绑定它的 Agent 都可读/写/删；
+- 会话、daily、cases、todo 等私有记录在 \`agents/<agentId>/projects/<projectId>/\`，不在这里。`;
+
+const memoryAgentsMd = `# memory/
+
+项目共享记忆（属于项目这个全局实体，所有绑定它的 Agent 都可读/写/删）。
+
+- 由记忆工具读写（\`lifeos_memory_search/record/delete\`），**不要手改数据库文件**；
+- 空目录正常：第一次写入时才创建 SQLite；
+- 项目私有数据（会话、daily、cases、todo）在各自的 Agent 绑定目录，不在这里。`;
+
+async function ensureMemoryDir(id: string): Promise<void> {
+  const dir = join(registryRoot(), id, "memory");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(join(dir, "AGENTS.md"), memoryAgentsMd + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" })
+    .catch(() => { /* 已存在：不覆盖 */ });
+  await writeFile(join(registryRoot(), id, "AGENTS.md"), projectAgentsMd + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" })
+    .catch(() => { /* 已存在：不覆盖 */ });
+}
+
 const parse = (raw: string): GlobalProject | undefined => {
   try {
     const parsed = JSON.parse(raw) as Partial<GlobalProject>;
@@ -28,7 +53,7 @@ export async function listGlobalProjects(): Promise<Map<string, GlobalProject>> 
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const project = await readGlobalProject(entry.name);
     if (project !== undefined) {
-      await mkdir(join(registryRoot(), project.id, "memory"), { recursive: true, mode: 0o700 });
+      await ensureMemoryDir(project.id);
       out.set(project.id, project);
     }
   }
@@ -56,7 +81,7 @@ export async function registerGlobalProject(path: string, preferredName?: string
   const projects = [...(await listGlobalProjects()).values()];
   for (const project of projects) {
     if (await canonical(project.path) === canonicalTarget) {
-      await mkdir(join(registryRoot(), project.id, "memory"), { recursive: true, mode: 0o700 });
+      await ensureMemoryDir(project.id);
       return project;
     }
   }
@@ -65,7 +90,7 @@ export async function registerGlobalProject(path: string, preferredName?: string
   let id = base;
   for (let n = 2; taken.has(id); n += 1) id = `${base.slice(0, 55)}-${n}`;
   const project: GlobalProject = { schemaVersion: 1, id, name: basename(target) || id, path: target };
-  await mkdir(join(registryRoot(), id, "memory"), { recursive: true, mode: 0o700 });
+  await ensureMemoryDir(id);
   await writeFile(manifestPath(id), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   return project;
 }

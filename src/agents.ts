@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { broadcast } from "./events.ts";
 import { runningOf } from "./session-runtime.ts";
+import { ensureProjectSkeleton } from "./project-skeleton.ts";
 
 /** agent.json 的唯一形状（读/写共用；旧的 boundProjectIds 读到就清掉，不再写回）。 */
 export type AgentDefinition = {
@@ -102,7 +103,7 @@ const workspaceAgentsMd = `# 交互 harness · 项目私有层（workspace）
 \`~/.lifeos/interaction-harness/protocol.md\`（尤其 §15 会话、开场与项目私有骨架）。本文件只写本目录的规矩。
 
 - \`sessions/\` 会话（见协议 §15.1；出厂预置的默认会话只随出厂模板）
-- \`tasks/\` 任务目录（一个任务一个目录，需要时才创建，不预建）
+- \`tasks/\` 任务根（已预建；任务目录 \`<NNNN>-<标题>/\` 按需创建，不预建）
 - \`daily/\` 每日记录（按日期分文件，追加，不改写历史）
 - \`cases/\` 正例与反例（按日期分文件，编号引用，不改写历史）
 - \`todo/\` 一句话待办（不是任务；升级为任务时建 \`tasks/<slug>-<id8>/\`）
@@ -144,10 +145,8 @@ export async function createAgent(input: CreateAgentInput): Promise<
       throw error;                                          // 其它错误：外层 catch 回滚半成品
     }
     // workspace 骨架 = 出厂模板同构（agent.json / identity.md / AGENTS.md / concept-space.md /
-    // project.json / sessions / daily / cases / todo），只差"预置会话文件"（协议 §12.2：只随出厂模板）
-    for (const sub of ["daily", "cases", "todo", "sessions"]) {
-      await mkdir(join(dir, "projects", "workspace", sub), { recursive: true, mode: 0o700 });
-    }
+    // project.json / sessions / daily / cases / todo / memory / tasks），只差"预置会话文件"
+    // （协议 §12.2：只随出厂模板）
     const record: AgentRecord = {
       schemaVersion: 1, id, name,
       ...(description !== undefined && description !== "" ? { description } : {}),
@@ -157,9 +156,11 @@ export async function createAgent(input: CreateAgentInput): Promise<
     // identity.md = Agent 结构的一部分，**只装骨架**（用户没批准过"传身份内容"的入口——见 C029）
     await writeFile(join(dir, "identity.md"), identitySkeleton(name), { encoding: "utf8", mode: 0o600 });
     const workspace = join(dir, "projects", "workspace");
+    await mkdir(workspace, { recursive: true, mode: 0o700 });
     await writeJson(join(workspace, "project.json"), { schemaVersion: 1, id: "workspace", name: "工作区" });
     await writeFile(join(workspace, "AGENTS.md"), workspaceAgentsMd, { encoding: "utf8", mode: 0o600 });
     await writeFile(join(workspace, "concept-space.md"), workspaceConceptSpace, { encoding: "utf8", mode: 0o600 });
+    await ensureProjectSkeleton(workspace, { name: "工作区", path: workspace });
     // 写操作必须闭环到 UI（用户 2026-10-19 点名）：在**共享写实现**里广播，工具/HTTP 两条入口都自动生效
     broadcast({ type: "agents_changed" });
     return { id, name, dir, created: true };
