@@ -50,7 +50,7 @@ install-receipt.json    安装收据
 | `GET /api/agents/:id` | 单个 Agent 定义（未知 404） |
 | `PUT /api/agents/:id` | 基础信息（改名/描述，写 `agent.json` 原子） |
 | `GET·PUT /api/agents/:id/identity` | 身份正文 `identity.md`（读/写） |
-| `GET·PUT /api/agents/:id/config` | **Agent 个人模型默认**（`agents/<id>/projects/workspace/config.json`） |
+| `GET·PUT /api/agents/:id/config` | **Agent 个人模型默认**（`agents/<id>/projects/workspace/config.json`）；保存时校验 provider/model **必须在 `config/models.json` 里**（否则 400 `model_not_found`）——默认只能从清单里来 |
 | `GET /api/models-config` | 解析用户 `config/models.json` 为 provider/模型清单（**响应剔除一切密钥字段**；只读） |
 | `POST·GET /api/agents/:id/avatar` | 头像：上传（png/jpg/webp≤2MB 魔数校验）/ reset 回自动 / 读图 |
 | `GET /api/agents/:id/projects` | 项目列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；**目录名 = 项目名**（可读、允许中文；旧 uuid 目录懒迁移，`legacyId` 供旧 URL 反查）；默认项目在前 |
@@ -64,8 +64,8 @@ install-receipt.json    安装收据
 | `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE）；**`behavior: "steer"\|"followUp"`** = 生成中投入输入，直接走 Pi 原生 `steer()`/`followUp()` 队列 |
 | `POST /api/agents/:id/sessions/:sid/abort` | **打断**当前 run（Pi `abort()`；run 的 finally 照常发 `done`） |
 | `POST /api/agents/:id/sessions/:sid/compact` | **压缩上下文**（Pi `compact()`；会先 abort 当前 run） |
-| `POST /api/agents/:id/sessions/:sid/model` | **会话级切模型** `{provider, model}`（Pi `setModel()`：校验 provider 有 key、写 `model_change`、不动全局默认） |
-| `POST /api/agents/:id/sessions/:sid/thinking` | **会话级思考级别** `{level}`（Pi `setThinkingLevel()`） |
+| `POST /api/agents/:id/sessions/:sid/model` | **会话级切模型** `{provider, model}`（Pi `setModel()`：写 `model_change`、不动全局默认）。失败分三种：404 `session_not_found` / 404 `model_not_found` / **409 `model_rejected`（Pi 原文案，如 `No API key for …`）** |
+| `POST /api/agents/:id/sessions/:sid/thinking` | **会话级思考级别** `{level}`（Pi `setThinkingLevel()` 会按模型能力夹取；返回**实际生效值**，非法档位 400） |
 | `GET /api/agents/:id/events`（SSE） | 一条流承载该 Agent 的全部会话：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / **`retrying`** / **`retry_end`** / `done` / `error` / **`agents_changed`**（助手创建/归档后广播，前端据此自动重取列表）；每条带 `seq`，`?since=` 可续传；**事件名 = 事件类型**（映射见 `src/stream-events.ts`） |
 | `GET /api/agents/:id/sessions/:sid/entries` | **会话历史**：原始条目只读直出（`offset/limit` 分页、`labels`、`leafId`）；不投影、不改写，与会话 JSONL 逐条一致 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |

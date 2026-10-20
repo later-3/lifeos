@@ -456,6 +456,23 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   headerModel.expected === null || headerModel.line.includes(`${headerModel.expected.provider}/${headerModel.expected.id}`),
   `${headerModel.line}（接口 ${headerModel.expected === null ? "无模型" : `${headerModel.expected.provider}/${headerModel.expected.id}`}）`);
 
+// 呈现底线：可见按钮必须有可访问名（文字 / aria-label / title 至少一个）。
+// 反例：只画一个图标、没有标签——人认不出、读屏认不出、自动化也认不出（"做了个按钮在那儿"）。
+const noName = () => page.evaluate(() => [...document.querySelectorAll("button")]
+  .filter((button) => button.offsetParent !== null)
+  .map((button) => ({ text: (button.innerText || "").trim(), aria: button.getAttribute("aria-label") ?? "", title: button.getAttribute("title") ?? "" }))
+  .filter((button) => button.text === "" && button.aria === "" && button.title === ""));
+const unnamedChrome = await noName();
+check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
+
+// 对话框里同样要成立（配置弹窗是控件最密的地方）
+await page.locator('button[title="配置助手"]').first().click();
+await page.waitForTimeout(400);
+const unnamedDialog = await noName();
+check("可见按钮都有可访问名（配置对话框）", unnamedDialog.length === 0, `${unnamedDialog.length} 个未命名`);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(250);
+
 // 列头语义：列头只写"这一列是什么"，"默认"这类徽标属于行内数据，不许重复出现在列头
 const headerTexts = await page.evaluate(() => [...document.querySelectorAll("aside > div:first-child")]
   .map((el) => (el.textContent ?? "").trim()));

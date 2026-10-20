@@ -331,22 +331,38 @@ export async function compactSession(agentId: string, sessionId: string): Promis
   }
 }
 
+/** Pi 的思考档位（agent 包 types.ts）：路由用它做入参校验，界面用同一份。 */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
+
+/** 切模型的结果：三种失败要分开报（会话不在 / 清单里没有 / Pi 拒绝，含无 API key）。 */
+export type SetModelResult =
+  | { ok: true }
+  | { ok: false; reason: "session_not_found" }
+  | { ok: false; reason: "model_not_found" }
+  | { ok: false; reason: "rejected"; message: string };
+
 /** 会话级切模型（Pi `setModel()`，ModelRuntime 解析出 Model）。 */
-export async function setSessionModel(agentId: string, sessionId: string, provider: string, modelId: string): Promise<boolean> {
+export async function setSessionModel(agentId: string, sessionId: string, provider: string, modelId: string): Promise<SetModelResult> {
   const state = stateOf(agentId).sessions.get(sessionId);
-  if (state === undefined) return false;
+  if (state === undefined) return { ok: false, reason: "session_not_found" };
   const model = state.modelRuntime.getModel(provider, modelId);
-  if (model === undefined) return false;
-  await state.session.setModel(model);
-  return true;
+  if (model === undefined) return { ok: false, reason: "model_not_found" };
+  try {
+    await state.session.setModel(model);
+    return { ok: true };
+  } catch (error) {
+    // Pi 在 provider 没配 key 时抛 "No API key for provider/model"：原样带回界面，不吞成"找不到"
+    return { ok: false, reason: "rejected", message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
-/** 会话级思考级别（Pi `setThinkingLevel()`）。 */
-export function setSessionThinking(agentId: string, sessionId: string, level: string): boolean {
+/** 会话级思考级别（Pi `setThinkingLevel()` 会把不支持的值夹取到可用档位）。 */
+export function setSessionThinking(agentId: string, sessionId: string, level: ThinkingLevelName): { ok: true; level: string } | { ok: false } {
   const state = stateOf(agentId).sessions.get(sessionId);
-  if (state === undefined) return false;
-  state.session.setThinkingLevel(level as Parameters<HostedSession["setThinkingLevel"]>[0]);
-  return true;
+  if (state === undefined) return { ok: false };
+  state.session.setThinkingLevel(level);
+  return { ok: true, level: state.session.thinkingLevel };
 }
 
 /** 删除会话：移除文件与内存态；正在运行的拒绝。 */

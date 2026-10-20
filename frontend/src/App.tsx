@@ -620,8 +620,10 @@ export default function App() {
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/thinking`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level }),
     }).catch(() => undefined);
+    // Pi 会按模型能力夹取档位：提示里显示实际生效值（用接口回的 level，不回显入参）
+    const body = response === undefined ? {} : await response.json().catch(() => ({})) as { level?: string; error?: { message?: string } };
     const ok = response?.ok === true;
-    toast(ok ? `思考级别：${level}` : "切换失败", ok ? "success" : "error");
+    toast(ok ? `思考级别：${body.level ?? level}` : (body.error?.message ?? "切换失败"), ok ? "success" : "error");
     if (ok) void loadMessages(agent.id, sessionId);
   }
 

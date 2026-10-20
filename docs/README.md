@@ -19,4 +19,5 @@
 | [`design/references.md`](./design/references.md) | 外观与交互的参考项目清单 |
 | [`standards/development-harness.md`](./standards/development-harness.md) | 开发 Life OS 时怎么遵守交互 harness（自举） |
 | [`standards/reference-baseline.md`](./standards/reference-baseline.md) | 参考基线：每个场景照谁做、借什么、不借什么 |
+| [`standards/review.md`](./standards/review.md) | 代码检视与缺陷分级：四类检视、缺陷/质量/架构三分、交互交付四问、门禁 |
 | [`todo.md`](./todo.md) | 未实现功能的登记（一句话） |

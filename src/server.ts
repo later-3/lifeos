@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import {
   abortSession, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
   projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
-  setSessionModel, setSessionThinking, snapshotOf, subscribeAgent,
+  setSessionModel, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { readProjectManifest, readProjectManifests, registerProject } from "./projects.ts";
@@ -105,6 +105,23 @@ function stripSecrets<T>(value: T): T {
 }
 
 const identityPath = (id: string) => join(agentsRoot(), id, "identity.md");
+
+/** models.json 的 providers（唯一解析点；清单接口与"默认模型必须来自清单"校验共用）。 */
+async function readModelsConfig(): Promise<Record<string, unknown>> {
+  return readFile(join(resolveHome(), "config", "models.json"), "utf8")
+    .then((text) => (JSON.parse(text) as { providers?: Record<string, unknown> }).providers ?? {}, () => ({}));
+}
+
+/** provider → model id 列表（保存 Agent 默认模型时的校验用）。 */
+async function readModelsProviders(): Promise<Record<string, string[]>> {
+  const providers = await readModelsConfig();
+  const out: Record<string, string[]> = {};
+  for (const [id, value] of Object.entries(providers)) {
+    const models = (value as { models?: Array<{ id?: unknown }> } | undefined)?.models ?? [];
+    out[id] = models.flatMap((model) => (typeof model.id === "string" ? [model.id] : []));
+  }
+  return out;
+}
 const agentConfigPath = (id: string) => join(agentsRoot(), id, "projects", "workspace", "config.json");
 
 /** 原子写文本文件（tmp + rename）。 */
@@ -436,8 +453,13 @@ export function createApp() {
     if (body === undefined || typeof body.provider !== "string" || typeof body.model !== "string") {
       const error = problem("invalid_request", "需要 provider 与 model 字段", 400); return c.json(error.body, error.status);
     }
-    const ok = await setSessionModel(agent.id, c.req.param("sessionId"), body.provider, body.model);
-    if (!ok) { const error = problem("model_not_found", "找不到这个会话，或模型不在清单里", 404); return c.json(error.body, error.status); }
+    const result = await setSessionModel(agent.id, c.req.param("sessionId"), body.provider, body.model);
+    if (!result.ok) {
+      // 三种失败分开报：会话不在 / 清单里没有 / Pi 拒绝（如 provider 没配 API key）——原因原样给界面
+      if (result.reason === "session_not_found") { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+      if (result.reason === "model_not_found") { const error = problem("model_not_found", `models.json 里没有 ${body.provider}/${body.model}`, 404); return c.json(error.body, error.status); }
+      const error = problem("model_rejected", result.message, 409); return c.json(error.body, error.status);
+    }
     return c.json({ provider: body.provider, model: body.model });
   });
 
@@ -449,9 +471,14 @@ export function createApp() {
     if (body === undefined || typeof body.level !== "string") {
       const error = problem("invalid_request", "需要 level 字段", 400); return c.json(error.body, error.status);
     }
-    const ok = setSessionThinking(agent.id, c.req.param("sessionId"), body.level);
-    if (!ok) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-    return c.json({ level: body.level });
+    const level = THINKING_LEVELS.find((item) => item === body.level);
+    if (level === undefined) {
+      const error = problem("invalid_request", `level 只能是 ${THINKING_LEVELS.join(" / ")}`, 400); return c.json(error.body, error.status);
+    }
+    const result = setSessionThinking(agent.id, c.req.param("sessionId"), level);
+    if (!result.ok) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    // 回实际生效值：Pi 会按模型能力夹取，直接把入参回显就是假数据
+    return c.json({ level: result.level });
   });
 
   // 一条流承载该 Agent 的所有会话：先快照，再按序号推事件（since 可续传）。
@@ -549,8 +576,7 @@ export function createApp() {
 
   // 模型解析（只读用户 models.json；响应经 stripSecrets，apiKey 永不外带）+ settings 默认
   app.get("/api/models-config", async (c) => {
-    const providers = await readFile(join(resolveHome(), "config", "models.json"), "utf8")
-      .then((text) => (JSON.parse(text) as { providers?: Record<string, unknown> }).providers ?? {}, () => ({}));
+    const providers = await readModelsConfig();
     const settings = await readFile(join(resolveHome(), "config", "settings.json"), "utf8")
       .then((text) => JSON.parse(text), () => null);
     const items = Object.entries(providers).map(([id, value]) => {
@@ -576,13 +602,20 @@ export function createApp() {
         typeof body.defaultModel !== "string" || body.defaultModel.trim() === "") {
       const error = problem("invalid_request", "需要 defaultProvider 与 defaultModel（非空字符串）", 400); return c.json(error.body, error.status);
     }
+    const providerId = body.defaultProvider.trim();
+    const modelId = body.defaultModel.trim();
+    // 默认模型必须来自清单：不校验的话，清单里没有的 id 会在这里被写进配置，之后新建会话静默回落
+    const providers = await readModelsProviders();
+    if (providers[providerId] === undefined || !providers[providerId].includes(modelId)) {
+      const error = problem("model_not_found", `models.json 里没有 ${providerId}/${modelId}`, 400); return c.json(error.body, error.status);
+    }
     const config = {
       schemaVersion: 1,
-      defaultProvider: body.defaultProvider.trim(),
-      defaultModel: body.defaultModel.trim(),
+      defaultProvider: providerId,
+      defaultModel: modelId,
       ...(typeof body.defaultThinkingLevel === "string" && body.defaultThinkingLevel !== "" ? { defaultThinkingLevel: body.defaultThinkingLevel } : {}),
     };
-    await mkdir(join(agentsRoot(), agent.id, "workspace"), { recursive: true });
+    await mkdir(join(agentsRoot(), agent.id, "projects", "workspace"), { recursive: true });
     await writeTextAtomic(agentConfigPath(agent.id), JSON.stringify(config, null, 2) + "\n");
     return c.json({ config });
   });

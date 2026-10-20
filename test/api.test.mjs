@@ -440,10 +440,15 @@ test("基础信息与身份：PUT 改名生效、identity 读写往返、非法�
   } finally { server.close(); }
 });
 
-test("Agent 个人模型配置：保存到 workspace/config.json 并可回读", async () => {
+test("Agent 个人模型配置：保存到 workspace/config.json 并可回读（模型必须来自清单）", async () => {
   const { server, base, home } = await start();
-  const { readFile } = await import("node:fs/promises");
+  const { mkdir, readFile, stat } = await import("node:fs/promises");
   try {
+    // 默认模型只能从清单里选：给测试家一份清单，否则保存会被"清单里没有"拒绝
+    await mkdir(join(home, "config"), { recursive: true });
+    await (await import("node:fs/promises")).writeFile(join(home, "config", "models.json"), JSON.stringify({
+      providers: { command: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "k", models: [{ id: "z-ai/glm-5.3-flash" }] } },
+    }) + "\n");
     const saved = await fetch(`${base}/api/agents/lifeosagent/config`, {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash", defaultThinkingLevel: "high" }),
@@ -460,6 +465,17 @@ test("Agent 个人模型配置：保存到 workspace/config.json 并可回读", 
     });
     assert.equal(bad.status, 400);
     assert.equal((await (await fetch(`${base}/api/agents/lifeosagent/config`)).json()).config.defaultProvider, "command", "非法保存不得破坏已有配置");
+
+    // 清单里没有的模型：拒绝（否则会写进配置、新建会话静默回落）
+    const missing = await fetch(`${base}/api/agents/lifeosagent/config`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaultProvider: "command", defaultModel: "nope" }),
+    });
+    assert.equal(missing.status, 400);
+    assert.equal((await missing.json()).error.code, "model_not_found");
+    assert.equal((await (await fetch(`${base}/api/agents/lifeosagent/config`)).json()).config.defaultModel, "z-ai/glm-5.3-flash");
+
+    // 保存只应落在 projects/workspace/ 下：不许再顺手建一个空的 agents/<id>/workspace/
+    await assert.rejects(stat(join(home, "agents", "lifeosagent", "workspace")), "不应创建 agents/<id>/workspace/");
   } finally { server.close(); }
 });
 
@@ -660,7 +676,11 @@ test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切
     // 给测试家一份最小模型清单，才能验证"切模型成功"这条
     await mkdir(join(home, "config"), { recursive: true });
     await writeFile(join(home, "config", "models.json"), JSON.stringify({
-      providers: { test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "test-key", models: [{ id: "m1", name: "m1" }] } },
+      providers: {
+        test: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "test-key", models: [{ id: "m1", name: "m1" }] },
+        // 没配 key 的 provider：Pi 的 setModel 会抛 "No API key for …"，用来验证 409 原样带原因
+        nokey: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", models: [{ id: "m2", name: "m2" }] },
+      },
     }) + "\n");
     const sid = (await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json()).sessionId;
 
@@ -680,10 +700,16 @@ test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x", behavior: "steer" }),
     })).status, 404);
 
-    // 思考级别：合法 200、未知会话 404
-    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/thinking`, {
+    // 思考级别：合法 200（回实际生效值）、非法 400、未知会话 404
+    const thinking = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/thinking`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level: "medium" }),
-    })).status, 200);
+    });
+    assert.equal(thinking.status, 200);
+    const thinkingBody = await thinking.json();
+    assert.ok(["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinkingBody.level), `回实际档位，得到 ${thinkingBody.level}`);
+    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/thinking`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level: "banana" }),
+    })).status, 400);
     assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/thinking`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ level: "medium" }),
     })).status, 404);
@@ -693,9 +719,27 @@ test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "test", model: "m1" }),
     });
     assert.equal(okModel.status, 200, "清单里的模型应能切");
-    assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
+    const unknownModel = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "nope", model: "nope" }),
-    })).status, 404);
+    });
+    assert.equal(unknownModel.status, 404);
+    assert.equal((await unknownModel.json()).error.code, "model_not_found");
+
+    // 没配 key：409 + Pi 的原文案（之前这里会 500，且被压成"找不到"）
+    const noKey = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "nokey", model: "m2" }),
+    });
+    assert.equal(noKey.status, 409);
+    const noKeyBody = await noKey.json();
+    assert.equal(noKeyBody.error.code, "model_rejected");
+    assert.match(noKeyBody.error.message, /No API key for nokey\/m2/);
+
+    // 会话不存在：404 session_not_found（与"模型不在清单里"区分开）
+    const noSession = await fetch(`${base}/api/agents/lifeosagent/sessions/nope/model`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: "test", model: "m1" }),
+    });
+    assert.equal(noSession.status, 404);
+    assert.equal((await noSession.json()).error.code, "session_not_found");
 
     // 压缩：接线正确即可（测试家没有可用模型时 Pi 会报错 → 400）
     const compact = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/compact`, { method: "POST" });
