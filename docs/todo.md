@@ -6,7 +6,7 @@
 
 | # | 背景（现状） | 是什么 | 要做什么 |
 |---|---|---|---|
-| 1 | 项目只属于单个 Agent（manifest 在 `agents/<id>/projects/<pid>/`） | **Life OS 支持多 Agent 共用项目信息或者项目资源** | 设计共享层（同一目录多 Agent 复用同一 pid + 共享资产目录）后实现 |
+| 1 | 项目只属于单个 Agent（manifest 在 `agents/<id>/projects/<pid>/`）；记忆的跨项目读取也卡在这里 | **Life OS 支持多 Agent 共用项目信息或者项目资源**；`projectId` 需全局唯一 | 设计全局项目身份（canonical path / 全局注册表），同一目录多 Agent 复用同一 id；记忆与项目绑定都用它 |
 | 2 | 已支持创建与归档（工具 + HTTP + 行内删除入口）；归档目前只能手动恢复 | 归档助手的恢复入口（HTTP/UI）与启用/停用语义 | 先定恢复动作、以及「停用」与「归档」的区别，再实现 |
 | 3 | 注入是固定 6 区（方案 E，`src/assembly.ts`）；交互 harness 全文（约 26KB）常驻 system prompt | Prompt 通用机制：区域声明与注册、常在/按需判据、请求边界门禁 | 设计区域注册表；把 harness 全文改成索引 + 按需读取 |
 | 4 | P1 已实现（四 store / 读写 / 硬删除，**待审阅**）；架构见 [`architecture/agent-memory.md`](./architecture/agent-memory.md)，需求见 [`requirements/agent-memory.md`](./requirements/agent-memory.md)；工具与面板未做 | **记忆体系**：三个记忆工具（search/record/delete）+ prompt 规则、记忆面板 | 待两份文档审阅通过 → P2 工具与 prompt → P3 面板 |
