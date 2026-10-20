@@ -46,7 +46,7 @@ lifeos/
 ├─ config/                  唯一配置目录（= Pi 的 agentDir）
 │                            models.json · auth.json · models-store.json · settings.json? · file-roots.json
 ├─ interaction-harness/      通用层（所有 Agent 共用）
-│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/development/
+│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/<type>/
 ├─ agents/<id>/              每个 Agent 私有（目录名 = id）
 │  ├─ agent.json             身份与默认值（唯一来源）
 │  ├─ identity.md            身份正文（注入 preamble）

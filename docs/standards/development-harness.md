@@ -9,7 +9,7 @@
 
 | 层 | 物理位置 | 放什么 |
 |---|---|---|
-| **通用层**（所有 Agent 共用） | `~/.lifeos/interaction-harness/` | 协议正文 `protocol.md` · 本层指引 `AGENTS.md` · 飞轮 `flywheel.md` · 概念空间 `concept-space.md` + `concept-space/` · 通用案例 `cases/` · 任务类型 `task-types/development/*` |
+| **通用层**（所有 Agent 共用） | `~/.lifeos/interaction-harness/` | 协议正文 `protocol.md` · 本层指引 `AGENTS.md` · 飞轮 `flywheel.md` · 概念空间 `concept-space.md` + `concept-space/` · 通用案例 `cases/` · 任务类型 `task-types/<type>/*`（`development` 开发/协作/结论 · `general` 普通任务） |
 | **Agent × 项目私有层**（记录跟当前工作项目走） | `~/.lifeos/agents/<id>/projects/<项目名>/`，**默认 = `workspace/`** | 任务 `tasks/` · 日报 `daily/` · 案例 `cases/` · `todo/` · 项目指引 `AGENTS.md` ·（外部项目）`project.json` |
 
 **方向**：主体是 **Agent**，项目是它工作范围里的一部分——记录落在 Agent 目录内。项目只属于一个 Agent（多 Agent 共享 = 未实现，登记在 [`../todo.md`](../todo.md)）。
@@ -33,7 +33,7 @@
 2. 本层指引 `interaction-harness/AGENTS.md`
 3. 飞轮 `interaction-harness/flywheel.md`
 4. 概念空间元规则 + 两份索引（`concept-space/00-索引.md`、`concept-space/harness/00-索引.md`）
-5. 任务类型细则 `interaction-harness/task-types/development/*.md`
+5. 任务类型细则 `interaction-harness/task-types/<type>/*.md`（按类型目录自动加载；新增类型 = 加一个目录）
 6. **本项目指引（Agent 私有）** `agents/<id>/projects/<pid>/AGENTS.md`
 7. **项目规范（项目目录）** `<项目目录>/AGENTS.md`——外部项目才有；**只读项目目录自己这一份，不继承父目录**
 

@@ -24,8 +24,11 @@
 - **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_project_add`（目录注册并绑定）/ `lifeos_project_remove`（从列表移除，数据保留）/ `lifeos_project_list`（列项目）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。**幂等**：同一路径重复添加不改变任何东西；默认项目不可移除；移除不动目录、manifest 与会话。
 - **写操作闭环在共享实现里**（2026-10-20 架构修正）：`agents.ts`（创建/归档）与 `projects.ts`（绑定/移除）在写成功后广播 `agents_changed`，工具与 HTTP 两条入口自动生效——**不依赖调用方记得 notify**。事件总线在 `src/events.ts`、运行态在 `src/session-runtime.ts`，两者都不 import `agent-host`，因此 `agents/projects` 可以静态 import 而不是内联 `await import()`。
 - **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**）。
-- **`task.md` 是唯一状态源**：类型（自动 `development`）/ 类别 / 状态 / 负责人 / 目标（没给先用标题）/ 必需文档 / 当前指针 + **「本任务遵守」**（协议 · 本层指引 · 任务类型细则 · 本项目指引 · 项目仓库 `AGENTS.md` 存在才写）+ **「引用的案例」**占位（模型随后补 `cases/<日期>.md#Cxxx`）。
-- **类别决定必需文档**（照 `task-types/development/TEMPLATE.md`）：`A` 改产品行为 → `01-background · 02-design · 03-phase · 04-plan · phases/`；`B` 改协作规范 → `01-background · 02-plan`；`C` 只出结论 → `01-background`。
+- **`task.md` 是唯一状态源**：类型 / 类别 / 状态 / 负责人 / 目标（没给先用标题）/ 必需文档 / 当前指针 + **「本任务遵守」**（协议 · 本层指引 · **该类型的细则** · 本项目指引 · 项目仓库 `AGENTS.md` 存在才写）+ **「引用的案例」**占位（模型随后补 `cases/<日期>.md#Cxxx`）。
+- **类型 + 类别一起决定必需文档**（照 `task-types/<type>/TEMPLATE.md`，类型由目录声明、装配时按目录加载）：
+  - `development`（开发/协作/结论）：`A` 改产品行为 → `01-background · 02-design · 03-phase · 04-plan · phases/`；`B` 改协作规范 → `01-background · 02-plan`；`C` 只出结论 → `01-background`；
+  - `general`（**普通任务**：既不改产品行为也不改协作规范，只是把一件事管起来）：`G` → `01-background · 02-plan`（背景 + 步骤，保持简单；不建 `phases/`）。判据：资料整理、调研、外部沟通、一次性操作、环境维护等；改"怎么做"仍是 `development B`，改用户可观察行为仍是 `development A`。
+  - 类别必须与类型匹配（`general` 只接受 `G`，`development` 只接受 `A/B/C`），错配直接拒绝。
 - **列举 = 扫描 `tasks/` 读 `task.md`**（不维护索引文件）。
 
 ## 2 目录与文件（现状）

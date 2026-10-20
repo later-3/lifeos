@@ -230,3 +230,33 @@ test("lifeos_project_add / list / remove：绑定、幂等、移除后不再列�
   unsubscribe();
   void home;
 });
+
+test("lifeos_task_create：普通任务（general/G）只生成背景+步骤，不建 phases/；类型与类别必须匹配", async () => {
+  await freshHome();
+  const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+
+  const created = await taskCreate.execute("g1", { title: "整理资料", type: "general", category: "G" });
+  assert.equal(created.details.number, 1);
+  const dir = created.details.path;
+  const taskMd = await readFile(join(dir, "task.md"), "utf8");
+  assert.match(taskMd, /类型：general/);
+  assert.match(taskMd, /类别：G 普通任务/);
+  assert.match(taskMd, /必需文档：01-background\.md · 02-plan\.md/);
+  assert.match(taskMd, /任务类型细则：.*task-types\/general\/TEMPLATE\.md/, "引用对应类型的细则");
+  assert.deepEqual((await readdir(dir)).sort(), ["01-background.md", "02-plan.md", "task.md"], "普通任务只有两份文档 + task.md");
+  assert.deepEqual((await readdir(join(dir, "01-background.md")).catch(() => null)), null);
+
+  const listed = await taskList.execute("g2", {});
+  assert.match(listed.content[0].text, /general\/G 普通任务/, "列表要带类型");
+
+  await assert.rejects(taskCreate.execute("g3", { title: "错配", type: "general", category: "A" }), /普通任务（general）的 category 必须是 G/);
+  await assert.rejects(taskCreate.execute("g4", { title: "错配", type: "development", category: "G" }), /开发任务（development）的 category 必须是 A \/ B \/ C/);
+});
+
+test("lifeos_task_create：general 任务重新读取后 type 字段保留（listTasks 解析 task.md）", async () => {
+  await freshHome();
+  const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+  await taskCreate.execute("h1", { title: "环境维护", type: "general", category: "G" });
+  const listed = await taskList.execute("h2", {});
+  assert.match(listed.content[0].text, /^0001-[^ ]* · general\/G 普通任务 · 进行中 · 环境维护/m);
+});

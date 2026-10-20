@@ -2,25 +2,30 @@
 //
 // - 落点：`agents/<agent>/projects/<project>/tasks/<NNNN>-<标题>/`（编号 per-project 连续；中文目录名允许——用户会翻文件系统）
 // - `task.md` 是唯一状态源：类型 / 类别 / 状态 / 负责人 / 目标 / 必需文档 / 当前指针 / 本任务遵守的规范 + 引用案例
-// - 类别（照 task-types/development/TEMPLATE.md）：A 改产品行为（01-background·02-design·03-phase·04-plan·phases/）
-//   / B 改协作规范（01-background·02-plan）/ C 只出结论（01-background）
+// - 类型：development（开发/协作/结论，A/B/C 三类）/ general（普通任务：背景 + 步骤，只两份文档）
+// - 类别（照 task-types/<type>/TEMPLATE.md）：A 改产品行为（01-background·02-design·03-phase·04-plan·phases/）
+//   / B 改协作规范（01-background·02-plan）/ C 只出结论（01-background）/ G 普通任务（01-background·02-plan）
 // - 业务动作只在这里；Pi 工具（src/agent-tools.ts）与将来的 HTTP 都调它。
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest, sanitizeSegment } from "./projects.ts";
 
-export type TaskCategory = "A" | "B" | "C";
+export type TaskType = "development" | "general";
+export type TaskCategory = "A" | "B" | "C" | "G";
 
 export type TaskContext = { agentId: string; projectId: string };
 export type TaskSummary = {
   id: string;            // 目录名：0001-标题
   number: number;
   title: string;
+  type: string;
   category: string;
   status: string;
   goal: string;
   path: string;
+  /** 本任务生成/必需的文档（工具回执用） */
+  docs?: string[];
 };
 
 export type TaskError = { code: string; message: string };
@@ -32,6 +37,13 @@ const CATEGORY_LABEL: Record<TaskCategory, string> = {
   A: "A 改产品行为",
   B: "B 改协作规范",
   C: "C 只出结论",
+  G: "G 普通任务",
+};
+
+/** 每种任务类型允许的类别（类型决定类别，避免"普通任务选 A"这种错配）。 */
+const CATEGORIES_BY_TYPE: Record<TaskType, readonly TaskCategory[]> = {
+  development: ["A", "B", "C"],
+  general: ["G"],
 };
 
 /** 每个类别要生成的文档（与 TEMPLATE.md 的"必需文档"一致）。 */
@@ -48,6 +60,10 @@ const REQUIRED_DOCS: Record<TaskCategory, Array<{ file: string; title: string; s
   ],
   C: [
     { file: "01-background.md", title: "01 结论与依据", sections: ["结论（前置）", "依据（文件/命令/实测）", "未验证项"] },
+  ],
+  G: [
+    { file: "01-background.md", title: "01 背景", sections: ["现状与为什么做（一两句事实）", "完成标准（怎么算做完）"] },
+    { file: "02-plan.md", title: "02 步骤", sections: ["步骤（按顺序；做到哪算完成）", "验收（怎么确认做到）"] },
   ],
 };
 
@@ -67,14 +83,14 @@ export async function nextTaskNumber(ctx: TaskContext): Promise<number> {
 }
 
 /** 本任务遵守的规范与案例引用（路径真实存在才写；案例由模型后续补）。 */
-async function referenceBlock(ctx: TaskContext): Promise<string[]> {
+async function referenceBlock(ctx: TaskContext, type: TaskType): Promise<string[]> {
   const home = resolveHome();
   const lines = [
     "## 本任务遵守",
     "",
     `- 协议：${join(home, "interaction-harness", "protocol.md")}`,
     `- 本层指引：${join(home, "interaction-harness", "AGENTS.md")}`,
-    `- 任务类型细则：${join(home, "interaction-harness", "task-types", "development", "TEMPLATE.md")}`,
+    `- 任务类型细则：${join(home, "interaction-harness", "task-types", type, "TEMPLATE.md")}`,
     `- 本项目指引：${join(projectDir(ctx), "AGENTS.md")}`,
   ];
   const manifest = await readProjectManifest(ctx.agentId, ctx.projectId);
@@ -87,13 +103,22 @@ async function referenceBlock(ctx: TaskContext): Promise<string[]> {
 }
 
 export async function createTask(ctx: TaskContext, input: {
-  title: string; category: TaskCategory; goal?: string;
+  title: string; type?: TaskType; category: TaskCategory; goal?: string;
 }): Promise<{ task: TaskSummary } | TaskError> {
   const title = (input.title ?? "").trim();
   if (title === "") return { code: "invalid_title", message: "title 不能为空" };
+  const type: TaskType = input.type ?? "development";
+  if (type !== "development" && type !== "general") {
+    return { code: "invalid_type", message: "type 必须是 development（开发/协作/结论）或 general（普通任务）" };
+  }
   const category = input.category;
-  if (category !== "A" && category !== "B" && category !== "C") {
-    return { code: "invalid_category", message: "category 必须是 A / B / C（A 改产品行为 · B 改协作规范 · C 只出结论）" };
+  if (!CATEGORIES_BY_TYPE[type].includes(category)) {
+    return {
+      code: "invalid_category",
+      message: type === "general"
+        ? "普通任务（general）的 category 必须是 G（背景 + 步骤）"
+        : "开发任务（development）的 category 必须是 A / B / C（A 改产品行为 · B 改协作规范 · C 只出结论）",
+    };
   }
   const manifest = await readProjectManifest(ctx.agentId, ctx.projectId);
   if (manifest === undefined && ctx.projectId !== "workspace") {
@@ -107,11 +132,12 @@ export async function createTask(ctx: TaskContext, input: {
   const goal = goalInput === "" ? title : goalInput;
   const docs = REQUIRED_DOCS[category];
 
-  await mkdir(join(dir, "phases"), { recursive: true, mode: 0o700 });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  if (category === "A") await mkdir(join(dir, "phases"), { recursive: true, mode: 0o700 });
   const taskMd = [
     `# ${title}`,
     "",
-    "类型：development",
+    `类型：${type}`,
     `类别：${CATEGORY_LABEL[category]}`,
     "状态：进行中",
     `负责人：${ctx.agentId} ｜ 记录者：${ctx.agentId}`,
@@ -119,13 +145,13 @@ export async function createTask(ctx: TaskContext, input: {
     `必需文档：${docs.map((doc) => doc.file).join(" · ")}${category === "A" ? " · phases/" : ""}`,
     "当前指针：（下一步做什么 / 卡在哪——状态只写在这里）",
     "",
-    ...(await referenceBlock(ctx)),
+    ...(await referenceBlock(ctx, type)),
   ].join("\n");
   await writeFile(join(dir, "task.md"), taskMd, { encoding: "utf8", mode: 0o600 });
   for (const doc of docs) {
     await writeFile(join(dir, doc.file), docSkeleton(doc.title, doc.sections), { encoding: "utf8", mode: 0o600 });
   }
-  return { task: { id, number, title, category: CATEGORY_LABEL[category], status: "进行中", goal, path: dir } };
+  return { task: { id, number, title, type, category: CATEGORY_LABEL[category], status: "进行中", goal, path: dir, docs: docs.map((doc) => doc.file) } };
 }
 
 /** 列出某项目下的任务（读 task.md 的关键字段；不投影、不猜）。 */
@@ -147,6 +173,7 @@ export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
       id: entry.name,
       number: Number(match[1]),
       title: (text.split("\n")[0] ?? "").replace(/^#\s*/, ""),
+      type: field("类型"),
       category: field("类别"),
       status: field("状态"),
       goal: field("目标"),

@@ -80,10 +80,18 @@ export async function buildPromptParts(agentId: string, projectId: string): Prom
   for (const rel of ["concept-space/00-索引.md", "concept-space/harness/00-索引.md"]) {
     await pushFile(`概念索引 · ${rel}`, join(harnessRoot, rel));
   }
-  const taskTypesDir = join(harnessRoot, "task-types", "development");
-  const taskTypeFiles = (await readdir(taskTypesDir).catch(() => [] as string[])).filter((name) => name.endsWith(".md")).sort();
-  for (const name of taskTypeFiles) {
-    await pushFile(`任务类型 · development/${name}`, join(taskTypesDir, name));
+  // 任务类型按目录加载（development / general …）：新增类型 = 加一个目录，不改装配代码
+  const taskTypesRoot = join(harnessRoot, "task-types");
+  const taskTypes = (await readdir(taskTypesRoot, { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort();
+  for (const type of taskTypes) {
+    const dir = join(taskTypesRoot, type);
+    const files = (await readdir(dir).catch(() => [] as string[])).filter((name) => name.endsWith(".md")).sort();
+    for (const name of files) {
+      await pushFile(`任务类型 · ${type}/${name}`, join(dir, name));
+    }
   }
   await pushFile(`本项目指引 · ${projectId}/AGENTS.md（Agent 私有约定）`, join(projectDir, "AGENTS.md"));
 

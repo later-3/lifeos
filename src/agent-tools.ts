@@ -92,31 +92,42 @@ export function createAgentTools(ctx: ToolContext) {
     name: "lifeos_task_create",
     label: "Create Life OS task",
     description:
-      "Create a development task for the current project: a numbered task directory with task.md (single source of truth) and the required documents for its category. "
-      + "Category A changes product behavior (01-background, 02-design, 03-phase, 04-plan, phases/), B changes collaboration rules (01-background, 02-plan), C only produces a conclusion (01-background). "
+      "Create a numbered task for the current project: a task directory with task.md (single source of truth) and the required documents for its type/category. "
+      + "Type development: category A changes product behavior (01-background, 02-design, 03-phase, 04-plan, phases/), B changes collaboration rules (01-background, 02-plan), C only produces a conclusion (01-background). "
+      + "Type general: a normal task that is neither product nor collaboration work (errands, research, one-off operations) — category G, only 01-background + 02-plan (background + simple steps). "
       + "task.md also records which harness rules and project guides the task must follow; fill in referenced cases afterwards.",
-    promptSnippet: "Create a numbered development task (task.md + required docs)",
+    promptSnippet: "Create a numbered task (development A/B/C or general G) with task.md + required docs",
     promptGuidelines: [
-      "Use lifeos_task_create when the user asks for real work (a requirement, a fix, a review) — then fill 01-background with facts before designing.",
+      "Use lifeos_task_create when the user asks for real work (a requirement, a fix, a review, or a normal task to track) — then fill 01-background with facts before planning.",
+      "Pick type=general only when the task changes neither product behavior nor collaboration rules; otherwise use development with A/B/C.",
       "Keep task.md as the single place for status; update 当前指针 as you go.",
     ],
     parameters: Type.Object({
       title: Type.String({ description: "Task title, e.g. '文件面板：删除已注册根'. Chinese is fine; it becomes the directory name." }),
-      category: Type.Union([Type.Literal("A"), Type.Literal("B"), Type.Literal("C")], {
-        description: "A = changes product behavior, B = changes collaboration rules, C = conclusion only.",
+      type: Type.Optional(Type.Union([Type.Literal("development"), Type.Literal("general")], {
+        description: "development (default) for product/collaboration/conclusion work; general for a normal task that is neither (background + simple steps).",
+      })),
+      category: Type.Union([Type.Literal("A"), Type.Literal("B"), Type.Literal("C"), Type.Literal("G")], {
+        description: "development: A = changes product behavior, B = changes collaboration rules, C = conclusion only. general: G (only value).",
       }),
       goal: Type.Optional(Type.String({ description: "One-line verifiable goal. Defaults to the title; editable later." })),
     }),
     async execute(_toolCallId, params) {
-      const result = await createTask(ctx, { title: params.title, category: params.category as TaskCategory, ...(params.goal !== undefined ? { goal: params.goal } : {}) });
+      const result = await createTask(ctx, {
+        title: params.title,
+        ...(params.type !== undefined ? { type: params.type } : {}),
+        category: params.category as TaskCategory,
+        ...(params.goal !== undefined ? { goal: params.goal } : {}),
+      });
       if ("code" in result) throw new Error(result.message);
       const task = result.task;
+      const files = task.docs ?? [];
       return {
         content: [{
           type: "text" as const,
-          text: `Created task ${task.id} (${task.category}) at ${task.path}\n`
-            + `Files: task.md · ${task.category.startsWith("A") ? "01-background.md · 02-design.md · 03-phase.md · 04-plan.md · phases/" : task.category.startsWith("B") ? "01-background.md · 02-plan.md" : "01-background.md"}\n`
-            + `Next: fill 01-background with current facts and the acceptance criteria, then design.`,
+          text: `Created task ${task.id} (${task.type} · ${task.category}) at ${task.path}\n`
+            + `Files: task.md${files.length > 0 ? ` · ${files.join(" · ")}` : ""}${task.category.startsWith("A") ? " · phases/" : ""}\n`
+            + `Next: fill 01-background with current facts and the acceptance criteria, then the plan.`,
         }],
         details: { id: task.id, number: task.number, path: task.path },
       };
@@ -134,7 +145,7 @@ export function createAgentTools(ctx: ToolContext) {
       if (tasks.length === 0) {
         return { content: [{ type: "text" as const, text: "No tasks in this project yet." }], details: { tasks: [] } };
       }
-      const text = tasks.map((task) => `${task.id} · ${task.category} · ${task.status} · ${task.goal}`).join("\n");
+      const text = tasks.map((task) => `${task.id} · ${task.type}/${task.category} · ${task.status} · ${task.goal}`).join("\n");
       return { content: [{ type: "text" as const, text }], details: { tasks } };
     },
   });
