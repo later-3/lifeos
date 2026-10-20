@@ -26,7 +26,6 @@ Agent 现在只有会话 JSONL 和 `daily/` 文件：换个会话、换个项目
 | S4 | Agent 总结自己的工作方式："我习惯先读 AGENTS.md 再动手" | Agent 记忆（跨项目） | 这个 Agent 在任何项目里都能用到 |
 | S5 | 隔离：plant 在 lifeos 里记了"我的猫叫豆豆"（私有） | agent 的项目记忆 | coder 在 lifeos 搜"宠物"**必须搜不到** |
 | S6 | 用户说"把那条错误的记忆删掉" | 对应角色 | **硬删除、不可恢复**，删除后检索不到 |
-| S7 | 用户想看"到底进了哪些记忆" | — | 面板按角色列出：角色 · 来源 · 时间 · 摘要，可搜索/删除 |
 
 ## 3 功能需求
 
@@ -56,7 +55,7 @@ Agent 现在只有会话 JSONL 和 `daily/` 文件：换个会话、换个项目
 ### FR-3 删除
 
 - **硬删除、不可恢复**（MemOS `deleteTrace`）；幂等（重复删不报错）；
-- 只在用户**明确要求**时执行；面板操作前二次确认；
+- 只在用户**明确要求**时执行；调用方（工具/UI）负责二次确认；
 - 批量删除默认不提供；如提供，必须先列出将删条目与数量再确认；
 - **不支持编辑/撤销**：只有「增 / 查 / 删」三个操作；写错 = 删除旧条目 + 新增（底层 MemOS 有 updateTrace，但不暴露）；
 - 解绑项目 / 归档 Agent **不级联删除**记忆。
@@ -103,14 +102,6 @@ scope: "agent_project" | "project" | "agent" | "user"
 
 **验收**：模拟一轮对话，模型在"记到哪层"和"要不要跨项目"上做出符合规则的判断。
 
-### FR-7 可见性
-
-- Life OS 内的"记忆"面板：按四类角色分组；每行 **角色 · 来源（项目/Agent/用户）· 时间 · 摘要**；
-- 支持按角色过滤、搜索、删除（二次确认）；
-- 可选：复用 MemOS Viewer 作为调试视图（不替代我们的面板）。
-
-**验收**：面板能看到 FR-1 写入的四条记忆；删除后面板与检索同时消失。
-
 ### FR-8 配置与密钥
 
 - LLM（抽取/摘要/关键词）与 Embedding（向量）分开配置；
@@ -137,16 +128,14 @@ scope: "agent_project" | "project" | "agent" | "user"
 | FR-2 检索 | `index.ts::searchMemory` / `searchMemoryScopes` + `merge.ts`（顺序/去重） | ✅ P1（合并顺序已实现） |
 | FR-3 删除 | `index.ts::deleteMemory` → MemOS `deleteTrace` | ✅ P1 |
 | FR-4 隔离 | 一个角色一个 SQLite（物理隔离）+ 角色路径 | ✅ P1（隔离已验证） |
-| FR-5 工具 | `src/agent-tools.ts` 新增 3 个工具（P2） | ❌ 未做 |
-| FR-6 Prompt | `~/.lifeos/interaction-harness/memory.md` 由装配加载 | ✅ 规则文件已加；工具描述待 P2 |
-| FR-7 面板 | 新 HTTP 路由 + 前端面板（P3） | ❌ 未做 |
+| FR-5 工具 | `src/agent-tools.ts` 的 3 个工具（scope/projectId 解析见 `src/memory/resolve.ts`） | ✅ P2（已接） |
+| FR-6 Prompt | `~/.lifeos/interaction-harness/memory.md` 由装配加载；3 个工具的 description 写权限 | ✅ 已接 |
 | FR-8 配置 | `src/memory/config.ts`（LLM/embedding/env 密钥） | ✅ P1 |
 | FR-9 生命周期 | 四类目录 + 不级联（`projects.ts`/`agents.ts` 不删记忆） | ✅ 目录；导出未做 |
 
 ## 5 还需要补的功能（缺口）
 
 1. **P2 工具**：`lifeos_memory_search/record/delete`（描述即权限契约）+ prompt 规则；
-2. **P3 面板**：HTTP 列表/搜索/删除 + 前端"记忆"页（角色分组、来源、删除确认）；
 3. **导出/备份**：整目录备份之外，是否需要 JSON 导出；
 4. **审计**：删除记录（谁/何时/哪条）落到哪里。
 
@@ -157,7 +146,8 @@ scope: "agent_project" | "project" | "agent" | "user"
 - 跨项目自动检索（默认隔离，显式才查）；
 - **自动捕获（2026-10-20 定：暂时不做）**——只通过工具显式写入；
 - Graph Memory / Neo4j；
-- 多用户账号体系（当前单用户 `default`）。
+- 多用户账号体系（当前单用户 `default`）；
+- **记忆面板 / 记忆浏览 UI（2026-10-20 定：不做；调试用 MemOS Viewer）**。
 
 ## 7 测试与验收
 
@@ -177,11 +167,6 @@ scope: "agent_project" | "project" | "agent" | "user"
 LIFEOS_HOME=$(mktemp -d) node --experimental-strip-types test/memory.integration.mjs
 ```
 
-**UI 契约（P3）**
-
-- 面板按角色分组、显示来源/时间/摘要；
-- 删除前确认框；删除后列表与检索同时消失。
-
 **验收清单**
 
 | 场景 | 预期 |
@@ -192,7 +177,6 @@ LIFEOS_HOME=$(mktemp -d) node --experimental-strip-types test/memory.integration
 | S4 Agent 经验 | 该 Agent 跨项目命中 |
 | S5 隔离 | 其他 Agent 搜同一 query 无结果 |
 | S6 删除 | 删除后不可见、不可恢复 |
-| S7 可见性 | 面板列出四类记忆与来源 |
 
 ## 8 未决问题
 
@@ -205,6 +189,5 @@ LIFEOS_HOME=$(mktemp -d) node --experimental-strip-types test/memory.integration
 ## 9 交付顺序
 
 1. ✅ P1：四角色 store + 读写 API + 硬删除（已实现，待审阅）；
-2. P2：3 个工具 + prompt 规则；
-3. P3：面板（HTTP + 前端）；
-4. P4：导出/备份、审计（可选；自动捕获暂不做）。
+2. ✅ P2：3 个工具 + prompt 规则（工具描述即权限契约）——已实现；
+3. P4：导出/备份、审计（可选；自动捕获、记忆面板都不做）。

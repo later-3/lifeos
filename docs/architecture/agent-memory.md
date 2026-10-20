@@ -54,7 +54,7 @@ src/memory/index.ts   recordMemory / searchMemory / searchMemoryScopes / deleteM
 src/memory/merge.ts   多角色合并（顺序、去重、截断）
 ```
 
-对上层（P2 工具、P3 面板、HTTP）只暴露 `src/memory/index.ts`：
+对上层（P2 工具 / HTTP）只暴露 `src/memory/index.ts`：
 
 | 函数 | 作用 |
 |---|---|
@@ -63,11 +63,11 @@ src/memory/merge.ts   多角色合并（顺序、去重、截断）
 | `searchMemoryScopes(roles, query, { limit? })` | 多角色合并检索（顺序由调用方给） |
 | `deleteMemory(role, id)` | 硬删除（不可恢复、幂等） |
 
-**接入点**（P2/P3，具体功能与权限契约见需求文档）：
+**接入点**（P2，具体功能与权限契约见需求文档）：
 
 - 工具：`src/agent-tools.ts` 新增 3 个工具（search / record / delete；**没有编辑/撤销**），调用上面的函数；
 - Prompt：`~/.lifeos/interaction-harness/memory.md`（四类记忆与策略）由 `src/assembly.ts` 装配进 harness 区——**不写死在代码里**；
-- 面板：新 HTTP 路由读同一批 SQLite，前端按角色分组展示。
+- 面板：**不做**（2026-10-20 定；调试用 MemOS Viewer）。
 
 ## 5 底座验证（2026-10-20，`/tmp` 内完成，未动仓库）
 
@@ -111,7 +111,7 @@ embedding:
 
 MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**，所以每个 store 必须落盘一份；真实密钥只进进程环境。
 
-## 6 P1 实现（2026-10-20，已实现，待审阅）
+## 6 P1 + P2 实现（2026-10-20，已实现，待审阅）
 
 | 文件 | 作用 |
 |---|---|
@@ -128,8 +128,9 @@ MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**，所以�
 
 **P1 验证（临时 home + 本地 Ollama）**：四角色写入；角色内检索；跨 Agent 隔离（coder 搜不到 plant 的私有记忆）；合并顺序正确；硬删除后检索不到。
 
+**P2（3 个工具）**：`lifeos_memory_search` / `record` / `delete`，参数 scope/projectId 由 `src/memory/resolve.ts` 解析（跨项目只允许 scope=project 的检索）；已用真实 Ollama 端到端验证 record → search → delete → 空。
+
 ## 7 待办
 
 - P2 工具 + prompt（需求文档 FR-5/FR-6）；
-- P3 面板（FR-7）；
-- P4 导出/备份、审计（可选；自动捕获暂不做）。
+- P4 导出/备份、审计（可选；自动捕获、记忆面板都不做）。

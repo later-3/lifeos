@@ -21,7 +21,7 @@
 
 **任务 = 有目标、需落盘、可追溯的工作单元**（协议 §3.8）；现在实现的是**用户下达任务**（定时任务未实现，见 todo）。
 
-- **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_project_add`（目录注册并绑定）/ `lifeos_project_remove`（从列表移除，数据保留）/ `lifeos_project_list`（列项目）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。**幂等**：同一路径重复添加不改变任何东西；默认项目不可移除；移除不动目录、manifest 与会话。
+- **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_project_add`（目录注册并绑定）/ `lifeos_project_remove`（从列表移除，数据保留）/ `lifeos_project_list`（列项目）/ `lifeos_memory_search`（查记忆）/ `lifeos_memory_record`（记事实，scope 必填）/ `lifeos_memory_delete`（硬删除，仅用户明确要求）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。**幂等**：同一路径重复添加不改变任何东西；默认项目不可移除；移除不动目录、manifest 与会话。
 - **写操作闭环在共享实现里**（2026-10-20 架构修正）：`agents.ts`（创建/归档）与 `projects.ts`（绑定/移除）在写成功后广播 `agents_changed`，工具与 HTTP 两条入口自动生效——**不依赖调用方记得 notify**。事件总线在 `src/events.ts`、运行态在 `src/session-runtime.ts`，两者都不 import `agent-host`，因此 `agents/projects` 可以静态 import 而不是内联 `await import()`。
 - **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**）。
 - **`task.md` 是唯一状态源**：类型 / 类别 / 状态 / 负责人 / 目标（没给先用标题）/ 必需文档 / 当前指针 + **「本任务遵守」**（协议 · 本层指引 · **该类型的细则** · 本项目指引 · 项目仓库 `AGENTS.md` 存在才写）+ **「引用的案例」**占位（模型随后补 `cases/<日期>.md#Cxxx`）。

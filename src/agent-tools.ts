@@ -9,12 +9,16 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { archiveAgent, createAgent } from "./agents.ts";
 import { createTask, listTasks, type TaskCategory } from "./tasks.ts";
 import { bindProject, listAgentProjects, unbindProject } from "./projects.ts";
+import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./memory/index.ts";
+import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
+import { resolveMemoryRole, type MemoryScope } from "./memory/resolve.ts";
 
 /** Life OS 自有工具名（与内置 8 工具一起显式钉进 allowlist，见 agent-host.ts · ALL_TOOL_NAMES）。 */
 export const LIFEOS_TOOL_NAMES = [
   "lifeos_agent_create", "lifeos_agent_delete",
   "lifeos_task_create", "lifeos_task_list",
   "lifeos_project_add", "lifeos_project_remove", "lifeos_project_list",
+  "lifeos_memory_search", "lifeos_memory_record", "lifeos_memory_delete",
 ] as const;
 
 /** 工具要绑定"当前会话是谁、在哪个项目"——都由会话自身推导，模型不用传（也不会传错）。 */
@@ -230,5 +234,117 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList, projectAdd, projectRemove, projectList];
+
+  const MEMORY_SCOPES = ["agent_project", "project", "agent", "user"] as const;
+  const firstLine = (text: string): string => text.split("\n")[0]?.slice(0, 120) ?? "";
+
+  const memorySearch = defineTool({
+    name: "lifeos_memory_search",
+    label: "Search Life OS memories",
+    description:
+      "Search this agent's memories. With no scope, searches and merges in this order: agent's project memory (this agent + this project) → project shared memory (this project) → agent memory (this agent, across projects) → user memory. "
+      + "Cross-project: pass a GLOBAL projectId together with scope=project — only that project's shared memory is readable; another agent's private project memory is never readable. "
+      + "Results include id + scope so they can be deleted later.",
+    promptSnippet: "Search memories (project / agent / user) for this agent",
+    promptGuidelines: [
+      "Search memories when the user refers to something decided or learned before, or asks what you remember.",
+      "Default: only the current project. Do not search other projects unless the user explicitly asks; then use scope=project with that project's global projectId.",
+    ],
+    parameters: Type.Object({
+      query: Type.String({ description: "What to look for (natural language is fine)." }),
+      scope: Type.Optional(Type.Union(MEMORY_SCOPES.map((value) => Type.Literal(value)), {
+        description: "Restrict to one memory layer. Omit = merged default order (agent's project memory → project shared → agent → user).",
+      })),
+      projectId: Type.Optional(Type.String({ description: "Global project id. Only allowed with scope=project, for reading another project's shared memory." })),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 10)." })),
+    }),
+    async execute(_toolCallId, params) {
+      const limit = params.limit ?? 10;
+      if (params.scope === undefined) {
+        const roles = defaultReadOrder({ agentId: ctx.agentId, projectId: ctx.projectId });
+        const hits = await searchMemoryScopes(roles, params.query, { limit });
+        if (hits.length === 0) return { content: [{ type: "text" as const, text: "No memories found." }], details: { hits: [] } };
+        const text = hits.map((hit) => `${roleLabel(hit.role)} · ${hit.score.toFixed(2)} · ${hit.id} · ${firstLine(hit.text)}`).join("\n");
+        return { content: [{ type: "text" as const, text }], details: { hits } };
+      }
+      const resolved = resolveMemoryRole({
+        agentId: ctx.agentId, currentProjectId: ctx.projectId, scope: params.scope as MemoryScope,
+        ...(params.projectId !== undefined ? { targetProjectId: params.projectId } : {}), action: "search",
+      });
+      if ("error" in resolved) throw new Error(resolved.error);
+      const hits = await searchMemory(resolved.role, params.query, { limit });
+      if (hits.length === 0) return { content: [{ type: "text" as const, text: "No memories found." }], details: { hits: [] } };
+      const text = hits.map((hit) => `${roleLabel(resolved.role)} · ${hit.score.toFixed(2)} · ${hit.id} · ${firstLine(hit.text)}`).join("\n");
+      return { content: [{ type: "text" as const, text }], details: { hits } };
+    },
+  });
+
+  const memoryRecord = defineTool({
+    name: "lifeos_memory_record",
+    label: "Record a Life OS memory",
+    description:
+      "Record one fact the user asked to remember. scope is REQUIRED and decides where it goes: "
+      + "agent_project = this agent in this project (private), project = shared with all agents in this project, agent = this agent across projects, user = this user across projects. "
+      + "Write only the layer the user's instruction implies; do not auto-record whole conversations and do not share/promote by yourself. "
+      + "Never store secrets (API keys, passwords, tokens, cookies).",
+    promptSnippet: "Record a fact the user asked to remember (scope required)",
+    promptGuidelines: [
+      "Only record facts the user explicitly asked to keep (preferences, decisions, project conventions, lessons). Do not record every turn.",
+      "Choose the layer from the user's words: project conventions → project; user preferences → user; cross-project lessons → agent; this project's gotchas → agent_project.",
+    ],
+    parameters: Type.Object({
+      content: Type.String({ description: "The fact to remember, one or two sentences." }),
+      scope: Type.Union(MEMORY_SCOPES.map((value) => Type.Literal(value)), {
+        description: "Required. agent_project (private, this project) | project (shared in this project) | agent (this agent, cross-project) | user (this user, cross-project).",
+      }),
+      projectId: Type.Optional(Type.String({ description: "Global project id; defaults to the current project. Cannot be used to write into another project." })),
+    }),
+    async execute(_toolCallId, params) {
+      const resolved = resolveMemoryRole({
+        agentId: ctx.agentId, currentProjectId: ctx.projectId, scope: params.scope as MemoryScope,
+        ...(params.projectId !== undefined ? { targetProjectId: params.projectId } : {}), action: "record",
+      });
+      if ("error" in resolved) throw new Error(resolved.error);
+      const result = await recordMemory(resolved.role, { userText: params.content, agentText: "" });
+      return {
+        content: [{ type: "text" as const, text: `Recorded (${roleLabel(resolved.role)}) id=${result.traceId}` }],
+        details: { id: result.traceId, scope: params.scope, episodeId: result.episodeId },
+      };
+    },
+  });
+
+  const memoryDelete = defineTool({
+    name: "lifeos_memory_delete",
+    label: "Delete a Life OS memory",
+    description:
+      "Permanently delete one memory by id + scope (hard delete, irreversible, idempotent). "
+      + "Call it ONLY when the user explicitly asks to delete that memory; never as cleanup. "
+      + "There is no edit or undo: to correct a memory, delete it and record a new one. "
+      + "Never bulk-delete on your own; if the user asks for bulk deletion, list the items and counts first and wait for confirmation.",
+    promptSnippet: "Delete one memory (hard delete; only on explicit user request)",
+    promptGuidelines: [
+      "Confirm the exact id and scope with the user before deleting; deletion is permanent.",
+      "Do not delete memories to 'clean up' or to resolve contradictions — record a corrected memory instead (or ask the user).",
+    ],
+    annotations: { destructiveHint: true, readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+    parameters: Type.Object({
+      id: Type.String({ description: "Memory id from lifeos_memory_search." }),
+      scope: Type.Union(MEMORY_SCOPES.map((value) => Type.Literal(value)), {
+        description: "The layer the memory lives in (same as returned by search).",
+      }),
+      projectId: Type.Optional(Type.String({ description: "Global project id; defaults to the current project." })),
+    }),
+    async execute(_toolCallId, params) {
+      const resolved = resolveMemoryRole({
+        agentId: ctx.agentId, currentProjectId: ctx.projectId, scope: params.scope as MemoryScope,
+        ...(params.projectId !== undefined ? { targetProjectId: params.projectId } : {}), action: "delete",
+      });
+      if ("error" in resolved) throw new Error(resolved.error);
+      const deleted = await deleteMemory(resolved.role, params.id);
+      if (!deleted) throw new Error("No memory with that id in this scope (it may already be deleted).");
+      return { content: [{ type: "text" as const, text: `Deleted (${roleLabel(resolved.role)}) id=${params.id}` }], details: { id: params.id, scope: params.scope } };
+    },
+  });
+
+  return [create, remove, taskCreate, taskList, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete];
 }

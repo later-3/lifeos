@@ -14,7 +14,7 @@
 | [`architecture/directory-structure.md`](./architecture/directory-structure.md) | 仓库与家目录的目录结构（只放现在要用的） |
 | [`architecture/foundation.md`](./architecture/foundation.md) | 技术底座：家目录、接口面、前后端边界 |
 | [`architecture/agent-memory.md`](./architecture/agent-memory.md) | 记忆**架构**：底座（MemOS）、四类记忆落盘、隔离方式、组件与接口、落地现状 |
-| [`requirements/agent-memory.md`](./requirements/agent-memory.md) | 记忆**需求**：场景、功能需求（FR）、权限、工具/面板、缺口与测试验收 |
+| [`requirements/agent-memory.md`](./requirements/agent-memory.md) | 记忆**需求**：场景、功能需求（FR）、权限、工具、缺口与测试验收 |
 | [`design/frontend-structure.md`](./design/frontend-structure.md) | 前端界面结构与各区域规则 |
 | [`design/frontend-path.md`](./design/frontend-path.md) | 前端开发路径（三道闸：token / primitive / 契约） |
 | [`design/file-browser.md`](./design/file-browser.md) | 文件浏览器 |

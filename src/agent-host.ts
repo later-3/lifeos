@@ -46,7 +46,7 @@ export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot
 }
 
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
-// 8 个内置 + 7 个 Life OS 自有工具（agent 创建/归档、task 创建/列、project 添加/移除/列；见 src/agent-tools.ts）。
+// 8 个内置 + 10 个 Life OS 自有工具（agent、task、project、memory；见 src/agent-tools.ts）。
 // 注意：createAgentSession 的 tools 是**白名单**（只允许列出的工具启用），新工具必须写进来。
 const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...LIFEOS_TOOL_NAMES];
 

@@ -30,6 +30,11 @@ test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除
   const projectRemove = tools.find((tool) => tool.name === "lifeos_project_remove");
   assert.equal(projectRemove.annotations?.destructiveHint, true, "从列表移除要标注（可能被误当删除）");
   assert.equal(projectRemove.annotations?.idempotentHint, true, "重复移除同一个项目是幂等的");
+  const memoryRecord = tools.find((tool) => tool.name === "lifeos_memory_record");
+  assert.ok(memoryRecord.description.includes("scope is REQUIRED"), "记忆写入必须说明 scope 必填");
+  const memoryDelete = tools.find((tool) => tool.name === "lifeos_memory_delete");
+  assert.equal(memoryDelete.annotations?.destructiveHint, true, "硬删除要标注");
+  assert.ok(memoryDelete.description.includes("irreversible"), "描述写明不可恢复");
 });
 
 test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨架齐、同名幂等", async () => {

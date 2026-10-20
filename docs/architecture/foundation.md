@@ -21,7 +21,7 @@ pi/         Pi SDK（子模块，固定 commit；Agent 运行时）
 - 用 Pi SDK：`@earendil-works/pi-coding-agent`（`createAgentSession` / `SessionManager` / `SettingsManager` / `DefaultResourceLoader` / `ModelRuntime`）+ `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai`。
 - Life OS 只负责：**配置装配、交互 harness 注入、会话托管、事件转发**；不自己实现 Agent 循环。
 - 运行时宿主在 `src/agent-host.ts`（**不 import HTTP 框架**）；HTTP 层（`src/server.ts`）只是薄适配。
-- 工具 = 8 个 Pi 内置（`read/bash/edit/write/grep/find/ls/powershell`）+ 7 个 Life OS 自有（`lifeos_agent_create` / `lifeos_agent_delete` / `lifeos_task_create` / `lifeos_task_list` / `lifeos_project_add` / `lifeos_project_remove` / `lifeos_project_list`）；**名字必须显式写进 `tools` 白名单**（Pi 的语义是 allowlist：不写就不启用）。
+- 工具 = 8 个 Pi 内置（`read/bash/edit/write/grep/find/ls/powershell`）+ 10 个 Life OS 自有（`lifeos_agent_create` / `lifeos_agent_delete` / `lifeos_task_create` / `lifeos_task_list` / `lifeos_project_add` / `lifeos_project_remove` / `lifeos_project_list` / `lifeos_memory_search` / `lifeos_memory_record` / `lifeos_memory_delete`）；**名字必须显式写进 `tools` 白名单**（Pi 的语义是 allowlist：不写就不启用）。
 - 装配细节（agentDir / 模型优先级 / 注入方案 E）见 [`agent.md` §5](./agent.md)。
 
 ## 3 会话事实
