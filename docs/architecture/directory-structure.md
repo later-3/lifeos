@@ -45,14 +45,18 @@ lifeos/
 ```
 ~/.lifeos/
 ├─ config/                  唯一配置目录（= Pi 的 agentDir）
-│                            models.json · auth.json · models-store.json · settings.json? · file-roots.json
+│                            models.json · auth.json · models-store.json · settings.json? · file-roots.json · memory.json?（记忆的 LLM/embedding 覆盖）
+├─ memory/user/<uid>/        用户记忆（MemOS store；跨项目、跨 Agent）
+├─ projects/<pid>/memory/    项目共享记忆（MemOS store；项目下所有 Agent 可读）
 ├─ interaction-harness/      通用层（所有 Agent 共用）
 │                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/<type>/
 ├─ agents/<id>/              每个 Agent 私有（目录名 = id）
 │  ├─ agent.json             身份与默认值（唯一来源）
 │  ├─ identity.md            身份正文（注入 preamble）
 │  ├─ avatar/                图片头像（可选）
+│  ├─ memory/                Agent 记忆（MemOS store：config.yaml + data/memos.db）
 │  └─ projects/<pid>/        一项目一份：AGENTS.md · sessions/ · daily/ · cases/ · todo/ ·（外部项目）project.json
+│     └─ memory/             agent 的项目记忆（私有；MemOS store）
 └─ install-receipt.json      安装收据
 ```
 
@@ -64,13 +68,15 @@ lifeos/
 |---|---|
 | 会话（JSONL） · 每日记录 · 案例 · Todo · 任务 | `agents/<id>/projects/<pid>/`（默认 `workspace/`；打开外部项目后随该项目 pid） |
 | 通用案例 · 协议正文 · 任务类型细则 | `interaction-harness/`（通用层） |
+| 记忆：项目共享 / 用户 / Agent / agent 的项目记忆 | `projects/<pid>/memory/` · `memory/user/<uid>/` · `agents/<id>/memory/` · `agents/<id>/projects/<pid>/memory/`（各自一个 SQLite） |
 | 项目身份（外部项目） | `agents/<id>/projects/<pid>/project.json` |
 
 ## 4 明确**不建**（现在没有；真要写时再建并说明用途）
 
 - 代码：`src/agents/`、`src/routes/`、`src/long-agents/`、`src/utils/`、`src/sessions/`、`src/models/`、`shared/`、`packages/`、`deploy/`
-- 家目录顶层：`projects/`（多 Agent 共用项目，等真做时再设计）、`logs/`、`runtime/`
-- 文档：`docs/architecture/prompt/`、`agent-memory.md`、`agent-tasks.md`、`agent-tools.md`（2026-10-18 删除：描述的是未实现的机制；要点登记在 `docs/todo.md`）
+- 家目录顶层：`logs/`、`runtime/`
+- 文档：`docs/architecture/prompt/`、`agent-tasks.md`、`agent-tools.md`（2026-10-18 删除：描述的是未实现的机制；要点登记在 `docs/todo.md`）
+- 说明：`agent-memory.md` 已于 2026-10-20 重建（架构 + 需求两份）；`projects/` 已用于项目共享记忆（不再属于"不建"）
 
 ## 5 命名
 
