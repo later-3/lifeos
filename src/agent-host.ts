@@ -8,7 +8,8 @@ import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
-import { decideRestoreModel, type ModelRef } from "./model-follow.ts";
+import { decideRestoreModel } from "./model-follow.ts";
+import type { ModelRef } from "./model-follow-types.ts";
 // 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, eventsSeq, publish, subscribeAgent, type AgentEvent } from "./events.ts";
@@ -126,12 +127,7 @@ async function createHostedSession(
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
-  if (mode === "new") {
-    // 记录"创建时的默认"：以后默认变了，靠它区分"该跟随"还是"用户自己换过"
-    if (session.model !== undefined) appendDefaultRecord(sessionManager, { provider: session.model.provider, id: session.model.id });
-  } else {
-    await adoptAgentDefault(session, sessionManager, modelRuntime, agentId);
-  }
+  if (mode !== "new") await adoptAgentDefault(session, sessionManager, modelRuntime, agentId);
   return { session, modelRuntime, modelLabel };
 }
 
@@ -287,41 +283,25 @@ function sessionModelOf(manager: SessionManager): { provider: string; id: string
 
 /** 标记"用户显式换过模型"的 Pi 自定义条目（不参与模型上下文；只用于区分默认/覆盖）。 */
 const MODEL_OVERRIDE_ENTRY = "lifeos_model_override";
-/** 记录"创建时/上次跟随的默认模型"，用于区分"默认后来变了"与"用户自己换过"。 */
-const DEFAULT_MODEL_ENTRY = "lifeos_default_model";
 
 type SessionManagerLike = ReturnType<typeof SessionManager.create>;
 
-function customEntryData(manager: SessionManagerLike, customType: string): ModelRef | undefined {
-  const branch = manager.getBranch();
-  for (let i = branch.length - 1; i >= 0; i -= 1) {
-    const entry = branch[i];
-    if (entry?.type !== "custom" || entry.customType !== customType) continue;
-    const data = entry.data as { provider?: unknown; id?: unknown } | undefined;
-    if (typeof data?.provider === "string" && typeof data.id === "string") return { provider: data.provider, id: data.id };
-  }
-  return undefined;
-}
-
-const sameModelRef = (a: ModelRef | undefined, b: ModelRef | undefined): boolean =>
-  a !== undefined && b !== undefined && a.provider === b.provider && a.id === b.id;
-
+/** 只认 `/model` 写的标记；`legacy` 标记是早期错误逻辑补的，不再算数（否则默认永远跟不上）。 */
 function hasOverrideIn(manager: SessionManagerLike): boolean {
-  return manager.getBranch().some((entry) => entry.type === "custom" && entry.customType === MODEL_OVERRIDE_ENTRY);
+  return manager.getBranch().some((entry) => {
+    if (entry.type !== "custom" || entry.customType !== MODEL_OVERRIDE_ENTRY) return false;
+    const data = entry.data as { legacy?: unknown } | undefined;
+    return data?.legacy !== true;
+  });
 }
 
 function hasModelOverride(session: HostedSession): boolean {
   return hasOverrideIn(session.sessionManager);
 }
 
-function appendDefaultRecord(manager: SessionManagerLike, model: ModelRef): void {
-  manager.appendCustomEntry(DEFAULT_MODEL_ENTRY, { provider: model.provider, id: model.id });
-}
-
 /**
  * 恢复会话时处理"默认 vs 覆盖"（用户 2026-10-20 规则）：
  * 没被 `/model` 覆盖过的会话，重开时也要跟随最新默认；覆盖过的保留用户选择。
- * 旧会话（没有默认记录）若模型与当前默认不同，视为"以前用 `/model` 换过"→ 补标记保护。
  */
 async function adoptAgentDefault(
   session: HostedSession,
@@ -332,31 +312,16 @@ async function adoptAgentDefault(
   const resolution = await resolveModelChoice(agentId);
   const agentDefault: ModelRef | undefined = resolution === undefined ? undefined
     : { provider: resolution.choice.defaultProvider, id: resolution.choice.defaultModel };
-  const stored = sessionModelOf(manager);
-  const recordedDefault = customEntryData(manager, DEFAULT_MODEL_ENTRY);
   const decision = decideRestoreModel({
-    ...(stored !== undefined ? { stored } : {}),
-    ...(recordedDefault !== undefined ? { recordedDefault } : {}),
-    ...(agentDefault !== undefined ? { agentDefault } : {}),
+    stored: sessionModelOf(manager),
+    agentDefault,
     overridden: hasOverrideIn(manager),
   });
   if (decision === "follow" && agentDefault !== undefined) {
     const target = modelRuntime.getModel(agentDefault.provider, agentDefault.id);
     if (target !== undefined) {
-      try {
-        await session.setModel(target);
-        appendDefaultRecord(manager, agentDefault);
-      } catch { /* 默认模型此刻不可用（缺 key 等）：保持原样，下次再试 */ }
+      try { await session.setModel(target); } catch { /* 默认模型此刻不可用（缺 key 等）：保持原样，下次再试 */ }
     }
-    return;
-  }
-  if (decision === "mark_override") {
-    manager.appendCustomEntry(MODEL_OVERRIDE_ENTRY, { legacy: true, at: new Date().toISOString() });
-    return;
-  }
-  // 已经是默认但记录缺失/过期：补记录，避免下次被误判成"覆盖"
-  if (stored !== undefined && agentDefault !== undefined && sameModelRef(stored, agentDefault) && !sameModelRef(recordedDefault, agentDefault)) {
-    appendDefaultRecord(manager, agentDefault);
   }
 }
 
@@ -371,7 +336,6 @@ export async function applyAgentDefaultModel(agentId: string, provider: string, 
     if (model === undefined) continue;
     try {
       await state.session.setModel(model);
-      appendDefaultRecord(state.session.sessionManager, { provider, id: modelId });
       applied += 1;
     } catch {
       // 不能切（比如 key 缺失）就保持原样：配置保存本身不应因为某个会话失败而失败

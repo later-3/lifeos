@@ -107,7 +107,7 @@ Life OS（~/.lifeos）
 - **从没对本会话用过 `/model`** → 会话模型 = Agent 默认模型；**默认变了，顶部要跟着变**。
 - **用过 `/model`** → 会话级覆盖（Pi 会写 `model_change`，持久）；默认再变也不影响它。
 - 判定"是否覆盖"必须有**显式标记**（计划用 Pi 自定义条目 `lifeos_model_override`），不能靠"和默认值相等"猜——覆盖成同一个值也会误判。
-- **实现**（`src/model-follow.ts` 纯函数 + `agent-host.ts` 接线）：保存默认 → 同步**没被覆盖且不在跑**的打开中会话，并广播 `agents_changed`（前端只刷 meta）；`/model` 写 `lifeos_model_override`；新会话写 `lifeos_default_model`（记录创建时默认）；**重开会话**时按三者判定：已是默认→不动；等于记录的默认→跟随新默认；与记录不符/旧会话无记录→视为覆盖（补 `legacy` 标记，不擅自改）。正在跑的会话不在半路换模型。
+- **实现**（`src/model-follow.ts` 纯函数 + `agent-host.ts` 接线）：判定**只认 `/model` 写的显式标记**（`lifeos_model_override`，早期 `legacy` 标记忽略）；没有标记 → 跟随默认。保存默认 → 同步**没被覆盖且不在跑**的打开中会话 + 广播 `agents_changed`（前端只刷 meta，**不用刷新页面**）；打开/重开会话时未覆盖且不是默认 → 跟随。正在跑的会话不在半路换模型。
 
 **交互场景**：切换 Agent（重置流游标重订、定位该 Agent 最近会话）· 选会话（载入消息）· 新建 · 重命名（prompt）· 删除（confirm，删当前则定位最近）· 发送/流式/打断态沿用事件流。
 

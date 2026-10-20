@@ -744,7 +744,8 @@ async function capture(width, setup, clipTo) {
   await shotPage.waitForTimeout(500);
   if (setup !== undefined) await setup(shotPage);
   await settle(shotPage);
-  // 遮罩"会随对话变化"的正文（会话消息、完整历史正文与标题行）：基线只比界面骨架。
+  // 遮罩"会随数据变化"的区域（会话正文、完整历史、项目/会话行）：基线只比界面骨架。
+  // 侧栏行的名称/计数/相对时间都是用户数据——用户正常使用就会变，不该让门禁变红。
   // 不这么做的话，用户每聊一句、每多一个回合，截图就漂 → 门禁天天红（实测漂 5–8%）。
   // 对话框类截图按元素裁剪：Playwright 的 mask 画在最上层，会把浮在上面的对话框一起盖住
   const buffer = clipTo === undefined

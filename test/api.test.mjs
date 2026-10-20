@@ -838,7 +838,7 @@ test("默认模型跟随：没被 /model 覆盖过的会话跟随 Agent 默认�
   } finally { server.close(); }
 });
 
-test("重开会话（跨进程重启）：未覆盖的跟随最新默认；覆盖的/旧会话保留选择", async () => {
+test("重开会话（跨进程重启）：没被 /model 覆盖过的一律跟随最新默认；覆盖过的保留选择", async () => {
   const home = await mkdtemp(join(tmpdir(), "lifeos-restart-"));
   await installHome(process.cwd(), home);
   const { mkdir, writeFile } = await import("node:fs/promises");
@@ -886,6 +886,6 @@ test("重开会话（跨进程重启）：未覆盖的跟随最新默认；覆�
     const metaOf = async (sid) => (await (await fetch(`${server.base}/api/agents/lifeosagent/sessions/${sid}`)).json()).meta;
     assert.equal((await metaOf(plain)).model.id, "m3", "未覆盖的会话重开后跟随最新默认");
     assert.equal((await metaOf(overridden)).model.id, "m2", "覆盖过的会话保留用户选择");
-    assert.equal((await metaOf(legacy)).model.id, "m2", "旧会话无法判断，按覆盖保护（不擅自改）");
+    assert.equal((await metaOf(legacy)).model.id, "m3", "旧会话没被 /model 覆盖过 → 跟随默认（不靠值猜）");
   } finally { server.server.close(); }
 });

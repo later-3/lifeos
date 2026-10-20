@@ -808,7 +808,8 @@ export default function App() {
         <>
           <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken">
             <ColumnHeader label="项目" onHide={() => setShowProjects(false)} />
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2">
+            {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="project-rows">
               {!loaded && <Skeleton rows={2} />}
               {loaded && groups.length === 0 && <EmptyState title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />}
               {groups.map((group) => (
@@ -857,7 +858,7 @@ export default function App() {
             <ColumnHeader label={folded.projects ? currentGroup?.project.name ?? "会话" : "会话"}
               hint={folded.projects ? "会话" : undefined}
               onHide={() => setShowSessions(false)} />
-            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2" data-shot-mask="session-rows">
               {currentGroup === undefined && <EmptyState title="先选择项目" />}
               {currentGroup !== undefined && currentGroup.sessions.length === 0 && (
                 <EmptyState title="该项目暂无会话" hint="直接在右下输入框发消息，会自动新建会话。" />
