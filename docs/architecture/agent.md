@@ -73,13 +73,15 @@
 - 事件流：`GET /api/agents/:id/events`（SSE）一条流承载该 Agent 的**所有**会话；事件名 = 事件类型：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error`，每条带 `seq`，`?since=` 可续传（映射见 `src/stream-events.ts`）。
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
 - **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别。
-- **前端交互**（对照 Pi CLI / Pi Web，2026-10-19）：生成中 **Esc / 停止按钮 = 打断**；生成中 Enter = **steer 插话**；生成中超过 **60s 无事件 = 判为运行丢失**（清生成态 + 重载消息，尾部空回复给「重新发送」）；SSE 重连快照显示"不在跑"也走同一恢复；斜杠命令面板（`/compact /model /thinking /name /new /copy /export /abort`）；空输入时 **↑/↓ 浏览发送历史**。
-- **失败与状态可见**（2026-10-19，用户实测「发了消息没回复、不知道在等什么」）：头部显示**会话当前模型**（`provider/model`，来自 `GET …/sessions/:sid` 的 `meta`）；工作指示行按真实阶段变化——请求刚发出 **3s 内「正在连接模型…」**、之后 **「等待模型响应…」+ 秒数**、Pi 自动重试时 **「模型调用失败，Ns 后重试（i/max）：<原因>」**（危险色）、进模型后 **思考中 / 执行工具 / 输出中**；失败的 assistant 气泡显示 **`模型调用失败：<原因>`**，并在尾部给 **「重新发送」**（空回复同样给）。失败原因与重试信息全部来自 Pi（`errorMessage` / `auto_retry_start`），不自造文案。
+- **前端交互**（对照 Pi CLI / Pi Web，2026-10-19）：生成中 **Esc / 停止按钮 = 打断**；生成中 Enter = **steer 插话**；生成中超过 **60s 无事件 = 判为运行丢失**（清生成态 + 重载）；SSE 重连快照显示"不在跑"也走同一恢复；斜杠命令面板（`/compact /model /thinking /name /new /copy /export /abort`）；空输入时 **↑/↓ 浏览发送历史**。**已知问题**：60s 无事件也会在"模型很慢但还活着"时误判丢轮；计划改为"先查 running 再判丢"（`docs/todo.md`）。
+- **失败与状态可见**（2026-10-19 起，2026-10-20 与用户对齐归属）：**进度与失败属于"这一轮"→ 显示在左侧**；失败原因在 assistant 侧显示"归类文案 + 原始错误小字"（`src/failure.ts` 分类）；**「重新发送」属于用户消息**（动作挂在被重发的那条消息上），不放在失败提示旁。左侧本轮槽的阶段、计时与失败归属见 `docs/design/frontend-structure.md` §2.1（设计出发点 + 哪一步显示什么）。失败原因与重试信息全部来自 Pi（`stopReason` / `errorMessage` / `auto_retry_start`），不自造文案。
 - **深链接**（`?agent&project&session`）：URL 指定项目时**只在该项目里选会话**，不拿别的项目"记住的会话"顶上（2026-10-19 实测：`?project=<空项目>` 被 workspace 会话顶掉）。
 - **失败归因（2026-10-20 用户点名）**：`src/failure.ts` 把 Pi 的 `stopReason`（`ai/src/types.ts`：pending/stop/length/toolUse/error/aborted/deferred）与 `errorMessage`（`ai/src/utils/retry.ts` 的网络/超时模式）归成 `aborted / truncated / empty / timeout / network / auth / rate_limit / server / unknown`；界面按种类说人话（如"模型服务响应超时"、"连不上模型服务：网络或端点不可达"、"模型服务拒绝鉴权"），原始 `errorMessage` 作为小字证据保留。SSE 的 `error` 事件同样带 `kind`，前端 toast 用同一套文案。
 - **工具块状态**：`running` 只在"这一轮还在跑"时成立（`frontend/src/tool-state.ts`）；这一轮已结束但没拿到结果 = `missing`，显示**未完成**（不转圈）。工具结果**只按 `toolCallId` 精确配对**（曾用"最后一个没有结果的调用"兜底，导致同一条消息里两个调用的结果互串，`ls` 永远"执行中"）。
 - 模型选择：**优先级 A** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ Pi 回落；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。新建会话的模型与来源会打一行日志 `[assembly] 新建会话 … · 模型 <provider>/<id>（来源 …）`，排查"怎么用了这个模型"先看它。
 - **会话级切换**（`/model` `/thinking`，走 Pi `setModel` / `setThinkingLevel`）：只改当前会话（Pi 写 `model_change`），不动 Agent 默认、不动全局；`setModel` 会校验 provider 是否配了 key，失败原因（如 `No API key for …`）原样显示，不吞成"切换失败"。
+- **顶部模型显示规则**（2026-10-20 用户定）：顶部显示**本会话当前模型**。**没对本会话用过 `/model`** → 它就是 Agent 默认；**默认变了，顶部要跟着变**。**用过 `/model`** → 会话级覆盖（`model_change` 持久），默认再变也不影响它。判定"是否覆盖"必须有显式标记（计划：Pi 自定义条目 `lifeos_model_override`），不能靠"值相等"猜。**现状**：默认变更后已存在会话不跟随（Pi 会话保存创建时的 `model_change`）；跟随同步待实现（`docs/todo.md`）。
+- **一轮的路径**（失败归属的骨架）：① 前端发送（本地插入用户消息 + 左侧本轮占位）→ ② 新建会话（仅无会话）→ ③ 后端受理（202，`void runTurn`）→ ④ 后端开跑（登记 running、订阅 Pi 事件）→ ⑤ Pi 模型循环（思考/文本/工具调用与结果，临时错误自动重试）→ ⑥ 收尾（`done`，或抛错 → `error` 带归类）→ ⑦ 前端重读会话（文件是事实源）。哪一步失败，左侧就写哪一步；具体显示映射见 `docs/design/frontend-structure.md` §2.1。
 
 ## 5 装配（方案 E，2026-10-18 定稿，现状）
 
