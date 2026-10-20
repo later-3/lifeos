@@ -7,8 +7,9 @@
     "@earendil-works/pi-agent-core": "link:./pi/packages/agent",
     "@earendil-works/pi-ai": "link:./pi/packages/ai",
     "@earendil-works/pi-coding-agent": "link:./pi/packages/coding-agent",
-    "hono": "^4.9.7",
-    "@hono/node-server": "^1.19.1"
+    "@hono/node-server": "^1.19.1",
+    "@memtensor/memos-local-plugin": "2.0.16-beta.1",
+    "hono": "^4.9.7"
   },
   "scripts": {
     "home:install": "node --experimental-strip-types src/install.ts",
@@ -28,9 +29,17 @@
   },
   "type": "module",
   "devDependencies": {
-    "esbuild": "^0.25.0",
+    "@types/node": "^24.0.0",
     "concurrently": "^9.2.0",
-    "typescript": "^5.9.3",
-    "@types/node": "^24.0.0"
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "sharp",
+      "esbuild",
+      "onnxruntime-node"
+    ]
   }
 }

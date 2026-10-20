@@ -1,6 +1,6 @@
 # Agent 记忆（设计稿）
 
-> 角色：架构　类型：设计　状态：**设计稿（未实现）**——实现进度登记在 `docs/todo.md`
+> 角色：架构　类型：设计　状态：**设计 + P1 已实现**（四 store / 读写 / 软删除）；P2 工具、P3 面板待做——进度见 `docs/todo.md`
 
 本文是"记忆"的唯一权威：四种记忆、读写权限、隔离与读取顺序、工具与 prompt 的约定。
 未定稿的部分集中写在 §6，不在这里写成结论。
@@ -163,9 +163,35 @@ embedding:
 
 注意：`home-flashnext` 与 `command` 的 `/chat/completions` 实测可用（403 只是缺 User-Agent）；两者都能当 LLM。
 
-## 8 实现顺序（验证通过后）
+## 8 实现顺序
 
-1. 四个 store + 内部读写 API（角色/权限/隔离）；
-2. 三个记忆工具（search / record / delete，描述即权限契约）+ prompt 规则；
-3. "记忆"面板（列表/搜索/删除/来源标注）；
-4. 提升与跨项目检索（按 §6 的结论）。
+1. ✅ **四个 store + 内部读写 API**（P1，2026-10-20 完成）
+2. 三个记忆工具（search / record / delete，描述即权限契约）+ prompt 规则（P2）
+3. "记忆"面板（列表/搜索/删除/来源标注）（P3）
+4. 提升与跨项目检索（按 §6 的结论）
+
+## 9 P1 实现（2026-10-20，已完成并验证）
+
+| 文件 | 作用 |
+|---|---|
+| `src/memory/roles.ts` | 四角色与落点（纯函数）：用户 / Agent / Agent×项目私有 / 项目共享；`defaultReadOrder` = 私有→项目共享→Agent→用户 |
+| `src/memory/config.ts` | LLM 与 embedding 配置：默认 embedding = Ollama `nomic-embed-text`；LLM = `memory.json` 直配（Ollama）或 `models.json` 里第一个可用 provider；**密钥只进进程环境变量**，写盘的 `config.yaml` 只放 `${LIFEOS_MEMORY_API_KEY}` |
+| `src/memory/store.ts` | 每角色一个 MemOS 本地核心（一 SQLite）；`storeFor(role)` 懒启动、`closeMemoryStores()` 收尾 |
+| `src/memory/index.ts` | `recordMemory` / `searchMemory` / `searchMemoryScopes`（按顺序合并）/ 软删除三件套（`softDeleteMemory`、`restoreMemory`、`purgeDeleted`）/ `listDeleted` |
+| `src/memory/soft-delete.ts` | 软删清单（`soft-deleted.json`）；满 30 天后才允许 purge |
+| `src/memory/merge.ts` | 多角色结果合并（先到先得、按 id 去重、截断） |
+
+**两个实现要点**：
+
+1. **配置写盘**：MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**（内存里传的 config 会被覆盖），所以每个 store 都要落一份 config.yaml；密钥用 `${LIFEOS_MEMORY_API_KEY}` 占位，真实值只在本进程 env 里（不复制到磁盘）。
+2. **删除**：MemOS 的 `deleteTrace` 是硬删除；软删除/30 天保留在我们这一层（`soft-deleted.json` 过滤 + 过期后才调硬删）。
+
+**P1 验证（临时 home + 本地 Ollama，未动用户数据）**：
+
+| 验证 | 结果 |
+|---|---|
+| 四角色写入 | ✅ agent_project×2、project、user 各写入一条 |
+| 角色内检索 | ✅ 咖啡→拿铁、宠物→猫、项目约定、用户住址 |
+| 跨 Agent 隔离 | ✅ coder 搜"宠物"返回空（看不到 plant 的私有记忆） |
+| 合并读取（默认顺序） | ✅ 咖啡→agent_project、约定→project、住址→user |
+| 软删除 → 恢复 → 过期 purge | ✅ 删后不可见、恢复可见、31 天后 purge 后彻底不可见 |

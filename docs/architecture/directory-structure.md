@@ -18,6 +18,7 @@ lifeos/
 │  ├─ session-runtime.ts    运行态登记（哪些会话在跑）：agents/host 共用，避免循环依赖
 │  ├─ failure.ts            失败归因（stopReason + errorMessage → 可显示的九类）
 │  ├─ model-follow.ts       "默认 vs /model 覆盖"的判定（纯函数）
+│  ├─ memory/               记忆：四角色路径 / MemOS store / 读写 / 软删除 / 多角色合并
 │  ├─ assembly.ts           提示装配（方案 E：identity + harness 区 + Pi 的 tools/rules 回填）
 │  ├─ stream-events.ts      Pi 会话事件 → SSE 流事件的唯一映射
 │  ├─ projects.ts           项目 manifest 的读写与旧数据迁移
