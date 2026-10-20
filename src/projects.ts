@@ -12,6 +12,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
+import { sanitizeSegment } from "./segments.ts";
+import { ensureGlobalProject } from "./project-registry.ts";
 import { readAgent, writeAgent } from "./agents.ts";
 import { broadcast } from "./events.ts";
 
@@ -19,15 +21,7 @@ import { broadcast } from "./events.ts";
 // 旧设计的 uuid 目录在读取时懒迁移成可读名（manifest 里留 legacyId 供旧 URL 反查）。
 export type ProjectManifest = { schemaVersion: 1; id: string; name: string; path: string; legacyId?: string };
 
-/** 目录名清洗（项目名 / 任务名共用）：允许中文；去掉路径分隔符与控制字符，空白折成 `-`，最长 60。 */
-export function sanitizeSegment(name: string): string {
-  const cleaned = name
-    .replace(/[\/\:*?"<>|\u0000-\u001f]/g, " ")
-    .replace(/\s+/g, "-")
-    .replace(/^[.\-]+|[.\-]+$/g, "")
-    .slice(0, 60);
-  return cleaned === "" ? "unnamed" : cleaned;
-}
+export { sanitizeSegment } from "./segments.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -117,7 +111,13 @@ export async function readProjectManifests(agentId: string): Promise<Map<string,
       continue;
     }
     const manifest = await readProjectManifest(agentId, entry.name);
-    if (manifest !== undefined) out.set(manifest.id, manifest);
+    if (manifest !== undefined) {
+      const global = await ensureGlobalProject(manifest.path, manifest.id);
+      const bound = global.id === manifest.id && global.name === manifest.name
+        ? manifest
+        : await bindAgentProject(agentId, manifest.id, global);
+      out.set(bound.id, bound);
+    }
   }
   return out;
 }
@@ -213,13 +213,32 @@ export async function registerProject(agentId: string, path: string): Promise<{ 
   if (!info.isDirectory()) return { code: "not_a_directory", message: "不是目录", status: 400 };
   const existing = await readProjectManifests(agentId);
   for (const project of existing.values()) {
-    if (project.path === target) return { project, created: false };
+    if (project.path === target) {
+      // 已有绑定：确保全局注册表有同 path 的条目，并让 Agent 的绑定目录名 = 全局 id
+      const global = await ensureGlobalProject(project.path, project.id);
+      const bound = await bindAgentProject(agentId, project.id, global);
+      return { project: bound, created: false };
+    }
   }
   const name = basename(target) || target;
-  const pid = await uniqueSegment(agentId, sanitizeSegment(name));   // 目录名 = 项目名（可读）
-  const project: ProjectManifest = { schemaVersion: 1, id: pid, name, path: target };
-  const dir = join(agentProjectsRoot(agentId), pid);
-  await mkdir(dir, { recursive: true, mode: 0o700 });          // 私有层目录：0700（与家目录其余部分一致）
-  await writeFile(join(dir, "project.json"), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  return { project, created: true };
+  const global = await ensureGlobalProject(target, sanitizeSegment(name));   // 目录名 = 项目名（可读）
+  const bound = await bindAgentProject(agentId, undefined, global);
+  return { project: bound, created: true };
+}
+
+/**
+ * 把全局项目绑定到 Agent：目录名 = 全局 id（会话/记录/私有记忆都在这个目录下）。
+ * 旧绑定目录名不同时顺便改名（会话文件跟着搬），然后把 project.json 更新成全局身份。
+ */
+async function bindAgentProject(agentId: string, localId: string | undefined, global: ProjectManifest): Promise<ProjectManifest> {
+  const targetDir = join(agentProjectsRoot(agentId), global.id);
+  const sourceDir = localId !== undefined && localId !== global.id ? join(agentProjectsRoot(agentId), localId) : targetDir;
+  if (sourceDir !== targetDir) {
+    const targetExists = await stat(targetDir).catch(() => undefined);
+    if (targetExists === undefined) await rename(sourceDir, targetDir).catch(() => { /* 并发/已搬走：按现状 */ });
+  }
+  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const project: ProjectManifest = { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
+  await writeFile(join(targetDir, "project.json"), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  return project;
 }

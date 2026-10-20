@@ -48,26 +48,36 @@
 - 头像：上传存 `avatar/avatar.<ext>`（dir 0700 / 文件 0600），`agent.json.avatar` 只存引用；reset 删目录与字段 → 回到按 id 推导的自动头像。
 - 没有头像字段时，前端用 id 推导颜色 + 首字母（`frontend/src/agent-avatar.tsx`）。
 
-## 3 项目（2026-10-18 定稿：项目只属于一个 Agent）
+## 3 项目（2026-10-20 起：全局身份 + Agent 绑定）
 
-**项目 = 被这个 Agent 打开的一个目录。** 现在的形态是**两层**：
+**项目 = 一个目录 + 一条全局身份**；Agent 通过"绑定"引用它。分两层：
 
 | 层 | 位置 | 放什么 |
 |---|---|---|
-| **工作区**（真实目录） | 用户自己的目录（如 `~/Code/my-project`）；内置 `workspace` 例外 → `~/.lifeos` | 用户的代码/文档。我们只把它当 cwd（Agent 工具作用域），**不写任何自己的数据进去** |
-| **Agent 私有层** | `~/.lifeos/agents/<id>/projects/<项目名>/`（**目录名 = 项目名，可读、允许中文**） | 记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ 外部项目的身份 `project.json {schemaVersion,id(=目录名),name,path,legacyId?}` |
+| **全局注册表** | `~/.lifeos/projects/<name>/project.json` | 全局身份 `{schemaVersion, id(=目录名), name, path}`；项目共享记忆 `memory/` 也在这里 |
+| **Agent 绑定层** | `~/.lifeos/agents/<id>/projects/<全局 id>/` | 该 Agent 在这项目里的记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ `agent 的项目记忆`（`memory/`） |
+| **工作区**（真实目录） | 用户自己的目录（如 `~/Code/my-project`）；内置 `workspace` 例外 → `~/.lifeos` | 用户代码/文档；我们只当 cwd，**不写任何自己的数据进去** |
 
-接口与语义（`src/projects.ts` + `src/server.ts`）：
+### 3.1 全局项目注册表（2026-10-20 定，已实现）
+
+- **同一个目录只有一个全局 id**：按 canonical path（解析符号链接）判重；同 path 幂等复用；
+- 不同 path 同名 → `<name>-2`、`<name>-3`；
+- **Agent 绑定目录名 = 全局 id**：`agents/<id>/projects/<全局 id>/`；旧绑定目录名不同时懒迁移（改名，会话文件跟着搬）；
+- 迁移：读路径上确保注册表有条目；`project.json` 里保持 `{id, name, path}`（兼容旧读取）；
+- 记忆：**项目共享记忆**落 `~/.lifeos/projects/<全局 id>/memory/`；**agent 的项目记忆**落 `agents/<id>/projects/<全局 id>/memory/`；
+- `workspace` 是内置项目的特例，不进全局注册表。
+
+接口与语义（`src/projects.ts` + `src/project-registry.ts` + `src/server.ts`）：
 
 | 动作 | 接口 | 事实 |
 |---|---|---|
-| 打开目录（添加项目） | `POST /api/agents/:id/projects {path}` | 校验目录 → **同 path 幂等复用**（扫描该 Agent 的 manifest）→ 否则 `pid = uuidv7`、建私有层目录（0700）+ 写 `project.json`（0600）→ 从 `hiddenProjectIds` 摘除 |
-| 列表 | `GET /api/agents/:id/projects` | **扫描私有层目录 − `hiddenProjectIds`**；显示名：外部项目 = `basename(path)`，内部项目 = 目录名；`workspace` 在前 |
-| 从列表移除（可逆） | `DELETE /api/agents/:id/projects/:pid` | 写 `hiddenProjectIds`；**目录、manifest、会话、记录全部保留**；再次打开同 path 即重新出现；`workspace` 不可移除（400） |
+| 打开目录（添加项目） | `POST /api/agents/:id/projects {path}` | 校验目录 → 全局注册表按 path 幂等取 id（或新建）→ 建/改 Agent 绑定目录（0700）+ 写 `project.json`（0600）→ 从 `hiddenProjectIds` 摘除 |
+| 列表 | `GET /api/agents/:id/projects` | 扫描 Agent 绑定目录 − `hiddenProjectIds`；显示名 = `basename(path)`；`workspace` 在前 |
+| 从列表移除（可逆） | `DELETE /api/agents/:id/projects/:pid` | 只写 `hiddenProjectIds`；**全局注册表、绑定目录、会话、记录全部保留**；再次打开同 path 即重新出现；`workspace` 不可移除（400） |
 
-- **目录即项目**：私有层目录存在即可用（内部项目的 cwd = 该目录）；外部项目必须有 `project.json`（cwd = 它的 `path`）。
+- **目录即项目**：绑定目录存在即可用（内部项目的 cwd = 该目录）；外部项目必须有 `project.json`（cwd = 它的 `path`）。
 - 会话 cwd：`workspace` → `~/.lifeos`；外部项目 → 项目 `path`。**会话文件永远落家目录**（不写用户目录）。
-- 多 Agent 共用同一个项目（共享身份/资源）**现在不做**——见 todo。
+- 多 Agent **共用项目资源**（共享模板/资产）仍未做——见 todo；全局身份与共享记忆已可用。
 
 ## 4 会话（现状）
 

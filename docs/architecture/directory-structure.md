@@ -47,7 +47,7 @@ lifeos/
 ├─ config/                  唯一配置目录（= Pi 的 agentDir）
 │                            models.json · auth.json · models-store.json · settings.json? · file-roots.json · memory.json?（记忆的 LLM/embedding 覆盖）
 ├─ memory/user/<uid>/        用户记忆（MemOS store；跨项目、跨 Agent）
-├─ projects/<pid>/memory/    项目共享记忆（MemOS store；项目下所有 Agent 可读）
+├─ projects/<name>/          全局项目注册表：project.json（全局身份）+ memory/（项目共享记忆，MemOS store）
 ├─ interaction-harness/      通用层（所有 Agent 共用）
 │                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · cases/ · task-types/<type>/
 ├─ agents/<id>/              每个 Agent 私有（目录名 = id）
