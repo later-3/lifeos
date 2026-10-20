@@ -117,11 +117,51 @@ limit?: number
 5. **记忆提升**：私有 → 项目共享的触发方式（工具动作 / 面板按钮 / 定时归纳）。
 （删除相关已定：**能看到的人都能删**；软删保留 **1 个月**；用户可在面板上直接软删或彻底删除。）
 
-## 7 实现前置验证（未做）
+## 7 底座验证（2026-10-20，在 `/tmp` 内完成，未动仓库）
 
-1. MemOS 本地核心能否**多实例/多存储目录**（一个角色一个 store）；数据路径可配；
-2. **Embedding / LLM 全本地**（Ollama / OpenAI 兼容）或**不配 LLM 也能只用 L1 + 检索**；
-3. 工具与面板读取同一批 store 的接口稳定性。
+做法：克隆 MemOS（sparse：`apps/memos-local-plugin` + `packages`）→ `npm install`（326 包）→ 用
+`bootstrapMemoryCoreFull({ agent, home })` 直接起核心（不装 OpenClaw/Hermes/DSH，也不起 Viewer）。
+
+| 验证项 | 结果 |
+|---|---|
+| 无 key 启动 | ✅ 自定义 home → `<home>/data/memos.db`，`health.ok=true` |
+| 多实例隔离（四角色=四个 store 的前提） | ✅ home-A 搜不到 home-B 的记忆 |
+| 写入 + 检索（英文） | ✅ 咖啡→拿铁、宠物→猫、语言→TypeScript |
+| 写入 + 检索（中文） | ✅ 咖啡→拿铁、宠物→猫、语言→TypeScript |
+| 不配 LLM 时 | ⚠️ 检索质量明显下降：关键词通道把整句当 FTS 查询，停用词（is/I）会让不相关条目排第一 |
+| 默认本地 embedding（Xenova/all-MiniLM-L6-v2） | ⚠️ 需要从 HuggingFace 下载 ONNX 模型（本环境被墙，`fetch failed`）；目标机器能访问 HF 时可用 |
+| OpenAI 兼容 embedding（Ollama `nomic-embed-text`） | ✅ 768 维；检索 12–43ms |
+| 删除语义 | ⚠️ `deleteTrace` 是**硬删除**（幂等）；软删/1 个月保留必须由我们上层实现 |
+| 冷启动 | ⚠️ 首次 LLM 调用 ~19.6s（7B 模型加载），之后每轮 0.3–0.5s |
+
+### 模型分工：LLM 与 Embedding 是两回事
+
+MemOS 需要**两个模型槽位**，不能互相替代：
+
+| 槽位 | 干什么 | 能用什么 |
+|---|---|---|
+| **LLM（chat/completions）** | 事实抽取、摘要、反思、关键词、Skill 演化 | 任何 OpenAI 兼容的 **chat** 模型：我们 `models.json` 里的 `home-flashnext/qwen3.8-flash-next-iq3_s`、`command/*`，或本地 Ollama `qwen2.5` |
+| **Embedding（/v1/embeddings）** | 把文本变成向量（语义检索） | **必须是一个 embedding 模型**：Ollama `nomic-embed-text`（已验证）、`bge-m3`（中文更好，待评估）、HuggingFace 本地 ONNX、或任意 OpenAI 兼容 embeddings 端点 |
+
+**结论**：`qwen3.8-flash-next-iq3_s` 是 chat 模型（`/chat/completions`），**不能当 embedding 用**；它只填 LLM 槽位。我们还需要一个独立的 embedding 模型（推荐 Ollama `nomic-embed-text`，274MB，本地、无 key）。
+
+### 建议配置（概念样例；实际从 `~/.lifeos/config/models.json` 读 provider）
+
+```yaml
+llm:
+  provider: openai_compatible
+  endpoint: https://llm.ai4child.asia/v1     # 或 http://127.0.0.1:11434/v1
+  model: qwen3.8-flash-next-iq3_s            # 或 qwen2.5:7b-instruct
+  apiKey: <从 models.json 取>
+  timeoutMs: 120000
+embedding:
+  provider: openai_compatible
+  endpoint: http://127.0.0.1:11434/v1
+  model: nomic-embed-text
+  apiKey: ollama
+```
+
+注意：`home-flashnext` 与 `command` 的 `/chat/completions` 实测可用（403 只是缺 User-Agent）；两者都能当 LLM。
 
 ## 8 实现顺序（验证通过后）
 

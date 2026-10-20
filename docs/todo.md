@@ -9,7 +9,7 @@
 | 1 | 项目只属于单个 Agent（manifest 在 `agents/<id>/projects/<pid>/`） | **Life OS 支持多 Agent 共用项目信息或者项目资源** | 设计共享层（同一目录多 Agent 复用同一 pid + 共享资产目录）后实现 |
 | 2 | 已支持创建与归档（工具 + HTTP + 行内删除入口）；归档目前只能手动恢复 | 归档助手的恢复入口（HTTP/UI）与启用/停用语义 | 先定恢复动作、以及「停用」与「归档」的区别，再实现 |
 | 3 | 注入是固定 6 区（方案 E，`src/assembly.ts`）；交互 harness 全文（约 26KB）常驻 system prompt | Prompt 通用机制：区域声明与注册、常在/按需判据、请求边界门禁 | 设计区域注册表；把 harness 全文改成索引 + 按需读取 |
-| 4 | 记忆的设计已定稿（[`architecture/agent-memory.md`](./architecture/agent-memory.md)：四角色 + 读写权限 + 隔离 + 工具契约）；尚未实现 | **记忆体系**：四个 store、记忆工具（搜索/写入）、记忆面板 | 先验证 MemOS 本地核心（多 store / 本地 embedding / 无 key），再按文档 §8 顺序实现 |
+| 4 | 记忆设计已定稿、MemOS 本地核心已验证（[`architecture/agent-memory.md`](./architecture/agent-memory.md) §7：无 key、多 store 隔离、中文检索、删除是硬删）；尚未实现 | **记忆体系**：四个 store、记忆工具（搜索/写入/软删）、记忆面板 | 按文档 §8 顺序实现（P1 四个 store + 读写 API → P2 工具 → P3 面板） |
 | 5 | 已实现用户下达任务（`lifeos_task_create` / `lifeos_task_list`、编号 `NNNN-标题`、A/B/C 三类文档骨架） | Agent 定时任务（第二类）：启用/暂停/取消、运行历史、触发机制 | 先定调度与运行记录结构，再实现 |
 | 6 | 只有 Web 前端走 HTTP/SSE | 多客户端（TUI / 桌面 / 手机） | 需要时再设计（含接口版本化） |
 | 7 | 会话运行控制已对齐（打断/steer/followUp/压缩/切模型/思考级别/斜杠命令/历史） | 剩余 Pi 能力：`/fork` `/tree` `/clone`（分支）、`@` 文件提及、`/import` `/share`、`/login` `/logout` `/trust` `/settings` | 按使用频率分批接；分支类需要先有分支 UI |
