@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { IconTool } from "@tabler/icons-react";
+import { IconCheck, IconCopy, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
 import { argPreview, type Phase } from "./stream-blocks";
+import { copyText } from "./clipboard";
+import { copyTextOf } from "./message-text";
 
 /**
  * 消息渲染（Markdown + 结构化块）。
@@ -79,27 +81,79 @@ export function WorkingRow({ phase, activeTool, retry }: {
   );
 }
 
+/** 触屏/无悬停设备：动作条常显；悬停设备：悬停才显示（参照 Pi Web 的 hovered / isMobile）。 */
+function useNoHover(): boolean {
+  const [noHover, setNoHover] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(hover: none)");
+    const update = () => setNoHover(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return noHover;
+}
+
+type CopyState = "idle" | "copied" | "failed";
+
+/** 消息动作条（目前只有"复制"）：复制失败也要说出来，不静默。 */
+function MessageActions({ text, reveal }: { text: string; reveal: boolean }) {
+  const [state, setState] = useState<CopyState>("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => { if (timer.current !== undefined) clearTimeout(timer.current); }, []);
+  const copy = () => {
+    copyText(text)
+      .then(() => setState("copied"))
+      .catch(() => setState("failed"))
+      .finally(() => {
+        if (timer.current !== undefined) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setState("idle"), 1500);
+      });
+  };
+  const label = state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制";
+  // 反馈期间保持可见：否则鼠标一移开，"已复制"就随悬停态一起消失了
+  const visible = reveal || state !== "idle";
+  return (
+    <div data-testid="message-actions"
+      className={`flex justify-end transition-opacity duration-150 ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      <button type="button" onClick={copy} title="复制这条消息" data-testid="copy-message"
+        className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${state === "failed" ? "text-danger" : state === "copied" ? "text-accent" : "text-ink-500 hover:text-ink-900"}`}>
+        {state === "copied" ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        <span aria-live="polite">{label}</span>
+      </button>
+    </div>
+  );
+}
+
 export function MessageView({ role, blocks, busy, error, align = "end" }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
 }) {
+  const text = copyTextOf(blocks);
+  const [hovered, setHovered] = useState(false);
+  const noHover = useNoHover();
+  // 流式中的回复不给复制（Pi Web 同款：textContent && !isStreaming）
+  const showActions = text !== "" && !(role === "assistant" && busy);
+  const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   if (role === "user") {
-    const text = blocks.map((block) => (block.type === "text" ? block.text : "")).join("");
     return (
-      <div className={`flex ${align === "end" ? "justify-end" : "justify-start"}`}>
-        <div className="max-w-bubble rounded-bubble rounded-br-md bg-ink-900 px-4 py-2.5 text-white">
+      <div className={`flex flex-col gap-1 ${align === "end" ? "items-end" : "items-start"}`}
+        data-testid="message" data-role="user" {...hover}>
+        <div className="max-w-bubble rounded-bubble rounded-br-md bg-ink-900 px-4 py-2.5 text-white" data-testid="message-text">
           <Markdown text={text} inverse />
         </div>
+        {showActions && <MessageActions text={text} reveal={hovered || noHover} />}
       </div>
     );
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" {...hover}>
       {blocks.map((block, index) => (
         <BlockView key={index} block={block} live={busy} />
       ))}
       {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
+      {showActions && <MessageActions text={text} reveal={hovered || noHover} />}
     </div>
   );
 }
@@ -169,7 +223,7 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
 function BlockView({ block, live }: { block: Block; live: boolean }) {
   if (block.type === "text") {
     if (block.text === "" && live) return null;
-    return <Markdown text={block.text} />;
+    return <div data-testid="message-text"><Markdown text={block.text} /></div>;
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} />;
   return <ToolCallBlock block={block} live={live} />;

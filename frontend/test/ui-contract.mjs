@@ -473,6 +473,33 @@ check("可见按钮都有可访问名（配置对话框）", unnamedDialog.lengt
 await page.keyboard.press("Escape");
 await page.waitForTimeout(250);
 
+// 消息动作条：悬停出现"复制"；点击复制文本并给"已复制"反馈（参照 Pi Web MessageView）
+await page.mouse.move(0, 0);
+const firstMessage = page.locator('[data-testid="message"][data-role="user"]').first();
+if (await firstMessage.count() === 0) {
+  check("消息动作条：悬停出现复制", false, "入口会话里没有用户消息");
+} else {
+  const actions = firstMessage.locator('[data-testid="message-actions"]');
+  const idleOpacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  await firstMessage.hover();
+  await page.waitForTimeout(250);
+  const hoverOpacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  check("消息动作条：悬停出现复制", idleOpacity === "0" && hoverOpacity === "1", `idle=${idleOpacity} hover=${hoverOpacity}`);
+
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: APP_URL });
+  const copy = firstMessage.locator('[data-testid="copy-message"]').first();
+  await copy.click();
+  await page.waitForTimeout(200);
+  const label = (await copy.innerText()).trim();
+  check("复制后按钮显示「已复制」", label.includes("已复制"), label);
+
+  const clipboard = (await page.evaluate(() => navigator.clipboard.readText())).trim();
+  const expected = (await firstMessage.locator('[data-testid="message-text"]').first().innerText()).trim();
+  const plain = !/[*`#_[\]()<>]/.test(expected);   // 有 Markdown 记号时只断言"有内容"，否则逐字相等
+  check("剪贴板内容 = 消息文本", clipboard !== "" && (!plain || clipboard === expected),
+    `clipboard=${clipboard.slice(0, 30)} expected=${expected.slice(0, 30)}`);
+}
+
 // 列头语义：列头只写"这一列是什么"，"默认"这类徽标属于行内数据，不许重复出现在列头
 const headerTexts = await page.evaluate(() => [...document.querySelectorAll("aside > div:first-child")]
   .map((el) => (el.textContent ?? "").trim()));
@@ -681,7 +708,8 @@ async function capture(width, setup, clipTo) {
     : await (async () => {
         const box = await shotPage.locator(clipTo).first().boundingBox();
         if (box === null) return await shotPage.screenshot({ animations: "disabled", caret: "hide" });
-        const pad = 24;
+        // 不留边距：留边距会把对话框背后的页面一起截进来，聊天内容一变就"假红"（实测 2%）
+        const pad = 0;
         return await shotPage.screenshot({
           animations: "disabled", caret: "hide",
           clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: Math.min(1600, box.width + pad * 2), height: box.height + pad * 2 },
