@@ -98,7 +98,7 @@ function useNoHover(): boolean {
 type CopyState = "idle" | "copied" | "failed";
 
 /** 消息动作条：复制（有文本时）+ 重新发送（这一轮失败时）。复制失败也要说出来，不静默。 */
-function MessageActions({ text, reveal, onRetry }: { text: string; reveal: boolean; onRetry?: () => void }) {
+function MessageActions({ text, reveal, align, onRetry }: { text: string; reveal: boolean; align: "start" | "end"; onRetry?: () => void }) {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => { if (timer.current !== undefined) clearTimeout(timer.current); }, []);
@@ -122,9 +122,10 @@ function MessageActions({ text, reveal, onRetry }: { text: string; reveal: boole
   );
   // 反馈期间保持可见：否则鼠标一移开，"已复制"就随悬停态一起消失了
   const visible = reveal || state !== "idle";
+  // 动作跟着消息一侧：用户消息贴右侧气泡，助手消息贴左侧正文（否则按钮跑到对侧，看着"隔得很开"）
   return (
     <div data-testid="message-actions"
-      className={`flex justify-end transition-opacity duration-150 ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      className={`flex ${align === "end" ? "justify-end" : "justify-start"} transition-opacity duration-150 ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
       {text !== "" && (
       <button type="button" onClick={copy} title="复制这条消息" data-testid="copy-message"
         className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${state === "failed" ? "text-danger" : state === "copied" ? "text-accent" : "text-ink-500 hover:text-ink-900"}`}>
@@ -162,7 +163,7 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
           <Markdown text={text} inverse />
         </div>
         {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
-        {showActions && <MessageActions text={text} reveal={reveal} {...(onRetry !== undefined ? { onRetry } : {})} />}
+        {showActions && <MessageActions text={text} reveal={reveal} align="end" {...(onRetry !== undefined ? { onRetry } : {})} />}
       </div>
     );
   }
@@ -173,7 +174,7 @@ export function MessageView({ role, blocks, busy, error, align = "end", onRetry,
       ))}
       {error !== undefined && <p className="text-meta text-danger">模型调用失败：{error}</p>}
       {failureNote !== undefined && <p className="text-meta text-ink-500" data-testid="failure-note">{failureNote}</p>}
-      {showActions && <MessageActions text={text} reveal={reveal} {...(onRetry !== undefined ? { onRetry } : {})} />}
+      {showActions && <MessageActions text={text} reveal={reveal} align="start" {...(onRetry !== undefined ? { onRetry } : {})} />}
     </div>
   );
 }

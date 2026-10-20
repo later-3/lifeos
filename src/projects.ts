@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
+import { readAgent, writeAgent } from "./agents.ts";
 
 // id = 目录名 = **可读名**（用户会直接翻文件系统，2026-10-19 定）：中文允许；
 // 旧设计的 uuid 目录在读取时懒迁移成可读名（manifest 里留 legacyId 供旧 URL 反查）。
@@ -142,6 +143,64 @@ async function migrateUuidDir(agentId: string, dirName: string): Promise<Project
  * 注册 = "打开一个目录"（同 path 幂等复用；否则 uuidv7 新建）。
  * 返回 404/400 错误语义交由调用方转 HTTP。
  */
+/** 项目在界面上的投影：id/name 都有；外部项目才带 path（workspace 的家目录不暴露）。 */
+export type ProjectItem = { id: string; name: string; isDefault: boolean; path?: string };
+
+/** 扫描某 Agent 的项目目录（只看目录，文件忽略；排序稳定）。 */
+export async function scanProjectDirs(agentId: string): Promise<string[]> {
+  const entries = await readdir(agentProjectsRoot(agentId), { withFileTypes: true }).catch(() => []);
+  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name).sort();
+}
+
+/** 列表 = projects/ 下的目录 − 已移除项；默认项目置顶，其余按名字。 */
+export async function listAgentProjects(agentId: string): Promise<ProjectItem[]> {
+  const agent = await readAgent(agentId);
+  if (agent === undefined) return [];
+  const defaultId = agent.defaultProjectId ?? "workspace";
+  const manifests = await readProjectManifests(agentId);
+  const hidden = new Set(agent.hiddenProjectIds ?? []);
+  const items: ProjectItem[] = [];
+  for (const dir of await scanProjectDirs(agentId)) {
+    if (hidden.has(dir)) continue;
+    const manifest = manifests.get(dir);
+    const name = dir === "workspace" ? "workspace" : manifest !== undefined ? basename(manifest.path) || dir : dir;
+    const path = dir === "workspace" ? undefined : manifest?.path ?? join(agentProjectsRoot(agentId), dir);
+    items.push({ id: dir, name, isDefault: dir === defaultId, ...(path !== undefined ? { path } : {}) });
+  }
+  items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
+  return items;
+}
+
+/** 注册并绑定：同 path 幂等复用；之前"从列表移除"过的话摘掉 hidden 标记（重新出现）。 */
+export async function bindProject(agentId: string, path: string): Promise<{ project: ProjectItem; created: boolean; changed: boolean } | ProjectError> {
+  const agent = await readAgent(agentId);
+  if (agent === undefined) return { code: "agent_not_found", message: "找不到这个 Agent", status: 404 };
+  const registered = await registerProject(agentId, path);
+  if ("code" in registered) return registered;
+  const defaultId = agent.defaultProjectId ?? "workspace";
+  const project: ProjectItem = {
+    id: registered.project.id, name: registered.project.name, path: registered.project.path,
+    isDefault: registered.project.id === defaultId,
+  };
+  const hidden = (agent.hiddenProjectIds ?? []).filter((item) => item !== project.id);
+  const unhidden = hidden.length !== (agent.hiddenProjectIds ?? []).length;
+  if (unhidden) await writeAgent({ ...agent, hiddenProjectIds: hidden });
+  return { project, created: registered.created, changed: registered.created || unhidden };
+}
+
+/** 从该 Agent 的列表移除：写 hiddenProjectIds；目录、manifest、会话全部保留；默认项目不可移除。 */
+export async function unbindProject(agentId: string, pid: string): Promise<"unbound" | ProjectError> {
+  const agent = await readAgent(agentId);
+  if (agent === undefined) return { code: "agent_not_found", message: "找不到这个 Agent", status: 404 };
+  const defaultId = agent.defaultProjectId ?? "workspace";
+  if (pid === "workspace" || pid === defaultId) return { code: "cannot_unbind_default", message: "默认项目不可解绑", status: 400 };
+  const hidden = agent.hiddenProjectIds ?? [];
+  if (hidden.includes(pid)) return { code: "project_not_found", message: "该 Agent 下没有这个项目", status: 404 };
+  if (!(await scanProjectDirs(agentId)).includes(pid)) return { code: "project_not_found", message: "该 Agent 下没有这个项目", status: 404 };
+  await writeAgent({ ...agent, hiddenProjectIds: [...hidden, pid] });
+  return "unbound";
+}
+
 export async function registerProject(agentId: string, path: string): Promise<{ project: ProjectManifest; created: boolean } | ProjectError> {
   const target = resolve(path.trim());
   const info = await stat(target).catch(() => undefined);

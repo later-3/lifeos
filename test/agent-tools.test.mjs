@@ -26,6 +26,9 @@ test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除
     assert.ok(tool.parameters !== undefined && typeof tool.execute === "function");
   }
   assert.equal(tools[1].annotations?.destructiveHint, true, "归档是破坏性动作，标注要让权限扩展能拦一道");
+  const projectRemove = tools.find((tool) => tool.name === "lifeos_project_remove");
+  assert.equal(projectRemove.annotations?.destructiveHint, true, "从列表移除要标注（可能被误当删除）");
+  assert.equal(projectRemove.annotations?.idempotentHint, true, "重复移除同一个项目是幂等的");
 });
 
 test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨架齐、同名幂等", async () => {
@@ -181,4 +184,43 @@ test("lifeos_task_list：按编号列出任务的状态/类别/目标", async ()
   assert.deepEqual(listed.details.tasks.map((task) => task.number), [1, 2], "按编号排序");
   assert.equal(listed.details.tasks[1].goal, "可验收的目标");
   assert.match(listed.content[0].text, /0002-第一个/);
+});
+
+test("lifeos_project_add / list / remove：绑定、幂等、移除后不再列出、数据保留、默认项目不可移除", async () => {
+  const home = await freshHome();
+  const notified = [];
+  const tools = createAgentTools({ agentId: "lifeosagent", projectId: "workspace", notify: () => notified.push("changed") });
+  const tool = (name) => tools.find((item) => item.name === name);
+  const dir = await mkdtemp(join(tmpdir(), "lifeos-proj-"));
+
+  const added = await run(tool("lifeos_project_add"), { path: dir });
+  const id = added.details.project.id;
+  assert.equal(added.details.created, true);
+  assert.equal(added.details.project.path, dir);
+  assert.deepEqual(await readdir(dir), [], "不往用户的目录里写任何东西");
+  assert.equal(notified.length, 1, "写操作要通知界面刷新");
+
+  const again = await run(tool("lifeos_project_add"), { path: dir });
+  assert.equal(again.details.created, false, "同一路径幂等");
+  assert.equal(again.details.project.id, id);
+  assert.equal(notified.length, 1, "幂等重复添加不通知界面");
+
+  const list = await run(tool("lifeos_project_list"), {});
+  assert.ok(list.details.projects.some((project) => project.id === id), "列表里要能看到新项目");
+  assert.ok(list.details.projects.some((project) => project.id === "workspace" && project.isDefault), "workspace 是默认项目");
+
+  await run(tool("lifeos_project_remove"), { id });
+  assert.equal(notified.length, 2);
+  const after = await run(tool("lifeos_project_list"), {});
+  assert.ok(!after.details.projects.some((project) => project.id === id), "移除后不再列出");
+  assert.ok((await stat(join(home, "agents", "lifeosagent", "projects", id))).isDirectory(), "目录与数据要保留");
+
+  const back = await run(tool("lifeos_project_add"), { path: dir });
+  assert.equal(back.details.created, false, "重新添加同一路径 = 复用并重新出现");
+  assert.equal(notified.length, 3, "重新出现 = 真的变了，要通知");
+  assert.ok((await run(tool("lifeos_project_list"), {})).details.projects.some((project) => project.id === id));
+
+  await assert.rejects(run(tool("lifeos_project_remove"), { id: "workspace" }), /默认项目不可解绑/);
+  await assert.rejects(run(tool("lifeos_project_remove"), { id: "nope" }), /没有这个项目/);
+  await assert.rejects(run(tool("lifeos_project_add"), { path: join(dir, "nope") }), /目录不存在/);
 });

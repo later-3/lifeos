@@ -13,7 +13,18 @@ import { mkdir, readFile, readdir, rm, stat, writeFile, rename } from "node:fs/p
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
-export type AgentRecord = { schemaVersion: 1; id: string; name: string; description?: string; defaultProjectId: string; archivedAt?: string };
+/** agent.json 的唯一形状（读/写共用；旧的 boundProjectIds 读到就清掉，不再写回）。 */
+export type AgentDefinition = {
+  schemaVersion?: 1;
+  id: string;
+  name: string;
+  description?: string;
+  defaultProjectId?: string;
+  defaultSessionId?: string;
+  hiddenProjectIds?: string[];
+  archivedAt?: string;
+};
+export type AgentRecord = AgentDefinition;
 export type AgentError = { code: string; message: string; status: 400 | 404 | 409 };
 
 const agentsRoot = () => join(resolveHome(), "agents");
@@ -155,6 +166,24 @@ export async function createAgent(input: CreateAgentInput): Promise<
     await rm(dir, { recursive: true, force: true }).catch(() => { /* 尽力回滚半成品 */ });
     return { code: "create_failed", message: error instanceof Error ? error.message : String(error), status: 400 };
   }
+}
+
+/** 读 agent.json（不存在/损坏 → undefined）；旧设计遗留字段顺手清掉（一次性、幂等）。 */
+export async function readAgent(id: string): Promise<AgentDefinition | undefined> {
+  const raw = await readJson(join(agentDir(id), "agent.json"));
+  if (raw === undefined || typeof raw.id !== "string") return undefined;
+  const { boundProjectIds: legacy, ...clean } = raw as Record<string, unknown> & { boundProjectIds?: unknown };
+  if (legacy !== undefined) await writeAgent(clean as AgentDefinition);
+  return clean as AgentDefinition;
+}
+
+/** 写回 agent.json（改名/项目列表变更等）：原子替换、0600；顺手剥掉旧设计残留字段。 */
+export async function writeAgent(agent: AgentDefinition): Promise<void> {
+  const { boundProjectIds: _legacy, ...clean } = agent as AgentDefinition & { boundProjectIds?: unknown };
+  const path = join(agentDir(agent.id), "agent.json");
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, JSON.stringify(clean, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, path);
 }
 
 /** 归档一个 Agent（= "删除"，可恢复）：写 archivedAt，目录与数据全部保留。 */

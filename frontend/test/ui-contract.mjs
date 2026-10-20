@@ -493,6 +493,27 @@ if (await firstMessage.count() === 0) {
   const label = (await copy.innerText()).trim();
   check("复制后按钮显示「已复制」", label.includes("已复制"), label);
 
+  // 动作条跟着消息一侧：用户贴右（气泡右缘），助手贴左（正文左缘）——不能让按钮跑到对侧
+  const align = await page.evaluate(() => {
+    const box = (el) => { const b = el?.getBoundingClientRect(); return b === undefined || b === null ? null : { x: b.x, right: b.right }; };
+    const user = document.querySelector('[data-testid="message"][data-role="user"]');
+    const userRow = user?.querySelector('[data-testid="message-actions"]');
+    const userBox = box(user);
+    const userRowBox = box(userRow);
+    const assistants = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')]
+      .filter((el) => el.querySelector('[data-testid="message-text"]') !== null);
+    const last = assistants[assistants.length - 1];
+    const lastText = box(last?.querySelector('[data-testid="message-text"]'));
+    const lastRow = box(last?.querySelector('[data-testid="message-actions"]'));
+    return {
+      userGap: userBox === null || userRowBox === null ? null : Math.round(userBox.right - userRowBox.right),
+      assistantGap: lastText === null || lastRow === null ? null : Math.round(lastRow.x - lastText.x),
+    };
+  });
+  check("动作条跟随消息一侧（用户贴右 / 助手贴左）",
+    (align.userGap === null || Math.abs(align.userGap) <= 16) && (align.assistantGap === null || Math.abs(align.assistantGap) <= 16),
+    `user gap=${align.userGap}px, assistant gap=${align.assistantGap}px`);
+
   // 正常完成的会话里只有"复制"：重发动作只属于失败的那一轮（不能到处挂）
   const retryInMessage = await firstMessage.locator('[data-testid="resend-message"]').count();
   check("正常一轮不出现「重新发送」（只在失败消息的动作条里）", retryInMessage === 0, `${retryInMessage} 个`);

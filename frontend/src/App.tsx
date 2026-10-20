@@ -375,6 +375,8 @@ export default function App() {
         setAgents(data.items);
         if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
           await selectAgent(data.items[0]);
+        } else {
+          await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
         }
       })();
     });

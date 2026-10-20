@@ -8,15 +8,22 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { archiveAgent, createAgent } from "./agents.ts";
 import { createTask, listTasks, type TaskCategory } from "./tasks.ts";
+import { bindProject, listAgentProjects, unbindProject } from "./projects.ts";
 
 /** Life OS 自有工具名（与内置 8 工具一起显式钉进 allowlist，见 agent-host.ts · ALL_TOOL_NAMES）。 */
 export const LIFEOS_TOOL_NAMES = [
   "lifeos_agent_create", "lifeos_agent_delete",
   "lifeos_task_create", "lifeos_task_list",
+  "lifeos_project_add", "lifeos_project_remove", "lifeos_project_list",
 ] as const;
 
 /** 工具要绑定"当前会话是谁、在哪个项目"——都由会话自身推导，模型不用传（也不会传错）。 */
-export type ToolContext = { agentId: string; projectId: string };
+export type ToolContext = {
+  agentId: string;
+  projectId: string;
+  /** 写操作要闭环到界面：由宿主注入（工具不能反向 import agent-host，会成循环） */
+  notify?: () => void;
+};
 
 export function createAgentTools(ctx: ToolContext) {
   const create = defineTool({
@@ -137,5 +144,86 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList];
+  const projectAdd = defineTool({
+    name: "lifeos_project_add",
+    label: "Add Life OS project",
+    description:
+      "Add a directory as a project of this agent: registers it and binds it to the agent so it appears in the project list. "
+      + "The path must be an existing directory; nothing is written into it (the manifest lives under ~/.lifeos). "
+      + "Adding the same path again is idempotent (returns the existing project, created=false).",
+    promptSnippet: "Add a directory as a project of this agent",
+    promptGuidelines: [
+      "Use lifeos_project_add when the user wants to work on another repository/folder; report the project id so they can select it.",
+      "Do not call it for paths that do not exist; ask the user for the correct path instead.",
+    ],
+    parameters: Type.Object({
+      path: Type.String({ description: "Absolute path of an existing directory, e.g. /Users/you/Code/some-project" }),
+    }),
+    async execute(_toolCallId, params) {
+      const result = await bindProject(ctx.agentId, params.path);
+      if ("code" in result) throw new Error(result.message);
+      if (result.changed) ctx.notify?.();   // 界面自动重取项目列表（幂等重复添加不打扰）
+      return {
+        content: [{
+          type: "text" as const,
+          text: result.created
+            ? `Added project "${result.project.name}" (id: ${result.project.id}) from ${result.project.path}.`
+            : `Project already exists: "${result.project.name}" (id: ${result.project.id}) at ${result.project.path}. Nothing was created.`,
+        }],
+        details: { project: result.project, created: result.created },
+      };
+    },
+  });
+
+  const projectRemove = defineTool({
+    name: "lifeos_project_remove",
+    label: "Remove Life OS project",
+    description:
+      "Remove a project from this agent's list so it no longer appears in the UI. "
+      + "Files, sessions and records stay on disk and are recoverable by adding the same path again. "
+      + "The built-in workspace project and the default project cannot be removed.",
+    promptSnippet: "Remove a project from this agent's list (keeps all data)",
+    promptGuidelines: [
+      "lifeos_project_remove only hides a project from the list; it never deletes the directory or its sessions.",
+      "Confirm the project id with the user before removing it.",
+    ],
+    annotations: { destructiveHint: true, readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+    parameters: Type.Object({
+      id: Type.String({ description: "Project id (directory name under the agent's projects/), as returned by lifeos_project_list" }),
+    }),
+    async execute(_toolCallId, params) {
+      const result = await unbindProject(ctx.agentId, params.id);
+      if (result !== "unbound") throw new Error(result.message);
+      ctx.notify?.();
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Removed project "${params.id}" from the list. Its files and sessions are unchanged; add the same path again to restore it.`,
+        }],
+        details: { removed: params.id },
+      };
+    },
+  });
+
+  const projectList = defineTool({
+    name: "lifeos_project_list",
+    label: "List Life OS projects",
+    description:
+      "List this agent's projects (id, display name, path, which one is default) by scanning the agent's projects/ directories. "
+      + "Use the returned id wherever a project id is required.",
+    promptSnippet: "List this agent's projects",
+    parameters: Type.Object({}),
+    async execute() {
+      const projects = await listAgentProjects(ctx.agentId);
+      if (projects.length === 0) {
+        return { content: [{ type: "text" as const, text: "No projects yet." }], details: { projects: [] } };
+      }
+      const text = projects
+        .map((project) => `${project.id} · ${project.name}${project.isDefault ? " (default)" : ""}${project.path === undefined ? "" : ` · ${project.path}`}`)
+        .join("\n");
+      return { content: [{ type: "text" as const, text }], details: { projects } };
+    },
+  });
+
+  return [create, remove, taskCreate, taskList, projectAdd, projectRemove, projectList];
 }

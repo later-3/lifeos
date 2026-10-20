@@ -10,37 +10,13 @@ import {
   setSessionModel, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
-import { readProjectManifest, readProjectManifests, registerProject } from "./projects.ts";
-import { archiveAgent, createAgent } from "./agents.ts";
+import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
+import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import { resolveHome } from "./home.ts";
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
 // boundProjectIds 是旧设计的死字段（写而不读），已删；旧文件里的同名键在写回时被剥掉。
-export type AgentDefinition = { id: string; name: string; description?: string; defaultProjectId?: string; defaultSessionId?: string; hiddenProjectIds?: string[]; archivedAt?: string };
-
 const agentsRoot = () => join(resolveHome(), "agents");
-
-async function readAgent(id: string): Promise<AgentDefinition | undefined> {
-  try {
-    const parsed = JSON.parse(await readFile(join(agentsRoot(), id, "agent.json"), "utf8")) as AgentDefinition & { boundProjectIds?: unknown };
-    // 旧设计的死字段：读到就顺手清掉（一次性、幂等），别让它继续躺在用户文件里
-    if ("boundProjectIds" in parsed) {
-      const { boundProjectIds: _legacy, ...clean } = parsed;
-      void writeAgent(clean);
-      return clean;
-    }
-    return parsed;
-  } catch { return undefined; }
-}
-
-/** 写回 agent.json（改名/项目列表变更等）：原子替换、0600；顺手剥掉旧设计的残留字段。 */
-async function writeAgent(agent: AgentDefinition): Promise<void> {
-  const { boundProjectIds: _legacy, ...clean } = agent as AgentDefinition & { boundProjectIds?: unknown };
-  const path = join(agentsRoot(), agent.id, "agent.json");
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, JSON.stringify(clean, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  await rename(tmp, path);
-}
 
 type ResolvedProject = { id: string; name: string; path?: string };
 
@@ -64,12 +40,6 @@ export async function cwdOfSession(agent: AgentDefinition, sessionId: string): P
  * 不用「工作区」这类展示名）；外部项目显示其真实目录名（basename of path）。
  */
 const agentProjectsRoot = (agentId: string) => join(agentsRoot(), agentId, "projects");
-
-/** 扫描某 Agent 的项目目录（只看目录，文件忽略；排序稳定）。 */
-async function scanProjectDirs(agentId: string): Promise<string[]> {
-  const entries = await readdir(agentProjectsRoot(agentId), { withFileTypes: true }).catch(() => []);
-  return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name).sort();
-}
 
 /**
  * 解析项目（名称一律取真实目录名）：
@@ -249,21 +219,8 @@ export function createApp() {
   app.get("/api/agents/:id/projects", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const defaultId = agent.defaultProjectId ?? "workspace";
-    const manifests = await readProjectManifests(agent.id);
-    const hidden = new Set(agent.hiddenProjectIds ?? []);
-    const items: Array<{ id: string; name: string; isDefault: boolean; path?: string }> = [];
-
-    // 列表 = projects/ 下的目录 − 已移除项（用户 2026-10-18 定：有多少个目录就多少行；外部项目名称=真实目录名）
-    for (const dir of await scanProjectDirs(agent.id)) {
-      if (hidden.has(dir)) continue;
-      const manifest = manifests.get(dir);
-      const name = dir === "workspace" ? "workspace" : manifest !== undefined ? basename(manifest.path) || dir : dir;
-      const path = dir === "workspace" ? undefined : manifest?.path ?? join(agentProjectsRoot(agent.id), dir);
-      items.push({ id: dir, name, isDefault: dir === defaultId, ...(path !== undefined ? { path } : {}) });
-    }
-    items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
-    return c.json({ items });
+    // 列表逻辑下沉到 projects.ts：HTTP 与 lifeos_project_* 工具共用同一份（含 hidden 排除、默认项目置顶）
+    return c.json({ items: await listAgentProjects(agent.id) });
   });
 
   app.get("/api/agents/:id/projects/:pid/sessions", async (c) => {
@@ -319,37 +276,20 @@ export function createApp() {
     if (body === undefined || typeof body.path !== "string" || body.path.trim() === "") {
       const error = problem("invalid_request", "需要 path 字段（非空字符串）", 400); return c.json(error.body, error.status);
     }
-    const registered = await registerProject(agent.id, body.path);
-    if ("code" in registered) return fsError(c, registered);
-    const defaultId = agent.defaultProjectId ?? "workspace";
-    const project = { id: registered.project.id, name: registered.project.name, path: registered.project.path, isDefault: registered.project.id === defaultId };
-    // 之前"从列表移除"过的，再打开同一路径 = 重新出现（摘掉 hidden 标记）
-    const hidden = (agent.hiddenProjectIds ?? []).filter((item) => item !== project.id);
-    if (hidden.length !== (agent.hiddenProjectIds ?? []).length) await writeAgent({ ...agent, hiddenProjectIds: hidden });
-    return c.json({ project }, registered.created ? 201 : 200);
+    const bound = await bindProject(agent.id, body.path);
+    if ("code" in bound) return fsError(c, bound);
+    return c.json({ project: bound.project }, bound.created ? 201 : 200);
   });
 
   // 「从列表移除」（2026-10-18 拍板 A）：写 hiddenProjectIds；目录、manifest、会话/记录全部保留；内置 workspace 不可移除。
   app.delete("/api/agents/:id/projects/:pid", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const pid = c.req.param("pid");
-    const defaultId = agent.defaultProjectId ?? "workspace";
-    if (pid === "workspace" || pid === defaultId) {
-      const error = problem("cannot_unbind_default", "默认项目不可解绑", 400); return c.json(error.body, error.status);
-    }
-    // 「移除」= 从该助手的列表移除（写 hiddenProjectIds），目录与会话文件原样保留（协议：结构即事实）。
+    // 「移除」= 从该助手的列表移除（写 hiddenProjectIds），目录与会话文件原样保留（结构即事实）。
     // 重新注册同一路径（POST /projects）会把 pid 从 hidden 里摘掉，列表里再次出现。
-    const hidden = agent.hiddenProjectIds ?? [];
-    if (hidden.includes(pid)) {
-      const error = problem("project_not_found", "该 Agent 下没有这个项目", 404); return c.json(error.body, error.status);
-    }
-    const dirExists = (await scanProjectDirs(agent.id)).includes(pid);
-    if (!dirExists) {
-      const error = problem("project_not_found", "该 Agent 下没有这个项目", 404); return c.json(error.body, error.status);
-    }
-    await writeAgent({ ...agent, hiddenProjectIds: hidden.includes(pid) ? hidden : [...hidden, pid] });
-    return c.json({ hidden: pid });
+    const result = await unbindProject(agent.id, c.req.param("pid"));
+    if (result !== "unbound") { const error = problem(result.code, result.message, result.status); return c.json(error.body, error.status); }
+    return c.json({ hidden: c.req.param("pid") });
   });
 
   // 在某 project 下新建会话：cwd = 项目 path（workspace = ~/.lifeos，拍板2）；外部须已注册且已绑定。
