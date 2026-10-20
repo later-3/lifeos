@@ -14,6 +14,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { sanitizeSegment } from "./segments.ts";
 import { ensureGlobalProject } from "./project-registry.ts";
+import { ensureProjectSkeleton } from "./project-skeleton.ts";
 import { readAgent, writeAgent } from "./agents.ts";
 import { broadcast } from "./events.ts";
 
@@ -112,6 +113,7 @@ export async function readProjectManifests(agentId: string): Promise<Map<string,
     }
     const manifest = await readProjectManifest(agentId, entry.name);
     if (manifest !== undefined) {
+      await ensureProjectSkeleton(join(agentProjectsRoot(agentId), manifest.id), { name: manifest.name, path: manifest.path });
       const global = await ensureGlobalProject(manifest.path, manifest.id);
       const bound = global.id === manifest.id && global.name === manifest.name
         ? manifest
@@ -240,5 +242,7 @@ async function bindAgentProject(agentId: string, localId: string | undefined, gl
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
   const project: ProjectManifest = { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
   await writeFile(join(targetDir, "project.json"), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  // 项目骨架：AGENTS.md / concept-space.md / sessions / daily / cases / todo（create-only）
+  await ensureProjectSkeleton(targetDir, { name: global.name, path: global.path });
   return project;
 }

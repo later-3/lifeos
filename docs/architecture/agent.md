@@ -55,7 +55,9 @@
 | 层 | 位置 | 放什么 |
 |---|---|---|
 | **全局注册表** | `~/.lifeos/projects/<name>/project.json` | 全局身份 `{schemaVersion, id(=目录名), name, path}`；项目共享记忆 `memory/` 也在这里 |
-| **Agent 绑定层** | `~/.lifeos/agents/<id>/projects/<全局 id>/` | 该 Agent 在这项目里的记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`）+ `agent 的项目记忆`（`memory/`） |
+| **Agent 绑定层** | `~/.lifeos/agents/<id>/projects/<全局 id>/` | 该 Agent 在这项目里的记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`、`concept-space.md`）+ `agent 的项目记忆`（`memory/`） |
+
+绑定目录的骨架由 `src/project-skeleton.ts` 的 `ensureProjectSkeleton` 补齐（**create-only，不覆盖已有文件**；`tasks/` 按需建）。新建绑定立即建；老绑定在列出项目时补——两条入口共用同一份实现。
 | **工作区**（真实目录） | 用户自己的目录（如 `~/Code/my-project`）；内置 `workspace` 例外 → `~/.lifeos` | 用户代码/文档；我们只当 cwd，**不写任何自己的数据进去** |
 
 ### 3.1 全局项目注册表（2026-10-20 定，已实现）

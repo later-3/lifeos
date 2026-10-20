@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
@@ -57,4 +57,30 @@ test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一�
   assert.equal(again.created, false, "同 path 再次打开是幂等");
   const listed = await listAgentProjects("lifeosagent");
   assert.ok(listed.some((item) => item.id === one.project.id && item.path === dir));
+});
+
+test("项目绑定目录带 harness 骨架；老绑定在列出时补齐；不覆盖已有文件", async () => {
+  const home = await freshHome();
+  const dir = join(home, "repo2");
+  await mkdir(dir, { recursive: true });
+  const { project } = await registerProject("lifeosagent", dir);
+  const bindDir = join(home, "agents", "lifeosagent", "projects", project.id);
+
+  for (const file of ["AGENTS.md", "concept-space.md"]) {
+    assert.ok((await stat(join(bindDir, file))).isFile(), `${file} 应存在`);
+  }
+  for (const sub of ["sessions", "daily", "cases", "todo"]) {
+    assert.ok((await stat(join(bindDir, sub))).isDirectory(), `${sub}/ 应存在`);
+  }
+  await assert.rejects(stat(join(bindDir, "tasks")), "tasks/ 按需建，不预建");
+
+  await writeFile(join(bindDir, "AGENTS.md"), "自定义内容\n");
+  await listAgentProjects("lifeosagent");
+  assert.equal(await readFile(join(bindDir, "AGENTS.md"), "utf8"), "自定义内容\n", "已存在文件不覆盖");
+
+  await rm(join(bindDir, "AGENTS.md"));
+  await rm(join(bindDir, "daily"), { recursive: true });
+  await listAgentProjects("lifeosagent");
+  assert.ok((await stat(join(bindDir, "AGENTS.md"))).isFile(), "老绑定在列出时补 AGENTS.md");
+  assert.ok((await stat(join(bindDir, "daily"))).isDirectory(), "老绑定在列出时补 daily/");
 });
