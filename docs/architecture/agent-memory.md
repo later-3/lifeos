@@ -1,6 +1,6 @@
 # Agent 记忆（设计稿）
 
-> 角色：架构　类型：设计　状态：**设计 + P1 已实现**（四 store / 读写 / 软删除）；P2 工具、P3 面板待做——进度见 `docs/todo.md`
+> 角色：架构　类型：设计　状态：**设计 + P1 实现（待审阅）**（四 store / 读写 / 硬删除）；P2 工具、P3 面板待做——进度见 `docs/todo.md`
 
 本文是"记忆"的唯一权威：四种记忆、读写权限、隔离与读取顺序、工具与 prompt 的约定。
 未定稿的部分集中写在 §6，不在这里写成结论。
@@ -38,7 +38,7 @@
 | Agent × 项目私有 | **仅该 Agent**（在该项目内） | 仅该 Agent（在该项目内） | 仅该 Agent（在该项目内） |
 
 **删除不是"写"的附属动作**：它有独立的工具、独立的确认与审计（见 §4 的"删除语义"）。
-**删除权限与可见范围一致**：能看到的人都能删；看不到的人不能删（否则隔离没有意义）。用户本人可以在面板上直接删（软删或彻底删除）。
+**删除权限与可见范围一致**：能看到的人都能删；看不到的人不能删（否则隔离没有意义）。删除是**硬删除、不可恢复**（面板二次确认）。
 
 > 说明：上面把你列的"项目共享：都可以读"和"项目级：都可以读写"按**同一条（项目共享）的读/写两列**处理。如果你指的是两个不同的层，指出来，我在 §6 补一条。
 
@@ -73,7 +73,7 @@ limit?: number
 ```
 
 - 搜索/写入结果必须回传 **`id` + `scope`**（四个 store 的 id 不保证全局唯一，删除按这对参数定位）；
-- `lifeos_memory_delete` 标注 `destructiveHint: true`，描述里写死：**只在用户明确要求删除时调用**；只做软删除（可恢复，保留 1 个月）；不做「清理/优化」式删除；批量删除必须先列出将删条目和数量，得到确认后再执行。（彻底删除只在面板上由用户操作）
+- `lifeos_memory_delete` 标注 `destructiveHint: true`，描述里写死：**只在用户明确要求删除时调用**；**删除是硬删除、不可恢复**；不做「清理/优化」式删除；批量删除必须先列出将删条目和数量，得到确认后再执行。
 
 **工具描述就是权限契约**，必须逐条写清：
 
@@ -86,13 +86,11 @@ limit?: number
 
 | 项 | 约定 |
 |---|---|
-| **默认软删除** | 删除只把条目置为 `deleted`（检索立即排除，可恢复）；MemOS 本地插件的检索本来也只读 `activated / resolving`，`deleted / archived` 不参与召回 |
-| **保留期** | 软删除后**最多保留 1 个月**；过期即可 purge（自动清理由定时任务/启动检查执行，未实现前面板显示"已过期，可手动彻底删除"） |
-| **硬删除（purge）** | 面板上由**用户直接操作**（二次确认）；模型工具只做软删除，不给模型"彻底删"的权限 |
+| **硬删除** | 直接用 MemOS 的 `deleteTrace`：**删除即不可恢复**（幂等，重复删返回 `deleted:false`） |
 | **审计** | 每次删除记一条操作（谁 / 何时 / 哪个 scope / 哪条 id / 原因），可追溯；对应 MemOS 的 operation/audit 记录 |
-| **不级联** | 解绑项目、归档 Agent **都不删除记忆**（数据保留、可恢复），与项目"移除"的既有语义一致 |
+| **不级联** | 解绑项目、归档 Agent **都不删除记忆**（数据保留），与项目"移除"的既有语义一致 |
 | **批量删除** | 默认不提供 `delete_all`；确实需要时先返回"将删除 N 条（附样例）"，用户确认后再执行 |
-| **面板** | 删除前确认框（显示角色 · 来源 · 摘要）；提供两个动作：**删除（可恢复）** 与 **彻底删除**；"已删除"视图里可恢复（状态改回 `active`）或立即 purge |
+| **面板** | 删除前确认框（显示角色 · 来源 · 摘要）；确认后直接硬删除，不提供"回收站" |
 
 ### prompt
 
@@ -115,7 +113,7 @@ limit?: number
 3. **跨项目读取的授权方式**：显式 `projectId` 就够，还是要白名单/用户确认？
 4. **读取优先级权重**：项目共享是否应高于 Agent 个人（当前按"项目 > Agent"）。
 5. **记忆提升**：私有 → 项目共享的触发方式（工具动作 / 面板按钮 / 定时归纳）。
-（删除相关已定：**能看到的人都能删**；软删保留 **1 个月**；用户可在面板上直接软删或彻底删除。）
+（删除相关已定：**能看到的人都能删**；**硬删除、不可恢复**；面板操作前二次确认。）
 
 ## 7 底座验证（2026-10-20，在 `/tmp` 内完成，未动仓库）
 
@@ -131,7 +129,7 @@ limit?: number
 | 不配 LLM 时 | ⚠️ 检索质量明显下降：关键词通道把整句当 FTS 查询，停用词（is/I）会让不相关条目排第一 |
 | 默认本地 embedding（Xenova/all-MiniLM-L6-v2） | ⚠️ 需要从 HuggingFace 下载 ONNX 模型（本环境被墙，`fetch failed`）；目标机器能访问 HF 时可用 |
 | OpenAI 兼容 embedding（Ollama `nomic-embed-text`） | ✅ 768 维；检索 12–43ms |
-| 删除语义 | ⚠️ `deleteTrace` 是**硬删除**（幂等）；软删/1 个月保留必须由我们上层实现 |
+| 删除语义 | ✅ `deleteTrace` 是**硬删除**（幂等）；按用户决定**直接使用硬删除**（不做软删） |
 | 冷启动 | ⚠️ 首次 LLM 调用 ~19.6s（7B 模型加载），之后每轮 0.3–0.5s |
 
 ### 模型分工：LLM 与 Embedding 是两回事
@@ -177,14 +175,13 @@ embedding:
 | `src/memory/roles.ts` | 四角色与落点（纯函数）：用户 / Agent / Agent×项目私有 / 项目共享；`defaultReadOrder` = 私有→项目共享→Agent→用户 |
 | `src/memory/config.ts` | LLM 与 embedding 配置：默认 embedding = Ollama `nomic-embed-text`；LLM = `memory.json` 直配（Ollama）或 `models.json` 里第一个可用 provider；**密钥只进进程环境变量**，写盘的 `config.yaml` 只放 `${LIFEOS_MEMORY_API_KEY}` |
 | `src/memory/store.ts` | 每角色一个 MemOS 本地核心（一 SQLite）；`storeFor(role)` 懒启动、`closeMemoryStores()` 收尾 |
-| `src/memory/index.ts` | `recordMemory` / `searchMemory` / `searchMemoryScopes`（按顺序合并）/ 软删除三件套（`softDeleteMemory`、`restoreMemory`、`purgeDeleted`）/ `listDeleted` |
-| `src/memory/soft-delete.ts` | 软删清单（`soft-deleted.json`）；满 30 天后才允许 purge |
+| `src/memory/index.ts` | `recordMemory` / `searchMemory` / `searchMemoryScopes`（按顺序合并）/ `deleteMemory`（硬删除） |
 | `src/memory/merge.ts` | 多角色结果合并（先到先得、按 id 去重、截断） |
 
 **两个实现要点**：
 
 1. **配置写盘**：MemOS 会在运行中从 `<store>/config.yaml` **重新加载配置**（内存里传的 config 会被覆盖），所以每个 store 都要落一份 config.yaml；密钥用 `${LIFEOS_MEMORY_API_KEY}` 占位，真实值只在本进程 env 里（不复制到磁盘）。
-2. **删除**：MemOS 的 `deleteTrace` 是硬删除；软删除/30 天保留在我们这一层（`soft-deleted.json` 过滤 + 过期后才调硬删）。
+2. **删除**：按用户决定**直接用 MemOS 的硬删除**（`deleteTrace`），不做软删/回收站；面板确认框只防误触。
 
 **P1 验证（临时 home + 本地 Ollama，未动用户数据）**：
 
@@ -194,4 +191,4 @@ embedding:
 | 角色内检索 | ✅ 咖啡→拿铁、宠物→猫、项目约定、用户住址 |
 | 跨 Agent 隔离 | ✅ coder 搜"宠物"返回空（看不到 plant 的私有记忆） |
 | 合并读取（默认顺序） | ✅ 咖啡→agent_project、约定→project、住址→user |
-| 软删除 → 恢复 → 过期 purge | ✅ 删后不可见、恢复可见、31 天后 purge 后彻底不可见 |
+| 硬删除 | ✅ 删除后检索不到、不可恢复（`deleteTrace` 幂等） |
