@@ -102,7 +102,7 @@ install-receipt.json    安装收据
 
 ## 9 明确不做
 
-- 不做登录、不多用户（本机个人系统）。
+- 不做登录、不多用户（本机个人系统）；公网访问的身份门在部署层（Cloudflare Access），见 [`remote-access.md`](./remote-access.md)。
 - 不在后端做页面渲染。
 - 不复用旧前端组件与旧设计数值（界面参考见 [`reference-baseline.md`](../standards/reference-baseline.md)）。
 - 不做多客户端接入（等真要做时再设计，见 [`todo.md`](../todo.md)）。

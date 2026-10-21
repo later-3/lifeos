@@ -14,6 +14,7 @@
 | [`architecture/agent.md`](./architecture/agent.md) | Agent 是什么、由什么组成、每部分落在哪 |
 | [`architecture/directory-structure.md`](./architecture/directory-structure.md) | 仓库与家目录的目录结构（只放现在要用的） |
 | [`architecture/foundation.md`](./architecture/foundation.md) | 技术底座：家目录、接口面、前后端边界 |
+| [`architecture/remote-access.md`](./architecture/remote-access.md) | 远程访问：Cloudflare Tunnel + Access 的机制、访问方式、可用性边界 |
 | [`architecture/agent-memory.md`](./architecture/agent-memory.md) | 记忆**架构**：底座（MemOS）、四类记忆落盘、隔离方式、组件与接口、落地现状 |
 | [`architecture/conversation.md`](./architecture/conversation.md) | 会话**架构**：Pi TUI 对照、数据模型、事件、前后端分工、落地顺序 |
 | [`requirements/agent-memory.md`](./requirements/agent-memory.md) | 记忆**需求**：场景、功能需求（FR）、权限、工具、缺口与测试验收 |

@@ -12,6 +12,6 @@ if (!await pathExists(home)) {
   console.error("请先运行：pnpm home:install");
   process.exit(1);
 }
-serve({ fetch: createApp().fetch, port }, (info) => {
+serve({ fetch: createApp().fetch, port, hostname: "127.0.0.1" }, (info) => {
   console.log(`Life OS 后端已启动: http://127.0.0.1:${info.port}（家目录 ${home}）`);
 });
