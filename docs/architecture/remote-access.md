@@ -91,6 +91,14 @@ Life OS 不在公网监听端口。远程访问由三段组成：
 | 改允许邮箱/会话时长 | Zero Trust 控制台改 Access 应用 |
 | 回滚 | 停常驻 → 删 DNS → 删隧道 → 删 Access 应用 |
 
+### 迁移到常驻服务器
+
+域名、Access 应用、策略、邮箱和手机书签都不随宿主变化，差别只在隧道连接器：
+
+- **复用同一隧道**：把凭据与 config 放到服务器，启动 connector，并**停掉 Mac 上的 connector**；同一隧道多个 connector 会把流量分到旧源端。CF 不需要操作，DNS 也不变。
+- **新建隧道，或复用服务器上已有的隧道**：只需要把 `lifeos.ai4child.asia` 的 DNS CNAME 指到新隧道；Access 应用不动。
+- ingress 指向新宿主的 `127.0.0.1:<port>`；端口不同只改本地 config。凭据保持 `600`，不进仓库。
+
 ## 8 相关
 
 - 应用边界：[`foundation.md`](./foundation.md) §9（不做登录、不多用户）。
