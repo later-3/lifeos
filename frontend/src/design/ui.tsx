@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 /**
@@ -9,10 +10,10 @@ type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-300",
-  secondary: "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:text-ink-300",
-  ghost: "text-ink-700 hover:bg-hover hover:text-ink-900 disabled:text-ink-300",
-  danger: "bg-danger text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-300",
+  primary: "bg-accent text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
+  secondary: "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
+  ghost: "text-ink-700 hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
+  danger: "bg-danger text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
 };
 
 const SIZE: Record<Size, string> = {
@@ -24,7 +25,7 @@ export function Button({ variant = "secondary", size = "md", className = "", chi
   variant?: Variant; size?: Size; children: ReactNode;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
-    <button type="button" {...rest}
+    <button type="button" data-variant={variant} {...rest}
       className={`inline-flex shrink-0 items-center justify-center rounded-control font-medium transition-colors disabled:cursor-not-allowed ${VARIANT[variant]} ${SIZE[size]} ${className}`}>
       {children}
     </button>
@@ -37,7 +38,7 @@ export function IconButton({ label, active = false, tone = "default", size = "md
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "title">) {
   const box = size === "lg" ? "h-8 w-8" : "h-7 w-7";
   const look = tone === "solid"
-    ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-300"
+    ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-500"
     : active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900";
   return (
     <button type="button" aria-label={label} title={label} {...rest}
@@ -116,6 +117,49 @@ export function Skeleton({ rows = 3 }: { rows?: number }) {
     <div className="space-y-1.5 px-2 py-1" aria-hidden="true">
       {Array.from({ length: rows }).map((_, index) => (
         <div key={index} className="h-7 animate-pulse rounded-control bg-hover" />
+      ))}
+    </div>
+  );
+}
+
+
+/**
+ * Tabs：真正的 tab 语义（APG）：tablist/tab/tabpanel、aria-selected、方向键/Home/End。
+ * 与 Segmented 区分：Segmented 是“模式切换”，Tabs 是“分区切换”；两者命中区都至少 28px。
+ */
+export function Tabs<T extends string>({ value, options, onChange, label, idPrefix, block = false }: {
+  value: T; options: { value: T; label: string }[]; onChange: (next: T) => void;
+  label: string; idPrefix: string; block?: boolean;
+}) {
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const select = (index: number) => {
+    const next = options[index];
+    if (next === undefined) return;
+    onChange(next.value);
+    requestAnimationFrame(() => refs.current[index]?.focus());
+  };
+  return (
+    <div role="tablist" aria-label={label} aria-orientation="horizontal"
+      className={`inline-flex h-11 shrink-0 items-center rounded-control bg-hover ${block ? "w-full" : ""}`}>
+      {options.map((option, index) => (
+        <button key={option.value} type="button" role="tab"
+          id={`${idPrefix}-tab-${option.value}`}
+          aria-controls={option.value === value ? `${idPrefix}-panel-${option.value}` : undefined}
+          aria-selected={option.value === value}
+          tabIndex={option.value === value ? 0 : -1}
+          ref={(element) => { refs.current[index] = element; }}
+          onClick={() => onChange(option.value)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight") { event.preventDefault(); select((index + 1) % options.length); }
+            else if (event.key === "ArrowLeft") { event.preventDefault(); select((index - 1 + options.length) % options.length); }
+            else if (event.key === "Home") { event.preventDefault(); select(0); }
+            else if (event.key === "End") { event.preventDefault(); select(options.length - 1); }
+          }}
+          className={`h-11 rounded-control px-2.5 text-body transition-colors ${block ? "flex-1" : ""} ${
+            option.value === value ? "bg-surface text-ink-900 shadow-sm" : "text-ink-700 hover:text-ink-900"
+          }`}>
+          {option.label}
+        </button>
       ))}
     </div>
   );

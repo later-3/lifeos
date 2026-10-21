@@ -98,13 +98,13 @@ install-receipt.json    安装收据
 ## 8 验收
 
 - 行为级：`pi/packages/evals`（Pi 自带，按需使用）。
-- 真链路：浏览器 + `curl`，每一步给出命令与数字；前端另有三道闸（token / primitive / UI 契约），见 [`frontend-path.md`](../design/frontend-path.md)。
+- 真链路：浏览器 + `curl`，每一步给出命令与数字；前端另有四道闸（token / primitive / UI 契约 / 截图基线），见 [`frontend-spec.md`](../design/frontend-spec.md) §9。
 
 ## 9 明确不做
 
 - 不做登录、不多用户（本机个人系统）。
 - 不在后端做页面渲染。
-- 不复用旧前端组件与旧设计数值（界面参考见 [`references.md`](../design/references.md)）。
+- 不复用旧前端组件与旧设计数值（界面参考见 [`reference-baseline.md`](../standards/reference-baseline.md)）。
 - 不做多客户端接入（等真要做时再设计，见 [`todo.md`](../todo.md)）。
 
 ## 10 事件流（现状）

@@ -12,7 +12,7 @@
 | **通用层**（所有 Agent 共用） | `~/.lifeos/interaction-harness/` | 协议正文 `protocol.md` · 本层指引 `AGENTS.md` · 飞轮 `flywheel.md` · 概念空间 `concept-space.md` + `concept-space/` · 通用案例 `cases/` · 任务类型 `task-types/<type>/*`（`development` 开发/协作/结论 · `general` 普通任务） |
 | **Agent × 项目私有层**（记录跟当前工作项目走） | `~/.lifeos/agents/<id>/projects/<项目名>/`，**默认 = `workspace/`** | 任务 `tasks/` · 日报 `daily/` · 案例 `cases/` · `todo/` · 项目指引 `AGENTS.md` ·（外部项目）`project.json` |
 
-**方向**：主体是 **Agent**，项目是它工作范围里的一部分——记录落在 Agent 目录内。项目只属于一个 Agent（多 Agent 共享 = 未实现，登记在 [`../todo.md`](../todo.md)）。
+**方向**：主体是 **Agent**，项目是全局实体；一个项目可被多个 Agent 绑定，记录分两层：Agent 私有层（会话/daily/cases/todo/agent 的项目记忆）与项目共享层（project.json/共享记忆/规范）。
 
 ## 2 每轮要做的动作
 

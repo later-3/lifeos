@@ -25,6 +25,15 @@
   --color-danger: #b42318;
   --color-danger-soft: #fef3f2;
   --color-success: #067647;
+  --color-success-soft: #ecfdf3;
+
+  /* 消息类型背景：不同类型可区分，但都低饱和；只在这里取值。 */
+  --color-message-user: #111113;
+  --color-message-thinking: #fafafa;
+  --color-message-tool: #f4f4f5;
+  --color-message-tool-done: #ecfdf3;
+  --color-message-tool-error: #fef3f2;
+  --color-message-failure: #fff1f2;
 
   /* 字阶 5 档：micro / meta / body / content / title */
   --text-micro: 11px;
@@ -56,6 +65,11 @@
   @keyframes arc-spin {
     to { transform: rotate(360deg); }
   }
+}
+
+/* 配置弹窗的内容区最小高度：两个 tab 切换时不跳（数值收口在这里）。 */
+@utility min-h-panel {
+  min-height: 35rem;
 }
 
 /* 无障碍：系统开启"减少动态效果"时停转；状态仍由文案表达（"思考中…"）。 */

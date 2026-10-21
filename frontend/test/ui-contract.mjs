@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { pixelDiff } from "./png.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -472,11 +473,88 @@ check("未悬停时动作条全部隐藏", idleBars.every((opacity) => opacity =
 const unnamedChrome = await noName();
 check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
 
+// 固定状态条：必须在消息滚动区外；消息类型背景必须可区分。
+const turnBar = await page.evaluate(() => {
+  const bar = document.querySelector('[data-testid="turn-status-bar"]');
+  return { exists: bar !== null, inMain: bar?.closest("main") !== null && bar?.closest("main") !== undefined };
+});
+check("固定状态条在消息滚动区外", turnBar.exists && !turnBar.inMain, JSON.stringify(turnBar));
+const statusText = await page.locator('[data-testid="turn-status-content"]').innerText();
+check("状态条不写冗余“本轮”", !/本轮/.test(statusText), statusText.replace(/\n/g, " | "));
+const statusTitles = await page.locator('[data-testid="turn-status-content"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
+check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) && statusTitles.some((title) => title.includes("输出")) && statusTitles.some((title) => title.includes("上下文")),
+  statusTitles.join(" / "));
+const statusSpacing = await page.evaluate(() => {
+  const items = [...document.querySelectorAll("[data-status-metric]")];
+  const iconValue = items.map((item) => {
+    const icon = item.querySelector("[data-status-icon]")?.getBoundingClientRect();
+    const value = item.querySelector("[data-status-value]")?.getBoundingClientRect();
+    return icon === undefined || value === undefined ? 0 : Math.round(value.left - icon.right);
+  });
+  const boxes = items.map((item) => item.getBoundingClientRect());
+  const between = boxes.slice(1).map((box, index) => Math.round(box.left - boxes[index].right));
+  return { iconValue, between };
+});
+check("状态条：符号与数值间距 ≥4px", statusSpacing.iconValue.every((gap) => gap >= 4), statusSpacing.iconValue.join("/"));
+check("状态条：指标之间间距 ≥8px", statusSpacing.between.every((gap) => gap >= 8), statusSpacing.between.join("/"));
+
+const messageKinds = await page.evaluate(() => {
+  const kinds = new Map();
+  for (const el of document.querySelectorAll("[data-message-kind]")) {
+    const kind = el.getAttribute("data-message-kind");
+    if (kind === null) continue;
+    kinds.set(kind, getComputedStyle(el).backgroundColor);
+  }
+  return [...kinds].map(([kind, bg]) => ({ kind, bg }));
+});
+check("消息类型背景可区分", new Set(messageKinds.map((item) => item.bg)).size === messageKinds.length,
+  messageKinds.map((item) => `${item.kind}:${item.bg}`).join(" / "));
+
 // 对话框里同样要成立（配置弹窗是控件最密的地方）
 await page.locator('button[title="配置助手"]').first().click();
 await page.waitForTimeout(400);
 const unnamedDialog = await noName();
 check("可见按钮都有可访问名（配置对话框）", unnamedDialog.length === 0, `${unnamedDialog.length} 个未命名`);
+
+// 配置对话框：单页（资料 + 运行配置 + 身份）、初始焦点、内容文案、身份字号（前端规范 §2/§5/§7）
+const dialogContract = await page.evaluate(() => {
+  const d = document.querySelector('[role="dialog"]');
+  const active = document.activeElement;
+  const textarea = d?.querySelector("textarea");
+  const buttons = [...(d?.querySelectorAll("button") ?? [])].map((button) => (button.textContent ?? "").trim());
+  return {
+    tablist: d?.querySelectorAll('[role="tablist"]').length ?? 0,
+    profile: d?.querySelector('[data-testid="agent-profile"]') !== null,
+    runtime: d?.querySelector('[data-testid="agent-runtime"]') !== null,
+    identity: d?.querySelector('[data-testid="agent-identity"]') !== null,
+    modelSave: buttons.some((text) => text.includes("保存模型配置")),
+    primaryActions: d?.querySelectorAll('button[data-variant="primary"]').length ?? 0,
+    activeName: active?.getAttribute("name") ?? "",
+    footer: d?.querySelector("footer")?.textContent ?? "",
+    identityFont: textarea === null || textarea === undefined ? 0 : parseFloat(getComputedStyle(textarea).fontSize),
+  };
+});
+check("配置对话框：单页，无分区 Tab", dialogContract.tablist === 0, `tablist=${dialogContract.tablist}`);
+check("配置对话框：资料 / 运行配置 / 身份同页", dialogContract.profile && dialogContract.runtime && dialogContract.identity && dialogContract.modelSave,
+  `profile=${dialogContract.profile} runtime=${dialogContract.runtime} identity=${dialogContract.identity} modelSave=${dialogContract.modelSave}`);
+check("配置对话框：只有一个 primary 操作", dialogContract.primaryActions === 1, `${dialogContract.primaryActions} 个`);
+check("配置对话框：初始焦点在名字输入框", dialogContract.activeName === "agent-name", `active=${dialogContract.activeName || "(none)"}`);
+check("配置对话框：footer 不写实现路径", !/agent\.json|identity\.md/.test(dialogContract.footer), dialogContract.footer);
+check("配置对话框：身份正文 ≥15px", dialogContract.identityFont >= 15, `${dialogContract.identityFont}px`);
+
+// axe：自动扫 a11y；只把 serious/critical 作为失败，minor/moderate 记录在输出。
+const axePath = createRequire(import.meta.url).resolve("axe-core/axe.min.js");
+await page.addScriptTag({ path: axePath });
+const axeViolations = await page.evaluate(async () => {
+  const dialog = document.querySelector('[role="dialog"]');
+  if (dialog === null) return [{ id: "no-dialog", impact: "critical", nodes: 0 }];
+  const result = await window.axe.run(dialog, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } });
+  return result.violations
+    .filter((violation) => violation.impact === "serious" || violation.impact === "critical")
+    .map((violation) => ({ id: violation.id, impact: violation.impact, nodes: violation.nodes.length }));
+});
+check("配置对话框 axe 无 serious/critical", axeViolations.length === 0, JSON.stringify(axeViolations));
+
 await page.keyboard.press("Escape");
 await page.waitForTimeout(250);
 
@@ -722,11 +800,14 @@ if (emptyTarget === null) {
   const emptyState = await freshPage.evaluate(() => ({
     disabled: document.querySelector("textarea")?.disabled ?? true,
     hint: /会自动|写进这个会话/.test(document.body.innerText ?? ""),
+    header: document.querySelector('[data-testid="header-meta"]')?.textContent ?? "",
     text: (document.body.innerText ?? "").split("\n").filter((line) => line.trim() !== "").slice(-8).join(" | "),
   }));
   check("没有会话时输入框仍可用（首条消息＝建会话）", emptyState.disabled === false,
     `agent=${emptyTarget.agentId} project=${emptyTarget.projectId} disabled=${emptyState.disabled}`);
   check("空会话态有「直接发送即建会话」的提示", emptyState.hint, String(emptyState.text ?? ""));
+  // 无会话时头部显示 Agent 默认模型；配置保存后由 agents_changed 刷新，不能要求用户手动刷新页面。
+  check("无会话时头部显示默认模型", /·\s+\S+\/\S+/.test(emptyState.header), emptyState.header);
 }
 await freshPage.close();
 

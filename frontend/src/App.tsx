@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
@@ -14,9 +14,11 @@ import { FilePanel } from "./FilePanel";
 import { useColumnWidth } from "./useColumnWidth";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
-import { MessageView, WorkingRow, type Block } from "./Message";
+import { MessageView, type Block } from "./Message";
+import { TurnStatusBar } from "./turn-status";
 import { resendPlan } from "./resend";
 import { failureLabel, type FailureKind } from "./failure-text";
+import type { TurnStep } from "./working";
 import { applyStreamEvent, blocksOfStream, createStreamState, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
@@ -28,6 +30,8 @@ import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/u
 // 视觉：tokens（design/tokens.css）+ primitive（design/ui.tsx），页面层只组装。
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
+type UsageSummary = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
+type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string; failure?: FailureKind };
 type Group = { project: Project; sessions: SessionItem[] };
@@ -107,7 +111,15 @@ export default function App() {
   const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
-  const [meta, setMeta] = useState<{ model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean } | undefined>();
+  const [turnStep, setTurnStep] = useState<TurnStep>(1);
+  const [turnMetrics, setTurnMetrics] = useState<{ output: number; ttftSeconds: number; tokPerSecond: number }>();
+  const turnStartedAtRef = useRef(0);
+  const turnFirstTokenAtRef = useRef(0);
+  const turnUsageStartRef = useRef<UsageSummary | undefined>(undefined);
+  const turnMetricsPendingRef = useRef(false);
+  const [meta, setMeta] = useState<SessionMeta | undefined>();
+  // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
+  const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
@@ -131,9 +143,10 @@ export default function App() {
 
   const current = useRef<string | undefined>(undefined);
   const ctx = useRef<{ agentId?: string }>({});
+  const selectedProjectRef = useRef<string | undefined>(undefined);
+  useEffect(() => { selectedProjectRef.current = selectedProjectId; }, [selectedProjectId]);
   const snapshotSeq = useRef(0);
   const streaming = useRef(false);
-  const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLElement>(null);
   const followTail = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -157,9 +170,11 @@ export default function App() {
     } catch { /* 忽略 */ }
   }
 
-  // 只在"贴底"时跟随，否则用户可以往上翻历史
-  useEffect(() => {
-    if (followTail.current) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  // 只在"贴底"时跟随；流式期间直接设 scrollTop（smooth 会追不上 delta，产生抖动）。
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el === null || !followTail.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -223,19 +238,42 @@ export default function App() {
 
   async function loadMessages(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
-      messages: Message[]; meta?: { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean };
+      messages: Message[]; meta?: SessionMeta;
     };
     followTail.current = true;
     setMessages(data.messages ?? []);
     if (data.meta !== undefined) setMeta(data.meta);
+    if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
+      const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
+      const started = turnFirstTokenAtRef.current === 0 ? turnStartedAtRef.current : turnFirstTokenAtRef.current;
+      const seconds = Math.max(0.1, (Date.now() - started) / 1000);
+      const ttft = turnFirstTokenAtRef.current === 0 ? 0 : Math.max(0, (turnFirstTokenAtRef.current - turnStartedAtRef.current) / 1000);
+      turnMetricsPendingRef.current = false;
+      setTurnMetrics({ output, ttftSeconds: ttft, tokPerSecond: output / seconds });
+    }
   }
 
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
   async function refreshMeta(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
-      meta?: { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean };
+      meta?: SessionMeta;
     };
     if (data.meta !== undefined) setMeta(data.meta);
+  }
+
+  /** 无会话时刷新头部默认模型；配置保存会广播 agents_changed，最终走到这里。 */
+  async function refreshAgentDefaultModel(id: string) {
+    const response = await fetch(`/api/agents/${id}/config`).catch(() => undefined);
+    const data = response?.ok === true
+      ? await response.json().catch(() => ({})) as { config?: { defaultProvider?: string; defaultModel?: string } | null }
+      : {};
+    if (ctx.current.agentId !== id) return;
+    const config = data.config;
+    setAgentDefaultModel(
+      config?.defaultProvider !== undefined && config.defaultModel !== undefined
+        ? { provider: config.defaultProvider, id: config.defaultModel }
+        : undefined,
+    );
   }
 
   function pickLatest(list: SessionItem[]): SessionItem | undefined {
@@ -258,6 +296,8 @@ export default function App() {
 
   async function openSession(a: Agent, sid: string) {
     setHistory(undefined);
+    setTurnMetrics(undefined);
+    turnMetricsPendingRef.current = false;
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -278,8 +318,11 @@ export default function App() {
     setBusy(false);
     setSessionId(undefined);
     setMessages([]);
+    setMeta(undefined);
+    setAgentDefaultModel(undefined);
     setShowProjects(true);
     setShowSessions(true);
+    void refreshAgentDefaultModel(a.id);
     const next = await fetchGroups(a.id);
     setGroups(next);
     const remembered = readLast(lastSessionKey(a.id));
@@ -297,6 +340,8 @@ export default function App() {
     setShowSessions(true);
     setSessionId(undefined);
     setMessages([]);
+    setMeta(undefined);
+    void refreshAgentDefaultModel(agent.id);
     const group = groups.find((item) => item.project.id === project.id);
     const latest = pickLatest(group?.sessions ?? []);
     if (latest !== undefined) await openSession(agent, latest.sessionId);
@@ -333,6 +378,7 @@ export default function App() {
       if (payload.sessionId !== current.current) return;
       if (payload.type === "done" || payload.type === "error" || payload.type === "agents_changed") return;
       lastEventAtRef.current = Date.now();
+      if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
       const tailIsStreaming = streaming.current;
       if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
       const next = applyStreamEvent(streamRef.current, payload);
@@ -368,7 +414,7 @@ export default function App() {
       lastEventAtRef.current = Date.now();
       setRetry(undefined);
     });
-    const finish = (event: MessageEvent) => {
+    const finish = (event: MessageEvent, outcome: "done" | "error" = "done") => {
       const payload = JSON.parse(event.data) as AgentEvent;
       setStreamSeq(payload.seq);
       void reloadGroups();                                  // 别的会话结束也要更新列表的"运行中"点
@@ -376,17 +422,20 @@ export default function App() {
       streaming.current = false;
       busyRef.current = false;
       setBusy(false);
+      setTurnStep(4);
       setRetry(undefined);
+      const elapsed = Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
+      setTurnStatus({ text: `4/4 · ${outcome === "done" ? "完成" : "失败"} · ${elapsed}s` });
       if (current.current !== undefined) void loadMessages(agentId, current.current);
     };
-    stream.addEventListener("done", finish);
+    stream.addEventListener("done", (event) => finish(event as MessageEvent));
     // 运行边界错误（prompt 抛出）：按分类给出人能读懂的原因，再收尾
     stream.addEventListener("error", (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; message?: string; kind?: FailureKind };
       if (payload.sessionId === undefined || payload.sessionId === current.current) {
         toast(`${failureLabel(payload.kind)}${payload.message === undefined ? "" : ` · ${payload.message}`}`, "error");
       }
-      finish(event as MessageEvent);
+      finish(event as MessageEvent, "error");
     });
     // 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新
     stream.addEventListener("agents_changed", () => {
@@ -396,9 +445,34 @@ export default function App() {
         if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
           await selectAgent(data.items[0]);
         } else {
-          await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
-          // 默认模型可能变了（配置保存）→ 刷新头部 meta；不动消息，避免把正在流的这一轮冲掉
-          if (!busyRef.current && ctx.current.agentId !== undefined && current.current !== undefined) void refreshMeta(ctx.current.agentId, current.current);
+          const next = await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
+          const pid = selectedProjectRef.current;
+          if (next !== undefined && pid !== undefined && !next.some((g) => g.project.id === pid)) {
+            // 当前项目被工具/别处移除：立即回退到默认/第一个项目，不把选中态留在已删除项目上
+            const fallback = next.find((g) => g.project.isDefault) ?? next[0];
+            if (fallback !== undefined && agent !== undefined) {
+              setSelectedProjectId(fallback.project.id);
+              const latest = pickLatest(fallback.sessions);
+              if (latest !== undefined) await openSession(agent, latest.sessionId);
+              else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
+            } else {
+              setSelectedProjectId(undefined);
+              setSessionId(undefined);
+              setMessages([]);
+              setMeta(undefined);
+            }
+          } else if (next !== undefined && current.current !== undefined && !next.some((g) => g.sessions.some((s) => s.sessionId === current.current))) {
+            // 当前会话被工具/别处删除：回退到该项目最新会话，没有就清空
+            const group = next.find((g) => g.project.id === pid);
+            const latest = pickLatest(group?.sessions ?? []);
+            if (latest !== undefined && agent !== undefined) await openSession(agent, latest.sessionId);
+            else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
+          }
+          // 默认模型可能变了（配置保存）→ 无会话时刷新默认模型；有会话时刷新 meta
+          if (ctx.current.agentId !== undefined) {
+            void refreshAgentDefaultModel(ctx.current.agentId);
+            if (!busyRef.current && current.current !== undefined) void refreshMeta(ctx.current.agentId, current.current);
+          }
         }
       })();
     });
@@ -473,7 +547,13 @@ export default function App() {
     if (selectedProjectId === project.id) {
       const fallback = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
       if (fallback !== undefined) await selectProject(fallback.project);
-      else { setSelectedProjectId(undefined); setSessionId(undefined); setMessages([]); }
+      else {
+        setSelectedProjectId(undefined);
+        setSessionId(undefined);
+        setMessages([]);
+        setMeta(undefined);
+        void refreshAgentDefaultModel(agent.id);
+      }
     }
   }
 
@@ -498,7 +578,12 @@ export default function App() {
       if (sibling !== undefined) { await openSession(agent, sibling.sessionId); return; }
       const fallbackGroup = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
       if (fallbackGroup !== undefined) await selectProject(fallbackGroup.project);
-      else { setSessionId(undefined); setMessages([]); }
+      else {
+        setSessionId(undefined);
+        setMessages([]);
+        setMeta(undefined);
+        void refreshAgentDefaultModel(agent.id);
+      }
     }
   }
 
@@ -511,6 +596,15 @@ export default function App() {
   async function sendText(raw: string) {
     const text = raw.trim();
     if (text === "" || agent === undefined) return;
+    if (!busyRef.current) {
+      setTurnStep(1);
+      turnStartedAtRef.current = Date.now();
+      turnFirstTokenAtRef.current = 0;
+      // 新会话没有 meta：从 0 起算；已有会话从当前累计起算。
+      turnUsageStartRef.current = meta?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
+      turnMetricsPendingRef.current = true;
+      setTurnMetrics(undefined);
+    }   // 1/4：用户发送（steer 不新起一轮，不改步骤）
     // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
     // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
     let sid = sessionId;
@@ -569,6 +663,8 @@ export default function App() {
       setInput(text);                   // 失败回填草稿
       busyRef.current = false;
       setBusy(false);
+      setTurnStep(4);
+      turnMetricsPendingRef.current = false;
     };
     try {
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
@@ -577,6 +673,9 @@ export default function App() {
       if (!response.ok) {
         const error = await response.json() as { error?: { message?: string } };
         fail(`[出错] ${error.error?.message ?? "请求失败"}`);
+      } else {
+        setTurnStep(2);   // 2/4：后端受理（202）
+        window.setTimeout(() => { if (busyRef.current) setTurnStep(3); }, 250);   // 3/4：模型处理（含等待/思考/工具/输出）
       }
     } catch {
       fail("[出错] 网络错误");
@@ -696,6 +795,7 @@ export default function App() {
     busyRef.current = false;
     streaming.current = false;
     setBusy(false);
+    setTurnStep(4);
     setRetry(undefined);
     setTurnStatus({ text: reason });
     toast(reason, "error");
@@ -932,6 +1032,8 @@ export default function App() {
   const closeAllLeft = () => { setShowNav(false); setShowProjects(false); setShowSessions(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
+  // 有会话 → 会话当前模型（可能被 /model 覆盖）；无会话 → 该 Agent 的默认模型。
+  const headerModel = sessionId !== undefined ? meta?.model : agentDefaultModel;
 
   return (
     <div className="relative flex h-dvh bg-surface text-ink-900">
@@ -947,7 +1049,7 @@ export default function App() {
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {[agent?.name, currentGroup?.project.name].filter((part) => part !== undefined && part !== "").join(" · ") || "选择或新建一个会话"}
-              {meta?.model != null && ` · ${meta.model.provider}/${meta.model.id}`}
+              {headerModel != null && ` · ${headerModel.provider}/${headerModel.id}`}
             </p>
           </div>
           <span className="ml-auto" />
@@ -982,14 +1084,19 @@ export default function App() {
                   {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
               );
             })}
-            {busy && <WorkingRow phase={phase} {...(activeTool !== undefined ? { activeTool } : {})} {...(retry !== undefined ? { retry } : {})} />}
-            {/* 这一轮的结果说明在左侧（失败/中断也是回复）：不属于用户消息 */}
-            {!busy && turnStatus !== undefined && (
-              <p className="text-meta text-ink-500" data-testid="turn-status">{turnStatus.text}</p>
-            )}
-            <div ref={endRef} />
           </div>
         </main>
+
+        {/* 固定状态条：在消息滚动区外、输入框上方；位置不随消息滚动 */}
+        <div className="shrink-0 px-6" data-testid="turn-status-bar">
+          <TurnStatusBar busy={busy} step={turnStep} phase={phase}
+            {...(activeTool !== undefined ? { activeTool } : {})}
+            {...(retry !== undefined ? { retry } : {})}
+            {...(turnStatus !== undefined ? { status: turnStatus } : {})}
+            {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
+            {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
+            {...(meta?.context !== undefined ? { context: meta.context } : {})} />
+        </div>
 
         <footer className="shrink-0 px-6 pb-4">
           <div className="mx-auto w-full max-w-reading">
@@ -1136,7 +1243,7 @@ export default function App() {
       {box.overlayLeft && anyLeftOpen && (
         <>
           <div className="absolute inset-0 z-20 bg-ink-900/20" onClick={closeAllLeft} aria-hidden="true" />
-          <div className="absolute inset-y-0 left-11 z-30 flex shadow-lg">
+          <div className="absolute inset-y-0 left-11 right-0 z-30 flex overflow-x-auto shadow-lg">
             {leftColumns}
           </div>
         </>

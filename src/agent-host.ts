@@ -253,6 +253,35 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   }
 }
 
+type UsageSnapshot = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
+type UsageLike = { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } };
+const emptyUsage = (): UsageSnapshot => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 });
+function addUsage(totals: UsageSnapshot, usage: UsageLike): void {
+  totals.input += usage.input;
+  totals.output += usage.output;
+  totals.cacheRead += usage.cacheRead;
+  totals.cacheWrite += usage.cacheWrite;
+  totals.cost += usage.cost.total;
+  totals.totalTokens += usage.totalTokens;
+}
+
+/** 会话累计 usage：assistant / toolResult / usage / compaction / branch_summary。 */
+function sessionUsage(state: SessionState): UsageSnapshot {
+  const totals = emptyUsage();
+  for (const entry of state.session.sessionManager.getEntries()) {
+    if (entry.type === "message") {
+      if (entry.message.role === "assistant" && entry.message.usage !== undefined) {
+        addUsage(totals, entry.message.usage);
+      } else if (entry.message.role === "toolResult" && entry.message.usage !== undefined) {
+        addUsage(totals, entry.message.usage);
+      }
+    } else if ((entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") && entry.usage !== undefined) {
+      addUsage(totals, entry.usage);
+    }
+  }
+  return totals;
+}
+
 /** 会话当前用的模型与思考级别（内存态才有；界面用来显示"到底在用哪个模型"）。 */
 export function sessionMeta(agentId: string, state: SessionState): {
   model: { provider: string; id: string } | null;
@@ -261,13 +290,18 @@ export function sessionMeta(agentId: string, state: SessionState): {
   running: boolean;
   /** 是否用过 `/model`（显式覆盖）：决定默认模型变更后要不要跟随 */
   modelOverridden: boolean;
+  usage: UsageSnapshot;
+  context: { percent: number | null; window: number } | null;
 } {
   const model = state.session.model;
+  const context = state.session.getContextUsage();
   return {
     model: model === undefined ? null : { provider: model.provider, id: model.id },
     thinkingLevel: state.session.thinkingLevel,
     running: isRunning(agentId, state.session.sessionManager.getSessionId()),
     modelOverridden: hasModelOverride(state.session),
+    usage: sessionUsage(state),
+    context: context === undefined ? null : { percent: context.percent, window: context.contextWindow },
   };
 }
 
