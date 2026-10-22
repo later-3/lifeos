@@ -37,11 +37,44 @@ test("工具结果：取 text 块、带 isError/durationMs；超长截断并标�
   assert.equal(long.text.length, MAX_RESULT_CHARS);
 });
 
-test("不关心的事件一律 undefined（生命周期/重试/压缩/队列都不该变成界面事件）", () => {
+test("消息边界：assistant message_start/end 带段键，非 assistant 不产生段", () => {
+  assert.deepEqual(
+    toStreamEvent({ type: "message_start", message: { role: "assistant", timestamp: 1000 } }),
+    { type: "message_start", segment: "msg-1000" },
+  );
+  assert.deepEqual(
+    toStreamEvent({ type: "message_end", message: { role: "assistant", timestamp: 1000 } }),
+    { type: "message_end", segment: "msg-1000" },
+  );
+  assert.equal(toStreamEvent({ type: "message_start", message: { role: "user", timestamp: 1001 } }), undefined);
+  assert.equal(toStreamEvent({ type: "message_end", message: { role: "toolResult", timestamp: 1002 } }), undefined);
+});
+
+test("message_update 的内容事件带段键；同一段内 contentIndex 不跨段", () => {
+  assert.deepEqual(
+    toStreamEvent({ type: "message_update", message: { role: "assistant", timestamp: 2000 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "a" } }),
+    { type: "delta", index: 0, text: "a", segment: "msg-2000" },
+  );
+  assert.deepEqual(
+    toStreamEvent({ type: "message_update", message: { role: "assistant", timestamp: 3000 }, assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "b" } }),
+    { type: "thinking", index: 0, text: "b", segment: "msg-3000" },
+  );
+});
+
+test("工具执行 start/update 映射 running；end 才映射结果", () => {
+  assert.deepEqual(
+    toStreamEvent({ type: "tool_execution_start", toolCallId: "x", toolName: "read", args: { path: "a" } }),
+    { type: "tool_start", id: "x", name: "read", arguments: { path: "a" } },
+  );
+  assert.deepEqual(
+    toStreamEvent({ type: "tool_execution_update", toolCallId: "x", toolName: "read", partialResult: { text: "…" } }),
+    { type: "tool_update", id: "x" },
+  );
+});
+
+test("不关心的事件一律 undefined（生命周期/压缩/队列都不该变成界面事件）", () => {
   for (const event of [
     { type: "agent_start" }, { type: "agent_end", messages: [] }, { type: "turn_start" },
-    { type: "tool_execution_start", toolCallId: "x", toolName: "read", args: {} },
-    { type: "tool_execution_update", toolCallId: "x", toolName: "read", partialResult: {} },
     { type: "compaction_start", reason: "threshold" },
     { type: "bash_execution_update", delta: "…" }, { type: "message_start", message: {} },
     { type: "message_update" }, { type: "message_update", assistantMessageEvent: { type: "done" } },

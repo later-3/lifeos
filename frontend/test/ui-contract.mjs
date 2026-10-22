@@ -201,7 +201,9 @@ const ENTRY_URL = await (async () => {
   try {
     const res = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`);
     const body = await res.json();
-    const sid = body.items?.[0]?.sessionId;
+    // 优先选有真实消息的非默认会话；默认欢迎会话可能没有 usage，状态条/截图契约会无数据。
+    const sid = body.items?.find((item) => item.isDefault !== true && item.messages > 0)?.sessionId
+      ?? body.items?.[0]?.sessionId;
     return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
   } catch { return APP_URL; }
 })();

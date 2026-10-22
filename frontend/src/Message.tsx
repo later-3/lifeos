@@ -25,10 +25,12 @@ import { toolState } from "./tool-state";
 
 export type Block =
   | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
+  | { type: "thinking"; text: string; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
       result?: string; isError?: boolean; truncated?: boolean; durationMs?: number;
+      /** 仅客户端：由 tool_execution_start/update/end 驱动，不靠整轮 busy */
+      running?: boolean;
     };
 export type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[];
@@ -139,8 +141,9 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   return (
     <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" {...hover}>
       {blocks.map((block, index) => (
-        // 这一轮失败时把过程展开（思考/工具都看得见）：失败也要能解释"它做了什么"
-        <BlockView key={index} block={block} live={busy} forceOpen={failure !== undefined} />
+        // 段级 live：旧段的思考已结束，不跟着整轮 busy 继续转圈；工具由 running/result 单独判断。
+        <BlockView key={index} block={block} live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
+          forceOpen={failure !== undefined} />
       ))}
       {(failure !== undefined || error !== undefined) && (
         <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
@@ -188,7 +191,8 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
 }
 
 function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCall" }>; live: boolean }) {
-  const state = toolState({ hasResult: block.result !== undefined, ...(block.isError !== undefined ? { isError: block.isError } : {}), live });
+  // 工具状态优先看 tool_execution_start/end 维护的 running；旧历史块没有该字段时才回落到段/轮 live。
+  const state = toolState({ hasResult: block.result !== undefined, ...(block.isError !== undefined ? { isError: block.isError } : {}), live: block.running === true || (block.running === undefined && live) });
   const running = state === "running";
   const [open, toggle] = useAutoOpen(running, false);
   const preview = argPreview(block.name, block.arguments);

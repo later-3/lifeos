@@ -1,6 +1,6 @@
 # 会话与过程状态需求
 
-> 角色：需求　类型：功能　状态：草案（2026-10-21，待评审；先文档、后实现）
+> 角色：需求　类型：功能　状态：实施中（2026-10-21 起草；2026-10-22 分段落地）
 
 ## 0 背景与目标
 
@@ -128,7 +128,16 @@
 - 运行中可发 `usage`/`turn` 事件；没有就不发，不造；
 - 数据源：Pi assistant `usage`、session entries、`getContextUsage()`。
 
-### FR-11 性能
+### FR-11 多 assistant message 分段
+
+- 一次 turn 可包含多条 assistant message；`contentIndex` 只在一段内有效，**禁止跨段共用槽位**；
+- 每个 `message_start/end` 是一个段；段内按 `contentIndex` 排序，段间按消息顺序；
+- thinking 的 live 只属于当前段；`thinking_end` / `message_end` 后旧段停止 spinner；
+- 工具 running 由 `tool_execution_start/update/end` 驱动，不能由整轮 busy 推断；
+- 最终回答 = 最后一段 text；过程文本仍保留可见，但不得覆盖后段位置；
+- 验收：A（thinking/toolCall）→ toolResult → B（thinking/text）时，块顺序正确、A 的 thinking 不再 live、工具状态正确、B 的 text 在最后；工具在 `message_end` 后仍显示执行中，直到 `tool_execution_end`。
+
+### FR-12 性能
 
 - 状态条计时器独立，不触发消息列表重渲染；
 - SSE 高频 delta 不导致状态条整页重排；

@@ -1,13 +1,13 @@
 # 会话与过程状态架构
 
-> 角色：架构　类型：设计　状态：草案（2026-10-21，待评审；先文档、后实现）
+> 角色：架构　类型：设计　状态：实施中（2026-10-22；消息分段已落地）
 
 ## 1 现状与差距
 
 ### 当前 Life OS
 
 - 前端：消息列表在滚动区；`WorkingRow` 也在滚动区（会随消息滚走）；header meta 只有 `Agent · project · 模型`；没有 token/速度/上下文；
-- 后端：`sessionMeta()` 只返回 `model/thinkingLevel/running/modelOverridden`；`stream-events.ts` 只映射 thinking/delta/tool/retry；
+- 后端：`sessionMeta()` 返回 `model/thinkingLevel/running/modelOverridden/activeTaskId`；`stream-events.ts` 映射 message 边界、thinking/text/tool call/result、tool execution start/update/end、retry；
 - 数据其实已有：Pi `AssistantMessage.usage`、session entries、`AgentSession.getContextUsage()`；只是没有送到前端。
 
 ### 当前代码证据
@@ -15,7 +15,7 @@
 - `frontend/src/App.tsx:167-170`：`endRef.scrollIntoView({ behavior: "smooth" })`；流式 delta 密集时 smooth 追不上，容易抖/落后；
 - `WorkingRow` 渲染在 `<main>` 滚动容器内（`App.tsx:1047`），没有固定状态层；
 - `frontend/src/Message.tsx`：用户消息 `bg-ink-900`、助手无背景；思考和工具块都用 `bg-sunken`，工具成功/失败主要靠文字色；没有 `data-message-kind`；
-- `src/stream-events.ts` 只映射 thinking/delta/tool_call/tool_result/retry；`tool_execution_start`、`message_end.usage`、`turn_start/end` 还没进入 UI 数据流。
+- `src/stream-events.ts` 已映射 `message_start/end`、`tool_execution_start/update/end`；`message_end.usage`、`turn_start/end` 仍不进入 UI 数据流（usage 走会话 meta/文件）。
 
 ### Pi Agent TUI 的可复用设计
 
@@ -77,7 +77,7 @@ type ContextUsage = { percent: number | null; contextWindow: number };
 
 ### 现有
 
-- 前端发送 → `POST …/messages` 202；SSE `thinking/delta/tool_call/tool_result/retrying/retry_end`；`done/error`；
+- 前端发送 → `POST …/messages` 202；SSE `message_start/message_end`、`thinking/delta/tool_call/tool_start/tool_update/tool_result`、`retrying/retry_end`；`done/error`；
 - `GET …/sessions/:id` 返回 `messages` + meta。
 
 ### 需要补
@@ -107,7 +107,7 @@ Pi SDK 的事件和“能知道什么”决定了状态条能显示什么，不�
 | `agent_start` / `agent_end` | 一次运行开始/结束 | 4/4 收尾；运行边界 | 不是“任务计划” |
 | `turn_start` / `turn_end` | 一次 assistant 响应 + 工具调用/结果为 turn | 3/4 内部计数；工具后续写 | 核心 `AgentEvent.turn_start` 没有 turnIndex（扩展事件才有）；**没有总 turn 数** |
 | `message_start/update/end` | assistant 消息流式；`message_update.contentIndex` 是消息内块序号 | thinking/text/tool 块 | 不是全局步骤；usage 在 message 结束时才有 |
-| `tool_execution_start/update/end` | 工具真实执行；`end` 有 result/isError/durationMs | 工具 running/done/error | 当前只映射了 end；需要补 start 才能准确“执行中” |
+| `tool_execution_start/update/end` | 工具真实执行；`end` 有 result/isError/durationMs | 工具 running/done/error | 已映射 start/update/end；running 不再由整轮 busy 推断 |
 | `auto_retry_start/end` | attempt/maxAttempts/delayMs/errorMessage | 重试倒计时 | 只覆盖重试，不是任务步骤 |
 | `AssistantMessage.usage` | input/output/cacheRead/cacheWrite/cost/totalTokens | 精确 tokens/成本 | **不是逐 token 流式给**；只能在 message_end 后读 |
 | `AgentSession.getContextUsage()` | context percent/window | 上下文占比 | 依赖最近 assistant usage；压缩后可能未知 |
@@ -120,7 +120,7 @@ Pi SDK 的事件和“能知道什么”决定了状态条能显示什么，不�
 - token 精确值只能在 message_end/turn_end 后拿；运行中速度只能 `≈` 或 TTFT；
 - 自动滚动是纯前端行为，和 SDK 无关；SDK 只提供“内容变化”的事件。
 
-## 4.2 流式块顺序：三实现对比（2026-10-22 诊断）
+## 4.2 流式块顺序：三实现对照（2026-10-22 修正）
 
 用户看到的“上面思考一直转、下面工具在跑、中间又出文本、下面又有工具”，不是单一原因，至少有三层事实要分开：
 
@@ -140,11 +140,11 @@ assistant message B（contentIndex 又从 0 开始：thinking/toolCall/text）�
 
 | 维度 | Life OS 当前 | Pi Web | Pi Agent TUI |
 |---|---|---|---|
-| 消息边界 | `src/stream-events.ts` 只映射 thinking/delta/tool_call/tool_result，没有 `message_start/message_end`；`frontend/src/stream-blocks.ts` 的 `slots` 以 `contentIndex` 为唯一 key，整轮共用 | `lib/streaming-message.ts`：`streamingMessage` 只代表当前 assistant message；`start/snapshot/delta/end` 按消息生命周期更新 `contentIndex` | `interactive-mode.ts`：`message_start` 新建一个 `AssistantMessageComponent`，`message_end` 结束并清 streaming；下一条 assistant message 是新的 component |
-| 工具与消息关系 | `tool_call` 插进同一个 `slots`；`tool_result` 按 id 原地更新 | `toolCall` 留在当前 message content；`toolResults` 按 toolCallId 配对；工具结果不改变消息边界 | toolCall 创建独立 `ToolExecutionComponent` 追加在 chat；`tool_execution_end` 原地更新，不塞回 assistant 文本 |
-| thinking 的 live | `MessageView` 对**所有块**传 `live={busy}`；`ThinkingBlock` 只要整轮 busy 就打 spinner/“思考中…” | `ThinkingBlock` 没有 turn-level spinner；只显示 thinking 文本/耗时，`isStreaming` 只用于文本/空块处理 | thinking 作为内容渲染/折叠；没有“每个 thinking 块整轮转圈”的状态 |
-| 工具 running | `toolState({ live: busy })`：整轮 busy 时，没有 result 的 tool 都算 running；只有 `tool_execution_end` 映射 | `ToolCallBlock` 看 result 是否存在；`rawInput` 区分参数流式；phase 由 `tool_execution_*` 单独维护 | `ToolExecutionComponent` 由 `tool_execution_start/end/update` 驱动；结束即更新为完成/错误 |
-| 最终输出 | 没有按“assistant message 段”/“最终答案”分组，整轮块混在一个数组 | `splitFinalAssistantBlocks` 把最后一段 text/image 作为 answer，之前作为 process；`ProcessDetailsGroup` 可折叠 | 按消息/工具组件顺序渲染；最终 assistant text 自然在最后 |
+| 消息边界 | `src/stream-events.ts` 映射 `message_start/end`（段键 = assistant timestamp）；`frontend/src/stream-blocks.ts` 用 segments，段内 `contentIndex` 排块，段间按到达顺序 | `lib/streaming-message.ts`：`streamingMessage` 只代表当前 assistant message；`start/snapshot/delta/end` 按消息生命周期更新 `contentIndex` | `interactive-mode.ts`：`message_start` 新建一个 `AssistantMessageComponent`，`message_end` 结束并清 streaming；下一条 assistant message 是新的 component |
+| 工具与消息关系 | `tool_call` 进入当前段；`tool_execution_start/update/end` 按 id 原地更新，工具结果不改变消息边界 | `toolCall` 留在当前 message content；`toolResults` 按 toolCallId 配对；工具结果不改变消息边界 | toolCall 创建独立 `ToolExecutionComponent` 追加在 chat；`tool_execution_end` 原地更新，不塞回 assistant 文本 |
+| thinking 的 live | 每个 thinking 块带 `live`；`message_end`/`thinking_end` 立即收口，旧段不再转圈 | `ThinkingBlock` 没有 turn-level spinner；只显示 thinking 文本/耗时，`isStreaming` 只用于文本/空块处理 | thinking 作为内容渲染/折叠；没有“每个 thinking 块整轮转圈”的状态 |
+| 工具 running | 每个 toolCall 带 `running`；由 `tool_execution_start/update/end` 驱动，`message_end` 不会误导为“未完成” | `ToolCallBlock` 看 result 是否存在；`rawInput` 区分参数流式；phase 由 `tool_execution_*` 单独维护 | `ToolExecutionComponent` 由 `tool_execution_start/end/update` 驱动；结束即更新为完成/错误 |
+| 最终输出 | `finalTextOfStream` 取最后一段 text；过程块仍按段顺序可见 | `splitFinalAssistantBlocks` 把最后一段 text/image 作为 answer，之前作为 process；`ProcessDetailsGroup` 可折叠 | 按消息/工具组件顺序渲染；最终 assistant text 自然在最后 |
 
 ### 这解释了用户看到的错乱
 
@@ -168,7 +168,13 @@ assistant message B（contentIndex 又从 0 开始：thinking/toolCall/text）�
   3. 段 B thinking/text；
   4. 断言段顺序、工具状态、thinking 不再 live、最终 text 在最后。
 
-当前状态：**仅诊断，未改流式代码**；下一步应先改 `stream-events` 的 message 边界 + `stream-blocks` 的段模型，再改 `MessageView` 的 live/工具状态，最后补上面这条测试。
+### 实现（2026-10-22）
+
+- `src/stream-events.ts`：assistant `message_start/end` → 段事件；`message_update` 带段键；`tool_execution_start/update/end` → tool_start/update/result。
+- `frontend/src/stream-blocks.ts`：`segments` + 段内 `slots`；`message_end` 关闭段；`thinking_end` 关闭思考；tool running 独立于段。
+- `frontend/src/Message.tsx`：thinking 看块级 `live`，tool 看块级 `running`；不再把所有块绑定到整轮 `busy`。
+- `frontend/src/App.tsx`：监听新事件；`finalTextOfStream` 作为最后一段答案；最终仍以会话 JSONL 刷新为准。
+- 验收：`test/stream-blocks.test.mjs` 覆盖 A thinking/tool → result → B thinking/text；`test/stream-events.test.mjs` 覆盖边界与 tool start/update/end。
 
 ## 5 前端结构
 

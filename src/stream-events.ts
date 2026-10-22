@@ -13,10 +13,16 @@
 export const MAX_RESULT_CHARS = 8000;
 
 export type StreamEvent =
-  | { type: "thinking"; index: number; text: string }
-  | { type: "thinking_end"; index: number }
-  | { type: "delta"; index: number; text: string }
-  | { type: "tool_call"; index: number; id: string; name: string; arguments: unknown }
+  // 一条 assistant message 的开始/结束：contentIndex 只在本段内有效，绝不跨段共用槽位。
+  | { type: "message_start"; segment: string }
+  | { type: "message_end"; segment: string }
+  | { type: "thinking"; index: number; text: string; segment?: string }
+  | { type: "thinking_end"; index: number; segment?: string }
+  | { type: "delta"; index: number; text: string; segment?: string }
+  | { type: "tool_call"; index: number; id: string; name: string; arguments: unknown; segment?: string }
+  // 工具的 running/done 由 tool_execution_* 驱动，不再用整轮 busy 推断。
+  | { type: "tool_start"; id: string; name: string; arguments: unknown }
+  | { type: "tool_update"; id: string }
   | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number }
   // Pi 的自动重试：让界面能显示"失败原因 + 第几次/共几次"（否则失败时界面一片空白）
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
@@ -41,8 +47,11 @@ export function toolResultText(result: unknown): { text: string; truncated: bool
   return { text: text.slice(0, MAX_RESULT_CHARS), truncated: true };
 }
 
+type PiMessage = { role?: unknown; timestamp?: unknown };
+
 type PiEvent = {
   type?: string;
+  message?: PiMessage;
   assistantMessageEvent?: {
     type?: string;
     contentIndex?: number;
@@ -50,29 +59,48 @@ type PiEvent = {
     toolCall?: { id?: unknown; name?: unknown; arguments?: unknown };
   };
   toolCallId?: unknown;
+  toolName?: unknown;
+  args?: unknown;
+  partialResult?: unknown;
   attempt?: unknown; maxAttempts?: unknown; delayMs?: unknown; errorMessage?: unknown; success?: unknown;
   result?: unknown;
   isError?: unknown;
   durationMs?: unknown;
 };
 
+/** 一条 assistant message 的稳定键（Pi 给 timestamp；同一轮内唯一）。 */
+function segmentOf(message: PiMessage | undefined): string | undefined {
+  return typeof message?.timestamp === "number" ? `msg-${message.timestamp}` : undefined;
+}
+
 /** 映射一条 Pi 事件；不关心的事件返回 undefined（调用方直接跳过）。 */
 export function toStreamEvent(event: unknown): StreamEvent | undefined {
   if (typeof event !== "object" || event === null) return undefined;
   const input = event as PiEvent;
 
+  if (input.type === "message_start") {
+    if (input.message?.role !== "assistant") return undefined;
+    return { type: "message_start", segment: segmentOf(input.message) ?? "assistant" };
+  }
+  if (input.type === "message_end") {
+    if (input.message?.role !== "assistant") return undefined;
+    return { type: "message_end", segment: segmentOf(input.message) ?? "assistant" };
+  }
+
   if (input.type === "message_update") {
     const update = input.assistantMessageEvent;
     if (update === undefined) return undefined;
     const index = typeof update.contentIndex === "number" ? update.contentIndex : 0;
-    if (update.type === "thinking_start") return { type: "thinking", index, text: "" };
-    if (update.type === "thinking_delta") return { type: "thinking", index, text: update.delta ?? "" };
-    if (update.type === "thinking_end") return { type: "thinking_end", index };
-    if (update.type === "text_delta") return { type: "delta", index, text: update.delta ?? "" };
+    const segment = segmentOf(input.message);
+    const segmentPart = segment === undefined ? {} : { segment };
+    if (update.type === "thinking_start") return { type: "thinking", index, text: "", ...segmentPart };
+    if (update.type === "thinking_delta") return { type: "thinking", index, text: update.delta ?? "", ...segmentPart };
+    if (update.type === "thinking_end") return { type: "thinking_end", index, ...segmentPart };
+    if (update.type === "text_delta") return { type: "delta", index, text: update.delta ?? "", ...segmentPart };
     if (update.type === "toolcall_end") {
       const call = update.toolCall;
       if (typeof call?.id !== "string" || typeof call.name !== "string") return undefined;
-      return { type: "tool_call", index, id: call.id, name: call.name, arguments: call.arguments ?? {} };
+      return { type: "tool_call", index, id: call.id, name: call.name, arguments: call.arguments ?? {}, ...segmentPart };
     }
     return undefined;
   }
@@ -88,6 +116,14 @@ export function toStreamEvent(event: unknown): StreamEvent | undefined {
   }
   if (input.type === "auto_retry_end") {
     return { type: "retry_end", success: input.success === true };
+  }
+
+  if (input.type === "tool_execution_start") {
+    if (typeof input.toolCallId !== "string" || typeof input.toolName !== "string") return undefined;
+    return { type: "tool_start", id: input.toolCallId, name: input.toolName, arguments: input.args ?? {} };
+  }
+  if (input.type === "tool_execution_update") {
+    return typeof input.toolCallId === "string" ? { type: "tool_update", id: input.toolCallId } : undefined;
   }
 
   if (input.type === "tool_execution_end") {

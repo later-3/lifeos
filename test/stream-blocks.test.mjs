@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, textOfBlocks } from "../frontend/src/stream-blocks.ts";
+import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks } from "../frontend/src/stream-blocks.ts";
 
 /**
  * 归并判据：一条助手消息里的块顺序 == 模型输出的顺序（思考/文本/工具交替），
@@ -36,6 +36,46 @@ test("晚到的低槽位插到前面（不为到达顺序改动模型顺序）",
   ]);
   assert.deepEqual(blocksOfStream(state).map((block) => block.type), ["thinking", "text", "text"]);
   assert.deepEqual(blocksOfStream(state).map((block) => block.text), ["开头", "中间", "结尾"]);
+});
+
+test("多条 assistant message：段内 contentIndex 重置，旧段思考收口，最终回答取最后一段 text", () => {
+  const state = run([
+    { type: "message_start", segment: "A" },
+    { type: "thinking", index: 0, text: "查文件", segment: "A" },
+    { type: "tool_call", index: 1, id: "call_1", name: "read", arguments: { path: "a.md" }, segment: "A" },
+    { type: "message_end", segment: "A" },
+    { type: "tool_result", id: "call_1", isError: false, text: "文件内容", truncated: false },
+    { type: "message_start", segment: "B" },
+    { type: "thinking", index: 0, text: "看结果", segment: "B" },
+    { type: "thinking_end", index: 0, segment: "B" },
+    { type: "delta", index: 1, text: "最终回答", segment: "B" },
+    { type: "message_end", segment: "B" },
+  ]);
+  const blocks = blocksOfStream(state);
+  assert.deepEqual(blocks.map((block) => block.type), ["thinking", "toolCall", "thinking", "text"]);
+  assert.equal(blocks[0].live, false, "A 段思考在 message_end 后必须停止 live");
+  assert.equal(blocks[1].result, "文件内容");
+  assert.equal(blocks[1].running, false);
+  assert.equal(blocks[2].live, false, "B 段 thinking_end 后停止 live");
+  assert.equal(blocks[3].text, "最终回答");
+  assert.equal(textOfBlocks(blocks), "最终回答");
+  assert.equal(finalTextOfStream(state), "最终回答");
+  assert.equal(state.segments.length, 2, "两条 assistant message 必须是两个段");
+  assert.equal(state.segments[0].slots[0].index, 0, "A 段从 0 开始");
+  assert.equal(state.segments[1].slots[0].index, 0, "B 段 contentIndex 也从 0 开始，不能与 A 共用槽位");
+});
+
+test("工具 running 由 tool_start/end 驱动；message_end 不会把未完成工具误判为未完成", () => {
+  const started = run([
+    { type: "message_start", segment: "A" },
+    { type: "tool_call", index: 0, id: "c1", name: "bash", arguments: { command: "sleep 1" }, segment: "A" },
+    { type: "tool_start", id: "c1", name: "bash", arguments: { command: "sleep 1" } },
+    { type: "message_end", segment: "A" },
+  ]);
+  const tool = blocksOfStream(started).find((block) => block.type === "toolCall");
+  assert.equal(tool.running, true, "message_end 后工具仍在执行");
+  const done = applyStreamEvent(started, { type: "tool_result", id: "c1", isError: false, text: "ok", truncated: false });
+  assert.equal(blocksOfStream(done).find((block) => block.type === "toolCall").running, false);
 });
 
 test("阶段与 activeTool 跟着事件走：工具结果回来后回到“等模型”", () => {

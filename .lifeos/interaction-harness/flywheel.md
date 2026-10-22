@@ -13,3 +13,4 @@
 - **规范按作用域加载，模板按优先级选一份**：规范逐层追加不覆盖；任务模板四层只选第一份（Agent×项目 → 项目共享 → Agent workspace → 协议默认），不要把两个机制混成“覆盖/合并”。（依据：2026-10-22 协议 §16）
 - **默认 Task 是会话的沉淀落点，不是绑定**：每 Agent×Project×日期一个；会话用 activeTaskId 引用，可共享/切换；Task 日期写字段，不建日期目录。（依据：2026-10-22 协议 §16.4）
 - **切换 Task 只改指针是假切换**：会话的 Task 必须由每次 run 的装配读取 `activeTaskId`，否则 meta 显示新 Task、prompt 仍是旧 `task.md`；切换只影响下一轮，当前 run 已装配的内容不改。（依据：2026-10-22 C110）
+- **流式状态必须按 assistant message 分段**：`contentIndex` 是消息内序号，工具前后会重置；段内用槽位、段间用消息顺序，thinking live 按段/块、tool running 按执行事件，不能拿整轮 busy 推断。（依据：2026-10-22 C111）

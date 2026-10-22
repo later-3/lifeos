@@ -21,7 +21,7 @@ import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { resendPlan } from "./resend";
 import { failureLabel, type FailureKind } from "./failure-text";
 import type { TurnStep } from "./working";
-import { applyStreamEvent, blocksOfStream, createStreamState, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
+import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
@@ -493,7 +493,8 @@ export default function App() {
       setPhase(next.phase);
       setActiveTool(next.activeTool);
       const blocks = blocksOfStream(next);
-      const text = textOfBlocks(blocks);
+      // 最终回答取最后一段 text；过程文本仍在 blocks 里可见，不把整轮块拼成一个答案。
+      const text = finalTextOfStream(next) || textOfBlocks(blocks);
       busyRef.current = true;
       setBusy(true);
       streaming.current = true;
@@ -505,7 +506,7 @@ export default function App() {
         return [...list.slice(0, -1), { ...last, text, blocks, streaming: true }];
       });
     };
-    for (const name of ["delta", "thinking", "thinking_end", "tool_call", "tool_result"] as const) stream.addEventListener(name, onStream);
+    for (const name of ["message_start", "message_end", "delta", "thinking", "thinking_end", "tool_call", "tool_start", "tool_update", "tool_result"] as const) stream.addEventListener(name, onStream);
     // Pi 的自动重试：显示"失败原因 + 第几次/共几次"，结束后收起
     stream.addEventListener("retrying", (event) => {
       const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; attempt: number; maxAttempts: number; delayMs: number; message: string };
