@@ -94,9 +94,9 @@
 - **深链接**（`?agent&project&session`）：URL 指定项目时**只在该项目里选会话**，不拿别的项目"记住的会话"顶上（2026-10-19 实测：`?project=<空项目>` 被 workspace 会话顶掉）。
 - **失败归因（2026-10-20 用户点名）**：`src/failure.ts` 把 Pi 的 `stopReason`（`ai/src/types.ts`：pending/stop/length/toolUse/error/aborted/deferred）与 `errorMessage`（`ai/src/utils/retry.ts` 的网络/超时模式）归成 `aborted / truncated / empty / timeout / network / auth / rate_limit / server / unknown`；界面按种类说人话（如"模型服务响应超时"、"连不上模型服务：网络或端点不可达"、"模型服务拒绝鉴权"），原始 `errorMessage` 作为小字证据保留。SSE 的 `error` 事件同样带 `kind`，前端 toast 用同一套文案。
 - **工具块状态**：`running` 只在"这一轮还在跑"时成立（`frontend/src/tool-state.ts`）；这一轮已结束但没拿到结果 = `missing`，显示**未完成**（不转圈）。工具结果**只按 `toolCallId` 精确配对**（曾用"最后一个没有结果的调用"兜底，导致同一条消息里两个调用的结果互串，`ls` 永远"执行中"）。
-- 模型选择：**优先级 A** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ Pi 回落；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。新建会话的模型与来源会打一行日志 `[assembly] 新建会话 … · 模型 <provider>/<id>（来源 …）`，排查"怎么用了这个模型"先看它。
+- 模型选择：**有效默认** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ `config/models.json` **清单第一项**（Life OS 隐式默认，与 Agent 配置弹窗 fallback 同源）→ 清单为空才 Pi 回落；`GET /api/agents/:id/config` 返回 `config/effective/source`，顶部显示与新会话创建共用这一个裁决；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。新建会话的模型与来源会打一行日志 `[assembly] 新建会话 … · 模型 <provider>/<id>（来源 …）`，排查"怎么用了这个模型"先看它。
 - **会话级切换**（`/model` `/thinking`，走 Pi `setModel` / `setThinkingLevel`）：只改当前会话（Pi 写 `model_change`），不动 Agent 默认、不动全局；`setModel` 会校验 provider 是否配了 key，失败原因（如 `No API key for …`）原样显示，不吞成"切换失败"。
-- **顶部模型显示规则**（2026-10-20 用户定）：顶部显示**本会话当前模型**。**没对本会话用过 `/model`** → 它就是 Agent 默认；**默认变了，顶部跟着变**。**用过 `/model`** → 会话级覆盖（`model_change` 持久），默认再变也不影响它。判定覆盖用**显式标记**（Pi 自定义条目 `lifeos_model_override`，不参与模型上下文），不靠"值相等"猜。**实现**：`src/model-follow.ts` 做判定（纯函数、穷举测试）。**只认 `/model` 写的显式覆盖标记**（`lifeos_model_override`；早期逻辑补的 `legacy:true` 标记一律忽略）；没有标记 → 一律跟随当前默认。保存默认 → `applyAgentDefaultModel` 同步未覆盖且**不在跑**的打开中会话 + 广播 `agents_changed`（前端只刷 meta）；**打开/重开**会话时若未覆盖且模型不是默认 → 跟随。不再用"值是否相等"去猜用户是否覆盖过（2026-10-20 实测：猜错会让默认永远跟不上）。
+- **顶部模型显示规则**（2026-10-20/10-22 用户定）：**没对本会话用过 `/model`** → 显示 Agent 的**有效默认**（不是拿会话值反猜），默认变了顶部跟着变；**用过 `/model`** → 显示会话覆盖模型（`model_change` 持久），之后默认再变也不影响它。判定覆盖用**显式标记**（Pi 自定义条目 `lifeos_model_override`，不参与模型上下文），不靠"值相等"猜。**实现**：`src/model-follow.ts` 做判定（纯函数、穷举测试）；只认 `/model` 写的显式覆盖标记（早期 `legacy:true` 标记一律忽略）；没有标记 → 一律跟随当前有效默认。保存默认 → `applyAgentDefaultModel` 同步未覆盖且**不在跑**的打开中会话 + 广播 `agents_changed`（前端刷新有效默认与 meta）；**打开/重开**会话时若未覆盖且模型不是默认 → 跟随。
 - **一轮的路径**（失败归属的骨架）：① 前端发送（本地插入用户消息 + 左侧本轮占位）→ ② 新建会话（仅无会话）→ ③ 后端受理（202，`void runTurn`）→ ④ 后端开跑（登记 running、订阅 Pi 事件）→ ⑤ Pi 模型循环（思考/文本/工具调用与结果，临时错误自动重试）→ ⑥ 收尾（`done`，或抛错 → `error` 带归类）→ ⑦ 前端重读会话（文件是事实源）。哪一步失败，左侧就写哪一步；具体显示映射见 `docs/design/chat.md` §3.3。
 
 ## 5 装配（方案 E，2026-10-18 定稿，现状）
@@ -126,7 +126,7 @@
 ## 6 配置（现状）
 
 - **模型清单与 Pi CLI 共用同一份**（2026-10-19 用户定）：`config/models.json` 内容与 `~/.pi/agent/models.json` 保持一致（当前 6 个 provider / 20 个模型）。**同步用复制，不要用软链**——实测软链会让 Pi 的 `ModelRuntime` 读不到 provider（`getModel` 落空）。
-- 只有 `models.json` 同步；`settings.json`（Pi CLI 的默认模型）**不自动复制**——它的默认可能指向本机 local 端点，端点没开时新 Agent 会失败。要换默认模型：在 Agent 配置里选（个人配置优先），或自己加 `config/settings.json`。
+- 只有 `models.json` 同步；`settings.json`（Pi CLI 的默认模型）**不自动复制**——它的默认可能指向本机 local 端点，端点没开时新 Agent 会失败。要换默认模型：在 Agent 配置里选（个人配置优先），或自己加 `config/settings.json`；两者都不存在时，`models.json` 清单第一项是隐式默认（与 Agent 配置弹窗 fallback 一致）。
 - **只有一个配置目录** `~/.lifeos/config/`（= Pi 的 `agentDir`）：`models.json`（provider/模型/密钥）· `auth.json` · `models-store.json` · `settings.json?` · `file-roots.json`（文件浏览器的根白名单）。
 - Agent 个人模型默认：`agents/<id>/projects/workspace/config.json`。
 - 环境变量只有 `LIFEOS_HOME`（读配置前告诉进程"家在哪"，测试与部署用；其余一律走配置文件）。

@@ -3,8 +3,9 @@
 //  - harness：作为**独立自定义区域** `<lifeos_interaction_harness>`（经内联 extension 写入 systemPromptOptions.sections）；
 //  - Pi 的 `<tools>`/`<rules>` 由 extension 从「Pi 自己的默认渲染结果」原样抽取后回填——不手写、自动跟随 Pi 更新；
 //  - `<docs>`（Pi 文档指引）有意不保留。
-// 模型优先级 A：Agent 个人（workspace/config.json）→ 系统（config/settings.json）→ Pi 回落。
-//  - 模型优先级 A：Agent 个人（workspace/config.json）→ 系统（config/settings.json）→ Pi 回落
+// 模型优先级 A（有效默认）：Agent 个人（workspace/config.json）→ 系统（config/settings.json）
+// → 模型清单第一项（Life OS 隐式默认，和 Agent 配置弹窗的 fallback 同源）→ 都没有才交给 Pi 回落。
+// “有效默认”必须同时给新会话和顶部显示用，否则界面显示的模型和真正会用的模型会分叉。
 import { readdir, readFile } from "node:fs/promises";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { basename, join } from "node:path";
@@ -41,12 +42,29 @@ export async function readSystemModelChoice(): Promise<ModelChoice | undefined> 
   return toChoice(await readJson(join(resolveHome(), "config", "settings.json")));
 }
 
-/** 优先级 A 的裁决（只给结论与来源，不构造 Pi 对象）。 */
-export async function resolveModelChoice(agentId: string): Promise<{ choice: ModelChoice; source: "agent" | "settings" } | undefined> {
+/** 模型清单第一项 = Life OS 的隐式默认（和 Agent 配置弹窗「settings ?? 第一个 provider」一致）。 */
+async function readCatalogModelChoice(): Promise<ModelChoice | undefined> {
+  const data = await readJson(join(resolveHome(), "config", "models.json"));
+  const providers = data?.providers;
+  if (providers === undefined || typeof providers !== "object" || providers === null) return undefined;
+  for (const [provider, value] of Object.entries(providers as Record<string, unknown>)) {
+    const models = (value as { models?: unknown } | undefined)?.models;
+    if (!Array.isArray(models)) continue;
+    const first = models.find((model): model is { id: string } =>
+      typeof model === "object" && model !== null && typeof (model as { id?: unknown }).id === "string");
+    if (first !== undefined) return { defaultProvider: provider, defaultModel: first.id };
+  }
+  return undefined;
+}
+
+/** 优先级 A 的有效默认裁决（只给结论与来源，不构造 Pi 对象）。 */
+export async function resolveModelChoice(agentId: string): Promise<{ choice: ModelChoice; source: "agent" | "settings" | "catalog" } | undefined> {
   const agentChoice = await readAgentModelChoice(agentId);
   if (agentChoice !== undefined) return { choice: agentChoice, source: "agent" };
   const systemChoice = await readSystemModelChoice();
   if (systemChoice !== undefined) return { choice: systemChoice, source: "settings" };
+  const catalogChoice = await readCatalogModelChoice();
+  if (catalogChoice !== undefined) return { choice: catalogChoice, source: "catalog" };
   return undefined;
 }
 

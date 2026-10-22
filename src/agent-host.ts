@@ -107,7 +107,9 @@ async function createHostedSession(
     const found = modelRuntime.getModel(resolution.choice.defaultProvider, resolution.choice.defaultModel);
     if (found !== undefined) {
       model = found;
-      modelLabel = `${resolution.choice.defaultProvider}/${resolution.choice.defaultModel}（来源 ${resolution.source === "agent" ? "Agent 个人配置" : "系统 settings"}）`;
+      const sourceLabel = resolution.source === "agent" ? "Agent 个人配置"
+        : resolution.source === "settings" ? "系统 settings" : "模型清单默认";
+      modelLabel = `${resolution.choice.defaultProvider}/${resolution.choice.defaultModel}（来源 ${sourceLabel}）`;
       if (resolution.choice.defaultThinkingLevel !== undefined) {
         thinkingLevel = resolution.choice.defaultThinkingLevel as ThinkingOption;
       }

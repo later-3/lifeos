@@ -458,6 +458,14 @@ test("Agent 个人模型配置：保存到 workspace/config.json 并可回读（
     await (await import("node:fs/promises")).writeFile(join(home, "config", "models.json"), JSON.stringify({
       providers: { command: { api: "openai-completions", baseUrl: "http://127.0.0.1:1", apiKey: "k", models: [{ id: "z-ai/glm-5.3-flash" }] } },
     }) + "\n");
+
+    // 没有个人配置时，GET 也要给出“有效默认”（清单第一项），供新 Agent/无会话头部显示
+    const beforeSave = await (await fetch(`${base}/api/agents/lifeosagent/config`)).json();
+    assert.equal(beforeSave.config, null, "还没保存个人配置");
+    assert.equal(beforeSave.effective?.defaultProvider, "command", "有效默认来自模型清单第一项");
+    assert.equal(beforeSave.effective?.defaultModel, "z-ai/glm-5.3-flash");
+    assert.equal(beforeSave.source, "catalog");
+
     const saved = await fetch(`${base}/api/agents/lifeosagent/config`, {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash", defaultThinkingLevel: "high" }),
@@ -468,6 +476,8 @@ test("Agent 个人模型配置：保存到 workspace/config.json 并可回读（
     assert.equal(file.defaultThinkingLevel, "high");
     const loaded = await (await fetch(`${base}/api/agents/lifeosagent/config`)).json();
     assert.equal(loaded.config.defaultModel, "z-ai/glm-5.3-flash");
+    assert.equal(loaded.effective?.defaultProvider, "command", "保存后有效默认 = 个人配置");
+    assert.equal(loaded.source, "agent");
 
     const bad = await fetch(`${base}/api/agents/lifeosagent/config`, {
       method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaultProvider: "", defaultModel: "x" }),

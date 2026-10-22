@@ -492,6 +492,44 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   headerModel.expected === null || headerModel.line.includes(`${headerModel.expected.provider}/${headerModel.expected.id}`),
   `${headerModel.line}（接口 ${headerModel.expected === null ? "无模型" : `${headerModel.expected.provider}/${headerModel.expected.id}`}）`);
 
+// 头部模型显示规则（用户 2026-10-22）：没 /model 覆盖 → 有效默认；覆盖过 → 会话模型。
+// 用拦截响应证明“显示规则”，不依赖真实会话恰好被 /model 切过。
+{
+  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  let overridden = false;
+  await displayPage.route(/\/api\/agents\/[^/]+\/config$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ config: null, effective: { defaultProvider: "test", defaultModel: "display-default" }, source: "catalog" }),
+  }));
+  await displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({
+      messages: [],
+      meta: {
+        model: { provider: "actual", id: "session-model" },
+        modelOverridden: overridden,
+        thinkingLevel: "off",
+        running: false,
+        context: null,
+      },
+    }),
+  }));
+  await displayPage.goto(page.url(), { waitUntil: "networkidle" });
+  await displayPage.waitForTimeout(400);
+  const notOverriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
+  check("未覆盖会话头部显示有效默认（不显示会话实际值）",
+    notOverriddenLine.includes("test/display-default") && !notOverriddenLine.includes("actual/session-model"),
+    notOverriddenLine);
+  overridden = true;
+  await displayPage.reload({ waitUntil: "networkidle" });
+  await displayPage.waitForTimeout(400);
+  const overriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
+  check("/model 覆盖会话头部显示覆盖模型（不被默认顶掉）",
+    overriddenLine.includes("actual/session-model") && !overriddenLine.includes("test/display-default"),
+    overriddenLine);
+  await displayPage.close();
+}
+
 // 呈现底线：可见按钮必须有可访问名（文字 / aria-label / title 至少一个）。
 // 反例：只画一个图标、没有标签——人认不出、读屏认不出、自动化也认不出（"做了个按钮在那儿"）。
 const noName = () => page.evaluate(() => [...document.querySelectorAll("button")]
@@ -592,6 +630,69 @@ check("配置对话框 axe 无 serious/critical", axeViolations.length === 0, JS
 
 await page.keyboard.press("Escape");
 await page.waitForTimeout(250);
+
+// 配置保存语义：footer primary 是“保存全部”，不是只保存基础信息。
+// 复现用户反例：改模型 → 点 footer 保存 → 关闭，不能再弹“放弃未保存的改动”。
+{
+  const configPage = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
+  await configPage.route(/\/api\/agents\/[^/]+\/config$/, async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const body = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ config: body, applied: 0 }) });
+  });
+  await configPage.route(/\/api\/agents\/[^/]+$/, async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    const body = JSON.parse(route.request().postData() ?? "{}");
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "test", name: body.name, description: body.description }) });
+  });
+  await configPage.route(/\/api\/agents\/[^/]+\/identity$/, async (route) => {
+    if (route.request().method() !== "PUT") return route.continue();
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+  });
+  await configPage.goto(page.url(), { waitUntil: "networkidle" });
+  await configPage.waitForTimeout(400);
+  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.waitForTimeout(700);
+  const footerSave = configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first();
+  check("配置 footer primary 写「保存全部」", (await footerSave.textContent() ?? "").includes("保存全部"), await footerSave.textContent() ?? "");
+
+  const modelSelect = configPage.locator('select[name="agent-model"]');
+  const modelValues = await modelSelect.locator("option").evaluateAll((options) => options.map((option) => option.value));
+  const currentModel = await modelSelect.inputValue();
+  const nextModel = modelValues.find((value) => value !== currentModel);
+  if (nextModel !== undefined) {
+    await modelSelect.selectOption(nextModel);
+    await configPage.waitForTimeout(200);
+    await footerSave.click();
+    await configPage.waitForTimeout(800);
+    await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
+    await configPage.waitForTimeout(400);
+    check("保存全部后关闭不再提示未保存", await configPage.locator('[role="dialog"]').count() === 0);
+  } else {
+    check("保存全部后关闭不再提示未保存", false, "没有可切换的模型");
+  }
+
+  // 基础信息走同一个 footer primary：改名 → 保存全部 → 关闭，也不应误报。
+  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.waitForTimeout(700);
+  await configPage.locator('input[name="agent-name"]').fill("saved-name-probe");
+  await configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first().click();
+  await configPage.waitForTimeout(800);
+  await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
+  await configPage.waitForTimeout(400);
+  check("保存基础信息后关闭不再提示未保存", await configPage.locator('[role="dialog"]').count() === 0);
+
+  // 真正有未保存基础信息时，提示必须说清楚是哪个保存域。
+  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.waitForTimeout(700);
+  await configPage.locator('input[name="agent-name"]').fill("dirty-name-probe");
+  await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
+  await configPage.waitForTimeout(300);
+  const confirmText = await configPage.getByRole('dialog', { name: "放弃未保存的改动？" }).innerText().catch(() => "");
+  check("未保存关闭提示写明「基础信息」", confirmText.includes("基础信息"), confirmText.slice(0, 100));
+  await configPage.getByRole("button", { name: "取消" }).click().catch(() => {});
+  await configPage.close();
+}
 
 // 消息动作条：悬停出现"复制"；点击复制文本并给"已复制"反馈（参照 Pi Web MessageView）
 await page.mouse.move(0, 0);

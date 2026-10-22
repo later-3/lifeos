@@ -12,6 +12,7 @@ import {
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
+import { resolveModelChoice } from "./assembly.ts";
 import { resolveHome } from "./home.ts";
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
@@ -532,7 +533,9 @@ export function createApp() {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const config = await readFile(agentConfigPath(agent.id), "utf8")
       .then((text) => JSON.parse(text), () => null);
-    return c.json({ config });
+    // 顶部/创建会话都要看“有效默认”：Agent 配置 → 系统 settings → 模型清单第一项。
+    const resolved = await resolveModelChoice(agent.id);
+    return c.json({ config, effective: resolved?.choice ?? null, source: resolved?.source ?? null });
   });
   app.put("/api/agents/:id/config", async (c) => {
     const agent = await readAgent(c.req.param("id"));

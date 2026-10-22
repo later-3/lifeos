@@ -65,11 +65,15 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
   const [identityError, setIdentityError] = useState("");
   const [modelsState, setModelsState] = useState<LoadState>("loading");
   const [modelsError, setModelsError] = useState("");
-  const [initial, setInitial] = useState<Snapshot>();
+  const [initial, setInitial] = useState<Snapshot>(() => ({
+    name: agent.name, description: agent.description ?? "", identity: "",
+    avatarKey: avatarKeyOf(agent.avatar), provider: "", model: "", thinking: "",
+  }));
   const [confirmClose, setConfirmClose] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
+  const identityBaselineSet = useRef(false);
 
   async function loadIdentity(): Promise<void> {
     setIdentityState("loading");
@@ -118,7 +122,13 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
 
   useEffect(() => {
     alive.current = true;
-    setInitial(undefined);
+    identityBaselineSet.current = false;
+    // 基线在挂载/切换 Agent 时就建立基础字段：用户不必等 identity 加载完才敢改名字；
+    // 加载期间改了名字，close 仍然会正确判脏（不能把“当前 state”误当原始基线）。
+    setInitial({
+      name: agent.name, description: agent.description ?? "", identity: "",
+      avatarKey: avatarKeyOf(agent.avatar), provider: "", model: "", thinking: "",
+    });
     setIdentity("");
     setModels(null);
     setProvider("");
@@ -130,17 +140,18 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
-  // 基础信息一就绪就建立基线，避免模型目录失败时名字/描述改动无法判断脏。
+  // identity 就绪后补一次基线；textarea 在就绪前是 disabled，用户不可能在这之前改身份。
   useEffect(() => {
-    if (identityState !== "ready" || initial !== undefined) return;
-    setInitial({ name, description, identity, avatarKey: avatarKeyOf(avatar), provider, model, thinking });
+    if (identityState !== "ready" || identityBaselineSet.current) return;
+    identityBaselineSet.current = true;
+    setInitial((prev) => ({ ...prev, identity }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identityState, initial]);
+  }, [identityState, identity]);
 
   // 模型目录就绪后补齐基线里的模型字段（首次加载/重试）。
   useEffect(() => {
     if (modelsState !== "ready" || initial === undefined || initial.provider !== "" || provider === "") return;
-    setInitial({ ...initial, provider, model, thinking });
+    setInitial((prev) => ({ ...prev, provider, model, thinking }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelsState, provider, model, thinking]);
 
@@ -151,15 +162,21 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
     : THINKING_ORDER.filter((level) => activeModel.thinkingLevelMap?.[level] !== null && (level !== "xhigh" && level !== "max" || activeModel.thinkingLevelMap?.[level] !== undefined));
   const modelCount = (models?.providers ?? []).reduce((sum, p) => sum + p.models.length, 0);
   const noModels = models !== null && models.providers.length === 0;
-  const dirty = initial !== undefined && (
+  // 用“哪个保存域还脏”来做关闭提示，避免用户只点了基础信息保存后被笼统的
+  // “放弃未保存的改动”吓到；同时为“保存全部”提供唯一判定。
+  const dirtyBasic = initial !== undefined && (
     name !== initial.name
     || description !== initial.description
     || identity !== initial.identity
     || avatarKeyOf(avatar) !== initial.avatarKey
-    || provider !== initial.provider
+  );
+  const dirtyModel = initial !== undefined && (
+    provider !== initial.provider
     || model !== initial.model
     || thinking !== initial.thinking
   );
+  const dirty = dirtyBasic || dirtyModel;
+  const dirtySections = [dirtyBasic ? "基础信息" : "", dirtyModel ? "模型配置" : ""].filter((part) => part !== "").join(" + ");
 
   function requestClose() {
     if (busy) { toast("保存中，请稍候", "error"); return; }
@@ -169,11 +186,11 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
 
   const notify = (next: Partial<Agent>) => onSaved({ ...agent, name, description, avatar, ...next });
 
-  async function saveBasic() {
-    if (identityState !== "ready" || name.trim() === "") return;
+  async function saveBasic(options?: { silent?: boolean }): Promise<boolean> {
+    if (identityState !== "ready" || name.trim() === "") return false;
     if (new TextEncoder().encode(identity).length > IDENTITY_LIMIT_BYTES) {
       toast("身份信息超过 64KB，请精简后再保存", "error");
-      return;
+      return false;
     }
     setBusy(true);
     try {
@@ -184,7 +201,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
       if (!agentRes.ok) {
         const data = await agentRes.json().catch(() => ({})) as { error?: { message?: string } };
         toast(data.error?.message ?? "保存失败", "error");
-        return;
+        return false;
       }
       const updated = await agentRes.json() as Agent;
       setName(updated.name);
@@ -200,16 +217,17 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
       if (!identityRes.ok) {
         const data = await identityRes.json().catch(() => ({})) as { error?: { message?: string } };
         toast(`名字/描述已保存；身份未保存：${data.error?.message ?? "请求失败"}`, "error");
-        return;
+        return false;
       }
       setInitial((prev) => prev === undefined ? prev : { ...prev, identity });
-      toast("基础信息已保存");
-    } catch { toast("网络错误", "error"); }
+      if (options?.silent !== true) toast("基础信息已保存");
+      return true;
+    } catch { toast("网络错误", "error"); return false; }
     finally { setBusy(false); }
   }
 
-  async function saveModel() {
-    if (modelsState !== "ready" || noModels || provider === "" || model === "") return;
+  async function saveModel(options?: { silent?: boolean }): Promise<boolean> {
+    if (modelsState !== "ready" || noModels || provider === "" || model === "") return false;
     setBusy(true);
     try {
       const response = await fetch(`/api/agents/${agent.id}/config`, {
@@ -219,12 +237,28 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: { message?: string } };
         toast(data.error?.message ?? "保存失败", "error");
-        return;
+        return false;
       }
       setInitial((prev) => prev === undefined ? prev : { ...prev, provider, model, thinking });
-      toast("模型配置已保存");
-    } catch { toast("网络错误", "error"); }
+      if (options?.silent !== true) toast("模型配置已保存");
+      return true;
+    } catch { toast("网络错误", "error"); return false; }
     finally { setBusy(false); }
+  }
+
+  /** footer 唯一 primary：保存用户看到的整张表单，而不是只保存“基础信息”。 */
+  async function saveAll() {
+    if (dirtyBasic) {
+      const basicOk = await saveBasic({ silent: true });
+      if (!basicOk) return;
+    }
+    if (!dirtyModel) { toast("已保存"); return; }
+    if (modelsState !== "ready" || noModels || provider === "" || model === "") {
+      toast("基础信息已保存；模型配置当前不可保存", "error");
+      return;
+    }
+    const modelOk = await saveModel({ silent: true });
+    toast(modelOk ? "已保存" : "基础信息已保存；模型配置未保存", modelOk ? "success" : "error");
   }
 
   async function uploadAvatar(file: File) {
@@ -271,10 +305,10 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
       <Modal title="配置助手" onClose={requestClose} width={640} initialFocus={nameRef} fullScreen
         icon={<AgentAvatar id={agent.id} name={name || agent.name} avatar={avatar} size={32} />}
         footer={<>
-          <span className="mr-auto text-micro text-ink-500">基础信息保存后立即生效</span>
+          <span className="mr-auto text-micro text-ink-500">保存后立即生效；模型配置用于新会话</span>
           <Button onClick={requestClose}>关闭</Button>
-          <Button variant="primary" disabled={basicDisabled} onClick={() => void saveBasic()}>
-            {busy ? "保存中…" : "保存基础信息"}
+          <Button variant="primary" disabled={basicDisabled} onClick={() => void saveAll()}>
+            {busy ? "保存中…" : "保存全部"}
           </Button>
         </>}>
         <div className="space-y-6">
@@ -376,7 +410,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
       </Modal>
 
       {confirmClose && (
-        <ConfirmDialog title="放弃未保存的改动？" message="关闭后，本次修改的配置不会保存。"
+        <ConfirmDialog title="放弃未保存的改动？" message={`未保存：${dirtySections || "本次修改"}。关闭后，这些修改不会保存。`}
           confirmLabel="放弃改动" danger
           onConfirm={() => { setConfirmClose(false); onClose(); }}
           onCancel={() => setConfirmClose(false)} />

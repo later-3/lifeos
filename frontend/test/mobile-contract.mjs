@@ -20,6 +20,25 @@ for (const width of widths) {
   const page = await context.newPage();
   await page.goto(APP_URL, { waitUntil: "networkidle" });
   await page.waitForTimeout(350);
+  // 不依赖“第一个 Agent 恰好有会话”：选一个确实有会话的 Agent/项目/会话，再跑手机表面契约。
+  const target = await page.evaluate(async () => {
+    const agents = await (await fetch("/api/agents")).json();
+    for (const agent of agents.items ?? []) {
+      const projects = await (await fetch(`/api/agents/${agent.id}/projects`)).json();
+      for (const project of projects.items ?? []) {
+        const sessions = await (await fetch(`/api/agents/${agent.id}/projects/${project.id}/sessions`)).json();
+        const session = sessions.items?.find((item) => item.sessionId !== undefined);
+        if (session !== undefined) return { agent: agent.id, project: project.id, session: session.sessionId };
+      }
+    }
+    return null;
+  });
+  const targetUrl = target === null ? null
+    : `${APP_URL}/?${new URLSearchParams({ agent: target.agent, project: target.project, session: target.session }).toString()}`;
+  if (targetUrl !== null) {
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+  }
   const base = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,
     client: document.documentElement.clientWidth,
@@ -156,6 +175,11 @@ for (const width of widths) {
   }
   await page.getByRole("button", { name: "关闭导航" }).click();
   await page.waitForTimeout(200);
+  // 导航测试可能切到没有会话的 Agent/项目；回到有会话的目标，再测全屏面板。
+  if (targetUrl !== null) {
+    await page.goto(targetUrl, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+  }
 
   // 全屏面板必须有返回/关闭，且按钮在视口内。
   const historyButton = page.getByRole("button", { name: "完整历史" }).first();

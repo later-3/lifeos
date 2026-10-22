@@ -362,13 +362,20 @@ export default function App() {
   async function refreshAgentDefaultModel(id: string) {
     const response = await fetch(`/api/agents/${id}/config`).catch(() => undefined);
     const data = response?.ok === true
-      ? await response.json().catch(() => ({})) as { config?: { defaultProvider?: string; defaultModel?: string } | null }
+      ? await response.json().catch(() => ({})) as {
+        config?: { defaultProvider?: string; defaultModel?: string } | null;
+        effective?: { defaultProvider?: string; defaultModel?: string } | null;
+      }
       : {};
     if (ctx.current.agentId !== id) return;
+    // 有效默认：后端已按 Agent 配置 → 系统 settings → 模型清单第一项裁决；
+    // 个人配置为空的**新 Agent** 也要显示系统/清单默认，不能再只读 config。
+    const effective = data.effective;
     const config = data.config;
+    const source = effective ?? config;
     setAgentDefaultModel(
-      config?.defaultProvider !== undefined && config.defaultModel !== undefined
-        ? { provider: config.defaultProvider, id: config.defaultModel }
+      source?.defaultProvider !== undefined && source.defaultModel !== undefined
+        ? { provider: source.defaultProvider, id: source.defaultModel }
         : undefined,
     );
   }
@@ -404,6 +411,8 @@ export default function App() {
     streaming.current = false;
     setBusy(false);
     await loadMessages(a.id, sid);
+    // 打开会话也要保证“有效默认”已加载：顶部在非覆盖分支显示它。
+    void refreshAgentDefaultModel(a.id);
   }
 
   async function selectAgent(a: Agent) {
@@ -592,6 +601,7 @@ export default function App() {
       if (found === undefined) { setLoaded(true); return; }
       setAgent(found);
       ctx.current = { agentId: found.id };
+      void refreshAgentDefaultModel(found.id);
       const groups = await fetchGroups(found.id);
       setGroups(groups);
       // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
@@ -1130,8 +1140,12 @@ export default function App() {
   const closeAllLeft = () => { setShowNav(false); setShowProjects(false); setShowSessions(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
-  // 有会话 → 会话当前模型（可能被 /model 覆盖）；无会话 → 该 Agent 的默认模型。
-  const headerModel = sessionId !== undefined ? meta?.model : agentDefaultModel;
+  // 显示规则（用户 2026-10-22）：用过 /model → 显示会话覆盖模型；
+  // 没用过 → 显示 Agent 的**有效默认**（配置 → 系统 → 清单第一项），不是拿会话值反猜。
+  // 没有有效默认时才退回 meta.model（例如后端模型清单为空）。
+  const headerModel = sessionId !== undefined
+    ? (meta?.modelOverridden === true ? meta?.model : (agentDefaultModel ?? meta?.model))
+    : agentDefaultModel;
 
   return (
     <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>

@@ -120,6 +120,56 @@ Pi SDK 的事件和“能知道什么”决定了状态条能显示什么，不�
 - token 精确值只能在 message_end/turn_end 后拿；运行中速度只能 `≈` 或 TTFT；
 - 自动滚动是纯前端行为，和 SDK 无关；SDK 只提供“内容变化”的事件。
 
+## 4.2 流式块顺序：三实现对比（2026-10-22 诊断）
+
+用户看到的“上面思考一直转、下面工具在跑、中间又出文本、下面又有工具”，不是单一原因，至少有三层事实要分开：
+
+### 事实 1：一次 turn 有多个 assistant message，contentIndex 会重置
+
+真实会话 JSONL 里，一次工具调用会形成：
+
+```text
+assistant message A（thinking + toolCall）→ message_end
+toolResult → toolResult
+assistant message B（contentIndex 又从 0 开始：thinking/toolCall/text）→ ...
+```
+
+`contentIndex` 是**消息内块序号**，不是整轮全局序号。`docs/architecture/conversation.md` §4.1 已记录这个 Pi SDK 事实。
+
+### 三实现对照
+
+| 维度 | Life OS 当前 | Pi Web | Pi Agent TUI |
+|---|---|---|---|
+| 消息边界 | `src/stream-events.ts` 只映射 thinking/delta/tool_call/tool_result，没有 `message_start/message_end`；`frontend/src/stream-blocks.ts` 的 `slots` 以 `contentIndex` 为唯一 key，整轮共用 | `lib/streaming-message.ts`：`streamingMessage` 只代表当前 assistant message；`start/snapshot/delta/end` 按消息生命周期更新 `contentIndex` | `interactive-mode.ts`：`message_start` 新建一个 `AssistantMessageComponent`，`message_end` 结束并清 streaming；下一条 assistant message 是新的 component |
+| 工具与消息关系 | `tool_call` 插进同一个 `slots`；`tool_result` 按 id 原地更新 | `toolCall` 留在当前 message content；`toolResults` 按 toolCallId 配对；工具结果不改变消息边界 | toolCall 创建独立 `ToolExecutionComponent` 追加在 chat；`tool_execution_end` 原地更新，不塞回 assistant 文本 |
+| thinking 的 live | `MessageView` 对**所有块**传 `live={busy}`；`ThinkingBlock` 只要整轮 busy 就打 spinner/“思考中…” | `ThinkingBlock` 没有 turn-level spinner；只显示 thinking 文本/耗时，`isStreaming` 只用于文本/空块处理 | thinking 作为内容渲染/折叠；没有“每个 thinking 块整轮转圈”的状态 |
+| 工具 running | `toolState({ live: busy })`：整轮 busy 时，没有 result 的 tool 都算 running；只有 `tool_execution_end` 映射 | `ToolCallBlock` 看 result 是否存在；`rawInput` 区分参数流式；phase 由 `tool_execution_*` 单独维护 | `ToolExecutionComponent` 由 `tool_execution_start/end/update` 驱动；结束即更新为完成/错误 |
+| 最终输出 | 没有按“assistant message 段”/“最终答案”分组，整轮块混在一个数组 | `splitFinalAssistantBlocks` 把最后一段 text/image 作为 answer，之前作为 process；`ProcessDetailsGroup` 可折叠 | 按消息/工具组件顺序渲染；最终 assistant text 自然在最后 |
+
+### 这解释了用户看到的错乱
+
+1. **工具后的下一条 assistant message contentIndex 从 0 开始**，但 Life OS 把 0 当成整轮同一个槽位：
+   - 下一条的 thinking/text 会插入/覆盖前面 index 0 的块；
+   - 后段 text 可能跑到前面，后段工具/文本顺序被改；
+   - 所以“中间出文本、下面又工具”不一定是模型乱，而是前端把不同消息的槽位拼错了。
+2. **thinking spinner 是整轮 `busy` 驱动**：任何思考块在整轮结束前都显示“思考中…”，即使它早已结束；用户看到“上面一直转、下面在跑工具”。
+3. **工具 running 也靠整轮 `busy`**：没有映射 `tool_execution_start`，只靠结果有没有回来；结果事件丢/晚时，旧工具会一直转。
+4. 模型在一条 turn 内**合法地**可以 thinking → text → tool → text；TUI/Pi Web 也接受这种顺序。问题不是“必须只有最后才有 text”，而是“不同消息的块不能被合并，running 必须按当前段/工具，而不是整轮”。
+
+### 应该怎么显示（建议规则）
+
+- **消息边界优先**：每个 `message_start/end` 是一个独立 assistant 段；段内按 `contentIndex` 排序，段间按消息顺序；禁止跨段共用槽位。
+- **thinking**：只对**当前正在流的那一段**显示 spinner；旧段显示“思考过程”（可折叠），不在整轮结束前继续转。
+- **工具**：由 `tool_execution_start/update/end` 驱动 running/done/error；不要用 turn busy 推断所有工具的运行状态。
+- **文本/工具顺序**：保留模型真实顺序；允许中间 text 是 commentary；**最终回答是最后一段 text**。如果需要降低噪音，可像 Pi Web 一样把 process 折叠成一组，但不能改变顺序或把后段 text 塞到前面。
+- **验收**：新增多 assistant message（工具后 contentIndex 重置）测试：
+  1. 段 A thinking/toolCall；
+  2. toolResult；
+  3. 段 B thinking/text；
+  4. 断言段顺序、工具状态、thinking 不再 live、最终 text 在最后。
+
+当前状态：**仅诊断，未改流式代码**；下一步应先改 `stream-events` 的 message 边界 + `stream-blocks` 的段模型，再改 `MessageView` 的 live/工具状态，最后补上面这条测试。
+
 ## 5 前端结构
 
 ```text

@@ -32,11 +32,22 @@ test("两区装配：customPrompt=交互 harness、appendSystemPrompt=identity�
   for (const source of parts.sources) assert.ok(source.startsWith(home), "来源必须真实存在于家目录");
 });
 
-test("模型优先级 A：Agent 个人（workspace/config.json）> 系统（settings.json）> 无", async () => {
+test("模型优先级 A：Agent 个人 > 系统 settings > 模型清单第一项 > 无", async () => {
   const home = await freshHome();
-  assert.equal(await resolveModelChoice("lifeosagent"), undefined, "都没配 → undefined（交给 Pi 回落）");
+  assert.equal(await resolveModelChoice("lifeosagent"), undefined, "都没有 → undefined（交给 Pi 回落）");
 
   await mkdir(join(home, "config"), { recursive: true });
+  // 清单第一项 = Life OS 隐式默认（新 Agent 没有个人配置、也没有 settings 时要能显示/使用它）
+  await writeFile(join(home, "config", "models.json"), JSON.stringify({
+    providers: {
+      first: { models: [{ id: "m-first" }, { id: "m-second" }] },
+      second: { models: [{ id: "m-other" }] },
+    },
+  }));
+  const catalog = await resolveModelChoice("lifeosagent");
+  assert.equal(catalog?.source, "catalog", "没有个人/系统配置时回落到清单第一项");
+  assert.deepEqual({ p: catalog?.choice.defaultProvider, m: catalog?.choice.defaultModel }, { p: "first", m: "m-first" });
+
   await writeFile(join(home, "config", "settings.json"), JSON.stringify({ defaultProvider: "sys", defaultModel: "m-sys", defaultThinkingLevel: "high" }));
   const sysOnly = await resolveModelChoice("lifeosagent");
   assert.equal(sysOnly.source, "settings");
