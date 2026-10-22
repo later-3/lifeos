@@ -90,7 +90,7 @@ export function MessageActionBar({ side, actions, hovered, suppressed = false }:
           <button key={action.key} type="button" onClick={() => activate(action)}
             title={action.title ?? action.label}
             {...(action.testId !== undefined ? { "data-testid": action.testId } : {})}
-            className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors ${TONE_CLASS[actionTone(state)]}`}>
+            className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors max-sm:min-h-11 ${TONE_CLASS[actionTone(state)]}`}>
             {state === "done" ? <IconCheck size={12} /> : action.icon}
             <span aria-live="polite">{actionLabel(action, state)}</span>
           </button>

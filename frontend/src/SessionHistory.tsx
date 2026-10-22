@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconChevronRight, IconHistory, IconX } from "@tabler/icons-react";
+import { IconArrowLeft, IconChevronRight, IconHistory, IconX } from "@tabler/icons-react";
 import { MessageView, type Block } from "./Message";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { Button, EmptyState, IconButton, Skeleton } from "./design/ui";
 import { estimateTokens, formatPercent, formatTokens, isSameScale, normalizeTo } from "./token-estimate";
 import { regionOf } from "./prompt-regions";
 import { applySectionPatch, type Sections } from "./prompt-patches";
+import { useIsMobile } from "./use-mobile";
+import { useDialogFocus } from "./design/overlay";
 
 /**
  * 完整历史 = 回合检查器（与对话区**并排**，不覆盖）。
@@ -255,7 +257,7 @@ function BlockHeader({ open, label, tag, sub, meta, depth = 0, strong = false, o
 }) {
   return (
     <button type="button" onClick={onToggle}
-      className={`flex w-full items-center gap-1.5 rounded-control pr-1 text-left transition-colors hover:bg-hover ${sub === undefined ? "h-7" : "py-1"}`}
+      className={`flex w-full items-center gap-1.5 rounded-control pr-1 text-left transition-colors hover:bg-hover max-sm:min-h-11 ${sub === undefined ? "h-7" : "py-1"}`}
       style={{ paddingLeft: 4 + depth * 10 }}>
       <IconChevronRight size={12} className={`shrink-0 self-start text-ink-500 transition-transform ${open ? "rotate-90" : ""} ${sub === undefined ? "" : "mt-1"}`} />
       <span className="min-w-0 flex-1">
@@ -265,7 +267,7 @@ function BlockHeader({ open, label, tag, sub, meta, depth = 0, strong = false, o
         </span>
         {sub !== undefined && <span className="block truncate text-micro text-ink-500">{sub}</span>}
       </span>
-      <span className="ml-auto min-w-16 shrink-0 self-start text-right tabular-nums text-micro text-ink-500">{meta}</span>
+      <span className="ml-auto min-w-16 shrink-0 self-start text-right tabular-nums text-micro text-ink-500 max-sm:hidden">{meta}</span>
     </button>
   );
 }
@@ -280,8 +282,10 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
   const [failed, setFailed] = useState<string | null>(null);
   // 上下文窗口按**该回合实际用的模型**取（provider 里第一个模型的窗口 ≠ 本会话模型；切过模型就更是错的）
   const [contextWindows, setContextWindows] = useState<Map<string, number>>(() => new Map());
+  const mobile = useIsMobile();
   const folds = useFolds();
   const root = useRef<HTMLDivElement>(null);
+  useDialogFocus(root, onClose, { enabled: mobile });
 
   async function load(offset: number) {
     setLoading(true);
@@ -299,10 +303,11 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
 
   useEffect(() => { void load(0); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agentId, sessionId]);
   useEffect(() => {
+    if (mobile) return;   // 手机走 useDialogFocus（含 Esc/焦点陷阱/滚动锁）；桌面 aside 保留 Esc
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); onClose(); } };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [mobile, onClose]);
   useEffect(() => {
     void (async () => {
       try {
@@ -331,8 +336,12 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
   const lastIndex = turns.length - 1;
 
   return (
-    <div ref={root} className="flex h-full min-h-0 flex-col bg-surface">
-      <header className="flex h-11 shrink-0 items-center gap-2 pl-4 pr-2">
+    <div ref={root} role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label={mobile ? "完整历史" : undefined}
+      className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-x-hidden bg-surface">
+      <header className="flex h-11 w-full min-w-0 shrink-0 items-center gap-2 pl-4 pr-2 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
+        {mobile && (
+          <Button variant="ghost" size="sm" aria-label="返回" onClick={onClose}><IconArrowLeft size={16} /> 返回</Button>
+        )}
         <div className="min-w-0">
           <h2 className="truncate text-body font-semibold text-ink-900">完整历史</h2>
           <p className="truncate text-micro text-ink-500" data-shot-mask="history-meta">
@@ -340,10 +349,10 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
           </p>
         </div>
         <span className="ml-auto" />
-        <IconButton label="关闭完整历史" onClick={onClose}><IconX size={15} /></IconButton>
+        {!mobile && <IconButton label="关闭完整历史" onClick={onClose}><IconX size={15} /></IconButton>}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" data-shot-mask="history-body">
+      <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto px-2 pb-3" data-shot-mask="history-body">
         {loading && entries.length === 0 && <Skeleton rows={5} />}
         {failed !== null && <p className="py-6 text-center text-meta text-danger">{failed}</p>}
         {!loading && failed === null && turns.length === 0 && (

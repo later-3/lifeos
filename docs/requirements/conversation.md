@@ -61,6 +61,8 @@
 | `◔` | 上下文占用 | “上下文占用 X% / window” |
 | `⚡` | 上一轮输出速度 | “上一轮输出速度；输出 N tokens，首字 Xs” |
 
+> 触屏没有 hover：状态条必须提供可点击的 `?` 图例入口，不能只靠 title。
+
 
 - 本轮：input、output、cache read/write（有则显示）、cost（有则显示）；
 - 会话累计：至少 input/output 总量；

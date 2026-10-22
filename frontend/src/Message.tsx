@@ -175,7 +175,7 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
   return (
     <div className="max-w-bubble overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <button type="button" onClick={toggle}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-500 transition-colors hover:text-ink-900">
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
         {live ? <Spinner size={12} className="text-accent" /> : null}
         <span>{live ? "思考中…" : "思考过程"}</span>
         <span className="ml-auto shrink-0 text-micro text-ink-500">{open ? "收起" : "展开"}</span>
@@ -199,7 +199,7 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
   return (
     <div className={`max-w-bubble overflow-hidden rounded-panel ring-1 ring-line ${surface}`} data-message-kind={`tool-${state}`}>
       <button type="button" onClick={toggle}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-700 transition-colors hover:bg-hover">
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-700 transition-colors hover:bg-hover max-sm:min-h-11">
         {running ? <Spinner size={12} className="text-accent" /> : <IconTool size={14} className="shrink-0 text-ink-300" />}
         <span className="shrink-0 font-medium">{block.name}</span>
         {preview !== "" && <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-700">{preview}</span>}

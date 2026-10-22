@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IconChevronDown, IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconRefresh } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconRefresh, IconX } from "@tabler/icons-react";
 import { DirectoryPicker } from "./DirectoryPicker";
 
 import { Button, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { Modal } from "./design/overlay";
+import { Modal, useDialogFocus } from "./design/overlay";
+import { useIsMobile } from "./use-mobile";
 import { isMarkdown } from "./fs-utils";
 
 type TreeEntry = { name: string; isDir: boolean };
@@ -19,7 +20,10 @@ const ROOT_KEY = "lifeos.fsRoot";
  * - 树：懒加载（展开才拉）+ 按路径缓存（不重拉）；刷新=清缓存并重拉根与所有已展开层；
  * - 本组件只负责树列本身，宽度由外层（App 面板布局）控制。
  */
-export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, name: string) => void; onHide?: () => void }) {
+export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: { onOpenFile: (path: string, name: string) => void; onHide?: () => void; hideLabel?: string }) {
+  const mobile = useIsMobile();
+  const panel = useRef<HTMLDivElement>(null);
+  useDialogFocus(panel, () => onHide?.(), { enabled: mobile && onHide !== undefined });
   const [root, setRoot] = useState<string | undefined>(undefined);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [entries, setEntries] = useState<Record<string, TreeEntry[]>>({});
@@ -120,7 +124,7 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
         return (
           <div key={childPath}>
             <button onClick={() => void toggle(childPath)}
-              className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900"
+              className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
               style={{ paddingLeft: 8 + depth * 14 }}>
               <IconChevronRight size={14}
                 className={`shrink-0 text-ink-500 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
@@ -144,7 +148,7 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
       }
       return (
         <button key={childPath} onClick={() => onOpenFile(childPath, entry.name)}
-          className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900"
+          className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
           style={{ paddingLeft: 8 + depth * 14 + 18 }}>
           {isMarkdown(entry.name)
             ? <IconFileText size={14} className="shrink-0 text-ink-500" />
@@ -175,16 +179,17 @@ export function FileTree({ onOpenFile, onHide }: { onOpenFile: (path: string, na
           </div>
         </Modal>
       )}
-      <div className="flex h-full min-h-0 flex-col bg-sunken">
+      <div ref={panel} role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label={mobile ? "文件" : undefined}
+        className="flex h-full min-h-0 flex-col bg-sunken">
         {/* 树列头（与三列同 40px）：根名 + 选择目录 + 刷新 + 收起 */}
-        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-3 pr-1">
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line pl-3 pr-1 max-sm:h-auto max-sm:min-h-12 max-sm:pt-safe">
           <button type="button" onClick={() => void openSwitcher()} title={root ?? ""}
-            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-control px-0.5 text-left text-micro text-ink-500 transition-colors hover:text-ink-900">
+            className="flex min-w-0 flex-1 items-center gap-0.5 rounded-control px-0.5 text-left text-micro text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
             <span className="min-w-0 truncate font-mono">· {rootLabel}</span>
             <IconChevronDown size={12} className="shrink-0" />
           </button>
           <IconButton label="刷新文件树" active={refreshing} onClick={() => void refresh()}><IconRefresh size={14} /></IconButton>
-          {onHide !== undefined && <IconButton size="sm" label="收起文件树" onClick={onHide}><IconChevronLeft size={16} /></IconButton>}
+          {onHide !== undefined && <IconButton size="sm" label={hideLabel} onClick={onHide}>{mobile ? <IconX size={16} /> : <IconChevronLeft size={16} />}</IconButton>}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
           {error !== null && <p className="px-2 py-3 text-center text-micro text-danger">{error}</p>}

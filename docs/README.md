@@ -20,6 +20,8 @@
 | [`requirements/agent-memory.md`](./requirements/agent-memory.md) | 记忆**需求**：场景、功能需求（FR）、权限、工具、缺口与测试验收 |
 | [`requirements/conversation.md`](./requirements/conversation.md) | 会话**需求**：固定状态条、4 步、tokens/速度、消息类型、自动跟随 |
 | [`design/frontend-spec.md`](./design/frontend-spec.md) | 统一前端设计与交互规范（所有页面） |
+| [`standards/frontend-development.md`](./standards/frontend-development.md) | 前端开发固定四步流程：核对规范 → 补规范 → 按规范开发 → 复盘 |
+| [`design/mobile.md`](./design/mobile.md) | 手机端布局与交互规范（返回/全屏表面/安全区/触控/PWA） |
 | [`design/chat.md`](./design/chat.md) | 主工作区页面设计（Agent × 项目 × 会话） |
 | [`design/file-browser.md`](./design/file-browser.md) | 文件浏览器页面设计 |
 | [`design/agent-config.md`](./design/agent-config.md) | Agent 配置页面设计（模态） |

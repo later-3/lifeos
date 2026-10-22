@@ -56,7 +56,7 @@ export function DirectoryPicker({ onCancel, onSelect, startPath }: {
 
   return (
     // 不写死用途：这个选择器同时用于「注册项目」与「切换文件根」。
-    <Modal title="选择目录" width={560} initialFocus={pathRef} onClose={() => { if (!busy) onCancel(); }}
+    <Modal title="选择目录" width={560} initialFocus={pathRef} fullScreen onClose={() => { if (!busy) onCancel(); }}
       footer={<>
         <span className="mr-auto flex min-w-0 items-center gap-2">
           <span className="min-w-0 truncate font-mono text-micro text-ink-500" title={currentPath}>{currentPath || "—"}</span>

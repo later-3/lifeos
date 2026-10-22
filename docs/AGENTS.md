@@ -1,6 +1,6 @@
 # docs/ 文档说明
 
-> 角色：文档地图　类型：索引/规则　状态：现状（2026-10-20）
+> 角色：文档地图　类型：索引/规则　状态：现状（2026-10-21）
 >
 > 本文件说明 `docs/` 下每类文档**管什么、不管什么、什么时候改**。它不是产品规范，也不替代 [`README.md`](./README.md) 的入口索引。
 > 写文档前先看这里；文档必须对开发/设计有价值，没有价值的直接删，不留“历史副本”。
@@ -13,7 +13,9 @@
 | `architecture/conversation.md` | 会话架构：TUI 对照、数据模型、事件、前后端分工、落地顺序 | 具体页面视觉/文案 | 会话数据流/事件变化时 |
 | `requirements/` | 需求：场景、功能、权限、验收 | 具体实现、页面布局 | 需求变化时 |
 | `requirements/conversation.md` | 会话功能需求：固定状态条、4 步、tokens/速度、消息类型、自动跟随 | 实现细节、组件 API | 会话需求变化时 |
+| `standards/frontend-development.md` | **前端开发流程**：四步门禁、规范覆盖表、参考证据分级、对象完整性、Agent 模拟验收 | 具体页面视觉/交互规则 | 流程变化时 |
 | `design/frontend-spec.md` | **统一前端设计与交互规范**：视觉基础、布局、数据呈现、关系表达、通用交互、组件、内容、a11y、模式、验证 | 单个页面的具体数据/交互/状态 | 跨页面规则变化时 |
+| `design/mobile.md` | **手机适配规范**：表面模型、导航/返回、全屏表面、触控、安全区、PWA、验收 | 桌面视觉/其他页面细节 | 手机布局/交互变化时 |
 | `design/<page>.md` | **单个页面的设计文档**：背景、数据、关系、任务、交互、布局、状态、范围外、设计验收 | 全局颜色/间距/控件规则；其他页面的数据 | 该页数据/关系/交互/状态变化时 |
 | `standards/reference-baseline.md` | 参考来源：场景 → 参考项目 → 文件/机制 → 借什么/不借什么 | 页面清单、pattern 库 | 页面/模式用到新参考时补一行 |
 | `standards/review.md` | 检视/评审流程：四类检视、结论分级、证据规则 | 前端设计规范 | 评审流程变化时 |
@@ -24,7 +26,9 @@
 
 | 文档 | 目标 | 读者 | 核心内容 |
 |---|---|---|---|
+| [`standards/frontend-development.md`](./standards/frontend-development.md) | 前端改动的固定执行顺序 | Agent、设计/开发、评审 | 四步门禁、覆盖表、参考证据、对象完整性、复盘、Agent 模拟验收 |
 | [`design/frontend-spec.md`](./design/frontend-spec.md) | 所有页面共同遵守 | Agent、设计/开发、评审 | 视觉基础、布局、数据呈现/关系、通用交互、组件、内容、a11y、交互模式、验证、页面模板 |
+| [`design/mobile.md`](./design/mobile.md) | 手机端布局与交互 | Agent、开发、评审 | 表面模型、导航/返回、全屏表面、触控、安全区、PWA、验收 |
 | [`design/chat.md`](./design/chat.md) | 主工作区页面 | Agent、开发、评审 | Agent/Project/Session/Message 的数据、关系、三列级联、聊天/历史交互、状态 |
 | [`design/file-browser.md`](./design/file-browser.md) | 文件浏览器页面 | Agent、开发、评审 | 文件树/查看器/页签/根切换的数据与交互 |
 | [`design/agent-config.md`](./design/agent-config.md) | Agent 配置模态 | Agent、开发、评审 | 背景、Agent/模型数据、关系、表单交互、状态、验收 |
@@ -49,21 +53,24 @@
 
 ## 4 开发前端时怎么读
 
-1. `docs/design/frontend-spec.md`：所有页面共同规则；
-2. 当前页面的 `docs/design/<page>.md`：本页数据/关系/交互/状态；
-3. 代码事实源：`design/tokens.css`、`design/ui.tsx`、`design/layout.ts`；
-4. 门禁：`AGENTS.md` 的 `pnpm verify` / `pnpm build`，以及 `frontend/test/ui-contract.mjs`。
+1. `docs/standards/frontend-development.md`：先做规范覆盖表，判断缺什么；
+2. `docs/design/frontend-spec.md`：所有页面共同规则；手机任务再读 `docs/design/mobile.md`；
+3. 当前页面的 `docs/design/<page>.md`：本页数据/关系/交互/状态；
+4. 代码事实源：`design/tokens.css`、`design/ui.tsx`、`design/layout.ts`；
+5. 门禁：`AGENTS.md` 的 `pnpm verify` / `pnpm build`，以及 `frontend/test/ui-contract.mjs`。
+
+没有规范覆盖表、参考证据或用户拍板，不进入代码。
 
 没有页面文档时：按 `frontend-spec.md` §10 的模板新建，先写背景；不要先写代码。
 
 ## 5 规范怎么落地
 
-- **正文只有一份**：`docs/design/frontend-spec.md` + `docs/design/<page>.md`，随代码进 Git，评审和代码一起做；
-- **注入点**：项目根 `AGENTS.md`（`src/assembly.ts` 作为“项目规范”加载）指向这两类文档；Agent 开工前按需读取，不把全文塞进 system prompt；
-- **项目共享层只放指针**：`~/.lifeos/projects/<projectId>/规范/前端开发/AGENTS.md` 指向示例实例里的 `docs/design/`；Life OS 本机用 `docs -> 仓库 docs` 的符号链接，只说明正文在哪，不复制正文；
+- **正文只有一份**：前端流程在 `docs/standards/frontend-development.md`，规范在 `docs/design/frontend-spec.md`，页面差异在 `docs/design/<page>.md`；随代码进 Git，评审和代码一起做；
+- **注入点**：项目根 `AGENTS.md`（`src/assembly.ts` 作为“项目规范”加载）先指向 `standards/frontend-development.md`，再指向规范/页面文档；Agent 开工前按需读取，不把全文塞进 system prompt；
+- **项目共享层只放指针**：`~/.lifeos/projects/<projectId>/规范/前端开发/AGENTS.md` 指向示例实例里的 `docs/standards/frontend-development.md` 与 `docs/design/`；Life OS 本机用 `docs -> 仓库 docs` 的符号链接，只说明正文在哪，不复制正文；
 - **通用 harness 不放本项目规范**：`~/.lifeos/interaction-harness/` 独立于任何具体项目（协议 §1），Life OS 前端规范不进通用层；发布时也不带 lifeos 示例；
 - **不另设“规范加载器”**：现有 `AGENTS.md` 注入 + 文件读取就是落地方式；避免全文注入的 token 成本和副本漂移；
-- **闭环**：读 spec + 页面文档 → 实现 → `pnpm verify`/`build` → 行为变化同轮更新页面文档。
+- **闭环**：读流程/规范/页面文档 → 规范覆盖表 → 缺则补 → 实现 → `pnpm verify`/`build` → 复盘并同轮更新文档。
 
 ## 6 新增/删除页面文档
 

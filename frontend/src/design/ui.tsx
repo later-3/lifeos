@@ -17,8 +17,8 @@ const VARIANT: Record<Variant, string> = {
 };
 
 const SIZE: Record<Size, string> = {
-  sm: "h-7 gap-1 px-2.5 text-meta",
-  md: "h-9 gap-1.5 px-3.5 text-body",
+  sm: "h-11 gap-1 px-2.5 text-meta sm:h-7",
+  md: "h-11 gap-1.5 px-3.5 text-body sm:h-9",
 };
 
 export function Button({ variant = "secondary", size = "md", className = "", children, ...rest }: {
@@ -36,7 +36,7 @@ export function Button({ variant = "secondary", size = "md", className = "", chi
 export function IconButton({ label, active = false, tone = "default", size = "md", className = "", children, ...rest }: {
   label: string; active?: boolean; tone?: "default" | "accent" | "solid"; size?: "sm" | "md" | "lg"; children: ReactNode;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "title">) {
-  const box = size === "lg" ? "h-8 w-8" : "h-7 w-7";
+  const box = size === "lg" ? "h-11 w-11 sm:h-8 sm:w-8" : "h-11 w-11 sm:h-7 sm:w-7";
   const look = tone === "solid"
     ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-500"
     : active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900";
@@ -78,7 +78,7 @@ export function Row({ selected = false, className = "", children, onClick }: {
       onKeyDown={onClick === undefined ? undefined : (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
       }}
-      className={`group flex h-8 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors ${
+      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors sm:h-8 ${
         selected ? "bg-surface font-medium text-ink-900 shadow-sm ring-1 ring-line" : "text-ink-700 hover:bg-hover"
       } ${className}`}>
       {children}

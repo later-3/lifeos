@@ -2,7 +2,7 @@
 
 > 角色：设计规范　类型：统一约束　状态：实施中（2026-10-20 重构）
 >
-> **所有页面遵守本文。** 页面专属的数据、关系、交互、状态写在 `docs/design/<page>.md`，不写在这里。
+> **所有页面遵守本文。** 开发前先走 [`docs/standards/frontend-development.md`](../standards/frontend-development.md) 的四步流程（先核对规范，缺则补）；页面专属的数据、关系、交互、状态写在 `docs/design/<page>.md`，不写在这里。
 > 数值只来自 `frontend/src/design/tokens.css`；控件只来自 `frontend/src/design/`；布局宽度只来自 `design/layout.ts`。
 > 历史与反例进 cases/flywheel，不在本文堆过程记录。
 
@@ -86,6 +86,16 @@ Life OS（~/.lifeos）
 - **布局决策矩阵**：页面类型 / 信息量 / 保存域 / 同任务参考 → 列 2–3 个布局方案 → 用户拍板；不靠实现者直觉。
 **自动检查**：目标尺寸/全宽导航/溢出；**人工评审**：信息层级、分组、鼠标移动距离（Fitts）。参考行只进 `reference-baseline.md`，不建第三份参考清单。
 
+### 3.2 移动端（手机 <640px）
+
+手机是独立布局和交互模式，不是桌面三列缩窄。完整规则见 [`mobile.md`](./mobile.md)，这里只保留入口约束：
+
+- 单主列；导航用全屏导航页（助手 → 项目 → 会话），会话页 header 有“返回项目”；
+- 系统返回/浏览器返回一次退一层；右边缘向左滑同义；根级再退才关闭；
+- 全屏表面有 header 返回/关闭、焦点陷阱、Esc、滚动锁、顶部/底部安全区；按钮必须在视口内；
+- 所有可点元素 ≥44×44；触屏关键动作不得 hover-only；
+- 消息区离开底部时显示“回到底部”箭头；Pi TUI 是基线，不低于它。
+
 ## 4 数据呈现与关系
 
 - **1:1**：字段组/设置区，标签在上、值在下；不拆成多列。
@@ -95,10 +105,13 @@ Life OS（~/.lifeos）
 - 列表/表格：行内数据只出现一次；数字列用 tabular-nums；长文本 truncate/line-clamp；日期/数字用 `Intl.*`。
 - 空态、加载态、错误态是数据呈现的一部分，不是事后补丁。
 - 页面文档必须写清：本页有哪些实体/字段、关系是什么、为什么这样表达。
+- 同一对象的动作和状态放在一起：消息动作在消息、轮次状态在轮次、文件动作在文件；不做跨区域的同名动作。
 
 ## 5 通用交互
 
 - **操作分层**：每个页面/单元最多一个主操作；立即生效的动作（如头像上传）必须单独标出，不能藏在“保存”语义下。
+- **对象完整性**：用户感知为一个对象的东西（一条消息、一轮对话、一个文件、一张表单）必须作为一个整体呈现；内部可分组/左右布局，但同一对象的信息、状态、动作不能散落到不相邻区域。`TurnStatusBar` 是“这一轮”的整体，不因内部布局拆成互不相关的控件。
+- **Pi TUI 基线**：会话页的滚动、回到底部、输入、状态能力不得低于当前 Pi TUI；差距登记 `docs/todo.md`，不以“前端更丰富”为理由缺失。
 - **动作挂在被作用的对象上**：作用于消息的动作在消息动作条；作用于“这一轮”的进度/失败在回复侧。
 - **可见性**：悬停出现的动作在触屏/无悬停设备常显；反馈期间保持可见；不挤布局。
 - **保存/脏/关闭**：有未保存改动时，关闭必须确认或保留草稿；不允许静默丢弃。
@@ -116,7 +129,7 @@ Life OS（~/.lifeos）
 ## 7 内容与可访问性
 
 - 文案用用户语言：按钮用动词（“保存基础信息”），错误说“发生了什么 + 怎么恢复”，不把 `agent.json`/`identity.md` 这类实现路径放主界面。
-- 状态条/数据文案：符号/图标必须带 `tooltip` 或图例；裸的 `↑/↓` 不允许，但“符号 + tooltip”可以（`↑` 输入、`↓` 输出、`◔` 上下文、`⚡` 速度）。当前会话内不再加“本轮”前缀。
+- 状态条/数据文案：符号/图标必须带 `tooltip` 或图例；触屏没有 hover，必须提供可点击的图例入口（如 `?`）。裸的 `↑/↓` 不允许，但“符号 + tooltip”可以（`↑` 输入、`↓` 输出、`◔` 上下文、`⚡` 速度）。当前会话内不再加“本轮”前缀。
 - 空态/错误态文案属于设计内容，不是占位。
 - 表单控件有 label/可访问名；图标按钮有 `aria-label`；Tab/Dialog 按 WAI-ARIA APG；对比度满足 WCAG。
 - 装饰图标 `aria-hidden`；异步提示用 `aria-live`。
@@ -145,7 +158,7 @@ Life OS（~/.lifeos）
 提交前必须全绿：
 
 ```bash
-pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm build
+pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:jump && pnpm test:pwa && pnpm build
 ```
 
 | 闸 | 拦什么 |
@@ -167,7 +180,7 @@ pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm build
 | 1 | **意图 / 数据·关系 / 模式** | 写代码前 | 页面文档写背景、用户任务、主操作/立即生效、明确不做；写数据（实体/字段/来源）、关系（1:1/1:N/N:M/层级及表达）、交互；选模式并写差异 | 没写不写代码 |
 | 2 | **WIG** | 合并前 | 用 Vercel Web Interface Guidelines 审改动：表单 label/name/autocomplete、焦点、错误、文案、反模式；输出 `file:line` | P1 必修 |
 | 3 | **APG / WCAG + axe** | 合并前 | Tab/Dialog 按 WAI-ARIA APG；axe 无 serious/critical；键盘走查 | P0/P1 必修 |
-| 4 | **Playwright 状态/数据** | 合并前 | 加载未完成禁写、接口失败有出口、脏关闭不丢、保存中、375/768/1280 无溢出 | P0/P1 必修 |
+| 4 | **Playwright 状态/数据** | 合并前 | 加载未完成禁写、接口失败有出口、脏关闭不丢、保存中、360/390/430 手机 + 1280 桌面无溢出 | P0/P1 必修 |
 | 5 | **NN/g + 截图** | 新页面/新模式 | 三宽度截图；选 5–6 条 NN/g；证据 + 结论；人签字 | 不签字不算完成 |
 
 来源：WIG `https://github.com/vercel-labs/web-interface-guidelines`；APG `https://www.w3.org/WAI/ARIA/apg/`；axe-core；NN/g 10 heuristics；WCAG 2.5.8/2.5.5、Apple HIG、Material 3、Adobe Spectrum（目标尺寸）。

@@ -27,8 +27,17 @@ Life OS 不在公网监听端口。远程访问由三段组成：
 
 - 地址：`https://lifeos.ai4child.asia`
 - 身份：使用 Access 策略允许的邮箱接收 One-time PIN，输入后进入；不需要 VPN 或客户端。
-- 手机在蜂窝网下打开同一地址，走同一登录流程（待手机复测）。
+- 手机在蜂窝网下打开同一地址，走同一登录流程（用户 2026-10-22 确认可访问；安装见 §2.1）。
 - 局域网直连 `192.168.x.x:43120` 不可用，这是绑定 `127.0.0.1` 的预期结果。
+
+### 2.1 安装为 PWA
+
+- `frontend/public/manifest.webmanifest`：`display=standalone`、`start_url=/`、192/512 + maskable 图标；
+- **Cloudflare Access 后必须用** `<link rel="manifest" crossorigin="use-credentials">`：浏览器默认无凭据抓 manifest，会被 302 到登录页并以 CORS 失败；这就是“只能创建快捷方式”的常见原因；
+- `frontend/public/sw.js`：只缓存同源 GET 壳，`/api/*` 与 SSE 走网络；`frontend/src/main.tsx` 只在构建产物注册；
+- iOS Safari：分享 → 添加到主屏幕；`apple-touch-icon` 与 `apple-mobile-web-app-capable` 已提供；
+- Android Chrome：manifest + service worker + HTTPS 满足后显示“安装应用”，不再只显示“创建快捷方式”；
+- 若仍只有快捷方式：先查 manifest `content-type`、图标尺寸、SW 是否注册、页面是否仍被 Access 重定向。
 
 ## 3 进程与可用性
 

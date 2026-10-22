@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { IconX } from "@tabler/icons-react";
 import { Button, IconButton } from "./ui";
+import { useIsMobile } from "../use-mobile";
 
 /**
  * 模态与确认框（前端开发路径 · 闸 3：键盘断言依赖这里的焦点陷阱 / aria-modal / Esc）。
@@ -10,27 +11,26 @@ import { Button, IconButton } from "./ui";
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-export function Modal({ title, subtitle, icon, onClose, children, footer, width = 640, initialFocus }: {
-  title: string; subtitle?: string; icon?: ReactNode; onClose: () => void;
-  children: ReactNode; footer?: ReactNode; width?: number;
-  /** 打开时聚焦的控件（如目录选择器的路径输入框）。不传则兜底到第一个可聚焦元素。 */
-  initialFocus?: { current: HTMLElement | null };
-}) {
-  const panel = useRef<HTMLDivElement>(null);
-  // onClose 每次渲染都是新函数：放进 ref，effect 只在挂载时跑一次。
-  // 否则每次按键/渲染都会重跑 effect → 把焦点从输入框拽回第一个可聚焦元素（之前退回"关闭按钮"，
-  // 导致在目录选择器里打字/退格都落到 X 上）。参照 Pi Web DirectoryPicker：输入框 autoFocus、陷阱只处理 Tab。
+/**
+ * 全屏表面共用的焦点契约：打开时进入、Tab 循环、Esc 关闭、锁背景滚动、关闭后还焦点。
+ * Modal 和手机全屏面板共用，避免每个面板各写一套（之前 MobileNav/历史/文件各自裸 div）。
+ */
+export function useDialogFocus(
+  panel: { current: HTMLElement | null },
+  onClose: () => void,
+  options?: { initialFocus?: { current: HTMLElement | null }; enabled?: boolean },
+): void {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-
+  const enabled = options?.enabled ?? true;
+  const initialFocus = options?.initialFocus;
   useEffect(() => {
+    if (!enabled) return;
     const previous = document.activeElement as HTMLElement | null;
     const node = panel.current;
-    // 打开对话框时锁住背景滚动（标准做法）：否则滚轮会滚到后面的页面（用户 2026-10-19 反馈）
     const previousBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const list = () => [...(node?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
-    // 初始焦点：显式指定 > 子元素自带的 autoFocus（焦点已在面板内）> 兜底第一个可聚焦元素。
     const preferred = initialFocus?.current;
     if (preferred !== undefined && preferred !== null) preferred.focus();
     else if (node !== null && !node.contains(document.activeElement)) (list()[0] ?? node)?.focus();
@@ -51,16 +51,31 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
       document.body.style.overflow = previousBodyOverflow;
       previous?.focus();
     };
+    // 只在开关时建立；onClose 走 ref，避免每次渲染把焦点拽回去。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [enabled]);
+}
+
+export function Modal({ title, subtitle, icon, onClose, children, footer, width = 640, initialFocus, fullScreen = false }: {
+  title: string; subtitle?: string; icon?: ReactNode; onClose: () => void;
+  children: ReactNode; footer?: ReactNode; width?: number;
+  /** 打开时聚焦的控件（如目录选择器的路径输入框）。不传则兜底到第一个可聚焦元素。 */
+  initialFocus?: { current: HTMLElement | null };
+  /** 手机上全屏 sheet（桌面仍是 width 模态）。 */
+  fullScreen?: boolean;
+}) {
+  const mobile = useIsMobile();
+  const full = fullScreen && mobile;
+  const panel = useRef<HTMLDivElement>(null);
+  useDialogFocus(panel, onClose, initialFocus === undefined ? {} : { initialFocus });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/35 p-3 backdrop-blur-[2px]"
+    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-ink-900/35 backdrop-blur-[2px] ${full ? "p-0" : "p-3"}`}
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={panel} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}
-        style={{ maxWidth: width, maxHeight: "calc(100dvh - 24px)" }}
-        className="flex w-full flex-col overflow-hidden rounded-panel bg-surface shadow-xl ring-1 ring-ink-900/10">
-        <header className="flex shrink-0 items-center gap-3 border-b border-line bg-sunken px-5 py-3">
+        style={{ maxWidth: full ? undefined : width, maxHeight: full ? "100dvh" : "calc(100dvh - 24px)" }}
+        className={`flex w-full flex-col overflow-hidden bg-surface shadow-xl ring-1 ring-ink-900/10 ${full ? "h-full rounded-none" : "rounded-panel"}`}>
+        <header className={`flex shrink-0 items-center gap-3 border-b border-line bg-sunken px-5 py-3 ${full ? "pt-safe" : ""}`}>
           {icon}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-body font-semibold text-ink-900">{title}</h2>
@@ -70,7 +85,7 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5 pt-4">{children}</div>
         {footer !== undefined && (
-          <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer>
+          <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 pt-3 pb-safe sm:pb-3">{footer}</footer>
         )}
       </div>
     </div>

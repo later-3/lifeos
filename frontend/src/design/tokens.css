@@ -67,6 +67,16 @@
   }
 }
 
+/* 手机安全区：composer/全屏 sheet 的底部至少 1rem，再叠加 home indicator。 */
+@utility pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* 全面屏顶部安全区：全屏 header/面板顶部使用；桌面 env 为 0，不改变布局。 */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+
 /* 配置弹窗的内容区最小高度：两个 tab 切换时不跳（数值收口在这里）。 */
 @utility min-h-panel {
   min-height: 35rem;

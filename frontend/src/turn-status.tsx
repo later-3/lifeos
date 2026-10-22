@@ -1,4 +1,7 @@
+import { IconInfoCircle } from "@tabler/icons-react";
 import { WorkingRow } from "./Message";
+import { IconButton } from "./design/ui";
+import { useToast } from "./design/toast";
 import type { Phase } from "./stream-blocks";
 import { compactTokens, type TurnStep } from "./working";
 
@@ -36,6 +39,7 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
   usage?: Usage;
   context?: Context | null;
 }) {
+  const toast = useToast();
   const hasUsage = usage !== undefined && usage.totalTokens > 0;
   if (!busy && status === undefined && metrics === undefined && !hasUsage) return null;
   return (
@@ -66,6 +70,10 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
             value={context.percent === null ? "?" : `${context.percent.toFixed(1)}%`} label="上下文"
             title={`上下文占用 ${context.percent === null ? "未知" : `${context.percent.toFixed(1)}%`} / ${compactTokens(context.window)}`} />
         )}
+        <IconButton label="状态条说明" size="sm"
+          onClick={() => toast("↑ 输入 tokens · ↓ 输出 tokens · ◔ 上下文占用 · ⚡ 上一轮输出速度")}>
+          <IconInfoCircle size={14} />
+        </IconButton>
       </div>
     </div>
   );

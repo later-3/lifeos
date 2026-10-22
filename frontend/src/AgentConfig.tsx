@@ -268,7 +268,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
 
   return (
     <>
-      <Modal title="配置助手" onClose={requestClose} width={640} initialFocus={nameRef}
+      <Modal title="配置助手" onClose={requestClose} width={640} initialFocus={nameRef} fullScreen
         icon={<AgentAvatar id={agent.id} name={name || agent.name} avatar={avatar} size={32} />}
         footer={<>
           <span className="mr-auto text-micro text-ink-500">基础信息保存后立即生效</span>
@@ -326,7 +326,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
                     <span className="text-micro text-ink-500" />
                     <span className="text-micro text-ink-500">{models?.providers.length ?? 0} 个服务 · {modelCount} 个模型</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field label="服务">
                       <select name="agent-provider" className={`${controlClass} h-9`} value={provider}
                         onChange={(event) => {

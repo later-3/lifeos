@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconPencil, IconPlus, IconTrash, IconX,
+  IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
+  IconMenu2, IconPencil, IconPlus, IconTrash, IconX,
 } from "@tabler/icons-react";
 import { useFold } from "./design/fold";
 import { useToast } from "./design/toast";
@@ -16,6 +16,8 @@ import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
 import { TurnStatusBar } from "./turn-status";
+import { MobileNav, type Level } from "./mobile-nav";
+import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { resendPlan } from "./resend";
 import { failureLabel, type FailureKind } from "./failure-text";
 import type { TurnStep } from "./working";
@@ -130,6 +132,12 @@ export default function App() {
   const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();
+  const isMobile = useIsMobile();
+  const [mobileNav, setMobileNav] = useState(false);
+  const [mobileNavLevel, setMobileNavLevel] = useState<Level>("agents");
+  const mobileHistoryPushed = useRef(false);
+  const ignoreMobilePop = useRef(false);
+  useAppHeight();
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
   // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
   const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
@@ -149,6 +157,7 @@ export default function App() {
   const streaming = useRef(false);
   const scrollRef = useRef<HTMLElement>(null);
   const followTail = useRef(true);
+  const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
@@ -177,6 +186,17 @@ export default function App() {
     el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  /** 回到最新：只在用户离开底部时出现；点击后恢复跟随。 */
+  function jumpToLatest() {
+    const el = scrollRef.current;
+    followTail.current = true;
+    setAtBottom(true);
+    if (el === null) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) el.scrollTop = el.scrollHeight;
+    else el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }
+
   useEffect(() => {
     // URL 三键反映当前状态：切到"没有会话的项目"也要更新（否则刷新会退回旧项目/旧会话）
     if (agent === undefined) return;
@@ -184,8 +204,82 @@ export default function App() {
     params.set("agent", agent.id);
     if (selectedProjectId !== undefined) params.set("project", selectedProjectId);
     if (sessionId !== undefined) params.set("session", sessionId);
-    window.history.replaceState(null, "", `?${params.toString()}`);
+    window.history.replaceState(window.history.state, "", `?${params.toString()}`);
   }, [agent?.id, selectedProjectId, sessionId]);
+
+  // 手机表面统一进浏览器 history：nav/history/file 至少各有一个可退的 sentinel。
+  // 内部层级变化复用同一个 sentinel；系统返回时退一层，再补一个 sentinel，直到根级关闭。
+  const mobileSurface = mobileNav ? "nav" : history !== undefined ? "history" : panelOpen ? "file" : undefined;
+  useEffect(() => {
+    if (!isMobile) return;
+    if (mobileSurface === undefined) { mobileHistoryPushed.current = false; return; }
+    const state = { ...(window.history.state ?? {}), lifeosMobile: mobileSurface };
+    if (!mobileHistoryPushed.current) {
+      window.history.pushState(state, "", window.location.href);
+      mobileHistoryPushed.current = true;
+    } else {
+      window.history.replaceState(state, "", window.location.href);
+    }
+  }, [isMobile, mobileSurface]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const onPop = () => {
+      if (ignoreMobilePop.current) { ignoreMobilePop.current = false; mobileHistoryPushed.current = false; return; }
+      if (mobileNav) {
+        if (mobileNavLevel !== "agents") {
+          setMobileNavLevel(mobileNavLevel === "sessions" ? "projects" : "agents");
+          window.history.pushState({ ...(window.history.state ?? {}), lifeosMobile: "nav" }, "", window.location.href);
+          mobileHistoryPushed.current = true;
+        } else {
+          setMobileNav(false);
+          mobileHistoryPushed.current = false;
+        }
+        return;
+      }
+      if (history !== undefined) { setHistory(undefined); mobileHistoryPushed.current = false; return; }
+      if (panelOpen) { setPanelOpen(false); mobileHistoryPushed.current = false; }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [isMobile, mobileNav, mobileNavLevel, history, panelOpen, setPanelOpen]);
+
+  /** 关闭手机表面：先把状态关掉，再消费 sentinel，避免把应用本身退出。 */
+  function dismissMobile(close: () => void) {
+    close();
+    if (isMobile && mobileHistoryPushed.current) {
+      ignoreMobilePop.current = true;
+      mobileHistoryPushed.current = false;
+      window.history.back();
+    }
+  }
+
+  /** 手机导航返回：优先消费浏览器历史（系统返回/边缘滑动同一套）；根级关闭。 */
+  function mobileNavBack() {
+    if (mobileNavLevel === "agents") { dismissMobile(() => setMobileNav(false)); return; }
+    if (mobileHistoryPushed.current) window.history.back();
+    else setMobileNavLevel(mobileNavLevel === "sessions" ? "projects" : "agents");
+  }
+
+  // 右边缘向左滑：和系统返回共用 sentinel；只在已有手机表面时触发，不会退出应用。
+  useEdgeBack(isMobile, () => {
+    if (mobileHistoryPushed.current) window.history.back();
+    else if (mobileNav) mobileNavBack();
+    else if (history !== undefined) closeHistory();
+    else if (panelOpen) closeFilePanel();
+  });
+
+  /** 手机导航入口：有会话时是“返回项目”，无会话时是“打开导航”；都从语义父级开始。 */
+  function openMobileNav(level: Level = "agents") {
+    if (!isMobile) return;
+    setMobileNavLevel(level);
+    setMobileNav(true);
+  }
+
+  /** 文件面板关闭入口：手机需要消费 history sentinel。 */
+  function closeFilePanel() {
+    dismissMobile(() => setPanelOpen(false));
+  }
 
   /** 打开完整历史：并排优先；若当前列宽下放不下（history=0），临时把左三列收进导航轨，关闭时恢复。 */
   function openHistory(sid: string, name: string) {
@@ -200,12 +294,14 @@ export default function App() {
     setHistory({ sessionId: sid, title: name });
   }
   function closeHistory() {
-    setHistory(undefined);
-    const previous = restoreFolds.current;
-    if (previous !== undefined) {
-      restoreFolds.current = undefined;
-      setShowNav(previous.nav); setShowProjects(previous.projects); setShowSessions(previous.sessions);
-    }
+    dismissMobile(() => {
+      setHistory(undefined);
+      const previous = restoreFolds.current;
+      if (previous !== undefined) {
+        restoreFolds.current = undefined;
+        setShowNav(previous.nav); setShowProjects(previous.projects); setShowSessions(previous.sessions);
+      }
+    });
   }
 
   // 窗口变窄导致历史列放不下：自动收左三列（保持并排），收起面板
@@ -218,7 +314,7 @@ export default function App() {
   }, [history, box.history, showNav, showProjects, showSessions, setShowNav, setShowProjects, setShowSessions]);
 
   // 面板放不下就收起（视口挤压保护）
-  useEffect(() => { if (panelOpen && !box.panelFits) setPanelOpen(false); }, [panelOpen, box.panelFits, setPanelOpen]);
+  useEffect(() => { if (!isMobile && panelOpen && !box.panelFits) setPanelOpen(false); }, [isMobile, panelOpen, box.panelFits, setPanelOpen]);
 
   // 输入框自适应高度（1–8 行）
   useEffect(() => {
@@ -241,6 +337,7 @@ export default function App() {
       messages: Message[]; meta?: SessionMeta;
     };
     followTail.current = true;
+    setAtBottom(true);
     setMessages(data.messages ?? []);
     if (data.meta !== undefined) setMeta(data.meta);
     if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
@@ -657,6 +754,7 @@ export default function App() {
     setBusy(true);
     streaming.current = true;
     followTail.current = true;
+    setAtBottom(true);
     setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }, { role: "assistant", text: "", blocks: [], streaming: true }]);
     const fail = (message: string) => {
       setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
@@ -1036,15 +1134,20 @@ export default function App() {
   const headerModel = sessionId !== undefined ? meta?.model : agentDefaultModel;
 
   return (
-    <div className="relative flex h-dvh bg-surface text-ink-900">
-      <NavRail items={railItems} />
+    <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>
+      {!isMobile && <NavRail items={railItems} />}
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
-      {!box.overlayLeft && leftColumns}
+      {!isMobile && !box.overlayLeft && leftColumns}
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
-      <div className="flex h-dvh min-w-0 flex-1 flex-col bg-surface">
-        <header className="flex h-11 shrink-0 items-center gap-2 px-4">
+      <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
+        <header className="flex h-11 shrink-0 items-center gap-2 px-4 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
+          {isMobile && (sessionId !== undefined ? (
+            <IconButton label="返回项目" onClick={() => openMobileNav("projects")}><IconArrowLeft size={18} /></IconButton>
+          ) : (
+            <IconButton label="打开导航" onClick={() => openMobileNav("agents")}><IconMenu2 size={18} /></IconButton>
+          ))}
           <div className="min-w-0">
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
@@ -1058,37 +1161,54 @@ export default function App() {
             <IconHistory size={16} />
           </IconButton>
           <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
-            onClick={() => { if (!panelOpen && history !== undefined) closeHistory(); setPanelOpen(!panelOpen); }}>
+            onClick={() => {
+              if (!panelOpen && history !== undefined) closeHistory();
+              if (!panelOpen && isMobile && fileTabs.length === 0) setShowTree(true);
+              if (panelOpen) closeFilePanel(); else setPanelOpen(true);
+            }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
         </header>
 
-        <main ref={scrollRef}
-          onScroll={(event) => {
-            const node = event.currentTarget;
-            followTail.current = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
-          }}
-          className="min-h-0 w-full flex-1 overflow-y-auto px-6 py-5">
-          <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
-            {sessionId === undefined && (selectedProjectId === undefined
-              ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
-              : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
-            {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
-            {messages.map((message, index) => {
-              // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
-              const plan = resend?.index === index ? resend : undefined;
-              return (
-                <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
-                  {...(message.error !== undefined ? { error: message.error } : {})}
-                  {...(message.failure !== undefined ? { failure: message.failure } : {})}
-                  {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
-              );
-            })}
-          </div>
-        </main>
+        <div className="relative min-h-0 flex-1">
+          <main ref={scrollRef}
+            onScroll={(event) => {
+              const node = event.currentTarget;
+              const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
+              followTail.current = bottom;
+              setAtBottom(bottom);
+            }}
+            className="h-full w-full overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+            <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
+              {sessionId === undefined && (selectedProjectId === undefined
+                ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
+                : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
+              {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
+              {messages.map((message, index) => {
+                // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
+                const plan = resend?.index === index ? resend : undefined;
+                return (
+                  <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
+                    {...(message.error !== undefined ? { error: message.error } : {})}
+                    {...(message.failure !== undefined ? { failure: message.failure } : {})}
+                    {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
+                );
+              })}
+            </div>
+          </main>
+          {!atBottom && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+              <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"
+                onClick={jumpToLatest}
+                className="pointer-events-auto rounded-full border border-line bg-surface shadow-md sm:h-9 sm:w-9">
+                <IconArrowDown size={16} />
+              </IconButton>
+            </div>
+          )}
+        </div>
 
         {/* 固定状态条：在消息滚动区外、输入框上方；位置不随消息滚动 */}
-        <div className="shrink-0 px-6" data-testid="turn-status-bar">
+        <div className="shrink-0 px-4 sm:px-6" data-testid="turn-status-bar">
           <TurnStatusBar busy={busy} step={turnStep} phase={phase}
             {...(activeTool !== undefined ? { activeTool } : {})}
             {...(retry !== undefined ? { retry } : {})}
@@ -1098,7 +1218,7 @@ export default function App() {
             {...(meta?.context !== undefined ? { context: meta.context } : {})} />
         </div>
 
-        <footer className="shrink-0 px-6 pb-4">
+        <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
             {palette !== undefined && (
               <div className="mb-1.5 max-h-56 overflow-y-auto overflow-hidden rounded-panel bg-surface p-1 shadow-sm ring-1 ring-line">
@@ -1185,10 +1305,11 @@ export default function App() {
       </div>
 
       {/* 完整历史 · 右侧并列列 */}
-      {history !== undefined && box.history > 0 && (
+      {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          <DragHandle onStart={(event) => beginDrag("c5", event)} />
-          <aside style={{ width: box.history }} className="flex shrink-0 overflow-hidden">
+          {!isMobile && <DragHandle onStart={(event) => beginDrag("c5", event)} />}
+          <aside style={{ width: isMobile ? "100%" : box.history }}
+            className={`flex shrink-0 overflow-hidden ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
             <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
               agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
           </aside>
@@ -1196,26 +1317,45 @@ export default function App() {
       )}
 
       {/* 右侧文件面板 */}
-      {panelOpen && box.panel > 0 && (
+      {panelOpen && (isMobile || box.panel > 0) && (
         <>
-          <DragHandle onStart={(event) => beginDrag("c4", event)} />
-          <aside style={{ width: box.panel }} className="flex shrink-0 overflow-hidden bg-surface">
-            {showTree ? (
-              <>
-                <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
-                  <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+          {!isMobile && <DragHandle onStart={(event) => beginDrag("c4", event)} />}
+          <aside style={{ width: isMobile ? "100%" : box.panel }}
+            className={`flex shrink-0 overflow-hidden bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+            {isMobile ? (
+              showTree ? (
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                  <FileTree onOpenFile={(path, name) => { openFile(path, name); setShowTree(false); }}
+                    onHide={closeFilePanel} hideLabel="关闭文件面板" />
                 </div>
-                <DragHandle onStart={(event) => beginDrag("c4t", event)} />
-              </>
+              ) : (
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <FilePanel tabs={fileTabs} activeId={activeFileTabId}
+                    onSelectTab={setActiveFileTabId} onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs}
+                    onClose={closeFilePanel} onShowTree={() => setShowTree(true)} />
+                </div>
+              )
             ) : (
-              <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-sunken py-1.5">
-                <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
-              </nav>
+              <>
+                {showTree ? (
+                  <>
+                    <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
+                      <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+                    </div>
+                    <DragHandle onStart={(event) => beginDrag("c4t", event)} />
+                  </>
+                ) : (
+                  <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-sunken py-1.5">
+                    <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
+                  </nav>
+                )}
+                <div className="min-w-0 flex-1 overflow-hidden">
+                  <FilePanel tabs={fileTabs} activeId={activeFileTabId}
+                    onSelectTab={setActiveFileTabId} onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs}
+                    onClose={closeFilePanel} onShowTree={() => setShowTree(true)} />
+                </div>
+              </>
             )}
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <FilePanel tabs={fileTabs} activeId={activeFileTabId}
-                onSelectTab={setActiveFileTabId} onCloseTab={closeFileTab} onPrefsChange={updateTabPrefs} />
-            </div>
           </aside>
         </>
       )}
@@ -1240,7 +1380,7 @@ export default function App() {
       )}
 
       {/* 窄窗口：左三列浮层（点空白处收起全部；参照 Pi Web / 通用 AppShell 的 overlay 抽屉） */}
-      {box.overlayLeft && anyLeftOpen && (
+      {!isMobile && box.overlayLeft && anyLeftOpen && (
         <>
           <div className="absolute inset-0 z-20 bg-ink-900/20" onClick={closeAllLeft} aria-hidden="true" />
           <div className="absolute inset-y-0 left-11 right-0 z-30 flex overflow-x-auto shadow-lg">
@@ -1248,6 +1388,20 @@ export default function App() {
           </div>
         </>
       )}
+
+      <MobileNav open={isMobile && mobileNav} level={mobileNavLevel}
+        onLevelChange={setMobileNavLevel}
+        onBack={mobileNavBack}
+        onClose={() => dismissMobile(() => setMobileNav(false))}
+        agents={agents} groups={groups} {...(agent !== undefined ? { agent } : {})}
+        {...(selectedProjectId !== undefined ? { projectId: selectedProjectId } : {})}
+        {...(sessionId !== undefined ? { sessionId } : {})}
+        onSelectAgent={async (item) => { const full = agents.find((entry) => entry.id === item.id); if (full !== undefined) await selectAgent(full); }}
+        onSelectProject={async (project) => { const full = groups.find((group) => group.project.id === project.id)?.project; if (full !== undefined) await selectProject(full); }}
+        onOpenSession={(sid) => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) void openSession(agent, sid); }}
+        onNewSession={() => { dismissMobile(() => setMobileNav(false)); void newSession(); }}
+        onAddProject={() => { dismissMobile(() => setMobileNav(false)); setAddingProject(true); }}
+        onConfigAgent={() => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) setConfigAgent(agent); }} />
     </div>
   );
 }

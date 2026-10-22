@@ -25,7 +25,10 @@
     "test:ui": "node frontend/test/ui-contract.mjs",
     "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui"
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:jump && pnpm test:pwa",
+    "test:mobile": "node frontend/test/mobile-contract.mjs",
+    "test:jump": "node frontend/test/jump-to-latest.mjs",
+    "test:pwa": "node frontend/test/pwa-contract.mjs"
   },
   "type": "module",
   "devDependencies": {

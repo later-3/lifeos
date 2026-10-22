@@ -3,7 +3,9 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { IconCopy, IconFile, IconFileText, IconTextWrap, IconX } from "@tabler/icons-react";
 import { isMarkdown } from "./fs-utils";
-import { EmptyState, IconButton, Segmented } from "./design/ui";
+import { Button, EmptyState, IconButton, Segmented } from "./design/ui";
+import { useDialogFocus } from "./design/overlay";
+import { useIsMobile } from "./use-mobile";
 
 export type FileTab = { id: string; fileName: string; filePath: string; mode?: "render" | "source"; wrap?: boolean };
 type FileData = { content: string; size: number; truncated: boolean; isBinary: boolean };
@@ -22,14 +24,19 @@ function formatSize(bytes: number): string {
  * + FileViewer（路径/大小/渲染·源码·换行切换/复制；md 渲染、源码行号）。
  * 性能：内容按路径缓存（切页签不重拉）；滚动位置只存本组件 ref（不触发全局重渲染）。
  */
-export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChange }: {
+export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChange, onClose, onShowTree }: {
   tabs: FileTab[];
   activeId?: string;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onPrefsChange: (id: string, prefs: { mode?: "render" | "source"; wrap?: boolean }) => void;
+  onClose?: () => void;
+  onShowTree?: () => void;
 }) {
   const active = tabs.find((tab) => tab.id === activeId);
+  const mobile = useIsMobile();
+  const panel = useRef<HTMLDivElement>(null);
+  useDialogFocus(panel, () => onClose?.(), { enabled: mobile && onClose !== undefined });
   const contents = useRef(new Map<string, FileData>());          // 按路径缓存：切页签不重拉
   const prefs = useRef(new Map<string, { mode?: "render" | "source"; wrap?: boolean; scrollTop: number }>());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -108,9 +115,14 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
   const mono = "font-mono text-micro text-ink-500 truncate";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface">
+    <div ref={panel} role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label={mobile ? "文件面板" : undefined}
+      className="flex h-full min-h-0 flex-col bg-surface">
       {/* 页签行（32px）：图标 + 名 + ×（hover 出现），中键关闭；激活页签用 2px accent 下划线 */}
-      <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-line bg-sunken">
+      <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-line bg-sunken max-sm:h-auto max-sm:min-h-12 max-sm:pt-safe">
+        {onShowTree !== undefined && (
+          <Button variant="ghost" size="sm" className="h-11 shrink-0 rounded-none border-r border-line px-3 sm:hidden"
+            aria-label="返回文件树" onClick={onShowTree}>文件</Button>
+        )}
         {tabs.map((tab) => {
           const isActive = tab.id === activeId;
           return (
@@ -118,18 +130,22 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
               onClick={() => onSelectTab(tab.id)}
               onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); onCloseTab(tab.id); } }}
               title={tab.filePath}
-              className={`group relative flex h-8 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
+              className={`group relative flex h-8 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors max-sm:h-11 ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
               {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
               {isMarkdown(tab.fileName) ? <IconFileText size={14} className="shrink-0" /> : <IconFile size={14} className="shrink-0" />}
               <span className="truncate">{tab.fileName}</span>
               <button aria-label={`关闭 ${tab.fileName}`} title="关闭" tabIndex={isActive ? 0 : -1}
                 onClick={(event) => { event.stopPropagation(); onCloseTab(tab.id); }}
-                className="rounded p-0.5 text-ink-300 opacity-0 transition-opacity hover:bg-hover hover:text-ink-700 group-hover:opacity-100 focus-visible:opacity-100">
+                className="flex h-11 w-11 items-center justify-center rounded p-0 text-ink-300 opacity-100 transition-opacity hover:bg-hover hover:text-ink-700 focus-visible:opacity-100 sm:h-auto sm:w-auto sm:p-0.5 sm:opacity-0 sm:group-hover:opacity-100">
                 <IconX size={14} />
               </button>
             </div>
           );
         })}
+        {onClose !== undefined && (
+          <Button variant="ghost" size="sm" className="ml-auto h-11 shrink-0 rounded-none border-l border-line px-3 sm:hidden"
+            aria-label="关闭文件面板" onClick={onClose}>关闭</Button>
+        )}
       </div>
 
       {/* 查看器 */}
