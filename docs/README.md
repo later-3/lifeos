@@ -2,6 +2,8 @@
 
 > 角色：总入口　类型：索引　状态：现状
 
+> **协议正文不在 `docs/`**：交互 harness 协议的唯一正文是仓库模板 `.lifeos/interaction-harness/protocol.md`（安装副本 `~/.lifeos/interaction-harness/protocol.md`）。`docs/` 只写 Life OS 的实现与开发规范，不复制协议条文；需要引用时写路径与章节号。
+
 三条规矩（用户 2026-10-18 定）：
 
 1. **只写现在的事实**：文档与代码不一致时以代码为准，并且**当场**把文档改对或删掉；写不进代码依据的话不写。

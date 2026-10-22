@@ -16,13 +16,14 @@
 ```
 Life OS（~/.lifeos）
 ├─ 系统配置 config/（models/settings，跨 Agent，不属于任何 Agent）
-├─ 通用层 interaction-harness/（协议/规范/飞轮/概念/任务类型）
+├─ 通用层 interaction-harness/（协议/飞轮/概念/任务类型）
+├─ 共享 workspace projects/workspace/specs/（全 Agent 规范）
 ├─ agents/
 │  └─ <agentId>/
 │     ├─ Agent { id, name, defaultProjectId, defaultSessionId, avatar }
 │     ├─ memory/（Agent 记忆，跨项目）
 │     └─ projects/<全局 projectId>/（绑定：sessions、daily、cases、todo、agent 的项目记忆）
-└─ projects/<projectId>/（全局项目：project.json、项目共享记忆、规范）
+└─ projects/<projectId>/（全局项目：project.json、共享记忆、specs；workspace 为共享层）
 ```
 
 - **Agent N:M Project**（通过绑定目录；同一项目可被多个 Agent 绑定，一个 Agent 可有多个项目）；但**当前页面的 Agent → Project 是 1:N**；

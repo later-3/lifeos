@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "type": "development",
+  "categories": {
+    "A": {
+      "label": "A 改产品行为",
+      "extraDirs": ["phases"],
+      "docs": [
+        { "file": "01-background.md", "title": "01 背景", "sections": ["现状事实（文件/命令/实测）", "完成标准（可验收）"] },
+        { "file": "02-design.md", "title": "02 设计", "sections": ["抽象定义", "逐项链路", "取舍与风险"] },
+        { "file": "03-phase.md", "title": "03 阶段", "sections": ["端到端拆解（P1/P2…）", "每阶段完成后可验证的现象"] },
+        { "file": "04-plan.md", "title": "04 计划", "sections": ["顺序与依赖", "验证方式"] }
+      ]
+    },
+    "B": {
+      "label": "B 改协作规范",
+      "docs": [
+        { "file": "01-background.md", "title": "01 背景", "sections": ["触发案例", "要改的协作行为"] },
+        { "file": "02-plan.md", "title": "02 计划", "sections": ["变更点", "影响面", "生效与回滚"] }
+      ]
+    },
+    "C": {
+      "label": "C 只出结论",
+      "docs": [
+        { "file": "01-background.md", "title": "01 结论与依据", "sections": ["结论（前置）", "依据（文件/命令/实测）", "未验证项"] }
+      ]
+    }
+  }
+}

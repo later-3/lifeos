@@ -33,8 +33,12 @@ test("全局项目注册表：同 path 幂等、同名不同 path 加后缀、pr
   const onDisk = JSON.parse(await readFile(join(home, "projects", first.id, "project.json"), "utf8"));
   assert.equal(onDisk.id, first.id);
   assert.equal(onDisk.path, a);
-  assert.equal((await listGlobalProjects()).size, 2);
+  assert.equal((await listGlobalProjects()).size, 3, "两个外部项目 + 共享 workspace");
   assert.equal((await readGlobalProject(first.id))?.path, a);
+  const workspace = await readGlobalProject("workspace");
+  assert.equal(workspace?.id, "workspace", "共享 workspace 必须有全局身份");
+  assert.equal(workspace?.path, undefined, "workspace 不对应一个用户目录");
+  assert.ok((await stat(join(home, "projects", "workspace", "specs", "agent-collaboration", "AGENTS.md"))).isFile(), "共享 workspace 带协作规范");
 });
 
 test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一个项目 id", async () => {
@@ -71,13 +75,14 @@ test("项目绑定目录带 harness 骨架；老绑定在列出时补齐；不�
   for (const file of ["AGENTS.md", "concept-space.md"]) {
     assert.ok((await stat(join(bindDir, file))).isFile(), `${file} 应存在`);
   }
-  for (const sub of ["sessions", "daily", "cases", "todo", "memory"]) {
+  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "specs"]) {
     assert.ok((await stat(join(bindDir, sub))).isDirectory(), `${sub}/ 应存在`);
   }
+  assert.ok((await stat(join(bindDir, "specs", "index.json"))).isFile(), "specs/index.json 预建");
   assert.ok((await stat(join(bindDir, "tasks"))).isDirectory(), "tasks/ 预建");
   assert.ok((await stat(join(bindDir, "tasks", "AGENTS.md"))).isFile(), "tasks/AGENTS.md 预建");
   assert.deepEqual((await readdir(join(bindDir, "tasks"))), ["AGENTS.md"], "不预建具体任务目录");
-  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "tasks"]) {
+  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "tasks", "specs"]) {
     assert.ok((await stat(join(bindDir, sub, "AGENTS.md"))).isFile(), `${sub}/AGENTS.md 应存在`);
   }
 

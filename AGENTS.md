@@ -10,7 +10,7 @@
 - 目录结构以 `docs/architecture/directory-structure.md` 为准；技术底座以 `docs/architecture/foundation.md` 为准。
 - 文档入口与标签见 `docs/README.md`（按场景进入；每份文档开头标 `角色 / 类型 / 状态`；`目标`不等于已发布）；每类文档的作用、边界与更新规则见 `docs/AGENTS.md`。
 - **未实现的东西不写进正式文档**：一句话登记在 `docs/todo.md`（背景 / 是什么 / 要做什么）；实现后删掉登记，把事实写进对应文档。
-- 协作规范与资产（概念空间、飞轮、正反案例、每日记录、Todo）在用户的交互 harness 目录 `~/.lifeos/interaction-harness/`，**不在仓库里复制副本**。
+- 协作规范与资产（概念空间、飞轮、正反案例、每日记录、Todo）在用户的交互 harness 目录 `~/.lifeos/interaction-harness/`，**不在仓库里复制副本**；共享 workspace 规范在 `~/.lifeos/projects/workspace/specs/`，项目/Agent/Task 规范在各自 `specs/`（协议 §16）。
   - **做事前**：读该目录的 `AGENTS.md`（本层指引：角色与责任、阅读顺序、部件与关系、七个板块协议、版本控制）、`protocol.md`，以及 `task-types/` 中与当前任务相关的细则。
   - **每轮结束（交付回复之前，不可跳过）**：新正反例 → `cases.md`；可复用结论 → `flywheel.md`；当天记录 → **当前工作项目**下 `daily/<今天>.md`（默认 = `~/.lifeos/agents/<agent>/projects/workspace/`；打开外部项目后 = 该项目 `projects/<pid>/`；**追加**，时间戳由程序生成）；遗留事项 → 同目录 `todo/`。
 

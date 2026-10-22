@@ -152,7 +152,7 @@ test("方案 E 注入逻辑（离线）：identity 替换 preamble、Pi 的 tool
     "</docs>",
   ].join("\n");
   const event = { systemPrompt: rendered, systemPromptOptions: { customPrompt: undefined, sections: { existing_section: "keep-me" } } };
-  handler(event);
+  await handler(event);
   const options = event.systemPromptOptions;
   assert.equal(options.customPrompt, parts.customPrompt, "identity 进入 preamble 位");
   assert.match(options.sections.tools, /read: Read file contents/, "tools 原样回填");
@@ -161,4 +161,22 @@ test("方案 E 注入逻辑（离线）：identity 替换 preamble、Pi 的 tool
   assert.equal(options.sections.docs, undefined, "docs 有意舍弃");
   assert.equal(options.sections.existing_section, "keep-me", "不破坏其它区域");
   assert.equal(options.sections.lifeos_interaction_harness, parts.harnessSection, "harness 为独立区域");
+});
+
+test("before_agent_start 每次重新取 parts：Task 切换后下一轮 harness 变化", async () => {
+  let harness = "## 当前 Task A\n\nA";
+  const extension = createLifeOsPromptExtension(async () => ({ customPrompt: "", harnessSection: harness }));
+  let handler;
+  const pi = { on: (name, fn) => { if (name === "before_agent_start") handler = fn; } };
+  extension.factory(pi);
+  const makeEvent = () => ({ systemPrompt: "<tools>\n- read\n</tools>", systemPromptOptions: { customPrompt: undefined, sections: {} } });
+  const first = makeEvent();
+  await handler(first);
+  assert.match(first.systemPromptOptions.sections.lifeos_interaction_harness, /Task A/);
+
+  harness = "## 当前 Task B\n\nB";
+  const second = makeEvent();
+  await handler(second);
+  assert.match(second.systemPromptOptions.sections.lifeos_interaction_harness, /Task B/);
+  assert.doesNotMatch(second.systemPromptOptions.sections.lifeos_interaction_harness, /Task A/);
 });

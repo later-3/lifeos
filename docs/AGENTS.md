@@ -3,6 +3,8 @@
 > 角色：文档地图　类型：索引/规则　状态：现状（2026-10-21）
 >
 > 本文件说明 `docs/` 下每类文档**管什么、不管什么、什么时候改**。它不是产品规范，也不替代 [`README.md`](./README.md) 的入口索引。
+>
+> **边界**：交互 harness 协议正文只在 `.lifeos/interaction-harness/protocol.md`；`docs/` 是 Life OS 的项目文档，只写本项目的实现、需求与开发规范，不复制协议。
 > 写文档前先看这里；文档必须对开发/设计有价值，没有价值的直接删，不留“历史副本”。
 
 ## 1 文档分层
@@ -67,9 +69,9 @@
 
 - **正文只有一份**：前端流程在 `docs/standards/frontend-development.md`，规范在 `docs/design/frontend-spec.md`，页面差异在 `docs/design/<page>.md`；随代码进 Git，评审和代码一起做；
 - **注入点**：项目根 `AGENTS.md`（`src/assembly.ts` 作为“项目规范”加载）先指向 `standards/frontend-development.md`，再指向规范/页面文档；Agent 开工前按需读取，不把全文塞进 system prompt；
-- **项目共享层只放指针**：`~/.lifeos/projects/<projectId>/规范/前端开发/AGENTS.md` 指向示例实例里的 `docs/standards/frontend-development.md` 与 `docs/design/`；Life OS 本机用 `docs -> 仓库 docs` 的符号链接，只说明正文在哪，不复制正文；
+- **项目共享层只放指针**：`~/.lifeos/projects/<projectId>/specs/frontend-development/AGENTS.md` 指向示例实例里的 `docs/standards/frontend-development.md` 与 `docs/design/`；Life OS 本机用 `docs -> 仓库 docs` 的符号链接，只说明正文在哪，不复制正文；
 - **通用 harness 不放本项目规范**：`~/.lifeos/interaction-harness/` 独立于任何具体项目（协议 §1），Life OS 前端规范不进通用层；发布时也不带 lifeos 示例；
-- **不另设“规范加载器”**：现有 `AGENTS.md` 注入 + 文件读取就是落地方式；避免全文注入的 token 成本和副本漂移；
+- **装配层加载规范**：`src/assembly.ts` 按协议 §16.2 读共享 workspace → 当前项目共享 → Agent 私有 workspace → Agent × 项目 → Task 的 `specs/index.json`，逐层追加、不覆盖；只加载当前项目可见的层，不跨项目扫描；
 - **闭环**：读流程/规范/页面文档 → 规范覆盖表 → 缺则补 → 实现 → `pnpm verify`/`build` → 复盘并同轮更新文档。
 
 ## 6 新增/删除页面文档

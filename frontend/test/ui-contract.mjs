@@ -417,8 +417,8 @@ await page.waitForTimeout(300);
 const paletteItems = await page.evaluate(() => [...document.querySelectorAll("button")]
   .map((button) => (button.textContent ?? "").trim())
   .filter((text) => text.startsWith("/")));
-check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")),
-  paletteItems.slice(0, 6).join(" | "));
+check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")) && paletteItems.some((text) => text.startsWith("/task")),
+  paletteItems.slice(0, 7).join(" | "));
 const paletteInsideComposer = await page.evaluate(() => {
   const container = document.querySelector('[data-testid="composer"]');
   const palette = document.querySelector('div[aria-label="斜杠命令"]');
@@ -635,8 +635,18 @@ await page.waitForTimeout(250);
 // 复现用户反例：改模型 → 点 footer 保存 → 关闭，不能再弹“放弃未保存的改动”。
 {
   const configPage = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
+  // 配置保存语义测试不依赖当前家目录有几个模型：显式给一个可切换的最小目录。
+  await configPage.route(/\/api\/models-config$/, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      providers: [{ id: "test", models: [{ id: "m1", name: "Model 1" }, { id: "m2", name: "Model 2" }] }],
+    }) });
+  });
   await configPage.route(/\/api\/agents\/[^/]+\/config$/, async (route) => {
-    if (route.request().method() !== "PUT") return route.continue();
+    if (route.request().method() === "GET") {
+      return await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        config: { defaultProvider: "test", defaultModel: "m1" }, effective: { defaultProvider: "test", defaultModel: "m1" }, source: "agent",
+      }) });
+    }
     const body = JSON.parse(route.request().postData() ?? "{}");
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ config: body, applied: 0 }) });
   });
@@ -1027,6 +1037,15 @@ const SHOTS = [
     await shotPage.waitForTimeout(800);
   }, '[role="dialog"]'],
   ["modal.png", 1600, async (shotPage) => {
+    // 模态基线是视觉契约，不依赖当前真实 Agent 的模型配置；固定一个与基线一致的默认模型。
+    await shotPage.route(/\/api\/agents\/[^/]+\/config$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        config: { defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash" },
+        effective: { defaultProvider: "command", defaultModel: "z-ai/glm-5.3-flash" },
+        source: "agent",
+      }) });
+    });
     await shotPage.locator('button[aria-label^="配置 "]').first().click();
     await shotPage.waitForTimeout(400);
   }, '[role="dialog"]'],

@@ -33,8 +33,9 @@ import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/u
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type UsageSummary = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
-type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
+type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
+type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string; failure?: FailureKind };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
@@ -838,6 +839,34 @@ export default function App() {
   }
 
   // 切换后必须重读会话：头部的"当前模型/思考级别"来自接口 meta，不刷新就会一直显示旧值
+  /** /task：列出当前项目的任务，选中后只切换 activeTaskId；下一轮 prompt 生效。 */
+  async function openTaskPalette() {
+    if (agent === undefined || sessionId === undefined) { toast("先选中会话", "error"); return; }
+    const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+    const response = await fetch(`/api/agents/${agent.id}/projects/${pid}/tasks`).catch(() => undefined);
+    if (response?.ok !== true) { toast("任务列表加载失败", "error"); return; }
+    const data = await response.json() as { items?: TaskItem[] };
+    const items = data.items ?? [];
+    if (items.length === 0) { toast("这个项目还没有任务", "error"); return; }
+    setPalette({ index: 0, items: items.map((task) => ({
+      key: task.id,
+      label: task.id,
+      hint: `${task.status}${task.isDefault ? " · 默认" : ""}${task.date !== undefined ? ` · ${task.date}` : ""}`,
+      run: () => { void applyTask(task.id); },
+    })) });
+  }
+
+  async function applyTask(taskId: string) {
+    if (agent === undefined || sessionId === undefined) return;
+    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/task`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId }),
+    }).catch(() => undefined);
+    const body = response?.ok === true ? undefined : await response?.json().catch(() => undefined) as { error?: { message?: string } } | undefined;
+    if (response?.ok !== true) { toast(body?.error?.message ?? "切换 Task 失败", "error"); return; }
+    setMeta((previous) => previous === undefined ? previous : { ...previous, activeTaskId: taskId });
+    toast(`已切换到 ${taskId}；下一轮生效`, "success");
+  }
+
   async function applyModel(provider: string, model: string) {
     if (agent === undefined || sessionId === undefined) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/model`, {
@@ -865,6 +894,7 @@ export default function App() {
   const COMMANDS: PaletteItem[] = [
     { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", run: () => void compactNow() },
     { key: "/model", label: "/model", hint: "切换本会话模型", run: () => void openModelPalette() },
+    { key: "/task", label: "/task", hint: "切换当前 Task（下一轮生效）", run: () => void openTaskPalette() },
     { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
     { key: "/name", label: "/name <名称>", hint: "重命名会话", run: () => setInput("/name ") },
     { key: "/new", label: "/new", hint: "新建会话", run: () => void newSession() },
@@ -1167,6 +1197,7 @@ export default function App() {
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {[agent?.name, currentGroup?.project.name].filter((part) => part !== undefined && part !== "").join(" · ") || "选择或新建一个会话"}
               {headerModel != null && ` · ${headerModel.provider}/${headerModel.id}`}
+              {meta?.activeTaskId != null && ` · Task ${meta.activeTaskId}`}
             </p>
           </div>
           <span className="ml-auto" />

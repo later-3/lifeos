@@ -8,7 +8,7 @@
 // “有效默认”必须同时给新会话和顶部显示用，否则界面显示的模型和真正会用的模型会分叉。
 import { readdir, readFile } from "node:fs/promises";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest } from "./projects.ts";
 
@@ -57,6 +57,25 @@ async function readCatalogModelChoice(): Promise<ModelChoice | undefined> {
   return undefined;
 }
 
+type SpecIndexEntry = { id?: unknown; path?: unknown };
+
+/** 读一层的 specs/index.json，返回主题正文路径（只允许本层目录内，防止索引越界）。 */
+async function readSpecPaths(root: string): Promise<string[]> {
+  const data = await readJson(join(root, "index.json"));
+  const entries = data?.specs;
+  if (!Array.isArray(entries)) return [];
+  const rootAbs = resolve(root);
+  const out: string[] = [];
+  for (const entry of entries as SpecIndexEntry[]) {
+    if (typeof entry.path !== "string" || entry.path.trim() === "") continue;
+    const path = resolve(rootAbs, entry.path);
+    const rel = relative(rootAbs, path);
+    if (rel.startsWith("..") || isAbsolute(rel) || rel === "") continue;
+    out.push(path);
+  }
+  return out;
+}
+
 /** 优先级 A 的有效默认裁决（只给结论与来源，不构造 Pi 对象）。 */
 export async function resolveModelChoice(agentId: string): Promise<{ choice: ModelChoice; source: "agent" | "settings" | "catalog" } | undefined> {
   const agentChoice = await readAgentModelChoice(agentId);
@@ -70,15 +89,17 @@ export async function resolveModelChoice(agentId: string): Promise<{ choice: Mod
 
 /**
  * 两区装配（事实来源全部来自文件；不预先塞任何不存在的内容）：
- * - 交互 harness 区（customPrompt）：协议正文、本层指引、飞轮、概念索引、任务类型细则、当前项目指引；
+ * - 交互 harness 区（customPrompt）：协议正文、本层指引、飞轮、概念索引、任务类型细则、
+ *   规范层（共享 workspace → 当前项目 → Agent 私有 workspace → Agent × 项目 → Task）、当前项目指引；
  * - identity 区（appendSystemPrompt）：identity.md。
  * 返回 sources 供反查/将来"会话历史"展示真实来源。
  */
-export async function buildPromptParts(agentId: string, projectId: string): Promise<{
-  customPrompt: string;
-  harnessSection: string;
-  sources: string[];
-}> {
+export type PromptParts = { customPrompt: string; harnessSection: string; sources: string[] };
+
+/** 每次 run 都重新装配（Task 在会话中途可切换）；固定 parts 仍可用于离线测试。 */
+export type PromptPartsSource = PromptParts | (() => Promise<PromptParts>);
+
+export async function buildPromptParts(agentId: string, projectId: string, taskId?: string): Promise<PromptParts> {
   const harnessRoot = join(resolveHome(), "interaction-harness");
   const projectDir = join(resolveHome(), "agents", agentId, "projects", projectId);
   const sections: string[] = [];
@@ -112,6 +133,33 @@ export async function buildPromptParts(agentId: string, projectId: string): Prom
       await pushFile(`任务类型 · ${type}/${name}`, join(dir, name));
     }
   }
+  // 规范层（协议 §16）：共享 workspace → 当前项目共享 → Agent 私有 workspace → Agent × 项目。
+  // 逐层追加，不做覆盖；索引只指向本层正文，不跨项目扫描。
+  const specRoots: Array<{ label: string; root: string }> = [
+    { label: "共享 workspace", root: join(resolveHome(), "projects", "workspace", "specs") },
+    ...(projectId !== "workspace" ? [{ label: `项目 ${projectId}`, root: join(resolveHome(), "projects", projectId, "specs") }] : []),
+    { label: "Agent 私有 workspace", root: join(resolveHome(), "agents", agentId, "projects", "workspace", "specs") },
+    ...(projectId !== "workspace" ? [{ label: `Agent × 项目 ${projectId}`, root: join(projectDir, "specs") }] : []),
+  ];
+  const seenSpecs = new Set<string>();
+  for (const { label, root } of specRoots) {
+    for (const path of await readSpecPaths(root)) {
+      if (seenSpecs.has(path)) continue; // 同一份正文只加载一次（workspace 的共享层与项目层同名时）
+      seenSpecs.add(path);
+      const topic = basename(resolve(path, ".."));
+      await pushFile(`规范 · ${label} · ${topic}`, path);
+    }
+  }
+
+  // 当前 Task（协议 §16.4）：只有会话选定了 Task 才加载；task.md 是唯一状态源。
+  if (taskId !== undefined && taskId !== "" && basename(taskId) === taskId) {
+    const taskDir = join(projectDir, "tasks", taskId);
+    await pushFile(`当前 Task · ${taskId}/task.md`, join(taskDir, "task.md"));
+    for (const path of await readSpecPaths(join(taskDir, "specs"))) {
+      await pushFile(`规范 · Task ${taskId} · ${basename(path)}`, path);
+    }
+  }
+
   await pushFile(`本项目指引 · ${projectId}/AGENTS.md（Agent 私有约定）`, join(projectDir, "AGENTS.md"));
 
   // 项目仓库自己的规范：只读「项目目录本身」这一份（外部项目才有 manifest）。
@@ -153,12 +201,14 @@ export function extractRenderedSection(rendered: string, tag: string): string | 
  * - harness → 独立自定义区域 `lifeos_interaction_harness`；
  * - Pi 的 <tools>/<rules> 从默认渲染结果**原样回填**（不手写、跟随 Pi 更新）；<docs> 有意舍弃。
  */
-export function createLifeOsPromptExtension(parts: { customPrompt: string; harnessSection: string }): InlineExtension {
+export function createLifeOsPromptExtension(source: PromptPartsSource): InlineExtension {
   return {
     name: "lifeos-prompt",
     hidden: true,
     factory: (pi) => {
-      pi.on("before_agent_start", (event) => {
+      pi.on("before_agent_start", async (event) => {
+        // Task 可切换：每次 run 重新读当前 activeTaskId；固定 parts 用于离线测试/旧调用。
+        const parts = typeof source === "function" ? await source() : source;
         const rendered = event.systemPrompt;      // 读在修改之前 = Pi 默认分支的渲染结果
         const tools = extractRenderedSection(rendered, "tools");
         const rules = extractRenderedSection(rendered, "rules");

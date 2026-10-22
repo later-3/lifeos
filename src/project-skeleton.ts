@@ -1,5 +1,5 @@
-// 项目目录骨架（协议 §15.3）：AGENTS.md / concept-space.md / sessions / daily / cases / todo /
-// memory（agent 的项目记忆）/ tasks（任务根，任务目录按需建）。
+// 项目目录骨架（协议 §12.3 / §16）：AGENTS.md / concept-space.md / sessions / daily / cases / todo /
+// memory（agent 的项目记忆）/ tasks（任务根，任务目录按需建）/ specs（本层规范）。
 // 每个预建子目录都带自己的 AGENTS.md，说明「这里放什么」——目录自解释。
 // create-only：已存在的文件绝不覆盖（用户的记录不能被初始化逻辑冲掉）。
 import { mkdir, writeFile } from "node:fs/promises";
@@ -18,6 +18,7 @@ const agentsMd = (name: string, path: string): string => `# 交互 harness · �
 - \`cases/<日期>.md\` 正例与反例（按日期分文件，编号引用）
 - \`todo/\` 一句话待办（不是任务；升级为任务时移到 \`tasks/\`）
 - \`memory/\` agent 的项目记忆（私有，MemOS；不进项目仓库）
+- \`specs/\` 本层规范（按主题分目录；\`index.json\` 是本层规范索引；协议 §16）
 - \`concept-space.md\` 本项目词索引：先建词条、再用词（协议 §4 自举）
 
 每个子目录都有自己的 \`AGENTS.md\`，先读它再往里面写。
@@ -78,6 +79,14 @@ tasks/<NNNN>-<标题>/task.md
 - 不是任务，不进 prompt，按需读；
 - 升级为任务时，用 \`lifeos_task_create\` 建到 \`tasks/<NNNN>-<标题>/\`，然后从这里删掉；
 - 不写长文、不写实现细节。`,
+  specs: `# specs/
+
+本层规范（协议 §16）。**一个主题一个目录**，正文只放一份；\`index.json\` 是本层索引。
+
+- 规范 = 具体场景下必须怎么做、可执行、可检查；
+- 规范目录名用英文（\`frontend-development\`、\`agent-collaboration\`）；
+- 只加载当前项目相关的规范，不跨项目注入；
+- 被提升到更高层时，移动正文并在原处留指针。`,
   memory: `# memory/
 
 agent 的项目记忆（私有，MemOS 本地存储）。
@@ -99,4 +108,5 @@ export async function ensureProjectSkeleton(dir: string, input: { name: string; 
   }
   await writeIfMissing(join(dir, "AGENTS.md"), agentsMd(input.name, input.path));
   await writeIfMissing(join(dir, "concept-space.md"), conceptMd(input.name));
+  await writeIfMissing(join(dir, "specs", "index.json"), JSON.stringify({ schemaVersion: 1, specs: [] }, null, 2) + "\n");
 }

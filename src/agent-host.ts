@@ -1,7 +1,10 @@
 // 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进“按 Agent 的事件流”（带序号，可续传）。
-// 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §15.2），这里只负责加载。
+// 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §12.2），这里只负责加载。
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } from "./assembly.ts";
+import { ensureDailyTask, listTasks } from "./tasks.ts";
+import { readProjectManifests } from "./projects.ts";
+import { ensureProjectSkeleton } from "./project-skeleton.ts";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
@@ -18,13 +21,16 @@ export { broadcast, subscribeAgent } from "./events.ts";
 export type { AgentEvent } from "./events.ts";
 export type { RunSnapshot } from "./session-runtime.ts";
 
+/** 会话当前选中的 Task（自定义条目；不参与模型上下文）。 */
+const ACTIVE_TASK_ENTRY = "lifeos_active_task";
+
 type HostedSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 type ModelRuntimeInstance = Awaited<ReturnType<typeof ModelRuntime.create>>;
-type SessionState = { session: HostedSession; modelRuntime: ModelRuntimeInstance };
+type SessionState = { session: HostedSession; modelRuntime: ModelRuntimeInstance; taskId?: string };
 type AgentState = {
   sessions: Map<string, SessionState>;
   /** 已创建但尚未落盘的会话（Pi 对无消息会话延迟写文件）——列表必须包含它们，否则“新建会话”隐身。 */
-  pending: Map<string, { projectId: string; at: string }>;
+  pending: Map<string, { projectId: string; at: string; taskId?: string }>;
 };
 
 // 状态以「家 + agentId」为键：测试/引导切换 LIFEOS_HOME 后不串状态（同 id 会话可能存在于不同家）。
@@ -63,13 +69,15 @@ type ModelOption = NonNullable<CreateOptions["model"]>;
  */
 export async function createHostedResourceLoader(input: {
   cwd: string; configDir: string; settingsManager: SettingsManager; parts: Awaited<ReturnType<typeof buildPromptParts>>;
+  /** 每次 run 重新装配（用于会话中途切换 Task）；不传则用固定 parts。 */
+  getParts?: () => Promise<Awaited<ReturnType<typeof buildPromptParts>>>;
 }): Promise<DefaultResourceLoader> {
   const loader = new DefaultResourceLoader({
     cwd: input.cwd,
     agentDir: input.configDir,
     settingsManager: input.settingsManager,
     noContextFiles: true,
-    extensionFactories: [createLifeOsPromptExtension(input.parts)],
+    extensionFactories: [createLifeOsPromptExtension(input.getParts ?? input.parts)],
   });
   await loader.reload();
   return loader;
@@ -86,6 +94,7 @@ async function createHostedSession(
   agentId: string,
   sessionManager: ReturnType<typeof SessionManager.create>,
   mode: "new" | "restored",
+  taskId?: string,
 ): Promise<{ session: SessionState["session"]; modelRuntime: ModelRuntimeInstance; modelLabel: string | undefined }> {
   const cwd = sessionManager.getCwd();
   const configDir = join(resolveHome(), "config");
@@ -96,8 +105,13 @@ async function createHostedSession(
   const settingsManager = SettingsManager.create(cwd, configDir);
 
   const projectId = projectOfSessionDir(sessionManager.getSessionDir());
-  const parts = await buildPromptParts(agentId, projectId);
-  const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts });
+  const parts = await buildPromptParts(agentId, projectId, taskId);
+  // Task 在会话中途可切换：每次 run 从会话的最后一条 active_task 条目重新装配，而不是把 task.md 固定死在创建时。
+  const getParts = async (): Promise<Awaited<ReturnType<typeof buildPromptParts>>> => {
+    const currentTaskId = activeTaskOf(sessionManager) ?? taskId;
+    return await buildPromptParts(agentId, projectId, currentTaskId);
+  };
+  const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts, getParts });
 
   const resolution = await resolveModelChoice(agentId);
   let model: ModelOption | undefined;
@@ -141,7 +155,7 @@ function projectOfSessionDir(dir: string): string {
   return dir.slice(index + marker.length).split(sep)[0] ?? "workspace";
 }
 
-/** 会话物理落在所属 project 的 sessions/ 下（协议 §15.1 结构即事实；默认 workspace）。 */
+/** 会话物理落在所属 project 的 sessions/ 下（协议 §12.1 结构即事实；默认 workspace）。 */
 export function sessionDir(agentId: string, projectId = "workspace"): string {
   return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
 }
@@ -177,8 +191,18 @@ async function findSessionFile(agentId: string, sessionId: string): Promise<{ pa
   return undefined;
 }
 
+/** 旧 URL 的 uuid 可能已被懒迁移成可读目录：入口先解析到当前绑定 id（会话/任务不能落旧目录）。 */
+async function canonicalProjectId(agentId: string, projectId: string): Promise<string> {
+  if (projectId === "workspace") return projectId;
+  const manifests = await readProjectManifests(agentId);
+  if (manifests.has(projectId)) return projectId;
+  for (const manifest of manifests.values()) if (manifest.legacyId === projectId) return manifest.id;
+  return projectId;
+}
+
 /** 新建会话到指定 project（cwd 由调用方按项目定：workspace=~/.lifeos，外部=项目 path）。 */
-export async function createSession(agentId: string, cwd: string, projectId = "workspace"): Promise<string> {
+export async function createSession(agentId: string, cwd: string, projectIdInput = "workspace"): Promise<string> {
+  const projectId = await canonicalProjectId(agentId, projectIdInput);
   if (projectId === "workspace") {
     // 内置 workspace 兜底注册（每个 Agent 天然有默认 project，agent.md §5.6）；外部项目 manifest 在共用层，不在此处理。
     const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
@@ -186,18 +210,23 @@ export async function createSession(agentId: string, cwd: string, projectId = "w
     await writeFile(join(projectDir, "project.json"),
       JSON.stringify({ schemaVersion: 1, id: "workspace" }) + "\n",
       { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
+    await ensureProjectSkeleton(projectDir, { name: "workspace", path: resolveHome() });
   }
+  // 强制 Task（协议 §16.4）：当天该 Agent × Project 的默认 Task；普通会话共享它。
+  const task = await ensureDailyTask({ agentId, projectId });
   const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));
-  const { session, modelRuntime, modelLabel } = await createHostedSession(agentId, manager, "new");
+  const { session, modelRuntime, modelLabel } = await createHostedSession(agentId, manager, "new", task.id);
   const sessionId = manager.getSessionId();
-  if (modelLabel !== undefined) console.log(`[assembly] 新建会话 ${sessionId} · 模型 ${modelLabel}`);
-  stateOf(agentId).sessions.set(sessionId, { session, modelRuntime });
-  stateOf(agentId).pending.set(sessionId, { projectId, at: new Date().toISOString() });
+  // 持久化“当前 Task”指针；可切换，不把 Session 绑定死在一个 Task。
+  session.sessionManager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId: task.id, at: new Date().toISOString() });
+  if (modelLabel !== undefined) console.log(`[assembly] 新建会话 ${sessionId} · 模型 ${modelLabel} · Task ${task.id}`);
+  stateOf(agentId).sessions.set(sessionId, { session, modelRuntime, taskId: task.id });
+  stateOf(agentId).pending.set(sessionId, { projectId, at: new Date().toISOString(), taskId: task.id });
   return sessionId;
 }
 
 /** 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。 */
-export function pendingSessions(agentId: string): Array<{ sessionId: string; projectId: string; at: string; name?: string }> {
+export function pendingSessions(agentId: string): Array<{ sessionId: string; projectId: string; at: string; taskId?: string; name?: string }> {
   const state = stateOf(agentId);
   return [...state.pending.entries()].map(([sessionId, meta]) => {
     const name = state.sessions.get(sessionId)?.session.sessionManager.getSessionName();
@@ -216,6 +245,18 @@ export async function projectIdOfSession(agentId: string, sessionId: string): Pr
   return found === undefined ? undefined : projectOfSessionDir(found.dir);
 }
 
+/** 会话里最后一次选中的 Task（自定义条目；旧会话没有 → undefined）。 */
+function activeTaskOf(manager: ReturnType<typeof SessionManager.open>): string | undefined {
+  const branch = manager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i -= 1) {
+    const entry = branch[i];
+    if (entry?.type !== "custom" || entry.customType !== ACTIVE_TASK_ENTRY) continue;
+    const data = entry.data as { taskId?: unknown } | undefined;
+    return typeof data?.taskId === "string" && data.taskId !== "" ? data.taskId : undefined;
+  }
+  return undefined;
+}
+
 /** 取会话：内存没有就从会话文件恢复（重启后也能续接；出厂默认会话也走这条路）。
  * 按文件名 `<ts>_<id>.jsonl` 匹配而不是 findById：出厂文件 header 的 cwd 为空，
  * findById 的 cwd 过滤会把它拒掉（换机器/换目录就 404）；open() 带 cwdOverride 即可绕开。 */
@@ -225,8 +266,19 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   if (existing !== undefined) return existing;
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return undefined;
-  const { session, modelRuntime } = await createHostedSession(agentId, SessionManager.open(found.path, found.dir, cwd), "restored");
-  const restored: SessionState = { session, modelRuntime };
+  const manager = SessionManager.open(found.path, found.dir, cwd);
+  const projectId = projectOfSessionDir(found.dir);
+  let taskId = activeTaskOf(manager);
+  if (taskId === undefined) {
+    // 旧会话/预置默认会话：首次打开时补当天默认 Task；旧文件没有指针时也不伪造成别的 Task。
+    try {
+      const task = await ensureDailyTask({ agentId, projectId });
+      taskId = task.id;
+      manager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
+    } catch { /* 项目已被移除等：保持无 Task，不阻断会话读取 */ }
+  }
+  const { session, modelRuntime } = await createHostedSession(agentId, manager, "restored", taskId);
+  const restored: SessionState = { session, modelRuntime, ...(taskId !== undefined ? { taskId } : {}) };
   state.sessions.set(sessionId, restored);
   state.pending.delete(sessionId);
   return restored;
@@ -292,6 +344,8 @@ export function sessionMeta(agentId: string, state: SessionState): {
   running: boolean;
   /** 是否用过 `/model`（显式覆盖）：决定默认模型变更后要不要跟随 */
   modelOverridden: boolean;
+  /** 当前会话引用的 Task（可切换；不是绑定） */
+  activeTaskId: string | null;
   usage: UsageSnapshot;
   context: { percent: number | null; window: number } | null;
 } {
@@ -302,6 +356,7 @@ export function sessionMeta(agentId: string, state: SessionState): {
     thinkingLevel: state.session.thinkingLevel,
     running: isRunning(agentId, state.session.sessionManager.getSessionId()),
     modelOverridden: hasModelOverride(state.session),
+    activeTaskId: state.taskId ?? null,
     usage: sessionUsage(state),
     context: context === undefined ? null : { percent: context.percent, window: context.contextWindow },
   };
@@ -409,6 +464,22 @@ export async function compactSession(agentId: string, sessionId: string): Promis
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export type SetTaskResult =
+  | { ok: true; taskId: string }
+  | { ok: false; reason: "session_not_found" | "task_not_found" };
+
+/** 切换会话当前 Task：只影响下一轮；当前正在跑的轮次已装配完，不会被中途改写。 */
+export async function setSessionTask(agentId: string, sessionId: string, taskId: string): Promise<SetTaskResult> {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return { ok: false, reason: "session_not_found" };
+  const projectId = projectOfSessionDir(state.session.sessionManager.getSessionDir());
+  const tasks = await listTasks({ agentId, projectId });
+  if (!tasks.some((task) => task.id === taskId)) return { ok: false, reason: "task_not_found" };
+  state.session.sessionManager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
+  state.taskId = taskId;
+  return { ok: true, taskId };
 }
 
 /** Pi 的思考档位（agent 包 types.ts）：路由用它做入参校验，界面用同一份。 */

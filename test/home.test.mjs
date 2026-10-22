@@ -25,11 +25,14 @@ test("家目录不存在 → 从 .lifeos 模板整树复制并写收据", async 
     "agents/lifeosagent/projects/workspace/AGENTS.md",
     "agents/lifeosagent/projects/workspace/project.json",
     "agents/lifeosagent/projects/workspace/sessions",
+    "agents/lifeosagent/projects/workspace/specs/index.json",
+    "projects/workspace/project.json",
+    "projects/workspace/specs/index.json",
     "install-receipt.json",
   ]) await access(join(home, file));
-  // 顶层空壳（共用项目层 / logs / runtime）已取消：模板里没有，装上也不许有
-  for (const gone of ["projects", "logs", "runtime"]) {
-    await access(join(home, gone)).then(() => assert.fail("家目录不该再有 " + gone + "/")).catch(() => {});
+  // 顶层 projects 是共享层，必须随模板安装；logs/runtime 仍不建
+  for (const gone of ["logs", "runtime"]) {
+    await assert.rejects(access(join(home, gone)), "家目录不该建 " + gone + "/");
   }
   const receipt = JSON.parse(await readFile(join(home, "install-receipt.json"), "utf8"));
   assert.equal(receipt.schemaVersion, 1);

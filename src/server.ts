@@ -7,12 +7,13 @@ import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
   projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
-  setSessionModel, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
+  setSessionModel, setSessionTask, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import { resolveModelChoice } from "./assembly.ts";
+import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
@@ -36,7 +37,7 @@ export async function cwdOfSession(agent: AgentDefinition, sessionId: string): P
 }
 
 /**
- * 项目目录：`<home>/agents/<agent>/projects/<pid>/`（协议 §15.1「结构即事实」）。
+ * 项目目录：`<home>/agents/<agent>/projects/<pid>/`（协议 §12.1「结构即事实」）。
  * 每个 Agent 同构：目录在就是项目，显示名 = 目录名（用户 2026-10-18 定：workspace 就显示 workspace，
  * 不用「工作区」这类展示名）；外部项目显示其真实目录名（basename of path）。
  */
@@ -114,7 +115,7 @@ function problem(code: string, message: string, status: 400 | 404 | 409) {
   return { body: { error: { code, message } }, status } as const;
 }
 
-/** 某 project 的会话目录：结构即事实（`agents/<id>/projects/<pid>/sessions/`，协议 §15.1）。 */
+/** 某 project 的会话目录：结构即事实（`agents/<id>/projects/<pid>/sessions/`，协议 §12.1）。 */
 function projectSessionsDir(agentId: string, projectId: string): string {
   return join(agentsRoot(), agentId, "projects", projectId, "sessions");
 }
@@ -306,6 +307,15 @@ export function createApp() {
     return c.json({ sessionId: await createSession(agent.id, sessionCwd, pid) });
   });
 
+  // 当前项目的任务清单（UI 的 /task 切换器读取；不产生文件、不建索引）。
+  app.get("/api/agents/:id/projects/:pid/tasks", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const project = await resolveProject(agent, c.req.param("pid"));
+    if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
+    return c.json({ items: await listTasks({ agentId: agent.id, projectId: project.id }) });
+  });
+
   // 重命名会话（写 Pi session_info 展示名；列表标题优先用它）。
   app.put("/api/agents/:id/sessions/:sessionId", async (c) => {
     const agent = await readAgent(c.req.param("id"));
@@ -420,6 +430,26 @@ export function createApp() {
     if (!result.ok) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
     // 回实际生效值：Pi 会按模型能力夹取，直接把入参回显就是假数据
     return c.json({ level: result.level });
+  });
+
+  // 会话当前 Task 切换（activeTaskId）：只影响下一轮；当前 run 已装配的 prompt 不变。
+  app.put("/api/agents/:id/sessions/:sessionId/task", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { taskId?: unknown } | undefined;
+    if (body === undefined || typeof body.taskId !== "string" || body.taskId.trim() === "") {
+      const error = problem("invalid_request", "需要 taskId 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const sessionId = c.req.param("sessionId");
+    if (await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId)) === undefined) {
+      const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+    }
+    const result = await setSessionTask(agent.id, sessionId, body.taskId.trim());
+    if (!result.ok) {
+      if (result.reason === "session_not_found") { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+      const error = problem("task_not_found", "当前项目找不到这个 Task", 404); return c.json(error.body, error.status);
+    }
+    return c.json({ sessionId, taskId: result.taskId });
   });
 
   // 一条流承载该 Agent 的所有会话：先快照，再按序号推事件（since 可续传）。

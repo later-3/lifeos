@@ -13,7 +13,7 @@
 
 **两个入口共用一份实现**（`src/agents.ts`，业务下沉、HTTP 只是薄适配）：**Pi 工具**（模型可调）`lifeos_agent_create` / `lifeos_agent_delete`（`src/agent-tools.ts`，英文描述、名字进白名单，见 reference-baseline「自有工具」行）与 **HTTP**（`POST /api/agents` · `DELETE /api/agents/:id`）。界面暂无「新建助手」按钮；**删除入口 = 助手行悬停出现的 ✕**（点击 → 确认对话框）。
 
-- **创建**：参数**只有 `name`（必填）与 `description`（可选）**——不开放「传身份内容」之类的入口（用户 2026-10-19 定，见 harness 案例 C029）。id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/`：`agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（**只装骨架**）+ workspace 骨架，**与出厂模板同构**：`project.json` / `AGENTS.md` / `concept-space.md` / `sessions/` / `daily/` / `cases/` / `todo/`（不建 `avatar/`；只差预置会话文件）。**内容也与模板同源**：`identity.md` 骨架的标题结构（`## 身份` / `## 人格`）、`AGENTS.md` 的项目私有层指引都取自模板（后者只去掉「出厂预置会话」那半句）；校验与 `PUT /api/agents/:id` 一致（name 截 60、description 截 300）；同构由测试的 readdir 深比较当守门人。
+- **创建**：参数**只有 `name`（必填）与 `description`（可选）**——不开放「传身份内容」之类的入口（用户 2026-10-19 定，见 harness 案例 C029）。id 由 name 生成 slug（冲突加序号）→ 建 `agents/<id>/`：`agent.json`（**不写 `defaultSessionId`**：预置会话只随出厂模板）+ `identity.md`（**只装骨架**）+ workspace 骨架，**与出厂模板同构**：`project.json` / `AGENTS.md` / `concept-space.md` / `sessions/` / `tasks/` / `daily/` / `cases/` / `todo/` / `specs/` / `memory/`（不建 `avatar/`；只差预置会话文件）。**内容也与模板同源**：`identity.md` 骨架的标题结构（`## 身份` / `## 人格`）、`AGENTS.md` 的项目私有层指引都取自模板（后者只去掉「出厂预置会话」那半句）；校验与 `PUT /api/agents/:id` 一致（name 截 60、description 截 300）；同构由测试的 readdir 深比较当守门人。
 - **id**：由 `name` 生成 slug（ASCII）；**非 ASCII 名得到不透明的随机后缀 `agent-3f9a`**（Kubernetes generateName 同款，不要生成过通用的 `agent`）。id 生成后**稳定**：改显示名不改 id；**创建按 name 幂等**——同名且未归档时返回已有 Agent（`POST` 200 / 工具结果 `created:false`），不会造出第二个实体。
 - **归档（= 删除，可恢复）**：`agent.json` 写 `archivedAt` → 列表与详情都不再返回它；**目录、会话、记录全部保留**（恢复 = 删掉该字段）。护栏：有会话运行中 → 409；非归档只剩 1 个 → 400 `last_agent`。
 
@@ -23,9 +23,12 @@
 
 - **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_project_add`（目录注册并绑定）/ `lifeos_project_remove`（从列表移除，数据保留）/ `lifeos_project_list`（列项目）/ `lifeos_memory_search`（查记忆）/ `lifeos_memory_record`（记事实，scope 必填）/ `lifeos_memory_delete`（硬删除，仅用户明确要求）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。**幂等**：同一路径重复添加不改变任何东西；默认项目不可移除；移除不动目录、manifest 与会话。
 - **写操作闭环在共享实现里**（2026-10-20 架构修正）：`agents.ts`（创建/归档）与 `projects.ts`（绑定/移除）在写成功后广播 `agents_changed`，工具与 HTTP 两条入口自动生效——**不依赖调用方记得 notify**。事件总线在 `src/events.ts`、运行态在 `src/session-runtime.ts`，两者都不 import `agent-host`，因此 `agents/projects` 可以静态 import 而不是内联 `await import()`。
-- **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**）。
+- **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**；目录平铺，日期写在 `task.md` 的 `日期：YYYY-MM-DD`，不建日期目录）。
+- **默认 Task（2026-10-22 起）**：新建会话时 `ensureDailyTask` 取/建当天该 Agent × Project 的默认 Task（`daily-YYYY-MM-DD`，general/G），会话用自定义条目 `lifeos_active_task` 记录 `activeTaskId`；普通会话共享当天 Task，不是绑定。
+- **中途切换（2026-10-22 完成）**：`PUT /api/agents/:id/sessions/:sid/task` 校验 Task 属于当前项目 → 追加 `lifeos_active_task` → 更新 meta；**只影响下一轮**（当前 run 的 prompt 已装配完），切换不重建会话。前端用 `/task` 调色板选择，头部显示 `Task <id>`。旧会话首次打开时若没有该条目，补当天默认 Task（不伪造历史 Task）。
+- **模板四层覆盖（选一份，不合并）**：`agents/<id>/projects/<pid>/task-types/<type>/` → `projects/<pid>/task-types/<type>/` → `agents/<id>/projects/workspace/task-types/<type>/` → `interaction-harness/task-types/<type>/`；机器读 `template.json`，人读 `TEMPLATE.md`。当前只为 development/general 提供默认模板；项目覆盖只需放 `template.json`。
 - **`task.md` 是唯一状态源**：类型 / 类别 / 状态 / 负责人 / 目标（没给先用标题）/ 必需文档 / 当前指针 + **「本任务遵守」**（协议 · 本层指引 · **该类型的细则** · 本项目指引 · 项目仓库 `AGENTS.md` 存在才写）+ **「引用的案例」**占位（模型随后补 `cases/<日期>.md#Cxxx`）。
-- **类型 + 类别一起决定必需文档**（照 `task-types/<type>/TEMPLATE.md`，类型由目录声明、装配时按目录加载）：
+- **类型 + 类别一起决定必需文档**（照 `task-types/<type>/template.json`，`TEMPLATE.md` 是给人读的说明；类型由目录声明、装配时按目录加载）：
   - `development`（开发/协作/结论）：`A` 改产品行为 → `01-background · 02-design · 03-phase · 04-plan · phases/`；`B` 改协作规范 → `01-background · 02-plan`；`C` 只出结论 → `01-background`；
   - `general`（**普通任务**：既不改产品行为也不改协作规范，只是把一件事管起来）：`G` → `01-background · 02-plan`（背景 + 步骤，保持简单；不建 `phases/`）。判据：资料整理、调研、外部沟通、一次性操作、环境维护等；改"怎么做"仍是 `development B`，改用户可观察行为仍是 `development A`。
   - 类别必须与类型匹配（`general` 只接受 `G`，`development` 只接受 `A/B/C`），错配直接拒绝。
@@ -38,7 +41,7 @@
 ├─ agent.json     身份与默认值（唯一来源）
 ├─ identity.md    身份正文 → 注入 prompt 的 preamble（包成 <lifeos_identity>）
 ├─ avatar/        图片头像（avatar.png|jpg|webp，0600；文件不存在 = 自动头像）
-└─ projects/<pid>/  每个项目一份：AGENTS.md · sessions/ · daily/ · cases/ · todo/ ·（外部项目）project.json
+└─ projects/<pid>/  每个项目一份：AGENTS.md · concept-space.md · sessions/ · tasks/ · daily/ · cases/ · todo/ · specs/ · memory/ ·（外部项目）project.json
 ```
 
 **项目目录命名（2026-10-19 用户定）**：目录名 = 项目名（用户会直接翻文件系统，不能是 UUID）；`manifest.id` 与目录名一致；旧 uuid 目录在读取时**懒迁移**成可读名（`legacyId` 记住旧 pid，旧 `?project=<uuid>` URL 仍可反查）。
@@ -50,15 +53,15 @@
 
 ## 3 项目（2026-10-20 起：全局身份 + Agent 绑定）
 
-**项目 = 一个目录 + 一条全局身份**；Agent 通过"绑定"引用它。分两层：
+**项目 = 一个目录 + 一条全局身份**；Agent 通过"绑定"引用它。存储分三层：
 
 | 层 | 位置 | 放什么 |
 |---|---|---|
-| **全局注册表** | `~/.lifeos/projects/<name>/project.json` | 全局身份 `{schemaVersion, id(=目录名), name, path}`；项目共享记忆 `memory/` 也在这里 |
-| **Agent 绑定层** | `~/.lifeos/agents/<id>/projects/<全局 id>/` | 该 Agent 在这项目里的记录（`sessions/`、`daily/`、`cases/`、`todo/`、`AGENTS.md`、`concept-space.md`）+ `agent 的项目记忆`（`memory/`） |
+| **全局注册表** | `~/.lifeos/projects/<name>/project.json` | 全局身份 `{schemaVersion, id(=目录名), name, path?}`；共享记忆 `memory/`、共享规范 `specs/` 也在这里；`workspace` 是全局特殊项目（无 path） |
+| **Agent 绑定层** | `~/.lifeos/agents/<id>/projects/<全局 id>/` | 该 Agent 在这项目里的记录（`sessions/`、`tasks/`、`daily/`、`cases/`、`todo/`、`specs/`、`AGENTS.md`、`concept-space.md`）+ `agent 的项目记忆`（`memory/`） |
+| **用户工作区** | 用户自己的目录（如 `~/Code/my-project`）；`workspace` 例外 → `~/.lifeos` | 用户代码/文档；只当 cwd，**不写我们的数据进去** |
 
-绑定目录的骨架由 `src/project-skeleton.ts` 的 `ensureProjectSkeleton` 补齐（**create-only，不覆盖已有文件**）：`sessions/`、`tasks/`（任务根，任务目录按需建）、`daily/`、`cases/`、`todo/`、`memory/`（agent 的项目记忆）。**每个预建子目录都带 `AGENTS.md`**，说明这里放什么。新建绑定立即建；老绑定在列出项目时补。全局项目层 `~/.lifeos/projects/<id>/` 同时预建 `memory/`（项目共享记忆）。
-| **工作区**（真实目录） | 用户自己的目录（如 `~/Code/my-project`）；内置 `workspace` 例外 → `~/.lifeos` | 用户代码/文档；我们只当 cwd，**不写任何自己的数据进去** |
+绑定目录的骨架由 `src/project-skeleton.ts` 的 `ensureProjectSkeleton` 补齐（**create-only，不覆盖已有文件**）：`sessions/`、`tasks/`（任务根，任务目录按需建）、`daily/`、`cases/`、`todo/`、`specs/`（本层规范）、`memory/`（agent 的项目记忆）。**每个预建子目录都带 `AGENTS.md`**，说明这里放什么。新建绑定立即建；老绑定在列出项目时补。全局项目层 `~/.lifeos/projects/<id>/` 同时预建 `memory/`（项目共享记忆）。
 
 ### 3.1 全局项目注册表（2026-10-20 定，已实现）
 
@@ -67,7 +70,7 @@
 - **Agent 绑定目录名 = 全局 id**：`agents/<id>/projects/<全局 id>/`；旧绑定目录名不同时懒迁移（改名，会话文件跟着搬）；
 - 迁移：读路径上确保注册表有条目；`project.json` 里保持 `{id, name, path}`（兼容旧读取）；
 - 记忆：**项目共享记忆**落 `~/.lifeos/projects/<全局 id>/memory/`；**agent 的项目记忆**落 `agents/<id>/projects/<全局 id>/memory/`；
-- `workspace` 是内置项目的特例，不进全局注册表。
+- `workspace` 是**全局特殊项目**：`~/.lifeos/projects/workspace/project.json`（id=workspace，无 path）+ 每个 Agent 私有的 `agents/<id>/projects/workspace/`。共享 workspace 放 specs/共享记忆，私有 workspace 放会话/记录；两者同名不同层，不把共享层改名为 shared。
 
 接口与语义（`src/projects.ts` + `src/project-registry.ts` + `src/server.ts`）：
 
@@ -79,7 +82,7 @@
 
 - **目录即项目**：绑定目录存在即可用（内部项目的 cwd = 该目录）；外部项目必须有 `project.json`（cwd = 它的 `path`）。
 - 会话 cwd：`workspace` → `~/.lifeos`；外部项目 → 项目 `path`。**会话文件永远落家目录**（不写用户目录）。
-- 多 Agent **共用项目资源**（共享模板/资产）仍未做——见 todo；全局身份与共享记忆已可用。
+- **共享身份、共享记忆、共享规范已可用**；多 Agent 共用的模板/资产（如项目级 task-types）仍只做了“项目/Agent 覆盖入口”，跨 Agent 同步未做——见 todo。
 
 ## 4 会话（现状）
 
@@ -88,7 +91,7 @@
 - 刚建、还没发消息的会话不在磁盘上（Pi 延迟落盘）→ 后端把它们并入列表（pending）。
 - 事件流：`GET /api/agents/:id/events`（SSE）一条流承载该 Agent 的**所有**会话；事件名 = 事件类型：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `done` / `error`，每条带 `seq`，`?since=` 可续传（映射见 `src/stream-events.ts`）。
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
-- **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别。
+- **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别 · **切换 activeTask**（写自定义条目，下一轮重新装配）。（注意：Task 切换不是 Pi 原生 API，属于 Life OS 的会话上下文）
 - **前端交互**（对照 Pi CLI / Pi Web，2026-10-19）：生成中 **Esc / 停止按钮 = 打断**；生成中 Enter = **steer 插话**；生成中超过 **60s 无事件 = 判为运行丢失**（清生成态 + 重载）；SSE 重连快照显示"不在跑"也走同一恢复；斜杠命令面板（`/compact /model /thinking /name /new /copy /export /abort`）；空输入时 **↑/↓ 浏览发送历史**。**已修（2026-10-20）**：发送时重置心跳计时；判丢前先查 `GET …/sessions/:sid` 的 `meta.running`，还在跑就再给一个窗口——修掉"页面静置 >60s 后发送立刻被判丢"的误报。推断性文案只出现在左侧本轮槽。
 - **失败与状态可见**（2026-10-19 起，2026-10-20 与用户对齐归属）：**进度与失败属于"这一轮"→ 显示在左侧**；失败原因在 assistant 侧显示"归类文案 + 原始错误小字"（`src/failure.ts` 分类）；**「重新发送」属于用户消息**（动作挂在被重发的那条消息上），不放在失败提示旁。左侧本轮槽的阶段、计时与失败归属见 `docs/design/chat.md` §3.3（设计出发点 + 哪一步显示什么）。失败原因与重试信息全部来自 Pi（`stopReason` / `errorMessage` / `auto_retry_start`），不自造文案。
 - **深链接**（`?agent&project&session`）：URL 指定项目时**只在该项目里选会话**，不拿别的项目"记住的会话"顶上（2026-10-19 实测：`?project=<空项目>` 被 workspace 会话顶掉）。
@@ -113,13 +116,14 @@
 | 区 | 内容 |
 |---|---|
 | `preamble` | `identity.md`（包 `<lifeos_identity>`）→ **替换** Pi 默认的"编码 agent"前言 |
-| `lifeos_interaction_harness` | 协议正文 · 本层指引 · 飞轮 · 概念空间索引 · **记忆规则（`memory.md`）** · 任务类型 · **本项目 `AGENTS.md`**（内容全部来自 `~/.lifeos` 下的文件） |
+| `lifeos_interaction_harness` | 协议正文 · 本层指引 · 飞轮 · 概念空间索引 · **记忆规则（`memory.md`）** · 任务类型 · **规范层**（共享 workspace → 项目共享 → Agent 私有 workspace → Agent × 项目 → Task）· **本项目 `AGENTS.md`**（内容全部来自 `~/.lifeos` 下的文件；Task 存在才注入 task.md） |
 | `tools` / `rules` | Pi 默认渲染结果**原样回填**（不手写，自动跟随 Pi 更新）；`<docs>` 有意舍弃 |
 
 实测（2026-10-18，真实家 + 真实一轮的落盘 system 条目）：sections = `preamble(identity) · skills · cwd · tools · rules · lifeos_interaction_harness`。
 **Pi 的上下文文件读取已显式关闭**（`createHostedResourceLoader({ noContextFiles: true })`，2026-10-18 用户定）：Pi 默认会把 cwd **及其所有父目录**的 `AGENTS.md`/`CLAUDE.md` 读进 `<project_context>` 区——「向上继承父目录规范」不是我们的设计。项目规范只走我们自己的通道（写进 harness 区，标题里标了来源，可反查）：
   ① `agents/<id>/projects/<pid>/AGENTS.md`＝**Agent 私有约定**（这个 Agent 对这个项目的规定）；
   ② `<项目目录>/AGENTS.md`＝**项目公共约定**（外部项目才读，**只读项目目录自己这一份，不继承父目录**）。
+  ③ `specs/`＝**规范层**：`src/assembly.ts` 读 `specs/index.json`，按共享 workspace → 项目共享 → Agent 私有 workspace → Agent × 项目 → Task 顺序追加；只加载当前项目可见的层，不覆盖。
 
 注意（事实）：注入发生在**每次 run 开始时**；run 结束后 `session.systemPrompt` getter 回落到默认基准——要查"那一轮到底注入了什么"，看会话 JSONL 的 system 条目。
 

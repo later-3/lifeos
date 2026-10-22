@@ -34,7 +34,8 @@ pi/         Pi SDK（子模块，固定 commit；Agent 运行时）
 ```
 config/                 唯一配置目录（models.json / auth.json / models-store.json / settings.json? / file-roots.json；含密钥，不进 Git）
 interaction-harness/    通用层：协议正文、本层指引、飞轮、概念空间、案例、任务类型
-agents/<id>/            每个 Agent 私有：agent.json · identity.md · avatar/ · projects/<pid>/（含 sessions/、project.json）
+projects/               全局项目注册表：project.json + memory/ + specs/；workspace/ 是所有 Agent 的共享 workspace（无 path）
+agents/<id>/            每个 Agent 私有：agent.json · identity.md · avatar/ · projects/<pid>/（含 sessions/、tasks/、specs/、project.json）
 install-receipt.json    安装收据
 ```
 骨架的**模板事实源 = 仓库根 `.lifeos/`**：`pnpm home:install` = 模板整树复制（家目录已存在则只提醒、不动任何东西）；服务启动只校验家目录存在，不创建、不覆盖。
@@ -54,11 +55,13 @@ install-receipt.json    安装收据
 | `GET /api/models-config` | 解析用户 `config/models.json` 为 provider/模型清单（**响应剔除一切密钥字段**；只读） |
 | `POST·GET /api/agents/:id/avatar` | 头像：上传（png/jpg/webp≤2MB 魔数校验）/ reset 回自动 / 读图 |
 | `GET /api/agents/:id/projects` | 项目列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；**目录名 = 项目名**（可读、允许中文；旧 uuid 目录懒迁移，`legacyId` 供旧 URL 反查）；默认项目在前 |
-| `POST /api/agents/:id/projects` | **打开目录**（校验目录 → 同 path 幂等复用 → 否则 `pid=uuidv7`、建私有层目录并写 `project.json`） |
+| `POST /api/agents/:id/projects` | **打开目录**（校验目录 → 全局项目按 path 幂等取 id → 绑定到 Agent；不写用户目录） |
 | `DELETE /api/agents/:id/projects/:pid` | **从列表移除**（写 `hiddenProjectIds`；目录、manifest、会话、记录全部保留；`workspace` 不可移除 400） |
 | `GET /api/agents/:id/sessions` | 该 Agent 的会话列表（带 `running` 标记；未落盘的新会话按 pending 计入） |
 | `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表（项目存在即 200，私有目录未建返回空列表） |
 | `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd：workspace = `~/.lifeos`；外部项目 = 项目 path**） |
+| `GET /api/agents/:id/projects/:pid/tasks` | 当前项目的任务清单（读 `tasks/*/task.md`，用于 `/task` 切换器） |
+| `PUT /api/agents/:id/sessions/:sid/task` | 切换会话 `activeTaskId`；校验 Task 属于当前项目；只影响下一轮，当前 run 不变 |
 | `POST /api/agents/:id/sessions` | 在默认 project（workspace）下新建会话（前端「＋新建会话」入口） |
 | `GET /api/agents/:id/sessions/:sid` | 读消息（含 `thinking` / `toolCall` / `toolResult` 块）+ **`meta`**（会话当前 `model`、`thinkingLevel`、**`running`**（这一轮是否在跑，前端判丢前先查它）、**`modelOverridden`**（是否用 `/model` 覆盖过））；失败的那条 assistant 带 **`error`**（Pi 原始 `errorMessage`）与 **`failure`**（归类：`timeout/network/auth/rate_limit/server/empty/aborted/truncated/unknown`，见 `src/failure.ts`）；工具结果**只按 `toolCallId` 配对** |
 | `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE）；**`behavior: "steer"\|"followUp"`** = 生成中投入输入，直接走 Pi 原生 `steer()`/`followUp()` 队列 |

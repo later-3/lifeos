@@ -338,27 +338,56 @@ test("会话 cwd 由所属项目决定（外部项目=manifest.path，workspace=
   } finally { server.close(); }
 });
 
-test("旧数据迁移：顶层共用层 manifest → 搬进 Agent 私有层并清掉旧目录", async () => {
+test("会话切换 Task：只更新 activeTaskId 与下一轮装配，校验项目内任务", async () => {
+  const { server, base, home } = await start();
+  try {
+    const created = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json();
+    const sid = created.sessionId;
+    const before = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
+    assert.ok(before.meta.activeTaskId, "新会话应有默认 Task");
+
+    const { createTask } = await import("../src/tasks.ts");
+    const task = await createTask({ agentId: "lifeosagent", projectId: "workspace" }, {
+      title: "switch-probe", type: "general", category: "G",
+    });
+    assert.ok(!("code" in task));
+    const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/tasks`)).json();
+    assert.ok(list.items.some((item) => item.id === task.task.id), "任务列表接口应返回当前项目任务");
+
+    const switched = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/task`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.task.id }),
+    });
+    assert.equal(switched.status, 200);
+    const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
+    assert.equal(after.meta.activeTaskId, task.task.id, "切换后 meta 立即反映 activeTaskId");
+
+    const missing = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/task`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "9999-nope" }),
+    });
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).error.code, "task_not_found");
+
+    // 下一轮装配直接读新 Task（这里不真跑模型，直接验证装配函数）
+    const { buildPromptParts } = await import("../src/assembly.ts");
+    const parts = await buildPromptParts("lifeosagent", "workspace", task.task.id);
+    assert.match(parts.harnessSection, /当前 Task · 000[0-9]+-switch-probe/);
+    assert.match(parts.harnessSection, /switch-probe/);
+    await import("node:fs/promises").then(({ access }) => access(join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", task.task.id, "task.md")));
+  } finally { server.close(); }
+});
+
+test("顶层 projects 是共享层：不会被迁移进某个 Agent，也不删除共享身份", async () => {
   const { server, base, home } = await start();
   const { mkdir, writeFile, readFile, access } = await import("node:fs/promises");
   try {
-    // 造一份"旧设计"的数据：私有层目录存在（无 manifest）+ 顶层共用层有 manifest
-    const pid = "01a14f39-b0f9-7422-ab41-8770edabb414";
-    await mkdir(join(home, "agents", "lifeosagent", "projects", pid), { recursive: true });
-    await mkdir(join(home, "projects", pid), { recursive: true });
-    await writeFile(join(home, "projects", pid, "project.json"), JSON.stringify({ schemaVersion: 1, id: pid, name: "legacy", path: "/tmp/legacy-proj" }) + "\n");
+    // 全局共享项目：不属于任何 Agent，列表里不应被“搬走”
+    await mkdir(join(home, "projects", "legacy"), { recursive: true });
+    await writeFile(join(home, "projects", "legacy", "project.json"), JSON.stringify({ schemaVersion: 1, id: "legacy", name: "legacy", path: "/tmp/legacy-proj" }) + "\n");
 
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
-    const item = list.items.find((entry) => entry.path === "/tmp/legacy-proj");
-    assert.ok(item, "迁移后项目应出现在列表里");
-    assert.equal(item.name, "legacy-proj", "显示名 = basename(path)（manifest.name 不参与显示）");
-    assert.equal(item.id, "legacy", "目录名迁成可读名（manifest.name）");
-
-    const moved = JSON.parse(await readFile(join(home, "agents", "lifeosagent", "projects", "legacy", "project.json"), "utf8"));
-    assert.equal(moved.path, "/tmp/legacy-proj");
-    assert.equal(moved.id, "legacy");
-    assert.equal(moved.legacyId, pid, "旧 pid 记在 legacyId（旧 URL 可反查）");
-    await access(join(home, "projects")).then(() => assert.fail("旧顶层共用层应被清掉")).catch(() => {});
+    assert.equal(list.items.some((entry) => entry.path === "/tmp/legacy-proj"), false, "全局项目不会自动变成某个 Agent 的绑定");
+    await access(join(home, "projects", "legacy", "project.json"));
+    assert.equal(JSON.parse(await readFile(join(home, "projects", "legacy", "project.json"), "utf8")).path, "/tmp/legacy-proj");
   } finally { server.close(); }
 });
 

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "type": "general",
+  "categories": {
+    "G": {
+      "label": "G 普通任务",
+      "docs": [
+        { "file": "01-background.md", "title": "01 背景", "sections": ["现状与为什么做（一两句事实）", "完成标准（怎么算做完）"] },
+        { "file": "02-plan.md", "title": "02 步骤", "sections": ["步骤（按顺序；做到哪算完成）", "验收（怎么确认做到）"] }
+      ]
+    }
+  }
+}

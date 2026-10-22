@@ -21,9 +21,13 @@ lifeos/
 │  ├─ memory/               记忆：四角色路径 / MemOS store / 读写 / 硬删除 / 多角色合并
 │  ├─ assembly.ts           提示装配（方案 E：identity + harness 区 + Pi 的 tools/rules 回填）
 │  ├─ stream-events.ts      Pi 会话事件 → SSE 流事件的唯一映射
-│  ├─ projects.ts           项目 manifest 的读写与旧数据迁移
+│  ├─ project-registry.ts   全局项目注册表（含共享 workspace）
+│  ├─ projects.ts           项目私有绑定 / Agent 列表 / 旧 uuid 懒迁移
+│  ├─ project-skeleton.ts   项目私有层骨架（create-only）
+│  ├─ tasks.ts              任务目录 / task.md / 默认 Task / 模板四层选择
+│  ├─ install.ts            `pnpm home:install`（模板整树复制 + 收据）
 │  ├─ fs.ts                 文件浏览器后端（根白名单 / 列目录 / 读文件）
-│  ├─ home.ts               家目录解析与校验 · install.ts 安装（模板整树复制）
+│  ├─ home.ts               家目录解析与校验
 ├─ frontend/                前端（Vite + React + Tailwind v4）
 │  └─ src/
 │     ├─ App.tsx            三级级联 + 聊天 + 会话/项目/Agent 操作
@@ -47,15 +51,16 @@ lifeos/
 ├─ config/                  唯一配置目录（= Pi 的 agentDir）
 │                            models.json · auth.json · models-store.json · settings.json? · file-roots.json · memory.json?（记忆的 LLM/embedding 覆盖）
 ├─ memory/user/<uid>/        用户记忆（MemOS store；跨项目、跨 Agent）
-├─ projects/<name>/          全局项目注册表：project.json（全局身份）+ memory/（项目共享记忆，MemOS store）
+├─ projects/<name>/          全局项目注册表：project.json（全局身份）+ memory/（共享记忆）+ specs/（项目共享规范；workspace 为全 Agent 共享层）
 ├─ interaction-harness/      通用层（所有 Agent 共用）
-│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · memory.md · cases/ · task-types/<type>/
+│                            protocol.md · AGENTS.md · flywheel.md · concept-space.md · concept-space/ · memory.md · cases/ · task-types/<type>/（含 template.json）
+├─ projects/workspace/       共享 workspace（所有 Agent）：project.json(id=workspace，无 path) · memory/ · specs/
 ├─ agents/<id>/              每个 Agent 私有（目录名 = id）
 │  ├─ agent.json             身份与默认值（唯一来源）
 │  ├─ identity.md            身份正文（注入 preamble）
 │  ├─ avatar/                图片头像（可选）
 │  ├─ memory/                Agent 记忆（MemOS store：config.yaml + data/memos.db）
-│  └─ projects/<pid>/        一项目一份：AGENTS.md · concept-space.md · sessions/ · tasks/ · daily/ · cases/ · todo/ · memory/ ·（外部项目）project.json（每个子目录带自己的 AGENTS.md）
+│  └─ projects/<pid>/        一项目一份：AGENTS.md · concept-space.md · sessions/ · tasks/ · daily/ · cases/ · todo/ · specs/ · memory/ ·（外部项目）project.json（每个子目录带自己的 AGENTS.md）
 │     └─ memory/             agent 的项目记忆（私有；MemOS store）
 └─ install-receipt.json      安装收据
 ```
@@ -66,8 +71,9 @@ lifeos/
 
 | 内容 | 落点 |
 |---|---|
-| 会话（JSONL） · 每日记录 · 案例 · Todo · 任务 | `agents/<id>/projects/<pid>/`（默认 `workspace/`；打开外部项目后随该项目 pid） |
+| 会话（JSONL） · 每日记录 · 案例 · Todo · 任务 | `agents/<id>/projects/<pid>/`（默认 `workspace/`；打开外部项目后随该项目 pid；任务目录平铺 + `task.md` 的 `日期` 字段） |
 | 通用案例 · 协议正文 · 任务类型细则 | `interaction-harness/`（通用层） |
+| 共享规范 | `projects/workspace/specs/`（所有 Agent）· `projects/<pid>/specs/`（项目共享）· `agents/<id>/projects/workspace/specs/`（Agent 跨项目）· `agents/<id>/projects/<pid>/specs/`（Agent × 项目） |
 | 记忆：项目共享记忆 / 用户记忆 / Agent 记忆 / agent 的项目记忆 | `projects/<pid>/memory/` · `memory/user/<uid>/` · `agents/<id>/memory/` · `agents/<id>/projects/<pid>/memory/`（各自一个 SQLite） |
 | 项目身份（外部项目） | `agents/<id>/projects/<pid>/project.json` |
 
@@ -83,4 +89,5 @@ lifeos/
 - **交互 harness 一律写全**：不单独说 harness；代码/文件用 `interaction-harness`。
 - 文件 kebab-case；函数/变量 camelCase；类型/组件 PascalCase。
 - HTTP 路径 `/api/<资源>`；Agent 路径段用 **id**（slug）。
-- 家目录固定名：`config/`、`interaction-harness/`、`agents/<id>/`（含 `projects/<pid>/`）、`install-receipt.json`。
+- 家目录固定名：`config/`、`interaction-harness/`、`projects/`（含 `workspace/`）、`agents/<id>/`（含 `projects/<pid>/`）、`install-receipt.json`。
+- 规范目录名统一英文 `specs/`；主题名英文；不新建中文 `规范/` 目录（协议概念仍称“规范”）。
