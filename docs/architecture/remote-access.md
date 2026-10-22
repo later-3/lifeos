@@ -93,11 +93,37 @@ Life OS 不在公网监听端口。远程访问由三段组成：
 
 ### 迁移到常驻服务器
 
-域名、Access 应用、策略、邮箱和手机书签都不随宿主变化，差别只在隧道连接器：
+先分清两层：**应用本体/数据迁移**和**远程入口切换**。本文只讲入口；应用必须先在服务器上跑起来，并满足 `curl http://127.0.0.1:<port>/api/agents` 返回 200，才能切隧道。顺序是：**部署应用 → 本地验收 → 切隧道 → 停旧连接器**。
 
-- **复用同一隧道**：把凭据与 config 放到服务器，启动 connector，并**停掉 Mac 上的 connector**；同一隧道多个 connector 会把流量分到旧源端。CF 不需要操作，DNS 也不变。
-- **新建隧道，或复用服务器上已有的隧道**：只需要把 `lifeos.ai4child.asia` 的 DNS CNAME 指到新隧道；Access 应用不动。
-- ingress 指向新宿主的 `127.0.0.1:<port>`；端口不同只改本地 config。凭据保持 `600`，不进仓库。
+域名、Access 应用、策略、邮箱和手机书签都不随宿主变化。入口切换有两种做法：
+
+#### A. 搬同一个隧道（CF 零操作，推荐）
+
+1. 在新宿主准备好应用，并把隧道凭据与 config 复制过去；凭据 `chmod 600`，ingress 的 `service` 改为新宿主的 `http://127.0.0.1:<port>`。
+2. 停掉旧连接器（Mac）：`launchctl bootout gui/$(id -u) <launch-agent-label>`；这一步会有短暂中断。
+3. 在新宿主用 LaunchAgent（macOS）或 systemd user service（Linux）常驻并启动。
+4. `cloudflared tunnel info <tunnel-name>` 确认连接来自新宿主。
+5. DNS 与 Access 都不需要改。
+
+如果两台机器上的应用都在跑，可以先起新连接器、确认后再停旧的；**不要长期同时跑**：同一隧道多个 connector 会被 Cloudflare 分流，旧机器睡眠时会出现间歇 502。
+
+#### B. 新建隧道，或复用新宿主已有的隧道（改一次 DNS）
+
+1. 在新宿主创建/选择隧道，配置 ingress，常驻并启动；若复用已有隧道（例如服务器上已有的 `llm-home`），把 hostname 加进它的 ingress 后重启即可。
+2. 停掉旧连接器。
+3. 把 hostname 的 CNAME 指向新隧道：
+
+   ```bash
+   cloudflared tunnel route dns --overwrite-dns <new-tunnel> <hostname>
+   ```
+
+4. Access 应用、策略、邮箱不变。
+
+#### 共同注意
+
+- 迁移前先备份并迁走 Life OS 的数据目录；本文不覆盖数据迁移。
+- 回滚：停新连接器 → 恢复旧连接器；若改过 DNS，用 `--overwrite-dns` 指回旧隧道。
+- 凭据始终 `600`，不进仓库。
 
 ## 8 相关
 
