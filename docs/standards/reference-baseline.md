@@ -29,6 +29,7 @@
 | 文件面板的根目录历史 | VS Code「Open Recent」（打开过的文件夹按最近使用排序，MRU）；Pi Web `lib/project-groups.ts · getRecentProjects`（按最近活动排序去重，**不另存历史**） | 用**已有数据**当历史：根白名单 `config/file-roots.json` 按最近使用排序（家目录固定第一），切换即提权；界面用现有 Modal 列出来（不新增控件/存储） | 不新建"历史记录"存储、不做无限条目管理；不借 Pi Web 的项目分组逻辑（我们是文件根，不是会话项目）|
 | 创建实体的唯一性（Agent） | Kubernetes `metadata.generateName`（名字 + 随机后缀，id 不承载语义）；声明式创建的 create-or-return（`kubectl apply` / Terraform 的 name 唯一键）；GitHub/Slack 改名不改 id | 非 ASCII 名得到不透明 id（`agent-3f9a`）；**创建按 name 幂等**（同名返回已有实体，`created:false`）；工具描述写明"id 生成后稳定，改名不变，不要归档重建" | 不引入 idempotency-key 机制（调用方是模型，按 name 幂等已足够）|
 | 聊天输入框（Enter 发送 / 输入法组字 / 多行） | Pi Web `components/ChatInput.tsx`：`isComposingRef` + `nativeEvent.isComposing` + `keyCode === 229` + `compositionend` 后 `COMPOSITION_END_ENTER_GRACE_MS = 100` 宽限；Shift+Enter 换行 | 整套判定与宽限值；组字中把 Enter 让给输入法、组字刚结束吞掉那次冒泡 | 不借其自研 textarea / 自适应高度 / 移动端 Ctrl+Enter 快捷键（我们用原生 textarea + rows=1）|
+| 输入框对象结构（composer / 菜单 / 排队 / 横幅） | Pi Web `components/ChatInput.tsx`：L1419-1485 排队消息在 textarea 上方成组显示、L1487-1514 retry/compact 横幅同容器、L1054-1177 slash/history/@ 菜单键盘导航、L1393-1416 单一 wrapper（`maxWidth:820;margin:0 auto`）；LobeHub `src/features/ChatInput/Mobile/index.tsx`：`ChatInput` header/footer action bar + `InputEditor defaultRows=1` + `SendArea`，`fullscreen` 才绝对定位铺满 | 输入区视为**一个对象**：textarea、发送/停止、palette、排队/横幅在同一容器内分组；移动端默认 1 行，菜单/发送在附近；视觉用我们自己的 token | 不借 Pi Web 的 inline CSS / i18n / 自研 textarea 与自动高度实现；不借 LobeHub 的文件上传/expand 机制；不把同一输入对象的动作拆到不相邻区域 |
 | Life OS 自有工具（Agent 创建/归档、任务、项目） | Pi `extensions.md §Tools`（`defineTool` + 注册；throw = 失败结果；`content`+`details` 必填）与 `sdk.ts` 的 `tools` **白名单**语义（列出的才启用）；`annotations` 借 MCP 的 destructiveHint 等标注 | 用 Pi 的工具模型定义名字/英文描述/参数 schema/标注；业务动作下沉到 `src/agents.ts`（工具与 HTTP 共用一份实现）；工具名显式写进 allowlist | 不自己实现工具循环、参数解析或事件；不绕开 Pi 的工具系统（如让模型直接「执行命令」模拟工具）|
 | 技能（skill） | Pi `docs/skills.md`：约定目录 + 递归发现；启动只把 **name/description/path** 放进 system prompt；正文按需读取 | 目录约定、发现顺序、"索引进 prompt、正文按需" | 不改 Pi 的发现规则 |
 | 用户目录布局 | 实机 `~/.pi/agent/`：`auth.json`、`models.json`、`settings.json`、`extensions/`、`skills/`、`npm/` | 家的根放**名词式 json**（`config.json` 风格）、子目录按功能 | 不照搬 Pi 目录名（我们的家叫 `~/.lifeos`） |
@@ -52,7 +53,9 @@
 
 1. 提出新机制/新命名时，先在本文件找到**对应场景行**；找不到就**先补行**（补行要写明"借什么、不借什么"）；
 2. 参照点要**可核**：给出文件路径、命令或实机位置，不写"某某框架一般这么做"；
-3. 与 Pi 冲突时，**以 Pi 的公开接口与文档为准**；要偏离必须在本文件写明理由（并登记为决策）。
+3. 只写“它是怎么做的”不够：必须能回答**为什么这样设计 / 好处 / 适用条件与代价 / 我们的情况 / 倾向**；“借什么/不借什么”是分析后的结论，不是分析本身；
+4. **场景行不是永久判决**：倾向绑定当前功能/数据/设备场景；需求或数据变了就重新评估，不采用的原因要连同“复核触发条件”一起记录，拆解可复用；详细分析放任务文档，完成后回填本文件，不另建第三份清单；
+5. 与 Pi 冲突时，**以 Pi 的公开接口与文档为准**；要偏离必须在本文件写明理由（并登记为决策）。
 
 ## 前端页面布局（2026-10-21 补）
 

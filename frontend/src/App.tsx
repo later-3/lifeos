@@ -1220,22 +1220,25 @@ export default function App() {
 
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {palette !== undefined && (
-              <div className="mb-1.5 max-h-56 overflow-y-auto overflow-hidden rounded-panel bg-surface p-1 shadow-sm ring-1 ring-line">
-                {palette.items.map((item, index) => (
-                  <button key={item.key} type="button"
-                    onMouseEnter={() => setPalette({ ...palette, index })}
-                    onClick={() => { setPalette(undefined); item.run(); }}
-                    className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors ${index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"}`}>
-                    <span className="shrink-0 font-mono">{item.label}</span>
-                    {item.hint !== undefined && <span className="ml-auto min-w-0 truncate text-micro text-ink-500">{item.hint}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="flex items-end gap-2 rounded-panel bg-surface p-1.5 ring-1 ring-line focus-within:ring-accent">
-              <textarea ref={inputRef} value={input} rows={1}
-                placeholder="输入消息 · Enter 发送 · 生成中 Enter 插话 · Esc 打断 · / 查看命令"
+            {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
+            <div data-testid="composer"
+              className="rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              {palette !== undefined && (
+                <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
+                  {palette.items.map((item, index) => (
+                    <button key={item.key} type="button"
+                      onMouseEnter={() => setPalette({ ...palette, index })}
+                      onClick={() => { setPalette(undefined); item.run(); }}
+                      className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors max-sm:min-h-11 ${index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"}`}>
+                      <span className="shrink-0 font-mono">{item.label}</span>
+                      {item.hint !== undefined && <span className="ml-auto min-w-0 truncate text-micro text-ink-500">{item.hint}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-end gap-2 p-1.5">
+                <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
+                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · 生成中 Enter 插话 · Esc 打断 · / 查看命令"}
                 onChange={(event) => {
                   const next = event.target.value;
                   setInput(next);
@@ -1267,7 +1270,8 @@ export default function App() {
                   // 输入历史：空输入时 ↑/↓ 浏览（对齐 Pi CLI 的 historyPrevious/Next）
                   if ((event.key === "ArrowUp" || event.key === "ArrowDown") && input === "" && sentHistoryRef.current.length > 0) {
                     event.preventDefault();
-                    const delta = event.key === "ArrowUp" ? -1 : 1;
+                    // ↑ 走向更早历史（索引 +1），↓ 走回更新/清空（索引 -1）。
+                    const delta = event.key === "ArrowUp" ? 1 : -1;
                     const next = Math.max(-1, Math.min(sentHistoryRef.current.length - 1, historyIndexRef.current + delta));
                     historyIndexRef.current = next;
                     setInput(next === -1 ? "" : sentHistoryRef.current[next] ?? "");
@@ -1299,6 +1303,7 @@ export default function App() {
                   <IconArrowUpIcon />
                 </IconButton>
               )}
+              </div>
             </div>
           </div>
         </footer>

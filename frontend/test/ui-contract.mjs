@@ -380,6 +380,35 @@ const imeGuard = await page.evaluate(() => {
 });
 check("输入法组字中的 Enter 不发送", imeGuard.ok, String(imeGuard.detail));
 
+// 单容器 composer（chat.md §3.5）：一个容器 + textarea 有可访问名 + 发送/停止在容器内
+const composerShape = await page.evaluate(() => {
+  const container = document.querySelector('[data-testid="composer"]');
+  const textarea = container?.querySelector("textarea");
+  const action = container?.querySelector('button[aria-label="发送"], button[aria-label="停止（Esc）"]');
+  return {
+    exists: container !== null,
+    aria: textarea?.getAttribute("aria-label") ?? null,
+    action: action !== undefined && action !== null,
+    ring: container === null ? "" : getComputedStyle(container).boxShadow,
+  };
+});
+check("composer 是单一容器", composerShape.exists && composerShape.action, JSON.stringify(composerShape));
+check("textarea 有可访问名", composerShape.aria === "输入消息", String(composerShape.aria));
+
+// 自动高度 1–8 行（chat.md §3.5）
+const autoTextarea = page.locator("textarea").first();
+const heightBefore = await autoTextarea.evaluate((el) => el.getBoundingClientRect().height);
+await autoTextarea.fill(Array.from({ length: 20 }, (_, i) => `line-${i}`).join("\n"));
+await page.waitForTimeout(120);
+const heightAfter = await autoTextarea.evaluate((el) => ({
+  height: el.getBoundingClientRect().height,
+  style: Number.parseFloat(el.style.height || "0"),
+}));
+check("输入框自动 1–8 行", heightAfter.height > heightBefore && heightAfter.style > 0 && heightAfter.style <= 178,
+  `${heightBefore.toFixed(1)} → ${heightAfter.height.toFixed(1)} (style=${heightAfter.style})`);
+await autoTextarea.fill("");
+await page.waitForTimeout(80);
+
 // 斜杠命令面板（对齐 Pi CLI / Pi Web）：输入 "/" 列命令，Esc 关闭
 const chatComposer = page.locator("textarea").first();
 await chatComposer.click();
@@ -390,6 +419,12 @@ const paletteItems = await page.evaluate(() => [...document.querySelectorAll("bu
   .filter((text) => text.startsWith("/")));
 check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")),
   paletteItems.slice(0, 6).join(" | "));
+const paletteInsideComposer = await page.evaluate(() => {
+  const container = document.querySelector('[data-testid="composer"]');
+  const palette = document.querySelector('div[aria-label="斜杠命令"]');
+  return container !== null && palette !== null && container.contains(palette);
+});
+check("斜杠命令面板在 composer 容器内", paletteInsideComposer);
 await page.keyboard.press("Escape");
 await page.waitForTimeout(200);
 const paletteClosed = await page.evaluate(() => ![...document.querySelectorAll("button")]
@@ -810,6 +845,29 @@ if (emptyTarget === null) {
   check("无会话时头部显示默认模型", /·\s+\S+\/\S+/.test(emptyState.header), emptyState.header);
 }
 await freshPage.close();
+
+// 输入历史 ↑/↓（chat.md §3.5；拦截 202，不打真实模型）
+await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/, (route) => route.fulfill({
+  status: 202, contentType: "application/json", body: JSON.stringify({ accepted: true }),
+}));
+await chatComposer.fill("history-probe");
+await chatComposer.press("Enter");
+await page.waitForTimeout(350);
+await chatComposer.fill("");
+await page.waitForTimeout(120);
+await chatComposer.press("ArrowUp");
+await page.waitForTimeout(120);
+const historyValue = await chatComposer.inputValue();
+await chatComposer.fill("");
+await page.waitForTimeout(120);
+await chatComposer.press("ArrowDown");
+await page.waitForTimeout(120);
+const historyCleared = await chatComposer.inputValue();
+check("空输入 ↑ 取回输入历史", historyValue === "history-probe", `value=${historyValue}`);
+check("空输入 ↓ 返回空输入", historyCleared === "", `value=${historyCleared}`);
+await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/);
+await page.reload({ waitUntil: "networkidle" });
+await page.waitForTimeout(300);
 
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。

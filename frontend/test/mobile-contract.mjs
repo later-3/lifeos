@@ -35,6 +35,33 @@ for (const width of widths) {
   check(`[${width}] 有导航入口`, base.menu || base.back);
   check(`[${width}] 可见按钮触控目标 ≥44`, base.small.length === 0, base.small.map((button) => `${button.text}:${button.w}x${button.h}`).join(" / "));
 
+  // 手机 composer（chat.md §3.5）：短 placeholder、可访问名、调色板行 ≥44。
+  const composer = await page.evaluate(() => {
+    const c = document.querySelector('[data-testid="composer"]');
+    const ta = c?.querySelector("textarea");
+    return { exists: c !== null, placeholder: ta?.getAttribute("placeholder") ?? null, aria: ta?.getAttribute("aria-label") ?? null };
+  });
+  check(`[${width}] 手机 composer 短 placeholder`, composer.exists && composer.placeholder === "输入消息", JSON.stringify(composer));
+  check(`[${width}] composer textarea 有可访问名`, composer.aria === "输入消息", String(composer.aria));
+  const textarea = page.locator("textarea").first();
+  await textarea.fill("/");
+  await page.waitForTimeout(250);
+  const paletteSmall = await page.evaluate(() => {
+    const palette = document.querySelector('div[aria-label="斜杠命令"]');
+    return [...(palette?.querySelectorAll("button") ?? [])].filter((button) => button.offsetParent !== null)
+      .map((button) => ({ text: (button.textContent ?? "").trim().slice(0, 12), h: Math.round(button.getBoundingClientRect().height) }));
+  });
+  check(`[${width}] 调色板行 ≥44`, paletteSmall.length > 0 && paletteSmall.every((button) => button.h >= 44), paletteSmall.map((button) => `${button.text}:${button.h}`).join(" / "));
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    const ta = document.querySelector("textarea");
+    if (ta === null) return;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    setter.call(ta, "");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForTimeout(150);
+
   const navEntry = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
 
   // 系统返回：一次退一层，根级再退才关闭；不能直接离开应用。
