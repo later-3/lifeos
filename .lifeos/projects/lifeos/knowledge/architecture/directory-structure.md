@@ -34,6 +34,7 @@ lifeos/
 ```
 ~/.lifeos/
 ├─ config/                      模型与文件根配置（含密钥，永不进 Git）
+├─ logs/                       运行日志（backend-<date>.jsonl / frontend-<date>.jsonl；14 天滚动；运行时创建，模板不带——与协议无关的 Life OS 运行产物）
 ├─ interaction-harness/         协议目录：protocol.md · AGENTS.md · skeleton/（目录说明模板）· task-types/（协议默认的任务类型）
 ├─ projects/                    共享层（全局项目注册表）
 │  ├─ workspace/                共享 workspace（所有 Agent）：project.json（无 path）· AGENTS.md · flywheel.md · concept-space.md · specs/ · cases/ · knowledge/ · tools/ · todo/ · memory/ · task-types/
@@ -65,7 +66,7 @@ lifeos/
 ## 4 明确不建（现在没有；真要写时再建并说明用途）
 
 - 代码：`src/agents/`、`src/routes/`、`src/utils/`、`shared/`、`packages/`、`deploy/`
-- 家目录顶层：`logs/`、`runtime/`、`daily/`（日志只在 Task 里）
+- 家目录顶层：`runtime/`、`daily/`（日常沉淀只在默认 Task；生产运行日志是 Life OS 运行产物，落 `logs/`，不进模板——模板与运行时区分见 §2）
 - 文档：`docs/`（已并入 `.lifeos/projects/lifeos/`）
 
 ## 5 命名

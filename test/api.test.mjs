@@ -1,26 +1,11 @@
 // 起真实服务（随机端口）测只读接口与错误路径。
 import { test } from "node:test";
-import assert from "node:assert/strict";
+import { start, startOn } from "./server-harness.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { serve } from "@hono/node-server";
 import { installHome } from "../src/home.ts";
-import { createApp } from "../src/server.ts";
-
-async function startOn(home) {
-  process.env.LIFEOS_HOME = home;
-  const server = serve({ fetch: createApp().fetch, port: 0 });
-  await new Promise((resolve) => server.once("listening", resolve));
-  const { port } = server.address();
-  return { server, base: `http://127.0.0.1:${port}`, home };
-}
-
-async function start() {
-  const home = await mkdtemp(join(tmpdir(), "lifeos-test-"));
-  await installHome(process.cwd(), home);
-  return startOn(home);
-}
+import { join } from "node:path";
+import assert from "node:assert/strict";
 
 test("GET /api/agents 列出默认 Agent", async () => {
   const { server, base } = await start();
@@ -724,13 +709,13 @@ test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切
     assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/abort`, { method: "POST" })).status, 200);
     assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/abort`, { method: "POST" })).status, 404);
 
-    // steer / followUp：走 Pi 原生队列，返回 202 + queued 类型
+    // steer / followUp：空闲会话 → 409 session_idle（决策 b：不静默入 Pi 队列；前端自动改发新回合）
     for (const behavior of ["steer", "followUp"]) {
       const response = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/messages`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "插一句", behavior }),
       });
-      assert.equal(response.status, 202, behavior);
-      assert.equal((await response.json()).queued, behavior);
+      assert.equal(response.status, 409, behavior);
+      assert.equal((await response.json()).error.code, "session_idle", behavior);
     }
     assert.equal((await fetch(`${base}/api/agents/lifeosagent/sessions/nope/messages`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x", behavior: "steer" }),

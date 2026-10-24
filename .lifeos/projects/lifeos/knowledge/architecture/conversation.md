@@ -282,6 +282,20 @@ useLayoutEffect(() => {
 - 截图：运行中/完成/失败/重试/窄屏；
 - 不写真实家目录：route mock / 临时 home。
 
+## 13 运行注册表与回合账本（2026-10-24 修订）
+
+- **运行注册表**（既有 `session-runtime`）回答"这个会话正在跑吗"；**回合账本**新增：每受理一条消息生成 `turnId`，直至终态（done / error / lost）；两者同宿主（agent-host），**不做第二份真相**；
+- 对账端点：`GET /api/agents/:id/sessions/:sid/turns/last` → `{turn:{turnId,state,at}}` / `{turn:null}`（无回合不算错误）；
+- SSE 追加回合事件 `{type:"turn", turnId, state, at}`——事件名 = 事件类型（api 2.2）；与既有 `done/error` 共存，由前端归并；
+- 账本丢失（进程重启）→ 兜底读会话 JSONL 尾条：完整回合（user…assistant/stop)→ complete；仅 user 无收尾 → lost；把 `lost` 补判进账本后照常对账；
+- 设计来源：C113/C114（参考 LibreChat PR#14220 "活 job"校验与确认事件、piweb per-session 事实模型）。
+
+## 14 SSE 投递语义与损失恢复
+
+- SSE 断流是一等场景（休眠/代理/网络），**事件允许丢**，但对账必须能补：重连＝快照（seq/since）+ `GET …/turns/last` 的组合，不依赖"一条不丢"；
+- 前端恢复三分支（FR-13）：已完成（响应在下方） / 中断（带重发） / 进行中已恢复；heartbeat 窗口（60s）与轮询间隔（5s）**常量可注入**（测试用 addInitScript 覆盖）；
+-背诵点："丢了快照"永远不会丢"真相"——真相在注册表/账本/JSONL 三层，每层都能独立回答"完了吗"。
+
 ## 12 开放决策
 
 1. 状态条位置：输入框上方（建议）还是 header 下？

@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
-  projectIdOfSession, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
+  projectIdOfSession, sessionExists, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionTask, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
@@ -15,6 +15,8 @@ import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition 
 import { resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
+import { appendFrontendRows, log } from "./logging.ts";
+import { randomUUID } from "node:crypto";
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
 // boundProjectIds 是旧设计的死字段（写而不读），已删；旧文件里的同名键在写回时被剥掉。
@@ -169,6 +171,16 @@ function textOf(message: { content?: unknown }): string {
 
 export function createApp() {
   const app = new Hono();
+
+// 请求行（协议 P1·1.5 / specs 2.10）：每个 HTTP 请求一行 method/path/status/millis/requestId。
+app.use(async (c, next) => {
+  const requestId = randomUUID().slice(0, 8);
+  const startedAt = Date.now();
+  await next();
+  const status = c.res.status;
+  const path = new URL(c.req.url).pathname;
+  void log.info("http", undefined, "request", { details: { method: c.req.method, path, status, millis: Date.now() - startedAt, requestId } });
+});
 
   // 创建助手（模型侧走 lifeos_agent_create 工具，界面暂无入口——用户 2026-10-19 定）
   app.post("/api/agents", async (c) => {
@@ -355,6 +367,30 @@ export function createApp() {
     if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
     return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(agent.id, state) });
   });
+  // 对账端点（协议 P1·1.2）：内存账本（running/done/error）在，进程重启则兜底读 JSONL（done/lost）。
+  app.get("/api/agents/:id/sessions/:sessionId/turns/last", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    if (!(await sessionExists(agent.id, c.req.param("sessionId")))) {
+      const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+    }
+    return c.json(await turnLastOf(agent.id, c.req.param("sessionId")));
+  });
+
+  // 前端批量上报（协议 P1·1.5）：≤50 条/批、单批 ≤16KiB、逐条写进 frontend-<date>.jsonl。
+  app.post("/api/logs", async (c) => {
+    const raw = await c.req.text();
+    if (raw.length > 16 * 1024) { const error = problem("invalid_request", "批量过大（>16KiB）", 400); return c.json(error.body, error.status); }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { const error = problem("invalid_request", "body 不是合法 JSON", 400); return c.json(error.body, error.status); }
+    const events = (parsed as { events?: unknown }).events;
+    if (!Array.isArray(events) || events.length === 0 || events.length > 50) {
+      const error = problem("invalid_request", "events 必须是 1..50 条的数组", 400); return c.json(error.body, error.status);
+    }
+    const written = await appendFrontendRows(events as Array<Record<string, unknown>>);
+    void log.info("http", undefined, "frontend-logs", { details: { written, requestId: "batch" } });
+    return c.json({ written });
+  });
 
   app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {
     const agent = await readAgent(c.req.param("id"));
@@ -370,9 +406,18 @@ export function createApp() {
     // 生成中投入输入：对接 Pi 原生 steer / followUp（不自造客户端队列）
     const behavior = body.behavior === "steer" || body.behavior === "followUp" ? body.behavior : undefined;
     if (behavior !== undefined) {
-      const queued = await queueSessionInput(agent.id, sessionId, body.text, behavior);
-      if (!queued) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-      return c.json({ queued: behavior }, 202);
+      const verdict = await queueSessionInput(agent.id, sessionId, body.text, behavior);
+      if ("code" in verdict) {
+        if (verdict.code === "session_not_found") { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+        if (verdict.code === "session_idle") {
+          const error = problem("session_idle", "会话空闲：改为新回合处理（决策 b）", 409); return c.json(error.body, error.status);
+        }
+        if (verdict.code === "error") {
+          const error = problem("steer_failed", verdict.message, 400); return c.json(error.body, error.status);
+        }
+        const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+      }
+      return c.json({ queued: verdict.queued }, 202);
     }
     void runTurn(agent.id, sessionId, body.text);
     return c.json({ accepted: true }, 202);

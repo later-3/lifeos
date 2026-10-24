@@ -162,6 +162,7 @@ test("lifeos_task_create：编号连续、中文标题、按类别生成文档�
   assert.match(taskMd, /interaction-harness\/protocol\.md/);
   assert.match(taskMd, /Agent × 项目规范/, "指向本层规范");
   assert.match(taskMd, /类型规则：.*task-types/, "指向类型规则");
+  assert.doesNotMatch(taskMd, /specs\/code\/frontend\/code\.md/, "workspace 项目没有 code specs → 入口不该列不存在的文件（协议 §12.1 不写不存在路径）");
 
   // 编号递增；B/C 类别只生成各自的必需文档
   const second = await taskCreate.execute("t2", { title: "改协作规范", category: "B", goal: "规范里写清任务编号" });

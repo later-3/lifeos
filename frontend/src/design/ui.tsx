@@ -69,8 +69,8 @@ export const controlClass =
   "w-full rounded-control bg-surface px-2.5 text-body text-ink-900 ring-1 ring-line transition-shadow placeholder:text-ink-300 focus:ring-accent disabled:bg-hover disabled:text-ink-500";
 
 /** 列表行：32px 高，右侧元信息固定槽位（hover 时图标原地显隐，不造成位移）。 */
-export function Row({ selected = false, className = "", children, onClick }: {
-  selected?: boolean; className?: string; children: ReactNode; onClick?: () => void;
+export function Row({ selected = false, className = "", children, onClick, testId }: {
+  selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
 }) {
   return (
     <div role={onClick !== undefined ? "button" : undefined} tabIndex={onClick !== undefined ? 0 : undefined}
@@ -78,7 +78,7 @@ export function Row({ selected = false, className = "", children, onClick }: {
       onKeyDown={onClick === undefined ? undefined : (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
       }}
-      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors sm:h-8 ${
+      data-testid={testId} className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors sm:h-8 ${
         selected ? "bg-surface font-medium text-ink-900 shadow-sm ring-1 ring-line" : "text-ink-700 hover:bg-hover"
       } ${className}`}>
       {children}

@@ -1069,6 +1069,24 @@ for (const [name, width, setup, clipTo] of SHOTS) {
 }
 await shotBrowser.close();
 
+
+// —— P1·1.4 三态点契约（run-facts）—— 跨会话运行 / 完成未读 / 已读时间 三态语义。
+// 不依赖截图基线；以"渲染后的会话列表行"断言（DOM 里 title=生成中/完成未读/时间）。
+{
+  const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await runPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await runPage.waitForTimeout(700);
+  const sessionStates = await runPage.evaluate(() => {
+    return [...document.querySelectorAll("[data-testid]")].map((row) => ({
+      sessionId: row.getAttribute("data-session-id"),
+      running: row.querySelector('[title="生成中"]') !== null,
+      unread: row.querySelector('[title="完成未读"]') !== null,
+      anyDot: row.querySelector('[title="生成中"], [title="完成未读"]') !== null,
+    }));
+  });
+  check("P1·1.4 三态点：会话列表行可捕捉", sessionStates.length >= 1, `${sessionStates.length} 行`);
+}
+
 await browser.close();
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）

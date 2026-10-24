@@ -128,6 +128,49 @@ export async function resolveTaskDir(ctx: TaskContext, idOrDirName: string): Pro
 }
 
 /** 本 Task 遵守的规范与类型规则路径（只写真实存在的路径；不写死不存在的东西）。 */
+
+/** 开发类 Task 的"本任务遵守"里逐文件点名（仅列当前项目实际存在的那些，不跨项目泄漏路径）。 */
+const CODE_SPECS: Array<[string, string]> = [
+  ["frontend", "specs/code/frontend/code.md"],
+  ["backend", "specs/code/backend/code.md"],
+  ["testing", "specs/code/testing/testing.md"],
+  ["api", "specs/code/api/api.md"],
+  ["architecture", "specs/code/architecture/architecture.md"],
+];
+const PROJECT_RULES: Array<[string, string]> = [
+  ["开发落点", "specs/development-harness/development-harness.md"],
+  ["检视流程", "specs/review/review.md"],
+  ["参考基线", "knowledge/reference-baseline.md"],
+];
+
+async function codeSpecLines(home: string, pid: string): Promise<string[]> {
+  const projBase = join(home, "projects", pid);
+  const found: string[] = [];
+  const files: string[] = [];
+  for (const [label, rel] of CODE_SPECS) {
+    const path = join(projBase, rel);
+    if (await stat(path).then(() => true, () => false)) {
+      files.push(rel);
+      continue;
+    }
+  }
+  if (files.length === 0) return [];
+  return [`- 代码规范（按环节逐个对照）：${files.map((rel) => join(projBase, rel)).join(" · ")}`];
+}
+
+async function projectRuleLines(home: string, pid: string): Promise<string[]> {
+  const projBase = join(home, "projects", pid);
+  const found = await Promise.all(PROJECT_RULES.map(async ([label, rel]) => {
+    const path = join(projBase, rel);
+    return (await stat(path).then(() => true, () => false)) ? { label, path } : undefined;
+  }));
+  const present = found.filter((x) => x !== undefined);
+  if (present.length === 0) return [];
+  const labels = present.map((x) => (x as { label: string }).label).join(" / ");
+  const paths = present.map((x) => (x as { path: string }).path).join(" · ");
+  return [`- 本项目规范与流程（${labels}）：${paths}`];
+}
+
 async function referenceBlock(ctx: TaskContext, typeRulesDir: string): Promise<string[]> {
   const home = resolveHome();
   const lines = [
@@ -136,7 +179,8 @@ async function referenceBlock(ctx: TaskContext, typeRulesDir: string): Promise<s
     `- 协议：${join(home, "interaction-harness", "protocol.md")}`,
     `- 类型规则：${join(typeRulesDir, "AGENTS.md")}`,
     `- 共享 workspace 规范：${join(home, "projects", "workspace", "specs")}/`,
-  ];
+    ...(await codeSpecLines(home, ctx.projectId)),
+    ...(await projectRuleLines(home, ctx.projectId)),  ];
   if (ctx.projectId !== "workspace") lines.push(`- 项目共享规范：${join(home, "projects", ctx.projectId, "specs")}/`);
   lines.push(`- Agent × 项目规范：${join(projectDir(ctx), "specs")}/`);
   const manifest = await readProjectManifest(ctx.agentId, ctx.projectId);

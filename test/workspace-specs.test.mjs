@@ -108,3 +108,27 @@ test("共享 workspace 是全局特殊项目：无 path，且不会把顶层 pro
   assert.equal(manifest.id, "workspace");
   assert.equal("path" in manifest, false);
 });
+
+test("规范不跨项目泄漏：LifeOS 的 code specs 只进 lifeos 项目；共享 workspace 规范按设计跨项目", async () => {
+  const home = await freshHome();
+  const other = await buildPromptParts("lifeosagent", "demo-external");
+  assert.doesNotMatch(other.harnessSection, /生成状态由显式事件/, "code/frontend 不进其他项目");
+  assert.doesNotMatch(other.harnessSection, /运行日志前后端一致/, "code/backend 不进其他项目");
+  assert.doesNotMatch(other.harnessSection, /前端开发的固定流程/, "项目层流程规范不进其他项目");
+  assert.match(other.harnessSection, /多 Agent 协作规范/, "共享 workspace 的协作规范按设计跨项目");
+  const ws = await buildPromptParts("lifeosagent", "workspace");
+  assert.doesNotMatch(ws.harnessSection, /生成状态由显式事件/, "workspace 会话也不带生活项目 code specs");
+  const lifeos = await buildPromptParts("lifeosagent", "lifeos");
+  assert.match(lifeos.harnessSection, /生成状态由显式事件/, "code/frontend 正文在 lifeos 项目内可用");
+  assert.match(lifeos.harnessSection, /运行日志前后端一致/, "code/backend 正文在 lifeos 项目内可用");
+});
+
+test("任务入口逐文件点名：lifeos 项目建 Task → task.md 列出五份 code specs + 项目规范/流程；不写不存在的路径", async () => {
+  const home = await freshHome();
+  const result = await createTask({ agentId: "lifeosagent", projectId: "lifeos" }, { title: "入口点名", category: "B" });
+  assert.ok(!("code" in result));
+  const file = await readFile(join(result.task.path, "task.md"), "utf8");
+  const expect = ["specs/code/frontend/code.md", "specs/code/backend/code.md", "specs/code/testing/testing.md", "specs/code/api/api.md", "specs/code/architecture/architecture.md", "specs/development-harness/development-harness.md", "specs/review/review.md", "knowledge/reference-baseline.md"];
+  for (const path of expect) assert.match(file, new RegExp(path.replaceAll("/", "\\/")), `入口应点名 ${path}`);
+  assert.doesNotMatch(file, /不存在|__TEMPLATE__/, "不应出现占位或幻觉路径");
+});

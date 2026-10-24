@@ -54,3 +54,10 @@
 
 - 规则：catch 要么处理、要么升级为可观察（日志/广播/返回错误结构）；存量静默 catch 按模块逐步消除。
 - 依据：`specs/review/review.md` §7 存量缺口（迁自 review）。
+
+### 2.10 运行日志前后端一致；只写事实/ID，不写正文/凭据
+
+- 日志落 `~/.lifeos/logs/{backend,frontend}-<YYYY-MM-DD>.jsonl`（启动建目录，>14 天滚动）；逐行 JSON `{ts,level,module,fn,sessionId,turnId,agentId,projectId,msg,details?}`；
+- 大模块清单（后端）：http / agent-host / assembly / tasks / registry / fs / sse（fn 为辅行）；前端另立文件，大模块：transport / run / ui；
+- `debug` 静默默认，`info` 起可读；**正文与凭据零出现**——会话正文在会话 JSONL，密钥永不入日志；
+- 每次 HTTP 常驻一条请求行（method/path/status/millis/requestId）；每回合终态一行 turn 事件（受理/完成/错误/丢失），便于事后按 turnId 单轮回放。

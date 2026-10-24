@@ -10,6 +10,7 @@ import type { FailureKind } from "./failure.ts";
 export type AgentEventPayload =
   | ({ sessionId: string } & StreamEvent)
   | { sessionId: string; type: "done" }
+  | { sessionId: string; type: "turn"; turnId: string; state: "running" | "done" | "error" }
   | { sessionId: string; type: "error"; message: string; kind: FailureKind }
   // 助手/项目列表变了（写操作在共享实现里广播）：前端收到后重取，无需手动刷新
   | { type: "agents_changed" };

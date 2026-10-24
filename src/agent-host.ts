@@ -5,6 +5,7 @@ import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } fro
 import { ensureDailyShard, ensureDefaultTask, listTasks } from "./tasks.ts";
 import { readProjectManifests } from "./projects.ts";
 import { ensureAgentProjectLayer } from "./project-skeleton.ts";
+import { log } from "./logging.ts";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
@@ -17,6 +18,8 @@ import type { ModelRef } from "./model-follow-types.ts";
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, eventsSeq, publish, subscribeAgent, type AgentEvent } from "./events.ts";
 import { clearRunning, isRunning, markRunning, runningOf, type RunSnapshot } from "./session-runtime.ts";
+import { randomBytes } from "node:crypto";
+import { readTurnVerdict, type TurnVerdict } from "./turn-verdict.ts";
 export { broadcast, subscribeAgent } from "./events.ts";
 export type { AgentEvent } from "./events.ts";
 export type { RunSnapshot } from "./session-runtime.ts";
@@ -298,6 +301,44 @@ export async function ensureTurnShard(agentId: string, sessionId: string, date?:
   return { file };
 }
 
+// 回合账本（协议 P1·1.2）：每 (Agent, 会话) 一条"最近回合"——running / done / error / lost。
+// 事件里的 turnId 以它为宗；同一会话同一毫秒只受理一个回合，键冲突可忽略。
+export type TurnState = "running" | "done" | "error" | "lost";
+export type TurnRecord = { turnId: string; state: TurnState; at: string; sessionId: string };
+const turnLedger = new Map<string, TurnRecord>();   // key = agent\u0000 session（\u0000 不可能与 id 相撞）
+
+/** turnId：turn-<时间36>-<4hex>；P2 界面短 id = 末尾 4hex。 */
+export function newTurnId(): string {
+  return `turn-${Date.now().toString(36)}-${randomBytes(2).toString("hex")}`;
+}
+
+export function startTurn(agentId: string, sessionId: string, turnId: string): void {
+  turnLedger.set(`${agentId}\u0000${sessionId}`, { sessionId, turnId, state: "running", at: new Date().toISOString() });
+}
+
+export function finishTurn(agentId: string, sessionId: string, turnId: string, state: "done" | "error"): void {
+  turnLedger.set(`${agentId}\u0000${sessionId}`, { sessionId, turnId, state, at: new Date().toISOString() });
+}
+
+/** 对账（server 端点用）：先内存账本，miss 再读会话 JSONL 尾条（重启兜底，T9）。 */
+export async function turnLastOf(agentId: string, sessionId: string): Promise<{ turn: TurnRecord | null }> {
+  const record = turnLedger.get(`${agentId}\u0000${sessionId}`);
+  if (record !== undefined) {
+    return { turn: record };
+  }
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return { turn: null };
+  const verdict: TurnVerdict = await readTurnVerdict(found.path);
+  if (verdict === null) return { turn: null };
+  return { turn: { sessionId, turnId: verdict.turnId, state: verdict.state, at: new Date().toISOString() } };
+}
+
+/** 会话是否实质存在（账本为空 + 磁盘没有文件 → 404 依据）。 */
+export async function sessionExists(agentId: string, sessionId: string): Promise<boolean> {
+  if (stateOf(agentId).sessions.has(sessionId)) return true;
+  return (await findSessionFile(agentId, sessionId)) !== undefined;
+}
+
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
 export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
   const state = stateOf(agentId);
@@ -306,7 +347,14 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   // 发起对话才有分片（协议 §6.1）：本轮的日期分片在这里建；失败不阻断对话。
   await ensureTurnShard(agentId, sessionId).catch((error) => {
     console.error(`[tasks] 当天分片创建失败：${error instanceof Error ? error.message : String(error)}`);
+    void log.error("agent-host", "ensureTurnShard", "当天分片创建失败", { agentId, details: { message: error instanceof Error ? error.message : String(error) } });
   });
+  // 回合账本（turnId）：受理即开账；SSE turn 事件（running），终态在 try/catch 里补（协议 P1·1.2）
+  const projectIdForLog = await projectIdOfSession(agentId, sessionId);
+  const turnId = newTurnId();
+  startTurn(agentId, sessionId, turnId);
+  publish(agentId, { sessionId, type: "turn", turnId, state: "running" });
+  void log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId, agentId, projectId: projectIdForLog });
   markRunning(agentId, { sessionId, startedAt: new Date().toISOString() });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
@@ -314,9 +362,16 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   });
   try {
     await target.session.prompt(text);
+    // 回合账本 done（turn 终态先到位，再发收尾事件）
+    finishTurn(agentId, sessionId, turnId, "done");
+    void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog });
+    publish(agentId, { sessionId, type: "turn", turnId, state: "done" });
     publish(agentId, { sessionId, type: "done" });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    finishTurn(agentId, sessionId, turnId, "error");
+    void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
+    publish(agentId, { sessionId, type: "turn", turnId, state: "error" });
     publish(agentId, { sessionId, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown" });
   } finally {
     unsubscribe();
@@ -464,12 +519,20 @@ export async function abortSession(agentId: string, sessionId: string): Promise<
 }
 
 /** 生成中投入输入：steer 插进当前思考，followUp 本轮结束后处理（都是 Pi 原生队列）。 */
-export async function queueSessionInput(agentId: string, sessionId: string, text: string, behavior: "steer" | "followUp"): Promise<boolean> {
+export type QueueVerdict = { queued: "steer" | "followUp" } | { code: "session_idle" | "session_not_found" } | { code: "error"; message: string };
+
+/** 生成中投递输入：先裁决（决策 b）—— 空闲返回 409 让前端改发新回合，绝不静默入 Pi 队列。 */
+export async function queueSessionInput(agentId: string, sessionId: string, text: string, behavior: "steer" | "followUp"): Promise<QueueVerdict> {
   const state = stateOf(agentId).sessions.get(sessionId);
-  if (state === undefined) return false;
-  if (behavior === "steer") await state.session.steer(text);
-  else await state.session.followUp(text);
-  return true;
+  if (state === undefined) return { code: "session_not_found" };
+  if (!isRunning(agentId, sessionId)) return { code: "session_idle" };
+  try {
+    if (behavior === "steer") await state.session.steer(text);
+    else await state.session.followUp(text);
+    return { queued: behavior };
+  } catch (error) {
+    return { code: "error", message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** 压缩上下文（Pi `compact()`：会先 abort 当前 run）。 */

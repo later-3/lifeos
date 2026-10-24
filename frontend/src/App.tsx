@@ -40,7 +40,8 @@ type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; stre
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
-type AgentEvent = { seq: number; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" });
+type TurnEventSegment = { type: "turn"; turnId: string; state: "running" | "done" | "error" };
+type AgentEvent = { seq: number; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" } | TurnEventSegment);
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
@@ -108,6 +109,11 @@ export default function App() {
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
   // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
   const sendTextRef = useRef<(raw: string) => void>(() => {});
+  // 运行事实（协议 P1·1.4）：三态列表、turn 事件、排队区的唯一事实源；呈现层只读它
+  const [runFacts, setRunFacts] = useState(emptyRunFacts);
+  const runFactsRef = useRef(runFacts);
+  runFactsRef.current = runFacts;
+
   const [streamSeq, setStreamSeq] = useState(0);
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
@@ -162,6 +168,7 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
+  useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
   useEffect(() => { if (agent !== undefined) writeLast(LAST_AGENT, agent.id); }, [agent?.id]);
 
   // 输入草稿：按会话归属（切会话换草稿、刷新不丢）；发送时清空，失败回填。
@@ -466,14 +473,17 @@ export default function App() {
     const agentId = agent?.id;
     if (agentId === undefined) return;
     const stream = new EventSource(`/api/agents/${agentId}/events?since=${streamSeq}`);
+    logger.info("transport", "sse-open", { since: streamSeq });
     stream.addEventListener("snapshot", (event) => {
+      logger.debug("transport", "sse-snapshot"); // debug 只本地，不上报
       const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
+      setRunFacts((f) => applyRunEvent(f, { type: "snapshot", running: snapshot.running }, Date.now(), sessionId));
       snapshotSeq.current = snapshot.seq;
       setStreamSeq(snapshot.seq);
       lastEventAtRef.current = Date.now();
       const running = snapshot.running.some((run) => run.sessionId === current.current);
       // 断线重连时快照说"不在跑"但 UI 还在生成态 → 说明那一轮已丢（后端重启等）→ 收尾并重载
-      if (!running && busyRef.current) recoverLostRun("运行已中断（连接恢复时该会话已不在运行）");
+      if (!running && busyRef.current) void reconcileLostRun("运行已中断（连接恢复时该会话已不在运行）");
       busyRef.current = running;
       setBusy(running);
     });
@@ -484,6 +494,10 @@ export default function App() {
       if (payload.seq <= snapshotSeq.current) return;
       if (payload.sessionId !== current.current) return;
       if (payload.type === "done" || payload.type === "error" || payload.type === "agents_changed") return;
+      if (payload.type === "turn") {
+        setRunFacts((f) => applyRunEvent(f, payload, Date.now(), sessionId));
+        return;   // turn 事件只进运行事实，不进消息管道
+      }
       lastEventAtRef.current = Date.now();
       if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
       const tailIsStreaming = streaming.current;
@@ -742,14 +756,19 @@ export default function App() {
       }
     }
     if (busyRef.current) {
-      // 生成中投入输入 = Pi 原生 steer（插进当前思考）；失败再退回普通发送
+      // 生成中投入输入 = Pi 原生 steer（插进当前思考）；空闲被后端 409（决策 b）→ 改发新回合
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, behavior: "steer" }),
       }).catch(() => undefined);
-      if (response?.ok === true) {
+      if (response?.status === 409 && (await response.json().catch(() => ({ }) as { error?: { code?: string } })).error?.code === "session_idle") {
+        toast("会话已空闲：改为新回合发送", "success");     // 决策 b 的透明化：一次提示，随后走普通发送
+        // 落入下方普通发送分支（busyRef 会被重置）
+        busyRef.current = false; setBusy(false);
+      } else if (response?.ok === true) {
         setInput("");
         setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }]);
         toast("已插话（steer，不影响当前轮继续）");
+        if (sid !== undefined) setRunFacts((f) => queueAdd(f, sid, { behavior: "steer", text }));
         return;
       }
     }
@@ -923,9 +942,39 @@ export default function App() {
 
   /** 打断：Pi 原生 abort()；run 的 finally 会发 done，前端据此收尾。 */
   async function stop() {
+    if (sessionId !== undefined) setRunFacts((f) => queueClear(f, sessionId));
+
     if (agent === undefined || sessionId === undefined) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
     toast(response?.ok === true ? "已请求打断" : "打断失败", response?.ok === true ? "success" : "error");
+  }
+
+  /** 恢复三分支（协议 FR-13）：先对账(1.2 端点/JSONL 兜底)再定文案 —— 已完成 / 中断(带重发) / 不可知·按丢失处理 */
+  async function reconcileLostRun(fallbackReason: string) {
+    const aid = agent?.id; const sid = sessionId;
+    if (aid !== undefined && sid !== undefined && !busyRef.current) return;
+    if (aid === undefined || sid === undefined) { recoverLostRun(fallbackReason); return; }
+    try {
+      const data = await (await fetch(`/api/agents/${aid}/sessions/${sid}/turns/last`)).json() as { turn?: { state: string } | null };
+      const state = data.turn?.state;
+      if (state === "done") {
+        // 分支1：已完成（响应在下方）—— 不再是"错误"提示
+        busyRef.current = false; streaming.current = false; setBusy(false);
+        setTurnStep(4); setRetry(undefined);
+        setTurnStatus({ text: "本轮已完成：连接恢复时对账成功，结果在下方" });
+        toast("本轮已完成：连接恢复时对账成功，结果在下方", "success");
+        if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
+        return;
+      }
+      if (state === "running") {
+        // 分支3：仍在运行（快照/连接恢复竞态）—— 保持生成态不清不动
+        lastEventAtRef.current = Date.now();
+        return;
+      }
+      recoverLostRun("受理之后中断：后端已不再运行这一轮（带重发）");   // 分支2：lost/无回合
+    } catch {
+      recoverLostRun(fallbackReason);   // 端点不可达：退回旧文案（保守）
+    }
   }
 
   /** 运行"跑丢了"（后端重启 / 断线）：清生成态、重载消息，尾部空回复处会给重试。 */
@@ -964,7 +1013,7 @@ export default function App() {
           const response = await fetch(`/api/agents/${agentId}/sessions/${sid}`);
           const data = await response.json() as { meta?: { running?: boolean } };
           if (data.meta?.running === true) { lastEventAtRef.current = Date.now(); return; }   // 还活着：再给一个窗口
-          recoverLostRun("受理之后中断：后端已不再运行这一轮（进程重启或连接断开）");
+          void reconcileLostRun("受理之后中断：后端已不再运行这一轮（进程重启或连接断开）");
         } catch {
           lastEventAtRef.current = Date.now();   // 连后端都查不到：先不判丢，等下一个窗口
         } finally {
@@ -1103,7 +1152,7 @@ export default function App() {
                 <EmptyState title="该项目暂无会话" hint="直接在右下输入框发消息，会自动新建会话。" />
               )}
               {currentGroup?.sessions.map((item) => (
-                <Row key={item.sessionId} selected={item.sessionId === sessionId}
+                <Row key={item.sessionId} testId={item.sessionId} selected={item.sessionId === sessionId}
                   onClick={() => agent !== undefined && void openSession(agent, item.sessionId)}
                   className="group/session">
                   {renaming?.sid === item.sessionId ? (
@@ -1121,9 +1170,11 @@ export default function App() {
                     <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
                   )}
                   <span className="relative flex w-24 shrink-0 items-center justify-end">
-                    {item.running
-                      ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="生成中" />
-                      : <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>}
+                    {(() => { const runNow = item.running || isRunning(runFacts, item.sessionId); const unread = hasUnread(runFacts, item.sessionId);
+                      if (runNow) return <span className={`h-1.5 w-1.5 rounded-full bg-success animate-pulse`} title="生成中" />;
+                      if (unread) return <span className="h-1.5 w-1.5 rounded-full bg-accent" title="完成未读" />;
+                      return <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>;
+                    })()}
                     <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
                       <IconButton label="会话历史" size="sm"
                         onClick={(event) => {
@@ -1256,6 +1307,7 @@ export default function App() {
         {/* 固定状态条：在消息滚动区外、输入框上方；位置不随消息滚动 */}
         <div className="shrink-0 px-4 sm:px-6" data-testid="turn-status-bar">
           <TurnStatusBar busy={busy} step={turnStep} phase={phase}
+            {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
             {...(activeTool !== undefined ? { activeTool } : {})}
             {...(retry !== undefined ? { retry } : {})}
             {...(turnStatus !== undefined ? { status: turnStatus } : {})}
@@ -1267,6 +1319,17 @@ export default function App() {
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
+            {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
+            {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (
+              <div data-testid="run-queue" className="mb-1 space-y-1">
+                {(runFacts.queue[sessionId] ?? []).map((item, i) => (
+                  <div key={i} className="inline-flex items-center gap-2 rounded bg-surface px-2 py-1 text-micro text-ink-500 ring-1 ring-line">
+                    <span>{item.behavior === "steer" ? "已插话（steer · 随本轮处理）" : "已排队（followUp · 下一轮发送）"}</span>
+                    <span className="max-w-40 truncate">{item.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div data-testid="composer"
               className="rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
@@ -1474,3 +1537,5 @@ function IconArrowUpIcon() {
     </svg>
   );
 }
+import { logger } from "./logger";
+import { emptyRunFacts, markViewed, applyRunEvent, isRunning, hasUnread, queueAdd, queueClear } from "./run-facts";

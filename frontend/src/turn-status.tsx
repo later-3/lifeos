@@ -28,7 +28,7 @@ function StatusMetric({ symbol, value, label, title, tone = "text-ink-500" }: {
  * 间距层级：图标↔数值 4px；输入↔输出 8px；不同指标组 12px。
  * 符号均有 tooltip；参考 Codex/Claude/Gemini status line、LobeHub TokenTag、Pi TUI footer。
  */
-export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, metrics, usage, context }: {
+export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, metrics, usage, context, turnId }: {
   busy: boolean;
   step: TurnStep;
   phase: Phase;
@@ -38,6 +38,7 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
   metrics?: Metrics;
   usage?: Usage;
   context?: Context | null;
+  turnId?: string;
 }) {
   const toast = useToast();
   const hasUsage = usage !== undefined && usage.totalTokens > 0;
@@ -52,6 +53,14 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
         ) : status !== undefined ? (
           <span className="text-meta text-ink-500" data-testid="turn-status">{status.text}</span>
         ) : null}
+        {/* turnId（P2·2.1）：受理即给短 id（末尾 6 位，tooltip 复制完整）。用户报障=Agent 排障 共用键。*/}
+        {turnId !== undefined && turnId !== "" && (
+          <span data-testid="turn-id" title={turnId}
+            className="inline-flex cursor-copy items-center text-meta tabular-nums text-ink-500"
+            onClick={() => { void navigator.clipboard?.writeText(turnId).catch(() => undefined); }}>
+            #{turnId.replace("turn-", "").slice(-6)}
+          </span>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-micro text-ink-500">
         {metrics !== undefined && (
