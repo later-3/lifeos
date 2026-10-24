@@ -6,6 +6,8 @@ import { mkdtemp, readFile, access, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
+
+const rejects = async (promise, message) => { await promise.then(() => assert.fail(message), () => undefined); };
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "../src/agent-tools.ts";
 import { subscribeAgent } from "../src/agent-host.ts";
 
@@ -46,14 +48,17 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
   assert.equal(id, "code-reviewer", "英文名 → slug");
   assert.ok(result.content[0].text.includes(id), "结果文本要回报新 id");
 
-  // 骨架（全部在 agent 私有层；不写用户目录、不建 avatar/sessions）
+  // 骨架（全部在 agent 私有层；不写用户目录）
   await access(join(home, "agents", id, "agent.json"));
   await access(join(home, "agents", id, "identity.md"));
-  await access(join(home, "agents", id, "projects", "workspace", "project.json"));
-  await access(join(home, "agents", id, "projects", "workspace", "daily"));
+  await rejects(access(join(home, "agents", id, "projects", "workspace", "project.json")), "绑定目录不写 project.json（协议 §5.3）");
+  await access(join(home, "agents", id, "projects", "workspace", "tasks", "0001-default", "daily"));
   await access(join(home, "agents", id, "projects", "workspace", "cases"));
   await access(join(home, "agents", id, "projects", "workspace", "todo"));
-  await stat(join(home, "agents", id, "projects", "workspace", "daily")).then((info) => assert.equal(info.mode & 0o777, 0o700));
+  await access(join(home, "agents", id, "projects", "workspace", "flywheel.md"));
+  await access(join(home, "agents", id, "tools"));
+  await access(join(home, "agents", id, "memory"));
+  await stat(join(home, "agents", id, "projects", "workspace", "tasks", "0001-default", "daily")).then((info) => assert.equal(info.mode & 0o777, 0o700));
   const record = JSON.parse(await readFile(join(home, "agents", id, "agent.json"), "utf8"));
   assert.equal(record.defaultProjectId, "workspace");
   assert.equal("defaultSessionId" in record, false, "预置会话只随出厂模板，新 Agent 不写");
@@ -89,9 +94,8 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
 
   // workspace/AGENTS.md：与模板同源的项目私有层指引（不是我发明的三行），且不写"出厂预置会话"这种不成立的话
   const workspaceGuide = await readFile(join(home, "agents", zh.details.id, "projects", "workspace", "AGENTS.md"), "utf8");
-  assert.match(workspaceGuide, /以协议正文为准/, "指引与模板同源（含协议指向）");
-  assert.match(workspaceGuide, /不复制通用正文/, "指引与模板同源（含不复制原则）");
-  assert.equal(workspaceGuide.includes("出厂默认会话预置于此"), false, "新 Agent 没有预置会话，模板那半句不照抄");
+  assert.match(workspaceGuide, /Agent × 项目/, "说明来自协议骨架模板（layer-project）");
+  assert.match(workspaceGuide, /默认项目/, "说明里讲清楚默认项目的作用");
 
   // 校验与 PUT 一致：name 截 60、description 截 300
   const long = await run(create, { name: "x".repeat(80), description: "d".repeat(500) });
@@ -117,7 +121,7 @@ test("lifeos_agent_delete：归档可恢复、数据全留；最后一个与不�
   assert.ok(typeof record.archivedAt === "string", "归档 = 写 archivedAt（可恢复）");
   // 数据全留：identity、workspace 记录目录都还在
   await access(join(home, "agents", a.details.id, "identity.md"));
-  await access(join(home, "agents", a.details.id, "projects", "workspace", "daily"));
+  await access(join(home, "agents", a.details.id, "projects", "workspace", "tasks", "0001-default", "daily"));
 
   // 重复归档 → 失败
   await assert.rejects(() => run(remove, { id: a.details.id }), /已归档/);
@@ -141,36 +145,38 @@ test("lifeos_task_create：编号连续、中文标题、按类别生成文档�
   const [, , taskCreate] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
 
   const first = await taskCreate.execute("t1", { title: "删除已注册根", category: "A" });
-  assert.equal(first.details.number, 1);
-  assert.equal(first.details.id, "0001-删除已注册根", "编号 + 中文标题（用户会翻文件系统）");
-  const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0001-删除已注册根");
-  for (const file of ["task.md", "01-background.md", "02-design.md", "03-phase.md", "04-plan.md"]) await access(join(dir, file));
+  // 0001 是出厂默认 Task（协议 §6.1），用户下达的 Task 从 0002 起
+  assert.equal(first.details.number, 2);
+  assert.equal(first.details.id, "0002", "Task ID 是四位编号");
+  const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0002-删除已注册根");
+  for (const file of ["task.md", "01-background.md", "02-design.md", "03-phase.md", "04-plan.md", "log.md", "AGENTS.md", "concept-space.md", "flywheel.md"]) await access(join(dir, file));
   await access(join(dir, "phases"));
   const taskMd = await readFile(join(dir, "task.md"), "utf8");
   assert.match(taskMd, /类型：development/, "任务类型自动填");
   assert.match(taskMd, /类别：A 改产品行为/);
   assert.match(taskMd, /状态：进行中/);
+  assert.match(taskMd, /^ID: 0002$/m, "task.md 写 ID");
   assert.match(taskMd, /负责人：lifeosagent/);
   assert.match(taskMd, /目标：删除已注册根/, "goal 没给时先用 title");
   assert.match(taskMd, /## 本任务遵守/, "引用规范区块");
   assert.match(taskMd, /interaction-harness\/protocol\.md/);
-  assert.match(taskMd, /本项目指引/, "指向项目私有层 AGENTS.md");
-  assert.match(taskMd, /## 引用的案例/, "案例位留给模型补");
+  assert.match(taskMd, /Agent × 项目规范/, "指向本层规范");
+  assert.match(taskMd, /类型规则：.*task-types/, "指向类型规则");
 
   // 编号递增；B/C 类别只生成各自的必需文档
   const second = await taskCreate.execute("t2", { title: "改协作规范", category: "B", goal: "规范里写清任务编号" });
-  assert.equal(second.details.id, "0002-改协作规范");
-  const bDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0002-改协作规范");
+  assert.equal(second.details.id, "0003");
+  const bDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0003-改协作规范");
   await access(join(bDir, "01-background.md"));
   await access(join(bDir, "02-plan.md"));
   await access(join(bDir, "02-design.md")).then(() => assert.fail("B 类不该有 02-design")).catch(() => {});
   assert.match(await readFile(join(bDir, "task.md"), "utf8"), /目标：规范里写清任务编号/);
 
   const third = await taskCreate.execute("t3", { title: "只出结论", category: "C" });
-  const cDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0003-只出结论");
+  const cDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0004-只出结论");
   await access(join(cDir, "01-background.md"));
   await access(join(cDir, "02-plan.md")).then(() => assert.fail("C 类不该有 02-plan")).catch(() => {});
-  assert.equal(third.details.number, 3);
+  assert.equal(third.details.number, 4);
 
   // 非法输入
   await assert.rejects(() => taskCreate.execute("x", { title: "  ", category: "A" }), /title 不能为空/);
@@ -180,16 +186,17 @@ test("lifeos_task_create：编号连续、中文标题、按类别生成文档�
 test("lifeos_task_list：按编号列出任务的状态/类别/目标", async () => {
   await freshHome();
   const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
+  // 出厂默认 Task（0001-default）已经在列表里（协议 §6.1）
   const empty = await taskList.execute("l0", {});
-  assert.match(empty.content[0].text, /No tasks/);
+  assert.match(empty.content[0].text, /^0001 · daily\/D 日常/m);
 
   await taskCreate.execute("t1", { title: "第二个", category: "B" });
   await taskCreate.execute("t2", { title: "第一个", category: "A", goal: "可验收的目标" });
   const listed = await taskList.execute("l1", {});
-  assert.equal(listed.details.tasks.length, 2);
-  assert.deepEqual(listed.details.tasks.map((task) => task.number), [1, 2], "按编号排序");
-  assert.equal(listed.details.tasks[1].goal, "可验收的目标");
-  assert.match(listed.content[0].text, /0002-第一个/);
+  assert.equal(listed.details.tasks.length, 3);
+  assert.deepEqual(listed.details.tasks.map((task) => task.number), [1, 2, 3], "按编号排序");
+  assert.equal(listed.details.tasks[2].goal, "可验收的目标");
+  assert.match(listed.content[0].text, /^0003 · development\/A 改产品行为 · 进行中 · 可验收的目标/m);
 });
 
 test("lifeos_project_add / list / remove：绑定、幂等、移除后不再列出、数据保留、默认项目不可移除", async () => {
@@ -241,21 +248,23 @@ test("lifeos_task_create：普通任务（general/G）只生成背景+步骤，�
   const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
 
   const created = await taskCreate.execute("g1", { title: "整理资料", type: "general", category: "G" });
-  assert.equal(created.details.number, 1);
+  assert.equal(created.details.number, 2, "0001 是默认 Task");
   const dir = created.details.path;
   const taskMd = await readFile(join(dir, "task.md"), "utf8");
   assert.match(taskMd, /类型：general/);
   assert.match(taskMd, /类别：G 普通任务/);
   assert.match(taskMd, /必需文档：01-background\.md · 02-plan\.md/);
-  assert.match(taskMd, /任务类型细则：.*task-types\/general\/TEMPLATE\.md/, "引用对应类型的细则");
-  assert.deepEqual((await readdir(dir)).sort(), ["01-background.md", "02-plan.md", "task.md"], "普通任务只有两份文档 + task.md");
-  assert.deepEqual((await readdir(join(dir, "01-background.md")).catch(() => null)), null);
+  assert.match(taskMd, /类型规则：.*task-types\/general\/AGENTS\.md/, "引用对应类型的规则");
+  const entries = (await readdir(dir)).sort();
+  for (const file of ["task.md", "01-background.md", "02-plan.md", "AGENTS.md", "concept-space.md", "flywheel.md"]) assert.ok(entries.includes(file), file);
+  assert.equal(entries.includes("log.md"), false, "普通类型没有 log.md（类型决定日志）");
+  assert.equal(entries.includes("phases"), false, "普通任务不建 phases/");
 
   const listed = await taskList.execute("g2", {});
   assert.match(listed.content[0].text, /general\/G 普通任务/, "列表要带类型");
 
-  await assert.rejects(taskCreate.execute("g3", { title: "错配", type: "general", category: "A" }), /普通任务（general）的 category 必须是 G/);
-  await assert.rejects(taskCreate.execute("g4", { title: "错配", type: "development", category: "G" }), /开发任务（development）的 category 必须是 A \/ B \/ C/);
+  await assert.rejects(taskCreate.execute("g3", { title: "错配", type: "general", category: "A" }), /类型 general 的 category 必须是 G/);
+  await assert.rejects(taskCreate.execute("g4", { title: "错配", type: "development", category: "G" }), /类型 development 的 category 必须是 A \/ B \/ C/);
 });
 
 test("lifeos_task_create：general 任务重新读取后 type 字段保留（listTasks 解析 task.md）", async () => {
@@ -263,5 +272,5 @@ test("lifeos_task_create：general 任务重新读取后 type 字段保留（lis
   const [, , taskCreate, taskList] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
   await taskCreate.execute("h1", { title: "环境维护", type: "general", category: "G" });
   const listed = await taskList.execute("h2", {});
-  assert.match(listed.content[0].text, /^0001-[^ ]* · general\/G 普通任务 · 进行中 · 环境维护/m);
+  assert.match(listed.content[0].text, /^0002 · general\/G 普通任务 · 进行中 · 环境维护/m);
 });

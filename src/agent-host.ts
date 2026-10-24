@@ -2,9 +2,9 @@
 // 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §12.2），这里只负责加载。
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } from "./assembly.ts";
-import { ensureDailyTask, listTasks } from "./tasks.ts";
+import { ensureDailyShard, ensureDefaultTask, listTasks } from "./tasks.ts";
 import { readProjectManifests } from "./projects.ts";
-import { ensureProjectSkeleton } from "./project-skeleton.ts";
+import { ensureAgentProjectLayer } from "./project-skeleton.ts";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
@@ -84,7 +84,7 @@ export async function createHostedResourceLoader(input: {
 }
 
 /**
- * 统一创建 Agent 会话（装配层，事实见 docs/architecture/agent.md §9.4）：
+ * 统一创建 Agent 会话（装配层，事实见 .lifeos/projects/lifeos/knowledge/architecture/agent.md §9.4）：
  * - agentDir = ~/.lifeos/config（Pi 由此读 models.json/auth.json/settings.json——界面里配的模型才真正生效）；
  * - customPrompt = identity（替换 Pi 默认“编码 agent”前言）+ harness 独立区；Pi 的 tools/rules 原样回填；
  * - tools = 全部 8 个内置工具（显式，不随隐式默认漂移）；Pi 的上下文文件读取已关闭（见 createHostedResourceLoader）；
@@ -139,7 +139,12 @@ async function createHostedSession(
     resourceLoader,
     tools: [...ALL_TOOL_NAMES],
     // 工具绑定会话上下文（谁 / 哪个项目），模型不用传：agentId + projectId 都从会话自身推导
-    customTools: createAgentTools({ agentId, projectId }),
+    customTools: createAgentTools({
+      agentId,
+      projectId,
+      // 建 Task 即进入它：会话指针指向新 Task（下一轮装配读取），与用户在界面里 /task 切换是同一件事
+      onEnterTask: (taskId) => enterTask(agentId, sessionManager, taskId),
+    }),
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
@@ -205,15 +210,10 @@ export async function createSession(agentId: string, cwd: string, projectIdInput
   const projectId = await canonicalProjectId(agentId, projectIdInput);
   if (projectId === "workspace") {
     // 内置 workspace 兜底注册（每个 Agent 天然有默认 project，agent.md §5.6）；外部项目 manifest 在共用层，不在此处理。
-    const projectDir = join(resolveHome(), "agents", agentId, "projects", "workspace");
-    await mkdir(projectDir, { recursive: true });
-    await writeFile(join(projectDir, "project.json"),
-      JSON.stringify({ schemaVersion: 1, id: "workspace" }) + "\n",
-      { encoding: "utf8", flag: "wx" }).catch(() => undefined);   // create-only
-    await ensureProjectSkeleton(projectDir, { name: "workspace", path: resolveHome() });
+    await ensureAgentProjectLayer(join(resolveHome(), "agents", agentId, "projects", "workspace"));
   }
-  // 强制 Task（协议 §16.4）：当天该 Agent × Project 的默认 Task；普通会话共享它。
-  const task = await ensureDailyTask({ agentId, projectId });
+  // 默认 Task（协议 §6.1）：每个 Agent × 项目一个。分片不在这里建：只有真正发起对话（每轮）才按当天日期建。
+  const task = await ensureDefaultTask({ agentId, projectId });
   const manager = SessionManager.create(cwd, sessionDir(agentId, projectId));
   const { session, modelRuntime, modelLabel } = await createHostedSession(agentId, manager, "new", task.id);
   const sessionId = manager.getSessionId();
@@ -272,7 +272,7 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   if (taskId === undefined) {
     // 旧会话/预置默认会话：首次打开时补当天默认 Task；旧文件没有指针时也不伪造成别的 Task。
     try {
-      const task = await ensureDailyTask({ agentId, projectId });
+      const task = await ensureDefaultTask({ agentId, projectId });
       taskId = task.id;
       manager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
     } catch { /* 项目已被移除等：保持无 Task，不阻断会话读取 */ }
@@ -284,11 +284,29 @@ export async function getSession(agentId: string, sessionId: string, cwd: string
   return restored;
 }
 
+/**
+ * 一轮交互的日期分片（协议 §6.1）：按本地日期取/建默认 Task 的 `daily/<日期>.md`。
+ * 没有交互的日子不建分片；跨天的会话仍指向默认 Task，新的一天写进新的分片。
+ * `date` 只给测试用（模拟跨天），正常调用不传。
+ */
+export async function ensureTurnShard(agentId: string, sessionId: string, date?: string): Promise<{ file: string } | undefined> {
+  // 新会话在第一条消息落盘前只存在于内存：项目以内存里会话的目录为准，落盘后再看文件位置
+  const live = stateOf(agentId).sessions.get(sessionId)?.session.sessionManager.getSessionDir();
+  const projectId = live !== undefined ? projectOfSessionDir(live) : await projectIdOfSession(agentId, sessionId);
+  if (projectId === undefined) return undefined;
+  const { file } = await ensureDailyShard({ agentId, projectId }, date);
+  return { file };
+}
+
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
 export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
   const state = stateOf(agentId);
   const target = state.sessions.get(sessionId);
   if (target === undefined) return;
+  // 发起对话才有分片（协议 §6.1）：本轮的日期分片在这里建；失败不阻断对话。
+  await ensureTurnShard(agentId, sessionId).catch((error) => {
+    console.error(`[tasks] 当天分片创建失败：${error instanceof Error ? error.message : String(error)}`);
+  });
   markRunning(agentId, { sessionId, startedAt: new Date().toISOString() });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
@@ -469,6 +487,13 @@ export async function compactSession(agentId: string, sessionId: string): Promis
 export type SetTaskResult =
   | { ok: true; taskId: string }
   | { ok: false; reason: "session_not_found" | "task_not_found" };
+
+/** 进入 Task（协议 §7）：写会话指针（自定义条目）并同步内存状态；下一轮装配读取它。 */
+function enterTask(agentId: string, manager: ReturnType<typeof SessionManager.create>, taskId: string): void {
+  manager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
+  const live = stateOf(agentId).sessions.get(manager.getSessionId());
+  if (live !== undefined) live.taskId = taskId;
+}
 
 /** 切换会话当前 Task：只影响下一轮；当前正在跑的轮次已装配完，不会被中途改写。 */
 export async function setSessionTask(agentId: string, sessionId: string, taskId: string): Promise<SetTaskResult> {

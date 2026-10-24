@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "specs": [
+    {
+      "id": "frontend-development",
+      "path": "frontend-development/process.md"
+    },
+    {
+      "id": "frontend-spec",
+      "path": "frontend-development/frontend-spec.md"
+    },
+    {
+      "id": "frontend-mobile",
+      "path": "frontend-mobile/mobile.md"
+    },
+    {
+      "id": "review",
+      "path": "review/review.md"
+    },
+    {
+      "id": "development-harness",
+      "path": "development-harness/development-harness.md"
+    },
+    {
+      "id": "code-frontend",
+      "path": "code/frontend/code.md"
+    },
+    {
+      "id": "code-backend",
+      "path": "code/backend/code.md"
+    },
+    {
+      "id": "code-testing",
+      "path": "code/testing/testing.md"
+    },
+    {
+      "id": "code-api",
+      "path": "code/api/api.md"
+    },
+    {
+      "id": "code-architecture",
+      "path": "code/architecture/architecture.md"
+    }
+  ]
+}

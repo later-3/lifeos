@@ -22,9 +22,9 @@ export const PROMPT_REGIONS: Record<string, RegionSpec> = {
   lifeos_interaction_harness: {
     label: "交互 harness 区",
     owner: "lifeos",
-    assembledBy: "按固定顺序拼文件（协议正文 / 本层指引 / 飞轮 / 概念空间 / 记忆规则 / 任务类型 / 本项目 AGENTS.md）",
+    assembledBy: "按协议 §9 拼：协议正文 / 协议目录说明 / 规范（Agent 本身 → 共享 workspace → 共享项目 → Agent × 项目 → Task）/ 当前 Task 的 AGENTS.md 与 task.md 与类型规则 / 说明文件索引",
     code: "src/assembly.ts · buildPromptParts → harnessSection",
-    editable: "~/.lifeos/interaction-harness/** ＋ agents/<id>/projects/<pid>/AGENTS.md",
+    editable: "~/.lifeos/interaction-harness/** ＋ 各层 AGENTS.md 与 specs/（按层）",
   },
   tools: {
     label: "工具清单区",

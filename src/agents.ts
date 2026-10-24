@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { broadcast } from "./events.ts";
 import { runningOf } from "./session-runtime.ts";
-import { ensureProjectSkeleton } from "./project-skeleton.ts";
+import { ensureAgentLayer, ensureAgentProjectLayer } from "./project-skeleton.ts";
+import { ensureDefaultTask } from "./tasks.ts";
 
 /** agent.json 的唯一形状（读/写共用；旧的 boundProjectIds 读到就清掉，不再写回）。 */
 export type AgentDefinition = {
@@ -85,35 +86,6 @@ const identitySkeleton = (name: string) => `# ${name}
 - （待填：口吻、风格、协作边界。）
 `;
 
-// 与出厂模板同构（模板 = 当前 Agent 结构的唯一事实源）：concept-space.md 的开头也照模板写。
-const workspaceConceptSpace = `# 概念空间（workspace 项目层 · 索引）
-
-规则同通用层（协议 §3.2 / §4）：一词一义、先定义再使用、索引与正文分开。
-本层只收**本项目特有**的词；通用词在 \`~/.lifeos/interaction-harness/concept-space/\`，不在此重复。
-
-| 编号 | 词 | 一句话 | 正文 |
-|---|---|---|---|
-`;
-
-// 与模板 workspace/AGENTS.md 同源（那是通用的项目私有层指引，不含个人内容）；
-// 唯一适配：模板"出厂默认会话预置于此"只对出厂 Agent 成立 → 改为"出厂预置只随出厂模板"。
-const workspaceAgentsMd = `# 交互 harness · 项目私有层（workspace）
-
-这里是 Agent 默认工作区（内置第一个 project）的指引。**以协议正文为准**：
-\`~/.lifeos/interaction-harness/protocol.md\`（尤其 §12 会话、开场与项目私有骨架）。本文件只写本目录的规矩。
-
-- \`sessions/\` 会话（见协议 §12.1；出厂预置的默认会话只随出厂模板）
-- \`tasks/\` 任务根（已预建；任务目录 \`<NNNN>-<标题>/\` 按需创建，不预建；日期写在 task.md 字段）
-- \`specs/\` 本层规范（按主题分目录；\`index.json\` 索引）
-- \`daily/\` 每日记录（按日期分文件，追加，不改写历史）
-- \`cases/\` 正例与反例（按日期分文件，编号引用，不改写历史）
-- \`todo/\` 一句话待办（不是任务；升级为任务时建 \`tasks/<NNNN>-<标题>/\`）
-- \`concept-space.md\` 本项目词索引：先建词条、再用词（协议 §4 自举）
-
-通用层（协议、飞轮、通用概念、任务类型）在 \`~/.lifeos/interaction-harness/\`；
-本目录只放**本项目**内容，不复制通用正文（协议 §6 不复制）。
-`;
-
 /** 创建一个 Agent（原子性：中途失败就删掉半成品目录）。 */
 export async function createAgent(input: CreateAgentInput): Promise<
   { id: string; name: string; dir: string; created: boolean } | AgentError
@@ -145,9 +117,8 @@ export async function createAgent(input: CreateAgentInput): Promise<
       }
       throw error;                                          // 其它错误：外层 catch 回滚半成品
     }
-    // workspace 骨架 = 出厂模板同构（agent.json / identity.md / AGENTS.md / concept-space.md /
-    // project.json / sessions / daily / cases / todo / memory / tasks），只差"预置会话文件"
-    // （协议 §12.2：只随出厂模板）
+    // 结构（协议 §4、§5）：Agent 本身（配置、身份、独有工具与记忆）+ 默认项目 workspace（Agent × 项目）
+    // + 它的默认 Task（协议 §6.1）。说明文字全部来自协议目录的骨架模板，代码不另写。
     const record: AgentRecord = {
       schemaVersion: 1, id, name,
       ...(description !== undefined && description !== "" ? { description } : {}),
@@ -156,12 +127,10 @@ export async function createAgent(input: CreateAgentInput): Promise<
     await writeJson(join(dir, "agent.json"), record);
     // identity.md = Agent 结构的一部分，**只装骨架**（用户没批准过"传身份内容"的入口——见 C029）
     await writeFile(join(dir, "identity.md"), identitySkeleton(name), { encoding: "utf8", mode: 0o600 });
+    await ensureAgentLayer(dir);
     const workspace = join(dir, "projects", "workspace");
-    await mkdir(workspace, { recursive: true, mode: 0o700 });
-    await writeJson(join(workspace, "project.json"), { schemaVersion: 1, id: "workspace", name: "工作区" });
-    await writeFile(join(workspace, "AGENTS.md"), workspaceAgentsMd, { encoding: "utf8", mode: 0o600 });
-    await writeFile(join(workspace, "concept-space.md"), workspaceConceptSpace, { encoding: "utf8", mode: 0o600 });
-    await ensureProjectSkeleton(workspace, { name: "工作区", path: workspace });
+    await ensureAgentProjectLayer(workspace);
+    await ensureDefaultTask({ agentId: id, projectId: "workspace" });
     // 写操作必须闭环到 UI（用户 2026-10-19 点名）：在**共享写实现**里广播，工具/HTTP 两条入口都自动生效
     broadcast({ type: "agents_changed" });
     return { id, name, dir, created: true };

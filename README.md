@@ -12,14 +12,13 @@ lifeos/
 ├─ src/        后端（Node + TypeScript）：HTTP 接口、Agent 会话、Prompt 装配
 ├─ frontend/   前端（Vite + React）：浏览器界面，构建为纯静态产物
 ├─ pi/         Pi SDK 源码（git 子模块，直接以源码方式使用）
-├─ .lifeos/   家目录模板（交互 harness 协议正文等；install = 整树复制到 ~/.lifeos）
-├─ docs/       设计文档
+├─ .lifeos/    家目录模板（协议、Agent、项目与知识/规范；install = 整树复制到 ~/.lifeos）
 └─ test/       后端测试
 ```
 
 - 前后端分离：后端提供 HTTP 与事件流，前端是纯静态页面
 - 运行时数据默认写入家目录 `~/.lifeos`；仓库内只有代码与文档
-- 设计文档入口：`docs/architecture/`（目录结构见 `directory-structure.md`，技术底座见 `foundation.md`）
+- 设计文档、规范与知识：`.lifeos/projects/lifeos/`（目录结构见 `knowledge/architecture/directory-structure.md`，技术底座见 `knowledge/architecture/foundation.md`）
 
 ## 快速开始
 
@@ -79,17 +78,22 @@ pnpm home:install
 - 家目录**已有内容** → 只提醒并退出，**一个字节都不改**（要重装请自行确认并清理后重试）；
 - 服务**启动时不执行安装**：只校验家目录存在，不存在就报错并提示先运行 `pnpm home:install`。
 
-执行后家目录结构如下（默认 `~/.lifeos`；结构摘录自 `docs/architecture/foundation.md` §4，以 `.lifeos/` 模板为准）：
+执行后家目录结构如下（默认 `~/.lifeos`；以 `.lifeos/` 模板为准，协议见 `interaction-harness/protocol.md`）：
 
 ```
 ~/.lifeos/
-├─ config/                  模型配置（下一步由你填写；含密钥，永不进 Git）
-├─ interaction-harness/     交互 harness：协议正文、指引、飞轮、概念空间、任务模板
-├─ agents/lifeosagent/      默认 Agent（agent.json + identity.md + projects/workspace/…，含出厂默认会话）
-└─ install-receipt.json     安装收据
+├─ config/                     模型配置（含密钥，永不进 Git）
+├─ interaction-harness/        协议目录：协议正文、说明、协议默认的任务类型模板
+├─ projects/
+│  ├─ workspace/               共享 workspace（所有 Agent）
+│  └─ lifeos/                  LifeOS 项目共享层（设计、规范、知识、待办）
+├─ agents/lifeosagent/         默认 Agent：配置、身份、工具、记忆；projects/{workspace,lifeos}/ 为 Agent × 项目
+└─ install-receipt.json        安装收据
 ```
 
 > 家目录也可以用 `LIFEOS_HOME` 指定到别处。
+
+结构校验（只读，不修改任何文件）：`pnpm home:check`，按交互 harness 协议检查家目录的结构。
 
 ### 4. 配置模型
 

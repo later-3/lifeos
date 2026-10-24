@@ -1,50 +1,47 @@
 # Life OS Development Rules
 
-## 参考基线与自举
+## 开始之前（每个任务）
 
-- 新增机制/命名前，先在 `docs/standards/reference-baseline.md` 找到对应场景行；找不到就先补行——**不许用"行业惯例"当依据**。
-- 我们开发 Life OS 的过程按交互 harness 走：落点与每轮动作见 `docs/standards/development-harness.md`。
+- 交互 harness 协议常驻注入（装配层 `src/assembly.ts`：协议正文 + 当前 Task 的 `AGENTS.md` / `task.md` / 类型规则）；要讨论协议本身，读 `~/.lifeos/interaction-harness/protocol.md`。
+- Life OS 的开发建设是一个项目（全局 id = `lifeos`）：**项目内容的事实源 = 仓库 `.lifeos/projects/lifeos/`**；安装副本 = `~/.lifeos/projects/lifeos/`。改了模板仓库文件后 `pnpm home:install` 重装（保留 `~/.lifeos/config/`），`pnpm home:check` 校验结构。
+- 每个目录的说明文件 `AGENTS.md` 是协议条文（协议 §5.2）：背景与目的 · 里面有什么 · 什么时候读 · 怎么用；建目录即写说明，说明文字的通用模板在 `~/.lifeos/interaction-harness/skeleton/`。
 
-## 文档与结构
+## 场景入口地图（按顺序读）
 
-- 目录结构以 `docs/architecture/directory-structure.md` 为准；技术底座以 `docs/architecture/foundation.md` 为准。
-- 文档入口与标签见 `docs/README.md`（按场景进入；每份文档开头标 `角色 / 类型 / 状态`；`目标`不等于已发布）；每类文档的作用、边界与更新规则见 `docs/AGENTS.md`。
-- **未实现的东西不写进正式文档**：一句话登记在 `docs/todo.md`（背景 / 是什么 / 要做什么）；实现后删掉登记，把事实写进对应文档。
-- 协作规范与资产（概念空间、飞轮、正反案例、每日记录、Todo）在用户的交互 harness 目录 `~/.lifeos/interaction-harness/`，**不在仓库里复制副本**；共享 workspace 规范在 `~/.lifeos/projects/workspace/specs/`，项目/Agent/Task 规范在各自 `specs/`（协议 §16）。
-  - **做事前**：读该目录的 `AGENTS.md`（本层指引：角色与责任、阅读顺序、部件与关系、七个板块协议、版本控制）、`protocol.md`，以及 `task-types/` 中与当前任务相关的细则。
-  - **每轮结束（交付回复之前，不可跳过）**：新正反例 → `cases.md`；可复用结论 → `flywheel.md`；当天记录 → **当前工作项目**下 `daily/<今天>.md`（默认 = `~/.lifeos/agents/<agent>/projects/workspace/`；打开外部项目后 = 该项目 `projects/<pid>/`；**追加**，时间戳由程序生成）；遗留事项 → 同目录 `todo/`。
+| 场景 | 按顺序读（相对仓库根） |
+|---|---|
+| 前端改动 | `.lifeos/projects/lifeos/specs/frontend-development/process.md`（固定四步）→ `.lifeos/projects/lifeos/specs/frontend-development/frontend-spec.md` →（碰手机时）`.lifeos/projects/lifeos/specs/frontend-mobile/mobile.md` → `.lifeos/projects/lifeos/knowledge/design/<页面>.md` → `.lifeos/projects/lifeos/specs/code/frontend/code.md` |
+| 后端 / 会话改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/backend/code.md` |
+| 接口 / 事件改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/api/api.md` |
+| 测试用例 | `.lifeos/projects/lifeos/specs/code/testing/testing.md`；检视时的证据规则见 `.lifeos/projects/lifeos/specs/review/review.md` |
+| 检视 / 评审 | `.lifeos/projects/lifeos/specs/review/review.md` → 按范畴核对 `.lifeos/projects/lifeos/specs/code/` 对应条文 |
+| 架构 / 底座 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md`、`.lifeos/projects/lifeos/knowledge/architecture/foundation.md`（事实现状）→ `.lifeos/projects/lifeos/specs/code/architecture/architecture.md`（约束） |
+| 家目录结构 / 安装 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md` → `.lifeos/projects/lifeos/knowledge/architecture/foundation.md` → `pnpm home:check` |
+| 记忆 | `.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md` + `.lifeos/projects/lifeos/knowledge/requirements/agent-memory.md` |
+| 新参考场景 | `.lifeos/projects/lifeos/knowledge/reference-baseline.md`：找不到场景行先补行，**不许用"行业惯例"当依据** |
+| 远程访问 | 公开机制 `.lifeos/projects/lifeos/knowledge/architecture/remote-access.md`；本机运维记录 `~/.lifeos/projects/lifeos/runbook/`（仅本机，不进仓库） |
+| 还没实现的东西 | `.lifeos/projects/lifeos/todo/todo.md` 一句话登记；实现后删除登记，把事实写进对应文档 |
+| Task / 协作机制 | 协议 §3.7（Task 与类型）、§7（会话与指针）、§11（提升与维护）；类型规则在 `~/.lifeos/interaction-harness/task-types/<类型>/AGENTS.md` |
+| 代码规范总目录 | `.lifeos/projects/lifeos/specs/code/AGENTS.md`（五环节归口边界；按上表各行分别进入对应正文） |
+
+> 场景入口地图只回答"读哪份、什么顺序"；条文本身在对应正文里维护，本文件不复制条文。
+
+## 工程原则（摘要；详细条文归 `.lifeos/projects/lifeos/specs/code/`）
+
+- TypeScript 保持严格类型，不用 `any` 规避设计问题；不忽略输入校验、路径边界、并发与持久化错误。
+- **以 Pi SDK 为底座**：复用它的公开接口与默认数据结构，不重复实现 Session、Agent、Tool；修改 `pi/` 前完整阅读并遵守 `pi/AGENTS.md`；`pi/` 是固定 Commit 的 Submodule。
+- 运行数据写入必须具备原子性或明确的冲突保护；不把凭据、Cookie、Token、模型密钥或正式数据提交进 Git。
+- **只放现在要用的目录与文件**；不为设想中的需求预建空壳；目录含义由该目录的 `AGENTS.md` 说明。
+- 保留用户已有改动；不使用 `git reset --hard`、`git clean -fd`、`git checkout .` 等破坏工作区的命令；只暂存当前任务明确修改的文件，不使用 `git add .`。
+- **未经用户明确要求，不提交、不推送、不部署。**
 
 ## 模型配置
 
 - 格式：与 Pi Agent 一致（`https://github.com/earendil-works/pi`）
-- 存放位置：`~/.lifeos/config/models.json`
-
-## 工程原则
-
-- **只放现在要用的目录与文件**；未来演进到了再建（见目录结构文档的"不建"清单）。不为设想中的需求预建空壳。
-- 优先复用 Pi 公开接口与默认数据结构（`pi/` 子模块），不在 Life OS 重复实现 Session、Agent、Tool 或 ResourceLoader；修改 `pi/` 前完整阅读并遵守 `pi/AGENTS.md`。
-- 命名一律写全：**交互 harness**（代码/文件用 `interaction-harness`），不单独说 harness。
-- 先读相关设计与现有实现，再改统一入口；不为单个需求旁路既有框架。
-- 模块职责单一、接口窄、数据流明确；不用抽象掩盖简单逻辑，不把简单问题扩展成新子系统。
-- TypeScript 保持严格类型，不用 `any` 规避设计问题；不忽略输入校验、路径边界、并发与持久化错误。
-- 运行数据写入必须具备原子性或明确的冲突保护；不把凭据、Cookie、Token、模型密钥或正式数据提交进 Git。
-- 保留用户已有改动；不使用 `git reset --hard`、`git clean -fd`、`git checkout .` 等破坏工作区的命令。
-- 不创建无归属的备份文件；不写"仅历史"的残留说明——不要的东西直接删。
-
-## 前端开发流程
-
-- **任何前端改动**（页面、布局、交互、响应式、视觉）先读 `docs/standards/frontend-development.md`，按固定四步走：核对规范 → 缺口补规范（参考证据 + 断言）→ 按规范开发 → 复盘。
-- 没有规范覆盖表、参考证据和用户拍板，不写代码；桌面规范不能直接套手机；同一用户对象的信息/动作保持整体（如 TurnStatusBar）。
-- 会话类前端对照当前 Pi TUI 基线；已知差距登记 `docs/todo.md`，不以“前端更丰富”为理由缺失。
+- 存放位置：`~/.lifeos/config/models.json`（含密钥，永不进 Git）
 
 ## 验证
 
-- 前后端改动完成后运行 `pnpm test` 与 `pnpm build`（这两条命令在实现第一步落地，落地前以实际存在的命令为准）。
-- 前端改动先读 `docs/design/frontend-spec.md` 和当前页面文档（`docs/design/<page>.md`），再走四道闸：`pnpm verify`（typecheck + lint:tokens + test + test:ui）。数值/颜色只在 `frontend/src/design/tokens.css`，控件只在 `frontend/src/design/`，布局宽度只改 `design/layout.ts`；视觉变化必须回应截图基线 diff（`pnpm test:ui:update` + 人眼确认）。
-- 针对性测试覆盖真实场景与边界，不能只断言实现细节；测试通过不代表架构正确，提交前还要核对文档、配置与真实行为是否一致。
-
-## Git
-
-- 只暂存当前任务明确修改的文件，不使用 `git add .` 或 `git add -A`。
-- 未经用户明确要求，不提交、不推送、不部署。
-- `pi/` 是固定 Commit 的 Submodule；父仓库记录的 Commit 才是部署事实。
+- `pnpm typecheck`、`pnpm test` 为基础门禁；前端改动按前端行的顺序走四步后再过 `pnpm verify`（typecheck + lint:tokens + test + test:ui）。
+- 家目录或模板结构改动后运行 `pnpm home:check`（结构不符合协议即失败）。
+- 数值/颜色只在 `frontend/src/design/tokens.css`，控件只在 `frontend/src/design/`，布局宽度只改 `design/layout.ts`；视觉变化必须回应截图基线 diff（`pnpm test:ui:update` + 人眼确认）。

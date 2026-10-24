@@ -1,10 +1,6 @@
 {
   "schemaVersion": 1,
   "specs": [
-    {
-      "id": "agent-collaboration",
-      "path": "agent-collaboration/AGENTS.md",
-      "appliesTo": { "scenes": ["all"] }
-    }
+    { "id": "agent-collaboration", "path": "agent-collaboration/agent-collaboration.md" }
   ]
 }

@@ -1,4 +1,4 @@
-// 记忆的四种角色与落点（docs/architecture/agent-memory.md §2）。
+// 记忆的四种角色与落点（.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md §2）。
 // 纯逻辑：只回答"哪个角色 → 哪个目录"，不启动 MemOS、不读模型配置。
 import { join } from "node:path";
 import { resolveHome } from "../home.ts";

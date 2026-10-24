@@ -1,112 +1,83 @@
-// 项目目录骨架（协议 §12.3 / §16）：AGENTS.md / concept-space.md / sessions / daily / cases / todo /
-// memory（agent 的项目记忆）/ tasks（任务根，任务目录按需建）/ specs（本层规范）。
-// 每个预建子目录都带自己的 AGENTS.md，说明「这里放什么」——目录自解释。
+// 结构骨架（协议 §5）：每个协作层、每个子目录的 AGENTS.md 文字都从协议目录 `interaction-harness/skeleton/` 读取，
+// 代码只负责按结构创建（模板是唯一事实源，代码不另写一份说明文字）。
 // create-only：已存在的文件绝不覆盖（用户的记录不能被初始化逻辑冲掉）。
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveHome } from "./home.ts";
 
-const agentsMd = (name: string, path: string): string => `# 交互 harness · 项目私有层（${name}）
-
-本目录是项目「${name}」在 Agent 侧的私有层（绑定到 \`${path}\`）。**以协议正文为准**：
-\`~/.lifeos/interaction-harness/protocol.md\`。
-
-## 这里放什么
-
-- \`sessions/\` 会话（Pi JSONL）
-- \`tasks/\` 任务根：任务目录 \`<NNNN>-<标题>/\` **按需创建**；\`task.md\` 是唯一状态源
-- \`daily/<日期>.md\` 每日记录（追加，不改写历史）
-- \`cases/<日期>.md\` 正例与反例（按日期分文件，编号引用）
-- \`todo/\` 一句话待办（不是任务；升级为任务时移到 \`tasks/\`）
-- \`memory/\` agent 的项目记忆（私有，MemOS；不进项目仓库）
-- \`specs/\` 本层规范（按主题分目录；\`index.json\` 是本层规范索引；协议 §16）
-- \`concept-space.md\` 本项目词索引：先建词条、再用词（协议 §4 自举）
-
-每个子目录都有自己的 \`AGENTS.md\`，先读它再往里面写。
-
-## 边界
-
-- **不往项目仓库目录写我们的数据**；项目自己的规范看 \`${path}/AGENTS.md\`（存在才读）。
-- 通用层（协议、飞轮、通用概念、任务类型）在 \`~/.lifeos/interaction-harness/\`。
-`;
-
-const conceptMd = (name: string): string => `# 概念空间（${name} 项目层 · 索引）
-
-规则同通用层（协议 §3.2 / §4）：一词一义、先定义再使用、索引与正文分开。
-本层只收**本项目特有**的词；通用词在 \`~/.lifeos/interaction-harness/concept-space/\`，不在此重复。
-
-| 编号 | 词 | 一句话 | 正文 |
-|---|---|---|---|
-`;
-
-const dirNotes: Record<string, string> = {
-  sessions: `# sessions/
-
-会话存储（Pi 原生 JSONL），一个会话一个文件。
-
-- 由 Life OS / Pi 写入，**不要手改**；
-- 文件里是消息与工具调用记录，不是知识库；
-- 会话属于当前 Agent × 当前项目，不会自动共享给别的 Agent。`,
-  tasks: `# tasks/
-
-任务根目录。**任务目录按需创建，不预建**：
-
-\`\`\`
-tasks/<NNNN>-<标题>/task.md
-\`\`\`
-
-- 编号在项目内连续（四位）；中文标题允许；
-- \`task.md\` 是唯一状态源（类型 / 类别 / 状态 / 目标 / 必需文档 / 当前指针）；
-- 模板在 \`~/.lifeos/interaction-harness/task-types/<type>/\`（development 分 A/B/C，general 只写背景+步骤）；
-- 已完成的任务保留，不删除（除非用户明确要求）。`,
-  daily: `# daily/
-
-每日记录，一个日期一个文件：\`<YYYY-MM-DD>.md\`。
-
-- 当天**追加**，不改写历史；
-- 记录当天做了什么、为什么、遗留什么；
-- 属于当前 Agent × 当前项目，不共享给别的 Agent。`,
-  cases: `# cases/
-
-正例与反例，一个日期一个文件：\`<YYYY-MM-DD>.md\`。
-
-- 按日期**追加**，编号连续（如 C001），不改写历史；
-- 写清「场景 / 做法 / 结果 / 教训」；
-- 可复用的结论进飞轮，不在这里重复长文。`,
-  todo: `# todo/
-
-一句话级待办。
-
-- 不是任务，不进 prompt，按需读；
-- 升级为任务时，用 \`lifeos_task_create\` 建到 \`tasks/<NNNN>-<标题>/\`，然后从这里删掉；
-- 不写长文、不写实现细节。`,
-  specs: `# specs/
-
-本层规范（协议 §16）。**一个主题一个目录**，正文只放一份；\`index.json\` 是本层索引。
-
-- 规范 = 具体场景下必须怎么做、可执行、可检查；
-- 规范目录名用英文（\`frontend-development\`、\`agent-collaboration\`）；
-- 只加载当前项目相关的规范，不跨项目注入；
-- 被提升到更高层时，移动正文并在原处留指针。`,
-  memory: `# memory/
-
-agent 的项目记忆（私有，MemOS 本地存储）。
-
-- 属于当前 Agent × 当前项目，别的 Agent 读不到；
-- 由记忆工具读写（\`lifeos_memory_search/record/delete\`），**不要手改数据库文件**；
-- 空目录正常：第一次写入时才创建 SQLite。`,
-};
+/** 读协议目录下的骨架模板（安装时已复制到家目录；缺失即明确失败，不静默降级）。 */
+export async function skeletonText(name: string): Promise<string> {
+  const path = join(resolveHome(), "interaction-harness", "skeleton", `${name}.md`);
+  const text = await readFile(path, "utf8").catch(() => undefined);
+  if (text === undefined) throw new Error(`缺少骨架模板：${path}（家目录是否安装完整？）`);
+  return text;
+}
 
 async function writeIfMissing(path: string, content: string): Promise<void> {
   await writeFile(path, content, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
 }
 
-/** 补齐一个项目目录的骨架（幂等、create-only）。 */
-export async function ensureProjectSkeleton(dir: string, input: { name: string; path: string }): Promise<void> {
-  for (const [sub, note] of Object.entries(dirNotes)) {
-    await mkdir(join(dir, sub), { recursive: true, mode: 0o700 });
-    await writeIfMissing(join(dir, sub, "AGENTS.md"), note + "\n");
-  }
-  await writeIfMissing(join(dir, "AGENTS.md"), agentsMd(input.name, input.path));
-  await writeIfMissing(join(dir, "concept-space.md"), conceptMd(input.name));
+/** 建目录并放上它的说明文件（AGENTS.md 来自 skeleton/dir-<name>.md）。 */
+async function dirWithNote(dir: string, note: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText(note));
+}
+
+/** 各协作层共有的子结构（协议 §5.1）：概念、飞轮、规范、案例、知识、工具、待办、记忆、任务类型。 */
+async function commonLayer(dir: string, withMemory: boolean): Promise<void> {
+  await writeIfMissing(join(dir, "concept-space.md"), await skeletonText("concept-space"));
+  await writeIfMissing(join(dir, "flywheel.md"), await skeletonText("flywheel"));
+  await dirWithNote(join(dir, "specs"), "dir-specs");
   await writeIfMissing(join(dir, "specs", "index.json"), JSON.stringify({ schemaVersion: 1, specs: [] }, null, 2) + "\n");
+  await dirWithNote(join(dir, "cases"), "dir-cases");
+  await dirWithNote(join(dir, "knowledge"), "dir-knowledge");
+  await dirWithNote(join(dir, "tools"), "dir-tools");
+  await dirWithNote(join(dir, "todo"), "dir-todo");
+  await dirWithNote(join(dir, "task-types"), "dir-task-types");
+  if (withMemory) await dirWithNote(join(dir, "memory"), "dir-memory");
+}
+
+/** 共享层（共享 workspace 或共享项目，`projects/<pid>/`）：project.json 只在这一层（协议 §5.3）。 */
+export async function ensureSharedLayer(dir: string, project: { id: string; name: string; path?: string }): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const manifest = {
+    schemaVersion: 1,
+    id: project.id,
+    name: project.name,
+    ...(project.path !== undefined ? { path: project.path } : {}),
+  };
+  await writeIfMissing(join(dir, "project.json"), JSON.stringify(manifest, null, 2) + "\n");
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-shared"));
+  await commonLayer(dir, true);
+}
+
+/** Agent × 项目（`agents/<id>/projects/<pid>/`）：只属于该 Agent；会话与任务在这一层。 */
+export async function ensureAgentProjectLayer(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-project"));
+  await commonLayer(dir, true);
+  await dirWithNote(join(dir, "sessions"), "dir-sessions");
+  await dirWithNote(join(dir, "tasks"), "dir-tasks");
+}
+
+/** Agent 本身（`agents/<id>/`）：配置、身份、独有的工具与记忆；不设飞轮与案例。 */
+export async function ensureAgentLayer(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-agent"));
+  await dirWithNote(join(dir, "tools"), "dir-tools");
+  await dirWithNote(join(dir, "memory"), "dir-memory");
+}
+
+/** Task 的共同结构（协议 §5.1）；task.md 与日志（log.md / daily/）由 tasks.ts 按类型写。 */
+export async function ensureTaskSkeleton(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("task"));
+  await writeIfMissing(join(dir, "concept-space.md"), await skeletonText("concept-space"));
+  await writeIfMissing(join(dir, "flywheel.md"), await skeletonText("flywheel"));
+  await dirWithNote(join(dir, "specs"), "dir-specs");
+  await writeIfMissing(join(dir, "specs", "index.json"), JSON.stringify({ schemaVersion: 1, specs: [] }, null, 2) + "\n");
+  await dirWithNote(join(dir, "cases"), "dir-cases");
+  await dirWithNote(join(dir, "knowledge"), "dir-knowledge");
+  await dirWithNote(join(dir, "tools"), "dir-tools");
+  await dirWithNote(join(dir, "todo"), "dir-todo");
 }

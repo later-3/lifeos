@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { installHome } from "../src/home.ts";
 import { buildPromptParts } from "../src/assembly.ts";
 import { createSession, getSession, deleteSession } from "../src/agent-host.ts";
-import { createTask, ensureDailyTask, listTasks, localDate } from "../src/tasks.ts";
+import { createTask, ensureDailyShard, ensureDefaultTask, listTasks, localDate } from "../src/tasks.ts";
 import { registerProject } from "../src/projects.ts";
 import { ensureSharedWorkspace, readGlobalProject } from "../src/project-registry.ts";
 
@@ -28,7 +28,7 @@ test("规范分层：共享 workspace 常驻；项目/Agent/Task 层只加载可
   const home = await freshHome();
   const parts = await buildPromptParts("lifeosagent", "workspace");
   assert.match(parts.harnessSection, /多 Agent 协作规范/, "共享 workspace 的协作规范必须进 prompt");
-  assert.ok(parts.sources.includes(join(home, "projects", "workspace", "specs", "agent-collaboration", "AGENTS.md")));
+  assert.ok(parts.sources.includes(join(home, "projects", "workspace", "specs", "agent-collaboration", "agent-collaboration.md")));
 
   const a = await mkdtemp(join(tmpdir(), "lifeos-spec-a-"));
   const b = await mkdtemp(join(tmpdir(), "lifeos-spec-b-"));
@@ -40,31 +40,41 @@ test("规范分层：共享 workspace 常驻；项目/Agent/Task 层只加载可
 
   const partsA = await buildPromptParts("lifeosagent", pa.project.id);
   assert.match(partsA.harnessSection, /项目 A 规范/, "当前项目共享 specs 要加载");
-  assert.match(partsA.harnessSection, /Agent 跨项目规范/, "Agent 私有 workspace specs 对所有项目加载");
+  // 协议 §4.3：Agent × 项目（默认项目 = workspace）的规范只在它自己的项目里加载，不跨项目注入
+  assert.doesNotMatch(partsA.harnessSection, /Agent 跨项目规范/, "Agent 默认 workspace 的规范不跨项目注入");
 
   const partsB = await buildPromptParts("lifeosagent", pb.project.id);
   assert.doesNotMatch(partsB.harnessSection, /项目 A 规范/, "不能跨项目注入 A 的规范");
-  assert.match(partsB.harnessSection, /Agent 跨项目规范/, "Agent 私有规范仍可见");
+  const partsWs = await buildPromptParts("lifeosagent", "workspace");
+  assert.match(partsWs.harnessSection, /Agent 跨项目规范/, "Agent 默认 workspace 的规范在 workspace 项目里加载");
 });
 
-test("默认 Task：同一天同 Agent×Project 只建一个，会话引用 activeTaskId 并注入 task.md", async () => {
+test("默认 Task（协议 §6.1）：每 Agent×项目一个；当天分片按需创建；会话引用默认 Task 并注入其说明与状态", async () => {
   const home = await freshHome();
   const ctx = { agentId: "lifeosagent", projectId: "workspace" };
-  const date = localDate();
-  const first = await ensureDailyTask(ctx, date);
-  const again = await ensureDailyTask(ctx, date);
-  assert.equal(again.id, first.id, "同一天必须复用默认 Task");
+  const first = await ensureDefaultTask(ctx);
+  const again = await ensureDefaultTask(ctx);
+  assert.equal(again.id, first.id, "默认 Task 只能有一个");
+  assert.equal(first.id, "0001");
+  assert.equal(first.dirName, "0001-default");
+  assert.equal(first.isDefault, true);
   const taskMd = await readFile(join(first.path, "task.md"), "utf8");
-  assert.match(taskMd, new RegExp(`日期：${date}`));
-  assert.match(taskMd, /默认：是/);
+  assert.match(taskMd, /^类型：daily$/m);
+  assert.doesNotMatch(taskMd, /^日期：/m, "默认 Task 按天分片，不写日期字段");
+
+  const date = localDate();
+  const shard = await ensureDailyShard(ctx, date);
+  assert.equal(shard.file, join(first.path, "daily", `${date}.md`));
+  assert.match(await readFile(shard.file, "utf8"), new RegExp(`# ${date}`));
   assert.ok((await listTasks(ctx)).some((task) => task.id === first.id && task.isDefault === true));
 
   const sessionId = await createSession("lifeosagent", home, "workspace");
   const state = await getSession("lifeosagent", sessionId, home);
-  assert.equal(state?.taskId, first.id, "会话应引用当天默认 Task");
+  assert.equal(state?.taskId, first.id, "会话应引用默认 Task（NNNN）");
   const parts = await buildPromptParts("lifeosagent", "workspace", first.id);
-  assert.match(parts.harnessSection, /当前 Task · /);
-  assert.match(parts.harnessSection, new RegExp(`daily-${date}`));
+  assert.match(parts.harnessSection, /当前 Task · 0001-default\/task\.md/);
+  assert.match(parts.harnessSection, /任务类型规则 · daily\/AGENTS\.md/);
+  assert.doesNotMatch(parts.harnessSection, /daily-\d{4}-\d{2}-\d{2}/, "不再有按日期建的 Task");
   await deleteSession("lifeosagent", sessionId);
 });
 

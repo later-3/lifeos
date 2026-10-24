@@ -1,5 +1,5 @@
 // 文件浏览器后端：根白名单 + 列目录 / 读文件 / 选择器浏览。
-// 安全边界（docs/design/file-browser.md P1）：
+// 安全边界（.lifeos/projects/lifeos/knowledge/design/file-browser.md P1）：
 //  - tree/content 只允许“resolve 后落在已注册根内”的路径（../ 越权一律 403）；
 //  - browse 是选择器专用通道：只列子目录名、不读文件——它是“打开任意目录”的入口，不构成读取面。
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";

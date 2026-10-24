@@ -2,7 +2,7 @@
   "name": "lifeos",
   "private": true,
   "version": "0.0.0",
-  "description": "占位：命令与依赖在第一步实现时再填（见 docs/architecture/directory-structure.md）",
+  "description": "占位：命令与依赖在第一步实现时再填（见 .lifeos/projects/lifeos/knowledge/architecture/directory-structure.md）",
   "dependencies": {
     "@earendil-works/pi-agent-core": "link:./pi/packages/agent",
     "@earendil-works/pi-ai": "link:./pi/packages/ai",
@@ -13,6 +13,7 @@
   },
   "scripts": {
     "home:install": "node --experimental-strip-types src/install.ts",
+    "home:check": "node --experimental-strip-types src/check-home.ts",
     "dev": "node --experimental-strip-types --watch src/main.ts",
     "dev:web": "pnpm --dir frontend dev",
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs && pnpm --dir frontend build",

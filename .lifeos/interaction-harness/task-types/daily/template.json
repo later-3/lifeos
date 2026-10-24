@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "type": "daily",
+  "categories": {
+    "D": {
+      "label": "D 日常",
+      "docs": [],
+      "extraDirs": ["daily"]
+    }
+  }
+}

@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readdir, readFile, writeFile, access } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
+import { checkHome } from "../src/home-check.ts";
 
 async function tempPath(prefix) {
   const base = await mkdtemp(join(tmpdir(), prefix));
@@ -22,12 +23,22 @@ test("家目录不存在 → 从 .lifeos 模板整树复制并写收据", async 
     "interaction-harness/protocol.md",
     "interaction-harness/AGENTS.md",
     "agents/lifeosagent/agent.json",
+    "agents/lifeosagent/AGENTS.md",
     "agents/lifeosagent/projects/workspace/AGENTS.md",
-    "agents/lifeosagent/projects/workspace/project.json",
+    "agents/lifeosagent/projects/workspace/flywheel.md",
+    "agents/lifeosagent/projects/workspace/concept-space.md",
     "agents/lifeosagent/projects/workspace/sessions",
     "agents/lifeosagent/projects/workspace/specs/index.json",
+    "agents/lifeosagent/projects/workspace/tasks/0001-default/task.md",
+    "agents/lifeosagent/projects/workspace/tasks/0001-default/daily/AGENTS.md",
+    "agents/lifeosagent/projects/lifeos/tasks/0001-default/task.md",
     "projects/workspace/project.json",
+    "projects/workspace/flywheel.md",
     "projects/workspace/specs/index.json",
+    "projects/lifeos/project.json",
+    "projects/lifeos/specs/index.json",
+    "interaction-harness/skeleton/layer-project.md",
+    "interaction-harness/task-types/daily/template.json",
     "install-receipt.json",
   ]) await access(join(home, file));
   // 顶层 projects 是共享层，必须随模板安装；logs/runtime 仍不建
@@ -73,4 +84,21 @@ test("家目录存在但为空 → 视为可安装", async () => {
   await mkdir(home, { recursive: true });
   const result = await installHome(process.cwd(), home);
   assert.equal(result.status, "installed");
+});
+
+test("安装后：默认 Task 与 LifeOS 项目身份（仓库路径占位已替换）", async () => {
+  const home = await tempPath("lifeos-install-check-");
+  await installHome(process.cwd(), home);
+  const project = JSON.parse(await readFile(join(home, "projects", "lifeos", "project.json"), "utf8"));
+  assert.equal(project.path, process.cwd(), "project.json 的 path 应为安装时的仓库根");
+  const task = await readFile(join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0001-default", "task.md"), "utf8");
+  assert.match(task, /^ID: 0001$/m);
+  assert.match(task, /^类型：daily$/m);
+});
+
+test("安装出来的家目录通过结构校验（协议 §5、§6）", async () => {
+  const home = await tempPath("lifeos-install-valid-");
+  await installHome(process.cwd(), home);
+  const report = await checkHome(home);
+  assert.deepEqual(report.errors, [], "结构错误：\n" + report.errors.join("\n"));
 });

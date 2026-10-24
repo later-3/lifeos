@@ -1,4 +1,4 @@
-// 记忆服务的模型配置（docs/architecture/agent-memory.md §7）：
+// 记忆服务的模型配置（.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md §7）：
 // - LLM：摘要/抽取/关键词（chat/completions），可用 models.json 里任一 provider；
 // - Embedding：向量（/v1/embeddings），默认本地 Ollama nomic-embed-text。
 //

@@ -1,9 +1,9 @@
 // 家目录安装：模板 = 仓库根 .lifeos/，安装 = 一次性整树复制。
 // 语义（2026-10-17 定）：家目录已有内容 → 只提醒并停止，一个字节都不改；不存在/为空 → 复制 + 写收据。
 // 服务启动不执行安装（见 main.ts），只校验家目录存在。
-import { chmod, cp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 /** 家目录：默认 ~/.lifeos，可用 LIFEOS_HOME 覆盖（引导/测试用）。 */
 export function resolveHome(): string {
@@ -39,6 +39,18 @@ async function stripGitkeep(root: string): Promise<void> {
   }
 }
 
+/** 模板里的仓库路径占位（`__REPO_ROOT__`，目前只用于 LifeOS 项目身份）替换成真实仓库路径。 */
+export const REPO_ROOT_PLACEHOLDER = "__REPO_ROOT__";
+
+async function fillRepoRoot(root: string, repoRoot: string): Promise<void> {
+  for (const path of await listFiles(root)) {
+    if (!path.endsWith(".json") && !path.endsWith(".md")) continue;
+    const text = await readFile(path, "utf8");
+    if (!text.includes(REPO_ROOT_PLACEHOLDER)) continue;
+    await writeFile(path, text.split(REPO_ROOT_PLACEHOLDER).join(repoRoot), { encoding: "utf8", mode: 0o600 });
+  }
+}
+
 /** 隐私收敛：家目录目录 0700、文件 0600。 */
 async function tightenPermissions(root: string): Promise<void> {
   const entries = await readdir(root, { withFileTypes: true });
@@ -65,6 +77,7 @@ export async function installHome(repoRoot: string, home = resolveHome()): Promi
 
   const sources = await listFiles(template);
   await cp(template, home, { recursive: true, force: true });
+  await fillRepoRoot(home, resolve(repoRoot));
   await stripGitkeep(home);
   await tightenPermissions(home);
 

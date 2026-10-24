@@ -7,7 +7,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { archiveAgent, createAgent } from "./agents.ts";
-import { createTask, listTasks, type TaskCategory } from "./tasks.ts";
+import { createTask, listTasks } from "./tasks.ts";
 import { bindProject, listAgentProjects, unbindProject } from "./projects.ts";
 import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./memory/index.ts";
 import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
@@ -22,17 +22,22 @@ export const LIFEOS_TOOL_NAMES = [
 ] as const;
 
 /** 工具要绑定"当前会话是谁、在哪个项目"——都由会话自身推导，模型不用传（也不会传错）。 */
-export type ToolContext = { agentId: string; projectId: string };
+export type ToolContext = {
+  agentId: string;
+  projectId: string;
+  /** 进入一个 Task（建 Task 即进入它）：由宿主把会话指针指向它，下一轮装配生效。 */
+  onEnterTask?: (taskId: string) => void;
+};
 
 export function createAgentTools(ctx: ToolContext) {
   const create = defineTool({
     name: "lifeos_agent_create",
     label: "Create Life OS agent",
     description:
-      "Create a new Life OS agent (a long-lived assistant with its own identity, workspace project, daily/cases/todo records and sessions). "
+      "Create a new Life OS agent (a long-lived assistant with its own identity, a default workspace project with its default task, and sessions). "
       + "The id is generated once and stays stable — renaming the display name never changes it, so never archive and recreate an agent just to change an id. "
       + "Creating with an existing agent name returns that agent unchanged (no duplicates). Non-ASCII names get an opaque id such as agent-3f9a; that is expected. "
-      + "The agent gets its standard skeleton (agent.json, identity.md, workspace project with AGENTS.md/concept-space.md/sessions/daily/cases/todo). "
+      + "The agent gets its standard skeleton (agent.json, identity.md, tools/, memory/, and the workspace project with flywheel, concept-space, cases, knowledge, tools, todo, sessions and tasks/0001-default). "
       + "Nothing is written outside ~/.lifeos/agents/<id>/, and other agents are untouched.",
     promptSnippet: "Create a new Life OS agent (multi-agent)",
     promptGuidelines: [
@@ -59,7 +64,7 @@ export function createAgentTools(ctx: ToolContext) {
         content: [{
           type: "text" as const,
           text: `Created agent "${result.name}" (id: ${result.id}).\n`
-            + `Files: ${result.dir}/agent.json · identity.md (skeleton) · projects/workspace/{project.json,AGENTS.md,concept-space.md,sessions,daily,cases,todo}\n`
+            + `Files: ${result.dir}/agent.json · identity.md (skeleton) · projects/workspace/{AGENTS.md,flywheel.md,concept-space.md,specs,cases,knowledge,tools,todo,memory,task-types,sessions,tasks/0001-default}\n`
             + `No preset session: the first message starts a new session.`,
         }],
         details: { id: result.id, dir: result.dir, created: true },
@@ -96,23 +101,23 @@ export function createAgentTools(ctx: ToolContext) {
     name: "lifeos_task_create",
     label: "Create Life OS task",
     description:
-      "Create a numbered task for the current project: a task directory with task.md (single source of truth) and the required documents for its type/category. "
-      + "Type development: category A changes product behavior (01-background, 02-design, 03-phase, 04-plan, phases/), B changes collaboration rules (01-background, 02-plan), C only produces a conclusion (01-background). "
-      + "Type general: a normal task that is neither product nor collaboration work (errands, research, one-off operations) — category G, only 01-background + 02-plan (background + simple steps). "
-      + "task.md also records which harness rules and project guides the task must follow; fill in referenced cases afterwards.",
-    promptSnippet: "Create a numbered task (development A/B/C or general G) with task.md + required docs",
+      "Create a numbered task in the current project: a task directory with task.md (single source of truth), the shared task structure and the documents its type declares. "
+      + "The type is open-ended: it names a folder under task-types/ that holds the type's template and rules (e.g. development, general). "
+      + "If no existing type fits, discuss it with the user and add a new type template instead of forcing one. daily is reserved for the system's default task. "
+      + "Creating a task also makes it the current task of this conversation (applied from the next turn).",
+    promptSnippet: "Create a numbered task of a declared type (task-types/<type>) with task.md and its documents",
     promptGuidelines: [
-      "Use lifeos_task_create when the user asks for real work (a requirement, a fix, a review, or a normal task to track) — then fill 01-background with facts before planning.",
-      "Pick type=general only when the task changes neither product behavior nor collaboration rules; otherwise use development with A/B/C.",
-      "Keep task.md as the single place for status; update 当前指针 as you go.",
+      "Use lifeos_task_create when the user asks for real work — then fill the background first, with facts, before planning.",
+      "Pick the type whose template fits the work; if none fits, discuss a new type with the user first.",
+      "Keep task.md as the single place for status; update 当前指针 as you go. Status is a record, not a lock: the user may reopen a finished task at any time.",
     ],
     parameters: Type.Object({
       title: Type.String({ description: "Task title, e.g. '文件面板：删除已注册根'. Chinese is fine; it becomes the directory name." }),
-      type: Type.Optional(Type.Union([Type.Literal("development"), Type.Literal("general")], {
-        description: "development (default) for product/collaboration/conclusion work; general for a normal task that is neither (background + simple steps).",
+      type: Type.Optional(Type.String({
+        description: "Task type = a folder name under task-types/ (default development). Declared types are described in task-types/*/AGENTS.md. daily is reserved.",
       })),
-      category: Type.Union([Type.Literal("A"), Type.Literal("B"), Type.Literal("C"), Type.Literal("G")], {
-        description: "development: A = changes product behavior, B = changes collaboration rules, C = conclusion only. general: G (only value).",
+      category: Type.String({
+        description: "Category as declared by the type's template (e.g. development: A / B / C; general: G).",
       }),
       goal: Type.Optional(Type.String({ description: "One-line verifiable goal. Defaults to the title; editable later." })),
     }),
@@ -120,20 +125,21 @@ export function createAgentTools(ctx: ToolContext) {
       const result = await createTask(ctx, {
         title: params.title,
         ...(params.type !== undefined ? { type: params.type } : {}),
-        category: params.category as TaskCategory,
+        category: params.category,
         ...(params.goal !== undefined ? { goal: params.goal } : {}),
       });
       if ("code" in result) throw new Error(result.message);
       const task = result.task;
+      ctx.onEnterTask?.(task.id);
       const files = task.docs ?? [];
       return {
         content: [{
           type: "text" as const,
           text: `Created task ${task.id} (${task.type} · ${task.category}) at ${task.path}\n`
-            + `Files: task.md${files.length > 0 ? ` · ${files.join(" · ")}` : ""}${task.category.startsWith("A") ? " · phases/" : ""}\n`
-            + `Next: fill 01-background with current facts and the acceptance criteria, then the plan.`,
+            + `Files: task.md${files.length > 0 ? ` · ${files.join(" · ")}` : ""}\n`
+            + `This conversation now works in task ${task.id} (takes effect from the next turn). Next: fill the background with current facts, then the plan.`,
         }],
-        details: { id: task.id, number: task.number, path: task.path },
+        details: { id: task.id, number: task.number, path: task.path, type: task.type },
       };
     },
   });

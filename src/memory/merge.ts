@@ -1,4 +1,4 @@
-// 多角色读取的合并（docs/architecture/agent-memory.md §3）：
+// 多角色读取的合并（.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md §3）：
 // 顺序由调用方给（默认 4→1→3→2），先到先得、按 id 去重、截断到 limit。
 import type { MemoryHit } from "./index.ts";
 import type { MemoryRole } from "./roles.ts";

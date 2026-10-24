@@ -1,5 +1,5 @@
 // 工具参数（scope + projectId）→ 记忆角色（纯函数，便于单测）。
-// 规则（docs/requirements/agent-memory.md FR-2/FR-4）：
+// 规则（.lifeos/projects/lifeos/knowledge/requirements/agent-memory.md FR-2/FR-4）：
 // - 默认在当前项目；projectId 可在显式指定时用于跨项目；
 // - 跨项目只能读该项目的「项目共享记忆」（scope=project），不能写/删；
 // - 跨项目不能读别的 Agent 的 agent 的项目记忆。

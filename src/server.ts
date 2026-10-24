@@ -597,7 +597,7 @@ export function createApp() {
     return c.json({ config, applied });
   });
 
-  // —— 文件浏览器（docs/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——
+  // —— 文件浏览器（.lifeos/projects/lifeos/knowledge/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——
   const fsError = (c: Context, error: { code: string; message: string; status: number }) =>
     c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
 

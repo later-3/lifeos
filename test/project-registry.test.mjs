@@ -33,7 +33,7 @@ test("全局项目注册表：同 path 幂等、同名不同 path 加后缀、pr
   const onDisk = JSON.parse(await readFile(join(home, "projects", first.id, "project.json"), "utf8"));
   assert.equal(onDisk.id, first.id);
   assert.equal(onDisk.path, a);
-  assert.equal((await listGlobalProjects()).size, 3, "两个外部项目 + 共享 workspace");
+  assert.equal((await listGlobalProjects()).size, 4, "两个外部项目 + 共享 workspace + 出厂的 LifeOS 项目");
   assert.equal((await readGlobalProject(first.id))?.path, a);
   const workspace = await readGlobalProject("workspace");
   assert.equal(workspace?.id, "workspace", "共享 workspace 必须有全局身份");
@@ -52,8 +52,9 @@ test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一�
   assert.ok(!("code" in two));
   assert.equal(one.project.id, two.project.id, "同一目录在全局只有一个 id");
 
-  const binding = join(home, "agents", "lifeosagent", "projects", one.project.id, "project.json");
-  assert.equal(JSON.parse(await readFile(binding, "utf8")).id, one.project.id);
+  const binding = join(home, "agents", "lifeosagent", "projects", one.project.id);
+  await assert.rejects(stat(join(binding, "project.json")), "绑定目录不写 project.json（身份只在共享层，协议 §5.3）");
+  assert.equal((await readGlobalProject(one.project.id))?.path, dir);
   assert.ok((await stat(join(home, "projects", one.project.id, "project.json"))).isFile());
   assert.ok((await stat(join(home, "projects", one.project.id, "memory"))).isDirectory(), "项目共享记忆目录应存在");
   assert.ok((await stat(join(home, "projects", one.project.id, "memory", "AGENTS.md"))).isFile(), "共享记忆目录带 AGENTS.md");
@@ -65,34 +66,33 @@ test("Agent 绑定使用全局 id；两个 Agent 打开同一目录得到同一�
   assert.ok(listed.some((item) => item.id === one.project.id && item.path === dir));
 });
 
-test("项目绑定目录带 harness 骨架；老绑定在列出时补齐；不覆盖已有文件", async () => {
+test("项目绑定目录带结构骨架与默认 Task；老绑定在列出时补齐；不覆盖已有文件", async () => {
   const home = await freshHome();
   const dir = join(home, "repo2");
   await mkdir(dir, { recursive: true });
   const { project } = await registerProject("lifeosagent", dir);
   const bindDir = join(home, "agents", "lifeosagent", "projects", project.id);
 
-  for (const file of ["AGENTS.md", "concept-space.md"]) {
+  for (const file of ["AGENTS.md", "concept-space.md", "flywheel.md", "specs/index.json", "tasks/AGENTS.md", "sessions/AGENTS.md"]) {
     assert.ok((await stat(join(bindDir, file))).isFile(), `${file} 应存在`);
   }
-  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "specs"]) {
+  for (const sub of ["cases", "knowledge", "tools", "todo", "memory", "task-types", "specs", "sessions", "tasks"]) {
     assert.ok((await stat(join(bindDir, sub))).isDirectory(), `${sub}/ 应存在`);
-  }
-  assert.ok((await stat(join(bindDir, "specs", "index.json"))).isFile(), "specs/index.json 预建");
-  assert.ok((await stat(join(bindDir, "tasks"))).isDirectory(), "tasks/ 预建");
-  assert.ok((await stat(join(bindDir, "tasks", "AGENTS.md"))).isFile(), "tasks/AGENTS.md 预建");
-  assert.deepEqual((await readdir(join(bindDir, "tasks"))), ["AGENTS.md"], "不预建具体任务目录");
-  for (const sub of ["sessions", "daily", "cases", "todo", "memory", "tasks", "specs"]) {
     assert.ok((await stat(join(bindDir, sub, "AGENTS.md"))).isFile(), `${sub}/AGENTS.md 应存在`);
   }
+  await assert.rejects(stat(join(bindDir, "daily")), "项目层不建 daily/（日志在默认 Task 里）");
+  await assert.rejects(stat(join(bindDir, "project.json")), "绑定目录不写 project.json");
+  const defaults = (await readdir(join(bindDir, "tasks"))).filter((name) => name.endsWith("-default"));
+  assert.deepEqual(defaults, ["0001-default"], "每个 Agent × 项目一个默认 Task");
+  assert.match(await readFile(join(bindDir, "tasks", "0001-default", "task.md"), "utf8"), /^类型：daily$/m);
 
   await writeFile(join(bindDir, "AGENTS.md"), "自定义内容\n");
   await listAgentProjects("lifeosagent");
   assert.equal(await readFile(join(bindDir, "AGENTS.md"), "utf8"), "自定义内容\n", "已存在文件不覆盖");
 
   await rm(join(bindDir, "AGENTS.md"));
-  await rm(join(bindDir, "daily"), { recursive: true });
+  await rm(join(bindDir, "cases"), { recursive: true });
   await listAgentProjects("lifeosagent");
   assert.ok((await stat(join(bindDir, "AGENTS.md"))).isFile(), "老绑定在列出时补 AGENTS.md");
-  assert.ok((await stat(join(bindDir, "daily"))).isDirectory(), "老绑定在列出时补 daily/");
+  assert.ok((await stat(join(bindDir, "cases"))).isDirectory(), "老绑定在列出时补 cases/");
 });

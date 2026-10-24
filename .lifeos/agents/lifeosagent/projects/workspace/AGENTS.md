@@ -1,15 +1,9 @@
-# 交互 harness · 项目私有层（workspace）
+# Agent × 项目
 
-这里是 Agent 默认工作区（内置第一个 project）的指引。**以协议正文为准**：
-`~/.lifeos/interaction-harness/protocol.md`（尤其 §12 会话、开场与项目私有骨架）。本文件只写本目录的规矩。
+这里是一个 Agent 在某个项目下的空间（协议 §4.2），只属于该 Agent。
 
-- `sessions/` 会话（出厂默认会话预置于此，第一句=打招呼，见协议 §12.2）
-- `tasks/` 任务根（已预建；任务目录 `<NNNN>-<标题>/` 按需创建，不预建；日期写在 task.md 字段）
-- `daily/` 每日记录（按日期分文件，追加，不改写历史）
-- `cases/` 正例与反例（按日期分文件，编号引用，不改写历史）
-- `todo/` 一句话待办（不是任务；升级为任务时建 `tasks/<NNNN>-<标题>/`）
-- `specs/` 本层规范（按主题分目录；`index.json` 索引；协议 §16）
-- `concept-space.md` 本项目词索引：先建词条、再用词（协议 §4 自举）
+- `sessions/`：会话（原始对话记录，属于本层）；
+- `tasks/`：任务，每个 Task 一个目录；默认 Task 是日常对话的入口；
+- `concept-space.md`、`flywheel.md`、`specs/`、`cases/`、`knowledge/`、`tools/`、`todo/`、`memory/`、`task-types/`：与其他协作层相同的结构。
 
-通用层（协议、飞轮、通用概念、任务类型）在 `~/.lifeos/interaction-harness/`；
-本目录只放**本项目**内容，不复制通用正文（协议 §6 不复制）。
+默认项目 `workspace` 是 Agent 没有添加任何项目时的交互场所，结构与其他项目相同。

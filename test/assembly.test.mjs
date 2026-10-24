@@ -22,13 +22,13 @@ test("两区装配：customPrompt=交互 harness、appendSystemPrompt=identity�
   const parts = await buildPromptParts("lifeosagent", "workspace");
   assert.match(parts.customPrompt, /^<lifeos_identity>[\s\S]+<\/lifeos_identity>$/, "customPrompt = identity（占 preamble）");
   assert.match(parts.harnessSection, /交互 harness 协议/, "harness 区含协议正文（来自 protocol.md）");
-  assert.match(parts.harnessSection, /## 任务类型 · development\/TEMPLATE\.md/, "含任务类型细则并标注来源");
-  assert.match(parts.harnessSection, /## 任务类型 · general\/TEMPLATE\.md/, "新增类型按目录自动加载（general）");
-  assert.match(parts.harnessSection, /## 记忆规则 · memory\.md/, "记忆策略来自 harness 文件（不写死在代码里）");
-  assert.match(parts.harnessSection, /agent 的项目记忆/, "记忆规则内容被加载");
-  assert.match(parts.harnessSection, /## 本项目指引 · workspace\/AGENTS\.md/, "含项目私有层指引");
+  assert.match(parts.harnessSection, /## 协议目录说明 · AGENTS\.md/, "协议目录说明常驻");
+  assert.match(parts.harnessSection, /## 说明文件索引/, "其他层只给说明文件索引");
+  assert.match(parts.harnessSection, /Agent × 项目 workspace：.*AGENTS\.md/, "索引列出 Agent × 项目的说明文件");
+  assert.doesNotMatch(parts.harnessSection, /## 任务类型 · development\//, "没有选中 Task 时不加载任何任务类型细则");
+  assert.doesNotMatch(parts.harnessSection, /## 记忆规则 · memory\.md/, "记忆规则已并入协议 §3.11，不再是单独文件");
   assert.equal(parts.harnessSection.startsWith("<lifeos_interaction_harness>"), false, "外层标签由 Pi 按 section 名自动包裹（协议正文内部提到该标签不算）");
-  assert.ok(parts.sources.length >= 6, `来源应≥6，实际 ${parts.sources.length}`);
+  assert.ok(parts.sources.length >= 3, `来源应≥3，实际 ${parts.sources.length}`);
   for (const source of parts.sources) assert.ok(source.startsWith(home), "来源必须真实存在于家目录");
 });
 

@@ -1,8 +1,8 @@
-// 项目（= 被某个 Agent 打开的目录）的私有绑定层（docs/architecture/agent.md §5.6）。
+// 项目（= 被某个 Agent 打开的目录）的私有绑定层（.lifeos/projects/lifeos/knowledge/architecture/agent.md §5.6）。
 //
 // 形态（2026-10-22 校正）：
 // - 项目是**全局实体**：`~/.lifeos/projects/<projectId>/project.json` 是共享身份；共享记忆与 specs 也在这里。
-// - 本文件只负责该 Agent 的**私有绑定**：`agents/<id>/projects/<pid>/project.json` + 会话/记录；
+// - 本文件只负责该 Agent 的**私有绑定**：`agents/<id>/projects/<pid>/`（只有会话、任务与 Agent × 项目的规范，协议 §5.3）；
 //   目录在就是绑定（"结构即事实"）。
 // - pid = 可读目录名（中文允许）；同 path 幂等复用；旧 uuid 目录读取时懒迁移。
 // - manifest 只落家目录，**不写进用户项目目录**（保持用户仓库干净）。
@@ -12,8 +12,9 @@ import { mkdir, readFile, readdir, rename, rmdir, stat, writeFile } from "node:f
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { sanitizeSegment } from "./segments.ts";
-import { ensureGlobalProject, type GlobalProject } from "./project-registry.ts";
-import { ensureProjectSkeleton } from "./project-skeleton.ts";
+import { ensureGlobalProject, readGlobalProject, type GlobalProject } from "./project-registry.ts";
+import { ensureAgentProjectLayer } from "./project-skeleton.ts";
+import { ensureDefaultTask } from "./tasks.ts";
 import { readAgent, writeAgent } from "./agents.ts";
 import { broadcast } from "./events.ts";
 
@@ -35,7 +36,6 @@ export async function uniqueSegment(agentId: string, base: string): Promise<stri
 export type ProjectError = { code: string; message: string; status: 400 | 404 };
 
 const agentProjectsRoot = (agentId: string) => join(resolveHome(), "agents", agentId, "projects");
-const manifestPath = (agentId: string, pid: string) => join(agentProjectsRoot(agentId), pid, "project.json");
 
 /** uuidv7：48 位时间戳 + version 7 + variant 10（与 Pi 的 createSessionId 同构）。 */
 export function uuidv7(): string {
@@ -61,48 +61,28 @@ const parseManifest = (raw: string): ProjectManifest | undefined => {
   } catch { return undefined; }
 };
 
-/** 读一个 Agent 私有绑定的 manifest（外部项目才有）。 */
+/** 读一个绑定的项目身份：来自共享层 `projects/<pid>/project.json`（协议 §5.3）；外部项目才有 path。 */
 export async function readProjectManifest(agentId: string, pid: string): Promise<ProjectManifest | undefined> {
-  return parseManifest(await readFile(manifestPath(agentId, pid), "utf8").catch(() => ""));
+  if (pid === "workspace") return undefined;
+  if (!(await stat(join(agentProjectsRoot(agentId), pid)).then((info) => info.isDirectory(), () => false))) return undefined;
+  const global = await readGlobalProject(pid);
+  if (global === undefined || global.path === undefined) return undefined;
+  return { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
 }
 
 /** 该 Agent 名下所有带 manifest 的项目（外部项目）；列表与"同 path 幂等"都用它。 */
 export async function readProjectManifests(agentId: string): Promise<Map<string, ProjectManifest>> {
   const out = new Map<string, ProjectManifest>();
-  const entries = await readdir(agentProjectsRoot(agentId), { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    if (UUID_RE.test(entry.name)) {
-      // 旧目录（uuid 名）→ 懒迁移成可读名；会话文件跟着目录一起搬
-      const migrated = await migrateUuidDir(agentId, entry.name);
-      if (migrated !== undefined) out.set(migrated.id, migrated);
-      continue;
-    }
-    const manifest = await readProjectManifest(agentId, entry.name);
+  for (const dir of await scanProjectDirs(agentId)) {
+    if (UUID_RE.test(dir)) continue;   // 旧 uuid 绑定目录不再自动迁移（历史数据搬迁另议）
+    const manifest = await readProjectManifest(agentId, dir);
     if (manifest !== undefined) {
-      await ensureProjectSkeleton(join(agentProjectsRoot(agentId), manifest.id), { name: manifest.name, path: manifest.path });
+      await ensureAgentProjectLayer(join(agentProjectsRoot(agentId), dir));
       const global = await ensureGlobalProject(manifest.path, manifest.id);
-      const bound = global.id === manifest.id && global.name === manifest.name
-        ? manifest
-        : await bindAgentProject(agentId, manifest.id, global);
-      out.set(bound.id, bound);
+      out.set(global.id === manifest.id ? manifest.id : dir, global.id === manifest.id ? manifest : { ...manifest, id: dir });
     }
   }
   return out;
-}
-
-/** 旧 uuid 目录 → 可读名（幂等；目录名与 manifest.id 一起改，legacyId 记住旧名字）。 */
-async function migrateUuidDir(agentId: string, dirName: string): Promise<ProjectManifest | undefined> {
-  const manifest = await readProjectManifest(agentId, dirName);
-  if (manifest === undefined) return undefined;
-  if (manifest.id !== dirName) return manifest;
-  const target = await uniqueSegment(agentId, sanitizeSegment(manifest.name));
-  const from = join(agentProjectsRoot(agentId), dirName);
-  const to = join(agentProjectsRoot(agentId), target);
-  await rename(from, to).catch(() => { /* 并发迁移/已搬走：按现状读取 */ });
-  const migrated: ProjectManifest = { ...manifest, id: target, legacyId: dirName };
-  await writeFile(join(to, "project.json"), JSON.stringify(migrated, null, 2) + "\n", { encoding: "utf8", mode: 0o600 }).catch(() => {});
-  return migrated;
 }
 
 /**
@@ -193,7 +173,7 @@ export async function registerProject(agentId: string, path: string): Promise<{ 
 
 /**
  * 把全局项目绑定到 Agent：目录名 = 全局 id（会话/记录/私有记忆都在这个目录下）。
- * 旧绑定目录名不同时顺便改名（会话文件跟着搬），然后把 project.json 更新成全局身份。
+ * 旧绑定目录名不同时顺便改名（会话文件跟着搬）。
  */
 async function bindAgentProject(agentId: string, localId: string | undefined, global: GlobalProject): Promise<ProjectManifest> {
   const targetDir = join(agentProjectsRoot(agentId), global.id);
@@ -202,11 +182,10 @@ async function bindAgentProject(agentId: string, localId: string | undefined, gl
     const targetExists = await stat(targetDir).catch(() => undefined);
     if (targetExists === undefined) await rename(sourceDir, targetDir).catch(() => { /* 并发/已搬走：按现状 */ });
   }
-  await mkdir(targetDir, { recursive: true, mode: 0o700 });
   if (global.path === undefined) throw new Error(`external project ${global.id} has no path`);
-  const project: ProjectManifest = { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
-  await writeFile(join(targetDir, "project.json"), JSON.stringify(project, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  // 项目骨架：AGENTS.md / concept-space.md / sessions / daily / cases / todo / specs（create-only）
-  await ensureProjectSkeleton(targetDir, { name: global.name, path: global.path });
-  return project;
+  // Agent × 项目层骨架（create-only，协议 §5.1）；身份只在共享层 project.json（协议 §5.3）
+  await ensureAgentProjectLayer(targetDir);
+  // 默认 Task：每个 Agent × 项目一个（协议 §6.1）
+  await ensureDefaultTask({ agentId, projectId: global.id });
+  return { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
 }

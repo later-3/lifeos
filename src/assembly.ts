@@ -11,6 +11,7 @@ import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest } from "./projects.ts";
+import { resolveTaskDir } from "./tasks.ts";
 
 export type ModelChoice = { defaultProvider: string; defaultModel: string; defaultThinkingLevel?: string };
 
@@ -87,12 +88,38 @@ export async function resolveModelChoice(agentId: string): Promise<{ choice: Mod
   return undefined;
 }
 
+/** 当前 Task 的类型规则：Agent × 项目 → 共享项目 → 协议默认，找到第一份（协议 §3.7）。 */
+async function resolveTypeRulesPath(agentId: string, projectId: string, type: string): Promise<string | undefined> {
+  const home = resolveHome();
+  const candidates = [
+    join(home, "agents", agentId, "projects", projectId, "task-types", type, "AGENTS.md"),
+    join(home, "projects", projectId, "task-types", type, "AGENTS.md"),
+    join(home, "interaction-harness", "task-types", type, "AGENTS.md"),
+  ];
+  for (const path of candidates) {
+    if (await readText(path) !== undefined) return path;
+  }
+  return undefined;
+}
+
+/** 一层的说明索引：只列「说明文件在哪、里面有什么」，不注入正文（协议 §9）。 */
+async function layerIndex(label: string, root: string): Promise<string[]> {
+  const hasNote = (await readText(join(root, "AGENTS.md"))) !== undefined;
+  if (!hasNote) return [];
+  const names = (await readdir(root, { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.name !== "AGENTS.md" && !entry.name.startsWith("."))
+    .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
+    .sort();
+  return [`- ${label}：${join(root, "AGENTS.md")}（有：${names.join("、") || "无"}）`];
+}
+
 /**
- * 两区装配（事实来源全部来自文件；不预先塞任何不存在的内容）：
- * - 交互 harness 区（customPrompt）：协议正文、本层指引、飞轮、概念索引、任务类型细则、
- *   规范层（共享 workspace → 当前项目 → Agent 私有 workspace → Agent × 项目 → Task）、当前项目指引；
- * - identity 区（appendSystemPrompt）：identity.md。
- * 返回 sources 供反查/将来"会话历史"展示真实来源。
+ * 装配（协议 §9）：
+ * - 常驻：协议正文、协议目录说明；
+ * - 规范：按 §4.3 顺序逐层追加（Agent × 项目 → 共享 workspace → 共享项目 → Agent × 项目 → Task），不覆盖、不扫描其他层；
+ * - 当前 Task：只加载指针指向的那一个的 `AGENTS.md`、`task.md` 与类型规则；
+ * - 其余层只给说明文件索引。
+ * identity.md 单独作为 customPrompt（Agent 本身）。
  */
 export type PromptParts = { customPrompt: string; harnessSection: string; sources: string[] };
 
@@ -100,8 +127,12 @@ export type PromptParts = { customPrompt: string; harnessSection: string; source
 export type PromptPartsSource = PromptParts | (() => Promise<PromptParts>);
 
 export async function buildPromptParts(agentId: string, projectId: string, taskId?: string): Promise<PromptParts> {
-  const harnessRoot = join(resolveHome(), "interaction-harness");
-  const projectDir = join(resolveHome(), "agents", agentId, "projects", projectId);
+  const home = resolveHome();
+  const harnessRoot = join(home, "interaction-harness");
+  const agentDir = join(home, "agents", agentId);
+  const projectDir = join(agentDir, "projects", projectId);
+  const sharedWorkspace = join(home, "projects", "workspace");
+  const sharedProject = join(home, "projects", projectId);
   const sections: string[] = [];
   const sources: string[] = [];
 
@@ -112,77 +143,70 @@ export async function buildPromptParts(agentId: string, projectId: string, taskI
     sections.push(`## ${title}\n\n${text.trim()}`);
   };
 
+  // 常驻：协议正文与协议目录说明
   await pushFile("协议正文 · protocol.md", join(harnessRoot, "protocol.md"));
-  await pushFile("本层指引 · AGENTS.md", join(harnessRoot, "AGENTS.md"));
-  await pushFile("飞轮 · flywheel.md", join(harnessRoot, "flywheel.md"));
-  await pushFile("概念空间元规则 · concept-space.md", join(harnessRoot, "concept-space.md"));
-  await pushFile("记忆规则 · memory.md", join(harnessRoot, "memory.md"));
-  for (const rel of ["concept-space/00-索引.md", "concept-space/harness/00-索引.md"]) {
-    await pushFile(`概念索引 · ${rel}`, join(harnessRoot, rel));
-  }
-  // 任务类型按目录加载（development / general …）：新增类型 = 加一个目录，不改装配代码
-  const taskTypesRoot = join(harnessRoot, "task-types");
-  const taskTypes = (await readdir(taskTypesRoot, { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => entry.name)
-    .sort();
-  for (const type of taskTypes) {
-    const dir = join(taskTypesRoot, type);
-    const files = (await readdir(dir).catch(() => [] as string[])).filter((name) => name.endsWith(".md")).sort();
-    for (const name of files) {
-      await pushFile(`任务类型 · ${type}/${name}`, join(dir, name));
-    }
-  }
-  // 规范层（协议 §16）：共享 workspace → 当前项目共享 → Agent 私有 workspace → Agent × 项目。
-  // 逐层追加，不做覆盖；索引只指向本层正文，不跨项目扫描。
+  await pushFile("协议目录说明 · AGENTS.md", join(harnessRoot, "AGENTS.md"));
+
+  // 规范：逐层追加，同一份正文只加载一次
   const specRoots: Array<{ label: string; root: string }> = [
-    { label: "共享 workspace", root: join(resolveHome(), "projects", "workspace", "specs") },
-    ...(projectId !== "workspace" ? [{ label: `项目 ${projectId}`, root: join(resolveHome(), "projects", projectId, "specs") }] : []),
-    { label: "Agent 私有 workspace", root: join(resolveHome(), "agents", agentId, "projects", "workspace", "specs") },
-    ...(projectId !== "workspace" ? [{ label: `Agent × 项目 ${projectId}`, root: join(projectDir, "specs") }] : []),
+    { label: "共享 workspace", root: join(sharedWorkspace, "specs") },
+    ...(projectId !== "workspace" ? [{ label: `共享项目 ${projectId}`, root: join(sharedProject, "specs") }] : []),
+    { label: `Agent × 项目 ${projectId}`, root: join(projectDir, "specs") },
   ];
+
+  // 当前 Task（协议 §7）：只加载指针指向的这一个
+  const ctx = { agentId, projectId };
+  const taskDir = taskId !== undefined && taskId !== "" ? await resolveTaskDir(ctx, taskId) : undefined;
+  let typeRules: string | undefined;
+  if (taskDir !== undefined) {
+    const taskMd = await readText(join(taskDir, "task.md"));
+    const type = taskMd?.split("\n").find((line) => line.startsWith("类型："))?.slice("类型：".length).trim() ?? "";
+    const taskLabel = basename(taskDir);
+    await pushFile(`当前 Task · ${taskLabel}/AGENTS.md`, join(taskDir, "AGENTS.md"));
+    await pushFile(`当前 Task · ${taskLabel}/task.md`, join(taskDir, "task.md"));
+    if (type !== "") {
+      typeRules = await resolveTypeRulesPath(agentId, projectId, type);
+      if (typeRules !== undefined) await pushFile(`任务类型规则 · ${type}/AGENTS.md`, typeRules);
+    }
+    specRoots.push({ label: `Task ${taskLabel}`, root: join(taskDir, "specs") });
+  }
+
   const seenSpecs = new Set<string>();
   for (const { label, root } of specRoots) {
     for (const path of await readSpecPaths(root)) {
-      if (seenSpecs.has(path)) continue; // 同一份正文只加载一次（workspace 的共享层与项目层同名时）
+      if (seenSpecs.has(path)) continue; // 同一份正文只加载一次
       seenSpecs.add(path);
       const topic = basename(resolve(path, ".."));
       await pushFile(`规范 · ${label} · ${topic}`, path);
     }
   }
 
-  // 当前 Task（协议 §16.4）：只有会话选定了 Task 才加载；task.md 是唯一状态源。
-  if (taskId !== undefined && taskId !== "" && basename(taskId) === taskId) {
-    const taskDir = join(projectDir, "tasks", taskId);
-    await pushFile(`当前 Task · ${taskId}/task.md`, join(taskDir, "task.md"));
-    for (const path of await readSpecPaths(join(taskDir, "specs"))) {
-      await pushFile(`规范 · Task ${taskId} · ${basename(path)}`, path);
-    }
-  }
-
-  await pushFile(`本项目指引 · ${projectId}/AGENTS.md（Agent 私有约定）`, join(projectDir, "AGENTS.md"));
-
-  // 项目仓库自己的规范：只读「项目目录本身」这一份（外部项目才有 manifest）。
-  // 不向上继承父目录——Pi 的上下文文件读取已在装配点关闭（noContextFiles）；
-  // 这里是我们自己的显式通道：读哪个文件、进哪个区、标题里写清楚，可反查。
+  // 项目仓库自己的规范：只读「项目目录本身」这一份（外部项目才有；不继承父目录）。
   const manifest = await readProjectManifest(agentId, projectId);
   if (manifest !== undefined) {
     await pushFile(`项目规范 · ${basename(manifest.path)}/AGENTS.md（项目目录，不继承父目录）`, join(manifest.path, "AGENTS.md"));
   }
 
-  // 区域内容（外层 <lifeos_interaction_harness> 标签由 Pi 按 section 名自动包裹，这里不写标签）
+  // 说明文件索引（只列在哪、有什么，不注入正文）
+  const index = [
+    ...(await layerIndex("Agent 本身", agentDir)),
+    ...(await layerIndex("共享 workspace", sharedWorkspace)),
+    ...(projectId !== "workspace" ? await layerIndex(`共享项目 ${projectId}`, sharedProject) : []),
+    ...(await layerIndex(`Agent × 项目 ${projectId}`, projectDir)),
+    ...(taskDir !== undefined ? await layerIndex(`当前 Task ${basename(taskDir)}`, taskDir) : []),
+  ];
+
   const harnessSection = [
     "以下是用户与该项目的交互 harness（协作规范与资料），本次会话必须遵守；需要完整资料时按索引读取。",
     "",
     sections.join("\n\n"),
     "",
-    "## 资料（按需读取，不常驻）",
-    `- 案例：${join(harnessRoot, "cases")}/（按日期分文件）`,
-    `- 每日记录 / 任务 / todo：${projectDir}/{daily,tasks,todo}`,
+    "## 说明文件索引（按需读取，不常驻）",
+    ...index,
   ].join("\n");
 
   // identity 占 preamble（Pi 默认“编码 agent”前言被身份取代）。
-  const identity = await readText(join(resolveHome(), "agents", agentId, "identity.md"));
+  const identity = await readText(join(agentDir, "identity.md"));
   const customPrompt = identity === undefined || identity.trim() === ""
     ? ""
     : `<lifeos_identity>\n${identity.trim()}\n</lifeos_identity>`;
