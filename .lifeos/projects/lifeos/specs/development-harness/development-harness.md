@@ -59,12 +59,68 @@
 - 家目录结构改动后运行 `pnpm home:check`：说明文件缺失、旧结构残留、Task 编号与类型不一致、开发类缺 `log.md`、默认 Task 不唯一等都会报错。
 - 安装测试与全流程模拟在 `test/home.test.mjs`、`test/protocol-flow.test.mjs`，改结构时要同步更新。
 
-## 7 运行环境约束（应该）
+## 7 并行开发与交付切换（Life OS 专属）
 
-**应该** 不要在**有真实网页会话运行**时 live-edit 服务端源码（`src/**`）：
+> 起因（2026-10-24）：Coder 在共享 worktree 上开发 Life OS，改前端导致用户页面白屏/语法错误，跑 build/test 触发重启——**开发实例与用户实例必须分开**。
 
-- 开发服务用 `node --watch` 启动，源码一改就重启子进程，**正在执行的那一轮会被静默杀死**（没有最终回复、没有错误条目，会话停在工具结果上）；
-- 真实使用/验收时，**应该** 用独立端口 + 独立 `LIFEOS_HOME` 的实例，或 `pnpm start`（构建产物）运行；
-- 一旦发生中断：先看 `logs/` 与 JSONL 尾条，用 `turns/last` 对账；**不要**把"没在跑"当"已完成"（见 turn-verdict 判定修复，2026-10-24 案例 C116）。
-- 依据：2026-10-24 会话 01a16bd9 被 `node --watch` 重启掐断（`evidence/2026-10-24-01-时间轴.md`、`03-进程与日志时间点.md`）。
-- **应该** 重装/替换家目录数据文件之前**先停后端**：旧进程会用内存中的陈旧叶 id 继续追加，写断会话 parent 链（消息从 branch 消失，见案例 C117）。顺序：停服务 → 备份 → 重装 → 起服务。
+### 7.1 两类实例（必须分离）
+
+| | 用户实例（你正在用的） | 开发实例（Coder 等） |
+|---|---|---|
+| 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 独立 worktree，如 `~/Code/lifeos-dev/<agentId>`（`git worktree add`） |
+| 数据 | `~/.lifeos` | 独立 `LIFEOS_HOME=~/.lifeos-dev/<agentId>` |
+| 后端 | 43120 | 43130（`--port`） |
+| 前端 | 5173，或主仓 `frontend/dist` | 5174（`VITE_DEV_API=http://127.0.0.1:43130 pnpm dev:web --port 5174`） |
+
+- **必须** 开发 Life OS 时使用独立实例；**禁止** 与用户实例共用 worktree、`LIFEOS_HOME`、端口。
+- **必须** 开发实例首次从模板安装独立家目录，不复制用户真实会话（避免写坏真实数据，见 C117）。
+- **应该** 把 worktree 路径、home、端口写进当前 Task 的 `log.md`，便于交接与排查。
+
+### 7.2 开发实例的启动与验证（应该）
+
+```bash
+# 1) 独立 worktree（一次）
+git worktree add ~/Code/lifeos-dev/<agentId> -b dev/<agentId>
+
+# 2) 独立家目录（一次）
+cd ~/Code/lifeos-dev/<agentId>
+LIFEOS_HOME=~/.lifeos-dev/<agentId> pnpm home:install
+
+# 3) 开发实例（两个进程；改源码只重启这一个）
+#    后端：pnpm 需要用 -- 透传端口（实测 pnpm run dev -- --port=43130 可用）
+LIFEOS_HOME=~/.lifeos-dev/<agentId> pnpm run dev -- --port=43130
+#    前端：vite 用 exec 传端口（实测可用）；它绑定 localhost，用 http://localhost:5174 访问
+VITE_DEV_API=http://127.0.0.1:43130 pnpm --dir frontend exec vite --port 5174
+```
+
+- **应该** 在开发实例里跑 `pnpm verify`、手测、截图对比；
+- **必须** 不在主 worktree 跑 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`。
+
+### 7.3 交付与切换（必须走流程）
+
+1. **必须** 开发实例验证通过（测试回执 + 手测证据）；
+2. **必须** 给出变更摘要 + 验证证据 + 预览地址（43130 / 5174）；
+3. **必须** 等用户确认；
+4. **必须** 再合并到主 worktree（merge / cherry-pick），不在主 worktree 里边改边跑；
+5. **应该** 在用户同意的时间窗重建并重启用户实例（43120）；
+6. **必须** 切换后复验（首页、会话、关键路径），失败按回滚方案退回；
+7. **必须** 把"改了什么、验证了什么、何时切换"记进 Task 的 `log.md`。
+
+### 7.4 禁止项（必须）
+
+- **禁止** 在用户实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；
+- **禁止** 在主 worktree 执行 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`；
+- **禁止** 重启或 kill 用户实例、修改用户 `~/.lifeos` 数据；
+- **禁止** 把"开发中"的状态当成"已交付"。
+
+### 7.5 例外（可以）
+
+- **可以** 在用户明确说"直接改当前实例"时按用户指示执行；**必须** 在 `log.md` 记录授权与影响范围。
+
+### 7.6 其它运行环境约束（沿用）
+
+- **应该** 不在有真实网页会话运行时 live-edit 服务端源码：`node --watch` 会重启子进程，静默杀死在跑的回合（案例 C116）。
+- **应该** 重装/替换家目录数据文件前先停后端：旧进程会用陈旧叶 id 追加，写断会话 parent 链（案例 C117）。顺序：停服务 → 备份 → 重装 → 起服务。
+- **应该** 中断后先看 `logs/` 与 JSONL 尾条，用 `turns/last` 对账；不要把"没在跑"当"已完成"。
+
+**依据**：C116（live-edit 杀回合）、C117（重装写断分支）、C118（Coder 共享 worktree 影响用户实例）。
