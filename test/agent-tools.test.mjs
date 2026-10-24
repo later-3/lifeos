@@ -275,3 +275,34 @@ test("lifeos_task_create：general 任务重新读取后 type 字段保留（lis
   const listed = await taskList.execute("h2", {});
   assert.match(listed.content[0].text, /^0002 · general\/G 普通任务 · 进行中 · 环境维护/m);
 });
+test("troubleshooting 类型：A/B/C 三类别合法；daily 在手动 createTask 被拒绝", async () => {
+  const home = await freshHome();
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const [, , taskCreate] = createAgentTools({ ...ctx, onEnterTask: () => undefined });
+
+  // troubleshooting 可以通过手动创建
+  const a = await taskCreate.execute("tA", { title: "定位一类问题", type: "troubleshooting", category: "A" });
+  assert.ok(!("code" in a), "A 类别合法");
+  const b = await taskCreate.execute("tB", { title: "修一个小 bug", type: "troubleshooting", category: "B" });
+  assert.ok(!("code" in b), "B 类别合法");
+  const c = await taskCreate.execute("tC", { title: "查到一个架构层问题", type: "troubleshooting", category: "C" });
+  assert.ok(!("code" in c), "C 类别合法");
+
+  // daily 类型仍然是系统保留
+  await assert.rejects(taskCreate.execute("tD", { title: "不受支持", type: "daily", category: "D" }), /daily 是系统保留/);
+});
+
+test("troubleshooting 类型：task.md 遵守区块内容正确", async () => {
+  const home = process.env.LIFEOS_HOME;
+  const { createTask } = await import("../src/tasks.ts");
+  // 在 workspace（没有 code specs 的项目）建 troubleshooting B：task.md 里不写 code specs 路径（不出现幻觉路径）
+  const res = await createTask({ agentId: "lifeosagent", projectId: "workspace" }, { title: "fix-bug", type: "troubleshooting", category: "B" });
+  if ("code" in res) { assert.fail(`troubleshooting B 合法`); }
+  const taskPath2 = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", res.task.dirName, "task.md");
+  const taskFile2 = await readFile(taskPath2, "utf8");
+  assert.match(taskFile2, /类型：troubleshooting/);
+  assert.match(taskFile2, /类别：B 直接修/);
+  assert.doesNotMatch(taskFile2, /specs\/code\/frontend\/code\.md/);  // workspace 没有 code specs，不列
+  const taskMd = taskFile2; // shared ref
+  assert.ok(taskFile2.includes("类型规则："), "有类型规则引用（troubleshooting 类型规则）");
+});

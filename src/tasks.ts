@@ -143,16 +143,15 @@ const PROJECT_RULES: Array<[string, string]> = [
   ["参考基线", "knowledge/reference-baseline.md"],
 ];
 
-async function codeSpecLines(home: string, pid: string): Promise<string[]> {
+async function codeSpecLines(home: string, pid: string, taskType?: string): Promise<string[]> {
+  // 涉及代码改动的类型才带 code specs；daily/general 不带（按任务类型过滤）
+  const codeTypes = new Set<string>(["development", "troubleshooting"]);
+  if (taskType !== undefined && !codeTypes.has(taskType)) return [];
   const projBase = join(home, "projects", pid);
-  const found: string[] = [];
   const files: string[] = [];
-  for (const [label, rel] of CODE_SPECS) {
-    const path = join(projBase, rel);
-    if (await stat(path).then(() => true, () => false)) {
-      files.push(rel);
-      continue;
-    }
+  for (const [, rel] of CODE_SPECS) {
+    const exists = await stat(join(projBase, rel)).then(() => true, () => false);
+    if (exists) files.push(rel);
   }
   if (files.length === 0) return [];
   return [`- 代码规范（按环节逐个对照）：${files.map((rel) => join(projBase, rel)).join(" · ")}`];
@@ -171,7 +170,7 @@ async function projectRuleLines(home: string, pid: string): Promise<string[]> {
   return [`- 本项目规范与流程（${labels}）：${paths}`];
 }
 
-async function referenceBlock(ctx: TaskContext, typeRulesDir: string): Promise<string[]> {
+async function referenceBlock(ctx: TaskContext, typeRulesDir: string, type: TaskType): Promise<string[]> {
   const home = resolveHome();
   const lines = [
     "## 本任务遵守",
@@ -179,7 +178,7 @@ async function referenceBlock(ctx: TaskContext, typeRulesDir: string): Promise<s
     `- 协议：${join(home, "interaction-harness", "protocol.md")}`,
     `- 类型规则：${join(typeRulesDir, "AGENTS.md")}`,
     `- 共享 workspace 规范：${join(home, "projects", "workspace", "specs")}/`,
-    ...(await codeSpecLines(home, ctx.projectId)),
+    ...(await codeSpecLines(home, ctx.projectId, type)),
     ...(await projectRuleLines(home, ctx.projectId)),  ];
   if (ctx.projectId !== "workspace") lines.push(`- 项目共享规范：${join(home, "projects", ctx.projectId, "specs")}/`);
   lines.push(`- Agent × 项目规范：${join(projectDir(ctx), "specs")}/`);
@@ -221,7 +220,7 @@ async function materialize(ctx: TaskContext, input: {
     `必需文档：${input.requiredDocs.join(" · ")}`,
     `当前指针：${input.pointer}`,
     "",
-    ...(await referenceBlock(ctx, input.typeRulesDir)),
+    ...(await referenceBlock(ctx, input.typeRulesDir, input.type)),
   ].join("\n");
   await writeFile(join(dir, "task.md"), taskMd, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
   for (const doc of input.docs) {
