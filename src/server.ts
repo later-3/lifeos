@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
-  projectIdOfSession, sessionExists, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
+  projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionTask, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
@@ -365,7 +365,17 @@ app.use(async (c, next) => {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const state = await getSession(agent.id, c.req.param("sessionId"), await cwdOfSession(agent, c.req.param("sessionId")));
     if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-    return c.json({ sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(agent.id, state) });
+    // 引用完整性（C117）：断裂的分支会让消息"消失"，必须显式报告而不是静默返回 0 条
+    const integrity = await sessionIntegrity(agent.id, c.req.param("sessionId"));
+    if (integrity !== undefined && integrity.orphanParents > 0) {
+      void log.warn("session", "integrity", "会话存在悬空 parentId（分支可能断裂）", {
+        agentId: agent.id, sessionId: c.req.param("sessionId"), details: { orphanParents: integrity.orphanParents },
+      });
+    }
+    return c.json({
+      sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(agent.id, state),
+      ...(integrity !== undefined ? { integrity } : {}),
+    });
   });
   // 对账端点（协议 P1·1.2）：内存账本（running/done/error）在，进程重启则兜底读 JSONL（done/lost）。
   app.get("/api/agents/:id/sessions/:sessionId/turns/last", async (c) => {

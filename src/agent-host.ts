@@ -333,6 +333,31 @@ export async function turnLastOf(agentId: string, sessionId: string): Promise<{ 
   return { turn: { sessionId, turnId: verdict.turnId, state: verdict.state, at: new Date().toISOString() } };
 }
 
+/** 引用完整性（2026-10-24 C117）：检查 parentId 指向的条目是否存在；断裂会让消息"消失"（branch 变短）。 */
+export async function sessionIntegrity(agentId: string, sessionId: string): Promise<{ orphanParents: number } | undefined> {
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return undefined;
+  const text = await readFile(found.path, "utf8").catch(() => "");
+  if (text.trim() === "") return { orphanParents: 0 };
+  const entries: Array<Record<string, unknown>> = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    try { entries.push(JSON.parse(trimmed) as Record<string, unknown>); } catch { /* 坏行跳过 */ }
+  }
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    const id = entry.id;
+    if (typeof id === "string" && id !== "") ids.add(id);
+  }
+  let orphanParents = 0;
+  for (const entry of entries) {
+    const parent = entry.parentId;
+    if (typeof parent === "string" && parent !== "" && !ids.has(parent)) orphanParents += 1;
+  }
+  return { orphanParents };
+}
+
 /** 会话是否实质存在（账本为空 + 磁盘没有文件 → 404 依据）。 */
 export async function sessionExists(agentId: string, sessionId: string): Promise<boolean> {
   if (stateOf(agentId).sessions.has(sessionId)) return true;

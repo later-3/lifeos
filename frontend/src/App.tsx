@@ -342,8 +342,12 @@ export default function App() {
 
   async function loadMessages(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
-      messages: Message[]; meta?: SessionMeta;
+      messages: Message[]; meta?: SessionMeta; integrity?: { orphanParents?: number };
     };
+    // 会话文件引用断裂（C117）：消息可能"消失"，明确告诉用户，不要静默
+    if ((data.integrity?.orphanParents ?? 0) > 0) {
+      toast(`会话文件存在断裂分支（${data.integrity?.orphanParents} 处），部分消息可能不显示；已记录日志`, "error");
+    }
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
