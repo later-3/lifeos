@@ -5,7 +5,7 @@ import { join, relative } from "node:path";
 
 export type HomeCheckReport = { errors: string[]; warnings: string[]; checked: number };
 
-const TASK_TYPES = new Set(["daily", "development", "general"]);
+const TASK_TYPES = new Set(["daily", "development", "general", "troubleshooting"]);
 const LEGACY_HARNESS = ["flywheel.md", "memory.md", "concept-space.md", "concept-space", "cases"];
 const DATE_FILE = /^\d{4}-\d{2}-\d{2}\.md$/;
 const TASK_DIR = /^(\d{4})-.+$/;

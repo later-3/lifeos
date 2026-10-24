@@ -1247,7 +1247,13 @@ export default function App() {
           <div className="min-w-0">
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
-              {[agent?.name, currentGroup?.project.name].filter((part) => part !== undefined && part !== "").join(" · ") || "选择或新建一个会话"}
+              {(() => {
+                // 项目名去重（2026-10-24 用户指出）：会话标题已经显示项目名时，meta 里不再重复
+                const parts = [agent?.name, currentGroup?.project.name]
+                  .filter((part): part is string => part !== undefined && part !== "")
+                  .filter((part, index) => index === 0 || part !== sessionTitle);
+                return parts.join(" · ") || "选择或新建一个会话";
+              })()}
               {headerModel != null && ` · ${headerModel.provider}/${headerModel.id}`}
               {meta?.activeTaskId != null && ` · Task ${meta.activeTaskId}`}
             </p>

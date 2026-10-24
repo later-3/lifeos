@@ -292,6 +292,16 @@ test("troubleshooting 类型：A/B/C 三类别合法；daily 在手动 createTas
   await assert.rejects(taskCreate.execute("tD", { title: "不受支持", type: "daily", category: "D" }), /daily 是系统保留/);
 });
 
+test("troubleshooting 自动带 evidence/（过程证据）与类型规则，不带 daily/", async () => {
+  const home = process.env.LIFEOS_HOME;
+  const { createTask } = await import("../src/tasks.ts");
+  const res = await createTask({ agentId: "lifeosagent", projectId: "workspace" }, { title: "证据目录", type: "troubleshooting", category: "B" });
+  assert.ok(!("code" in res));
+  const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", res.task.dirName);
+  assert.ok((await stat(join(dir, "evidence", "AGENTS.md"))).isFile(), "evidence/ 必须自动创建并带说明文件");
+  await assert.rejects(stat(join(dir, "daily")), undefined, "非日常类型不应有 daily/");
+});
+
 test("troubleshooting 类型：task.md 遵守区块内容正确", async () => {
   const home = process.env.LIFEOS_HOME;
   const { createTask } = await import("../src/tasks.ts");
