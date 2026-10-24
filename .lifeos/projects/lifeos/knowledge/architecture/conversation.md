@@ -288,6 +288,7 @@ useLayoutEffect(() => {
 - 对账端点：`GET /api/agents/:id/sessions/:sid/turns/last` → `{turn:{turnId,state,at}}` / `{turn:null}`（无回合不算错误）；
 - SSE 追加回合事件 `{type:"turn", turnId, state, at}`——事件名 = 事件类型（api 2.2）；与既有 `done/error` 共存，由前端归并；
 - 账本丢失（进程重启）→ 兜底读会话 JSONL 尾条：完整回合（user…assistant/stop)→ complete；仅 user 无收尾 → lost；把 `lost` 补判进账本后照常对账；
+- **兜底判定看终态而非存在性**（2026-10-24 修订）：取最后一条 assistant 的 `stopReason`——`stop/length/error` → 完成；`aborted` → 中断（lost）；`pending/toolUse/deferred` → 未完成（lost）；老条目无字段保守按完成。`turn-verdict.ts` 已按此实现（T11-T13）。
 - 设计来源：C113/C114（参考 LibreChat PR#14220 "活 job"校验与确认事件、piweb per-session 事实模型）。
 
 ## 14 SSE 投递语义与损失恢复
