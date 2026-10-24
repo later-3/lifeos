@@ -532,6 +532,42 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   await displayPage.close();
 }
 
+// Task 0002：task 段 =「0001 标题」（无 Task 前缀、无清中标题时只 ID）；thinking 段 = 档位本身（无"思考"二字）。
+// 用 mock 响应证明显示规则，不依赖真实会话恰好有 activeTaskId。
+{
+  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await displayPage.route(/\/api\/agents\/[^/]+\/config$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ config: null, effective: { defaultProvider: "test", defaultModel: "display-default" }, source: "catalog" }),
+  }));
+  await displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({
+      messages: [],
+      meta: {
+        model: { provider: "actual", id: "session-model" },
+        modelOverridden: true,
+        thinkingLevel: "high",
+        running: false,
+        context: null,
+        activeTaskId: "0007",
+      },
+    }),
+  }));
+  await displayPage.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/tasks$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ items: [{ id: "0007", title: "输入框优化", status: "进行中", type: "development", category: "A" }] }),
+  }));
+  await displayPage.goto(page.url(), { waitUntil: "networkidle" });
+  await displayPage.waitForTimeout(400);
+  const taskLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
+  check("task 段显示「0007 输入框优化」（无 Task 前缀）",
+    taskLine.includes("0007 输入框优化") && !taskLine.includes("Task "), taskLine);
+  check("thinking 段显示档位本身（无思考二字）",
+    taskLine.split(" · ").includes("high") && !taskLine.includes("思考"), taskLine);
+  await displayPage.close();
+}
+
 // 呈现底线：可见按钮必须有可访问名（文字 / aria-label / title 至少一个）。
 // 反例：只画一个图标、没有标签——人认不出、读屏认不出、自动化也认不出（"做了个按钮在那儿"）。
 const noName = () => page.evaluate(() => [...document.querySelectorAll("button")]

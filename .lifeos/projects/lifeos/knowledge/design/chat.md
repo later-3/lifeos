@@ -107,7 +107,7 @@
 | 列折叠 | 完全独立；收起进全局 44px 导航轨（常数与实现见 `specs/frontend-development/frontend-spec.md` §3） | 并列折叠仍保聊天宽度 |
 | 列拖宽 | 列间 1px 分隔线拖动 | 夹紧区间；宽度 localStorage；方向按把手位置 |
 | 左侧图标轨 | 常驻 44px（全局规则见 `specs/frontend-development/frontend-spec.md` §3），高亮 = 该列展开 | 不做 hover 自动展开；不做多列互斥 |
-| 主区头部 | 44px：标题 + `Agent · project · 当前模型 · Task` meta + 文件面板开关；没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；有 activeTaskId 时显示 `Task <id>`；无会话也显示有效默认 | 不放大徽标/计数；不为空白；Task id 可截断 |
+| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
 | 固定状态条 | 消息滚动区外、输入框上方；左边 4 步/阶段/耗时数字，右边 `⚡速度 · ↑输入 ↓输出 ◔上下文`（均有 tooltip） | 不随消息滚；不写“本轮”前缀；符号必须有 tooltip |
 | 输入框 | 单容器 composer（见 §3.5）；草稿按会话归属；Enter 发送/插话；输入法组字不发送 | 发送失败回填草稿；`submittingRef` 防重复 |
 | 消息区 | 阅读列居中；用户深色气泡，助手贴白底；思考/工具/成功/失败用不同 token 背景 | 禁 HTML 透传；思考/工具可折叠；每个块带 `data-message-kind` |

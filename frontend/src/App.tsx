@@ -26,6 +26,7 @@ import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { buildHeaderSegments, joinHeaderSegments } from "./header-strip";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -129,6 +130,8 @@ export default function App() {
   const [meta, setMeta] = useState<SessionMeta | undefined>();
   // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
+  // 头部状态条 task 段：activeTaskId → 任务标题（Task 0002）；缺失时按需拉一次清单（缺段只显示 ID）。
+  const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
@@ -871,6 +874,7 @@ export default function App() {
     if (response?.ok !== true) { toast("任务列表加载失败", "error"); return; }
     const data = await response.json() as { items?: TaskItem[] };
     const items = data.items ?? [];
+    if (items.length > 0) setTaskTitles((previous) => ({ ...previous, ...Object.fromEntries(items.map((task) => [task.id, task.title])) }));
     if (items.length === 0) { toast("这个项目还没有任务", "error"); return; }
     setPalette({ index: 0, items: items.map((task) => ({
       key: task.id,
@@ -1037,6 +1041,21 @@ export default function App() {
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
+
+  // 头部状态条 task 段：activeTaskId 有值而标题缺失时，按需拉一次任务清单（Task 0002；同 /task 调色板同一端点）。加载失败时该段回退为只显示 ID。
+  useEffect(() => {
+    const taskId = meta?.activeTaskId;
+    if (agent === undefined || taskId == null) return;
+    if (taskTitles[taskId] !== undefined) return;
+    const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+    let cancelled = false;
+    void fetch(`/api/agents/${agent.id}/projects/${pid}/tasks`)
+      .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
+      .then((data) => { if (!cancelled && data?.items !== undefined) setTaskTitles(Object.fromEntries(data.items.map((task) => [task.id, task.title]))); })
+      .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
+    return () => { cancelled = true; };
+  }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId]);
+
   const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
   const folded = box.folded;
@@ -1251,15 +1270,15 @@ export default function App() {
           <div className="min-w-0">
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
-              {(() => {
-                // 项目名去重（2026-10-24 用户指出）：会话标题已经显示项目名时，meta 里不再重复
-                const parts = [agent?.name, currentGroup?.project.name]
-                  .filter((part): part is string => part !== undefined && part !== "")
-                  .filter((part, index) => index === 0 || part !== sessionTitle);
-                return parts.join(" · ") || "选择或新建一个会话";
-              })()}
-              {headerModel != null && ` · ${headerModel.provider}/${headerModel.id}`}
-              {meta?.activeTaskId != null && ` · Task ${meta.activeTaskId}`}
+              {joinHeaderSegments(buildHeaderSegments({
+                agentName: agent?.name ?? "",
+                projectName: currentGroup?.project.name ?? "",
+                sessionTitle,
+                headerModel: headerModel ?? null,
+                thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : undefined,
+                activeTaskId: meta?.activeTaskId ?? undefined,
+                taskTitle: meta?.activeTaskId != null ? taskTitles[meta.activeTaskId] : undefined,
+              }))}
             </p>
           </div>
           <span className="ml-auto" />
