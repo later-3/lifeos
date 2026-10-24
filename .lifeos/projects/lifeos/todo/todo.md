@@ -16,3 +16,5 @@
 | 8 | 手机竖屏已按 `mobile.md` 适配；横屏宽度 ≥640 当前仍走桌面/平板布局，没有独立手机横屏/平板布局 | 手机横屏/平板适配 | 先定断点与表面模型，再扩展 `useIsMobile`/触控尺寸/布局；不要只改断点 |
 | 10 | Pi CLI/SDK 已有 `/fork`（从历史用户消息新建会话）、`/clone`（复制当前分支到新会话）、`/tree`（同会话文件内切换分支）、`--fork`、RPC `fork/clone/get_tree`、`SessionManager.getTree/createBranchedSession/forkFrom`；fork/clone 的 session header 有 `parentSession`，条目有 `id/parentId`。Life OS 的 `listSessions` 只读 session id/标题/时间，`SessionItem` 没有 parent；前端没有 fork/tree/clone 命令与任何关系展示。**8 个本地会话当前都没有 `parentSession`**（因为还没从 Web 建过 fork） | **Fork/clone/tree 的会话谱系与前端展示** | 先定产品语义：`/tree` 是同会话文件内分支，`/fork`/`/clone` 是新会话文件；再定列表展示（父会话 badge/缩进树/仅 header 链接）、fork 动作挂哪（历史用户消息/会话菜单）、新 fork 是否自动切换；后端解析 `parentSession` + 暴露 tree，前端只展示已确认关系；不要把 subagent 或群聊当成 fork |
 | 11 | Prompt 目前只按层级组装，组装后不能编辑 | **Prompt 编辑**：组装后修改/删除/新增 section/内容 | 先设计编辑边界、持久化与回滚，再实现；当前不做 |
+
+| 12 | 用户已讨论（2026-10-24）：像手机弹通知一样的网页通知功能 可顺手做，不要与呈现层强绑定——先在第一包落"运行事实 store"（run/未读/队列的唯一事实源），通知只是它的一个订阅者（Web Notification API + Permission + 可选 push） | 网页通知（Web Notification） | 等用户挖坑时再立 task；本条是待办登记 |

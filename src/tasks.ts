@@ -161,7 +161,7 @@ async function materialize(ctx: TaskContext, input: {
   for (const extra of input.extraDirs) {
     const sub = join(dir, extra);
     await mkdir(sub, { recursive: true, mode: 0o700 });
-    await writeFile(join(sub, "AGENTS.md"), await skeletonText(`dir-${extra}`), { encoding: "utf8", mode: 0o600, flag: "wx" })
+    await writeFile(join(sub, "AGENTS.md"), await skeletonText(extra), { encoding: "utf8", mode: 0o600, flag: "wx" })
       .catch(() => { /* 已存在：不覆盖 */ });
   }
   const taskMd = [

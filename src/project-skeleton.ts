@@ -17,24 +17,24 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
   await writeFile(path, content, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
 }
 
-/** 建目录并放上它的说明文件（AGENTS.md 来自 skeleton/dir-<name>.md）。 */
-async function dirWithNote(dir: string, note: string): Promise<void> {
+/** 建目录并放上它的说明文件（AGENTS.md 模板名 = 目录名，来自协议目录 skeleton/）。 */
+async function dirWithNote(dir: string, name: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText(note));
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText(name));
 }
 
 /** 各协作层共有的子结构（协议 §5.1）：概念、飞轮、规范、案例、知识、工具、待办、记忆、任务类型。 */
 async function commonLayer(dir: string, withMemory: boolean): Promise<void> {
   await writeIfMissing(join(dir, "concept-space.md"), await skeletonText("concept-space"));
   await writeIfMissing(join(dir, "flywheel.md"), await skeletonText("flywheel"));
-  await dirWithNote(join(dir, "specs"), "dir-specs");
+  await dirWithNote(join(dir, "specs"), "specs");
   await writeIfMissing(join(dir, "specs", "index.json"), JSON.stringify({ schemaVersion: 1, specs: [] }, null, 2) + "\n");
-  await dirWithNote(join(dir, "cases"), "dir-cases");
-  await dirWithNote(join(dir, "knowledge"), "dir-knowledge");
-  await dirWithNote(join(dir, "tools"), "dir-tools");
-  await dirWithNote(join(dir, "todo"), "dir-todo");
-  await dirWithNote(join(dir, "task-types"), "dir-task-types");
-  if (withMemory) await dirWithNote(join(dir, "memory"), "dir-memory");
+  await dirWithNote(join(dir, "cases"), "cases");
+  await dirWithNote(join(dir, "knowledge"), "knowledge");
+  await dirWithNote(join(dir, "tools"), "tools");
+  await dirWithNote(join(dir, "todo"), "todo");
+  await dirWithNote(join(dir, "task-types"), "task-types");
+  if (withMemory) await dirWithNote(join(dir, "memory"), "memory");
 }
 
 /** 共享层（共享 workspace 或共享项目，`projects/<pid>/`）：project.json 只在这一层（协议 §5.3）。 */
@@ -56,16 +56,16 @@ export async function ensureAgentProjectLayer(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-project"));
   await commonLayer(dir, true);
-  await dirWithNote(join(dir, "sessions"), "dir-sessions");
-  await dirWithNote(join(dir, "tasks"), "dir-tasks");
+  await dirWithNote(join(dir, "sessions"), "sessions");
+  await dirWithNote(join(dir, "tasks"), "tasks");
 }
 
 /** Agent 本身（`agents/<id>/`）：配置、身份、独有的工具与记忆；不设飞轮与案例。 */
 export async function ensureAgentLayer(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-agent"));
-  await dirWithNote(join(dir, "tools"), "dir-tools");
-  await dirWithNote(join(dir, "memory"), "dir-memory");
+  await dirWithNote(join(dir, "tools"), "tools");
+  await dirWithNote(join(dir, "memory"), "memory");
 }
 
 /** Task 的共同结构（协议 §5.1）；task.md 与日志（log.md / daily/）由 tasks.ts 按类型写。 */
@@ -74,10 +74,10 @@ export async function ensureTaskSkeleton(dir: string): Promise<void> {
   await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("task"));
   await writeIfMissing(join(dir, "concept-space.md"), await skeletonText("concept-space"));
   await writeIfMissing(join(dir, "flywheel.md"), await skeletonText("flywheel"));
-  await dirWithNote(join(dir, "specs"), "dir-specs");
+  await dirWithNote(join(dir, "specs"), "specs");
   await writeIfMissing(join(dir, "specs", "index.json"), JSON.stringify({ schemaVersion: 1, specs: [] }, null, 2) + "\n");
-  await dirWithNote(join(dir, "cases"), "dir-cases");
-  await dirWithNote(join(dir, "knowledge"), "dir-knowledge");
-  await dirWithNote(join(dir, "tools"), "dir-tools");
-  await dirWithNote(join(dir, "todo"), "dir-todo");
+  await dirWithNote(join(dir, "cases"), "cases");
+  await dirWithNote(join(dir, "knowledge"), "knowledge");
+  await dirWithNote(join(dir, "tools"), "tools");
+  await dirWithNote(join(dir, "todo"), "todo");
 }

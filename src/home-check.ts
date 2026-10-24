@@ -117,7 +117,7 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
     if (!await isFile(join(harness, "task-types", type, "template.json"))) errors.push(`协议默认任务类型缺少模板：task-types/${type}/template.json`);
     if (!await isFile(join(harness, "task-types", type, "AGENTS.md"))) errors.push(`协议默认任务类型缺少规则：task-types/${type}/AGENTS.md`);
   }
-  for (const name of ["layer-shared", "layer-agent", "layer-project", "task", "dir-specs", "concept-space", "flywheel"]) {
+  for (const name of ["layer-shared", "layer-agent", "layer-project", "task", "specs", "concept-space", "flywheel"]) {
     if (!await isFile(join(harness, "skeleton", `${name}.md`))) errors.push(`协议目录缺少骨架模板：skeleton/${name}.md`);
   }
   for (const legacy of LEGACY_HARNESS) {
