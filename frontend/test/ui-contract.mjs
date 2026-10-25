@@ -202,7 +202,9 @@ const ENTRY_URL = await (async () => {
     const res = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`);
     const body = await res.json();
     // 优先选有真实消息的非默认会话；默认欢迎会话可能没有 usage，状态条/截图契约会无数据。
-    const sid = body.items?.find((item) => item.isDefault !== true && item.messages > 0)?.sessionId
+    // 选消息数最多的非默认会话（有回复且带用量的概率最高；不依赖"最近更新"这种会变的顺序，2026-10-25 修复）
+    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && item.messages > 0)
+      .sort((a, b) => b.messages - a.messages)[0]?.sessionId
       ?? body.items?.[0]?.sessionId;
     return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
   } catch { return APP_URL; }
@@ -861,7 +863,24 @@ if (await historyButton.count() > 0) {
     };
   });
   check("回合树：回合 / 请求 / 回复 三层都在", tree.hasTurn && tree.hasRequest && tree.hasReply);
-  check("块头带 token 与占窗口比例", tree.hasToken && tree.hasWindow);
+  // 真实会话的最后一个回合可能是空回合（中断/未回复），不能假定它一定有 usage；
+  // 从后往前找一个"有回复且带 token/窗口"的回合再断言。
+  const usage = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
+    if (aside === undefined) return { ok: false, detail: "找不到历史列" };
+    const turns = [...aside.querySelectorAll("button")].filter((el) => /^回合 #\d/.test((el.textContent ?? "").trim()));
+    for (const turn of turns.slice().reverse()) {
+      turn.click();
+      await sleep(220);
+      const text = aside.textContent ?? "";
+      if (text.includes("回复") && /tok/.test(text) && text.includes("窗口")) {
+        return { ok: true, detail: (turn.textContent ?? "").trim().slice(0, 12) };
+      }
+    }
+    return { ok: false, detail: "所有回合都没有 usage 块头" };
+  });
+  check("块头带 token 与占窗口比例", usage.ok, String(usage.detail));
   check("历史列无横向溢出/裁切", tree.horizontalOverflow === false && tree.clipped === 0, `clipped=${tree.clipped}`);
 
   // 请求展开后必须能看到 system 分区（区域名 + 归属）。
@@ -1049,6 +1068,9 @@ async function capture(width, setup, clipTo) {
         const pad = 0;
         return await shotPage.screenshot({
           animations: "disabled", caret: "hide",
+          // clip 截图里也用**专用**遮罩：页面级 [data-shot-mask] 会把浮层一起盖住，不能复用
+          mask: [shotPage.locator("[data-shot-mask-clip]")],
+          maskColor: "#fafafa",
           clip: { x: Math.max(0, box.x - pad), y: Math.max(0, box.y - pad), width: Math.min(1600, box.width + pad * 2), height: box.height + pad * 2 },
         });
       })();
@@ -1071,6 +1093,13 @@ const SHOTS = [
     await shotPage.waitForTimeout(700);
   }],
   ["picker.png", 1600, async (shotPage) => {
+    // 选择器的目录列表是用户的文件系统（新增 state/、logs/ 等就会变高）：基线用固定的目录列表，只比对话框骨架。
+    await shotPage.route(/\/api\/fs\/browse\?/, async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        path: "/Users/xulater/.lifeos", parent: "/Users/xulater",
+        dirs: [".git", "agents", "config", "interaction-harness", "logs", "memory", "projects"],
+      }) });
+    });
     await shotPage.getByRole("button", { name: /添加项目/ }).first().click();
     await shotPage.waitForTimeout(800);
   }, '[role="dialog"]'],

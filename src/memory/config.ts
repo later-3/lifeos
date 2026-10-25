@@ -30,6 +30,72 @@ const DEFAULT_EMBEDDING = {
 
 const quote = (value: string): string => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * 展开 models.json 里 apiKey 的环境变量引用（$VAR / ${VAR}），与 Pi provider-composer 同语义。
+ * 为什么不能复用 Pi 的 resolveConfigValue：@earendil-works/pi-coding-agent 根包未导出该函数，
+ * 深路径导入被 Node exports map 拒绝；这里是最小等价实现。
+ * - 明文 key（不含 $）原样返回，向后兼容；
+ * - 遇 !command 形式显式报错（memory 链路不支持，不能静默把字面量发给上游）；
+ * - 引用的环境变量未设置 → 显式报错（响亮失败，不静默降级）。
+ */
+export function expandEnvValue(raw: string, what: string): string {
+  if (raw.startsWith("!")) {
+    throw new Error(`${what}：memory 链路不支持 !command 形式的密钥，请改用 \${ENV} 引用`);
+  }
+  let out = "";
+  let i = 0;
+  while (i < raw.length) {
+    const dollar = raw.indexOf("$", i);
+    if (dollar < 0) {
+      out += raw.slice(i);
+      break;
+    }
+    out += raw.slice(i, dollar);
+    const next = raw[dollar + 1];
+    if (next === "$") {
+      out += "$";
+      i = dollar + 2;
+      continue;
+    }
+    let name: string | undefined;
+    let end: number;
+    if (next === "{") {
+      const close = raw.indexOf("}", dollar + 2);
+      if (close < 0) {
+        out += "$";
+        i = dollar + 1;
+        continue;
+      }
+      const candidate = raw.slice(dollar + 2, close);
+      if (!ENV_NAME_RE.test(candidate)) {
+        out += raw.slice(dollar, close + 1);
+        i = close + 1;
+        continue;
+      }
+      name = candidate;
+      end = close + 1;
+    } else {
+      const match = raw.slice(dollar + 1).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      if (match === null) {
+        out += "$";
+        i = dollar + 1;
+        continue;
+      }
+      name = match[0];
+      end = dollar + 1 + name.length;
+    }
+    const value = process.env[name];
+    if (value === undefined) {
+      throw new Error(`${what}：环境变量 ${name} 未设置（无法解析密钥）`);
+    }
+    out += value;
+    i = end;
+  }
+  return out;
+}
+
 async function readJson<T>(path: string): Promise<T | undefined> {
   return readFile(path, "utf8").then((text) => JSON.parse(text) as T, () => undefined);
 }
@@ -49,8 +115,10 @@ async function resolveLlm(config: MemoryConfigFile): Promise<{ provider: string;
     if (provider === undefined || typeof provider.baseUrl !== "string" || provider.baseUrl === "") continue;
     const model = config.llm?.model ?? provider.models?.find((entry) => typeof entry.id === "string")?.id;
     if (typeof model !== "string" || model === "") continue;
-    const apiKey = typeof provider.apiKey === "string" ? provider.apiKey : "";
-    if (apiKey === "") continue;
+    const rawKey = typeof provider.apiKey === "string" ? provider.apiKey : "";
+    if (rawKey === "") continue;
+    // models.json 的 key 允许 ${ENV} 引用（models.json 可入库、真实 key 只在环境变量）；明文照原样通过
+    const apiKey = expandEnvValue(rawKey, `models.json provider "${id}" 的 apiKey`);
     return { provider: id, baseUrl: provider.baseUrl, apiKey, model };
   }
   return undefined;

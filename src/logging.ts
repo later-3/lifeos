@@ -3,7 +3,7 @@
 // - 字段（扁平）：{ ts, level, module, fn?, sessionId?, turnId?, agentId?, projectId?, msg, details? }；
 // - 正文/凭据零出现：用户消息正文在会话 JSONL，details 里的 key/token/password/cookie/auth 字段一律丢弃；
 // - debug 默认静默（info 起可读），环境变量 LIFEOS_LOG_DEBUG=1 打开 debug。
-import { appendFile, mkdir, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 
@@ -19,8 +19,18 @@ function backendFile(): string { return join(logsDir(), `backend-${localDate()}.
 function frontendFile(): string { return join(logsDir(), `frontend-${localDate()}.jsonl`); }
 
 /** 启动一次性：建目录 + 删除 14 天前的日志文件（按文件名日期）。 */
+const LOGS_NOTE = `# logs · 运行日志
+
+- 背景：后端与前端的结构化运行日志，程序按天写入，超过 14 天自动滚动删除。
+- 内容：backend-<日期>.jsonl、frontend-<日期>.jsonl；只含事实与 ID，不含正文与凭据。
+- 何时读：排障（按 sessionId / turnId 查一轮的完整过程）时。
+- 怎么用：不要手改；不入库（~/.lifeos/.gitignore 已排除）。
+`;
+
 export async function initLogs(): Promise<void> {
   await mkdir(logsDir(), { recursive: true, mode: 0o700 });
+  // 协议 §5.2：运行数据目录也有说明文件（由创建者补上，已存在不覆盖）
+  await writeFile(join(logsDir(), "AGENTS.md"), LOGS_NOTE, { flag: "wx", mode: 0o600 }).catch(() => undefined);
   const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
   for (const entry of await readdir(logsDir())) {
     const match = /(?:backend|frontend)-(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(entry);

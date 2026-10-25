@@ -8,9 +8,13 @@ import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
  */
 
 type Tone = "success" | "error";
-type Toast = { id: number; tone: Tone; text: string };
+/** 带动作的提示（如"后台会话已完成 · 查看"）：停留更久，动作按钮可点。 */
+export type ToastAction = { label: string; run: () => void };
+type Toast = { id: number; tone: Tone; text: string; action?: ToastAction };
 
-const ToastContext = createContext<(text: string, tone?: Tone) => void>(() => {});
+const ToastContext = createContext<(text: string, tone?: Tone, action?: ToastAction) => void>(() => {});
+const ACTION_TOAST_MS = 8000;
+const PLAIN_TOAST_MS = 2600;
 
 export function useToast() {
   return useContext(ToastContext);
@@ -20,10 +24,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Toast[]>([]);
   const seq = useRef(0);
 
-  const push = useCallback((text: string, tone: Tone = "success") => {
+  const push = useCallback((text: string, tone: Tone = "success", action?: ToastAction) => {
     const id = ++seq.current;
-    setItems((list) => [...list, { id, tone, text }]);
-    setTimeout(() => setItems((list) => list.filter((item) => item.id !== id)), 2600);
+    setItems((list) => [...list, { id, tone, text, ...(action !== undefined ? { action } : {}) }]);
+    setTimeout(() => setItems((list) => list.filter((item) => item.id !== id)), action !== undefined ? ACTION_TOAST_MS : PLAIN_TOAST_MS);
   }, []);
 
   const value = useMemo(() => push, [push]);
@@ -39,6 +43,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             }`}>
             {item.tone === "error" ? <IconAlertCircle size={16} /> : <IconCheck size={16} className="text-success" />}
             <span>{item.text}</span>
+            {item.action !== undefined && (
+              <button type="button" onClick={() => { item.action?.run(); setItems((list) => list.filter((entry) => entry.id !== item.id)); }}
+                className="pointer-events-auto ml-1 rounded-control px-1.5 py-0.5 text-accent hover:bg-accent-soft">
+                {item.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>

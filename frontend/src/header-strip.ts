@@ -4,6 +4,11 @@
 // 纯函数：frontend 2.7（可穷举测试）；测试 test/header-strip.test.mjs。
 export type HeaderSegment = { id: string; text: string };
 
+/** 任务标题缓存的键：**必须带 agent + project**，否则切 Agent 后同号 Task 会串标题（C120）。 */
+export function taskTitleKey(agentId: string, projectId: string, taskId: string): string {
+  return `${agentId}\u0000${projectId}\u0000${taskId}`;
+}
+
 export type HeaderStripInput = {
   agentName: string;
   projectName: string;

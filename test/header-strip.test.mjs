@@ -1,7 +1,7 @@
 // Task 0002 P1：header strip 分段容器纯函数——段顺序/可见性/去重/空态回退/拼装语义。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHeaderSegments, joinHeaderSegments } from "../frontend/src/header-strip.ts";
+import { buildHeaderSegments, joinHeaderSegments, taskTitleKey } from "../frontend/src/header-strip.ts";
 
 const base = {
   agentName: "coder",
@@ -54,4 +54,11 @@ test("可见性：无 model 时 model 段缺席，不产生悬空分隔符", () 
   const segments = buildHeaderSegments({ ...base, headerModel: null });
   assert.equal(segments.some((s) => s.id === "model"), false);
   assert.equal(joinHeaderSegments(segments), "coder · lifeos");
+});
+
+test("task 标题缓存键必须带 agent+project：同号 Task 不得串标题（C120）", () => {
+  const a = taskTitleKey("lifeosagent", "workspace", "0002");
+  const b = taskTitleKey("coder", "lifeos", "0002");
+  assert.notEqual(a, b);
+  assert.equal(taskTitleKey("coder", "lifeos", "0002"), b, "同作用域同号必须命中同一条");
 });

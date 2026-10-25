@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideRestoreModel } from "../src/model-follow.ts";
+import { decideRestoreModel, decideRestoreThinking } from "../src/model-follow.ts";
 
 const m = (provider, id) => ({ provider, id });
 
@@ -24,4 +24,14 @@ test("旧会话（早期逻辑打过 legacy 标记 → 视为未覆盖）：模�
 test("没有默认模型/没有存过：保持原样", () => {
   assert.equal(decideRestoreModel({ stored: undefined, agentDefault: m("p", "b"), overridden: false }), "keep");
   assert.equal(decideRestoreModel({ stored: m("p", "c"), agentDefault: undefined, overridden: false }), "keep");
+});
+
+test("思考级别：没 /thinking 覆盖过 → 跟随 Agent 默认（lifeosagent max 的会话不再停在 medium）", () => {
+  assert.equal(decideRestoreThinking({ stored: "medium", agentDefault: "max", overridden: false }), "follow");
+});
+
+test("思考级别：显式 /thinking 覆盖过 → 保留；相同 → 不动", () => {
+  assert.equal(decideRestoreThinking({ stored: "low", agentDefault: "max", overridden: true }), "keep");
+  assert.equal(decideRestoreThinking({ stored: "max", agentDefault: "max", overridden: false }), "keep");
+  assert.equal(decideRestoreThinking({ stored: undefined, agentDefault: "max", overridden: false }), "keep");
 });

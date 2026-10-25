@@ -15,12 +15,22 @@ export type RunFacts = {
   unread: Record<string, true | undefined>;
   /** 排队区（本期仅可见）：会话在跑时投递的 steer/followUp */
   queue: Record<string, QueueItem[] | undefined>;
+  /** 会话归属（任务 0008）：状态映射要用它做 Session → Project → Agent 的聚合 */
+  meta: Record<string, { agentId: string; projectId?: string | undefined } | undefined>;
 };
 
-export const emptyRunFacts = (): RunFacts => ({ snapRunning: [], lastTurn: {}, unread: {}, queue: {} });
+export const emptyRunFacts = (): RunFacts => ({ snapRunning: [], lastTurn: {}, unread: {}, queue: {}, meta: {} });
+
+/** 把事件/快照里带的归属写进 meta（只补全，不清空：归属一旦知道就一直有效）。 */
+function withMeta(meta: RunFacts["meta"], sessionId: string | undefined, agentId: string | undefined, projectId: string | undefined): RunFacts["meta"] {
+  if (sessionId === undefined || sessionId === "" || agentId === undefined || agentId === "") return meta;
+  const current = meta[sessionId];
+  if (current !== undefined && current.agentId === agentId && (projectId === undefined || current.projectId === projectId)) return meta;
+  return { ...meta, [sessionId]: { agentId, ...(projectId !== undefined ? { projectId } : current?.projectId !== undefined ? { projectId: current.projectId } : {}) } };
+}
 
 export type RunStreamEvent =
-  | { sessionId?: string; type: "turn"; turnId: string; state: TurnStateMini }
+  | { sessionId?: string; agentId?: string; projectId?: string; type: "turn"; turnId: string; state: TurnStateMini }
   | { type: "snapshot"; running: { sessionId: string }[] };
 
 /** 事件折叠（immutable）：turn / snapshot 两类；其他事件不产生运行事实。 */
@@ -34,11 +44,12 @@ export function applyRunEvent(facts: RunFacts, event: RunStreamEvent, now: numbe
     const lastTurn: Record<string, TurnFact | undefined> = { ...facts.lastTurn, [sid]: { turnId: event.turnId, state: event.state, at: now } };
     const unread: Record<string, true | undefined> = { ...facts.unread };
     if ((event.state === "done" || event.state === "error") && sid !== focusSessionId) unread[sid] = true;
+    const meta = withMeta(facts.meta, sid, event.agentId, event.projectId);
     if (event.state !== "running") {
       const queue: Record<string, QueueItem[] | undefined> = { ...facts.queue, [sid]: undefined };
-      return { ...facts, lastTurn, unread, queue };
+      return { ...facts, lastTurn, unread, queue, meta };
     }
-    return { ...facts, lastTurn, unread };
+    return { ...facts, lastTurn, unread, meta };
   }
   return facts;
 }
@@ -74,4 +85,46 @@ export function queueAdd(facts: RunFacts, sessionId: string, item: QueueItem): R
 export function queueClear(facts: RunFacts, sessionId: string): RunFacts {
   if (facts.queue[sessionId] === undefined) return facts;
   return { ...facts, queue: { ...facts.queue, [sessionId]: undefined } };
+}
+
+/** 服务端明确说某会话不在跑时，清掉残留的 running 事实（切回会话/后台回合结束后）。 */
+export function settleStopped(facts: RunFacts, sessionId: string | undefined, now: number): RunFacts {
+  if (sessionId === undefined || sessionId === "") return facts;
+  const previous = facts.lastTurn[sessionId];
+  if (previous === undefined || previous.state !== "running") return facts;
+  return { ...facts, lastTurn: { ...facts.lastTurn, [sessionId]: { ...previous, state: "done", at: now } } };
+}
+
+/**
+ * 快照（任务 0007）：服务端的运行集合与未读是真相，整体替换本地事实。
+ * 断线期间已经结束的回合，本地残留的 running 必须清掉（否则会永远显示"运行中"）。
+ */
+export function applySnapshotFacts(
+  facts: RunFacts,
+  snapshot: {
+    running: Array<{ sessionId: string; agentId?: string; projectId?: string }>;
+    unread: Array<{ sessionId: string; agentId?: string; projectId?: string }>;
+  },
+  now: number,
+): RunFacts {
+  let meta = facts.meta;
+  for (const entry of [...snapshot.running, ...snapshot.unread]) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+  const runningIds = [...new Set(snapshot.running.map((entry) => entry.sessionId))];
+  const lastTurn: Record<string, TurnFact | undefined> = { ...facts.lastTurn };
+  for (const [sessionId, fact] of Object.entries(lastTurn)) {
+    if (fact?.state === "running" && !runningIds.includes(sessionId)) lastTurn[sessionId] = { ...fact, state: "done", at: now };
+  }
+  const unread: Record<string, true | undefined> = {};
+  for (const entry of snapshot.unread) unread[entry.sessionId] = true;
+  return { ...facts, snapRunning: runningIds, lastTurn, unread, meta };
+}
+
+/** 批量写入会话归属（列表加载、事件携带时）：只补全，不清空。 */
+export function rememberMeta(
+  facts: RunFacts,
+  entries: Array<{ sessionId: string; agentId: string; projectId?: string | undefined }>,
+): RunFacts {
+  let meta = facts.meta;
+  for (const entry of entries) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+  return meta === facts.meta ? facts : { ...facts, meta };
 }

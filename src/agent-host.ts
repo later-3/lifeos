@@ -12,15 +12,16 @@ import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
 import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
-import { decideRestoreModel } from "./model-follow.ts";
+import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
 // 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
-import { broadcast, eventsSeq, publish, subscribeAgent, type AgentEvent } from "./events.ts";
-import { clearRunning, isRunning, markRunning, runningOf, type RunSnapshot } from "./session-runtime.ts";
+import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
+import { sessionViewsOf, sessionViewsReady } from "./session-views.ts";
+import { clearRunning, isRunning, markRunning, runningAll, runningOf, type RunSnapshot } from "./session-runtime.ts";
 import { randomBytes } from "node:crypto";
 import { readTurnVerdict, type TurnVerdict } from "./turn-verdict.ts";
-export { broadcast, subscribeAgent } from "./events.ts";
+export { broadcast } from "./events.ts";
 export type { AgentEvent } from "./events.ts";
 export type { RunSnapshot } from "./session-runtime.ts";
 
@@ -49,9 +50,22 @@ function stateOf(agentId: string): AgentState {
   return created;
 }
 
-/** 快照：当前序号 + 正在跑的会话（订阅时先给，保证不丢状态）。 */
-export function snapshotOf(agentId: string): { seq: number; running: RunSnapshot[] } {
-  return { seq: eventsSeq(agentId), running: runningOf(agentId) };
+/**
+ * 全局快照（任务 0007）：跨 Agent 的运行中会话（带当前 turnId）、服务端未读、最近回合账本。
+ * 必须与 subscribeBus 在同一个同步块里生成（HTTP 层保证），否则快照与缓冲会重复一条终态。
+ */
+export function globalSnapshot(): {
+  running: Array<RunSnapshot & { agentId: string; turnId?: string }>;
+  unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
+  turns: Array<TurnRecord & { agentId: string }>;
+} {
+  const running = runningAll().map((entry) => {
+    const record = turnLedger.get(`${entry.agentId}\u0000${entry.sessionId}`);
+    return record !== undefined && record.state === "running"
+      ? { ...entry, turnId: record.turnId }
+      : entry;
+  });
+  return { running, unread: sessionViewsOf().unread(), turns: turnSnapshotAll() };
 }
 
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
@@ -320,6 +334,29 @@ export function finishTurn(agentId: string, sessionId: string, turnId: string, s
   turnLedger.set(`${agentId}\u0000${sessionId}`, { sessionId, turnId, state, at: new Date().toISOString() });
 }
 
+/** 跨 Agent 的最近回合账本（全局快照用）：key 解析出 agentId。 */
+export function turnSnapshotAll(): Array<TurnRecord & { agentId: string }> {
+  const out: Array<TurnRecord & { agentId: string }> = [];
+  for (const [key, record] of turnLedger) {
+    const sep = key.indexOf("\u0000");
+    out.push({ agentId: key.slice(0, sep), ...record });
+  }
+  return out;
+}
+
+/**
+ * 回合结束的服务端事实（任务 0007 P2）：完成即记未读；若此刻有人正在看这个会话，同时记为已读。
+ * 被用户打断（aborted）的回合不算"完成"——pi-web 旧版同样不对打断的回合发完成通知（rpc-manager.ts:510）。
+ */
+function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined): void {
+  const at = new Date().toISOString();
+  if (!aborted) sessionViewsOf().markCompleted(agentId, sessionId, at, projectId);
+  if (isFocusedVisible(agentId, sessionId)) sessionViewsOf().markViewed(agentId, sessionId, at);
+}
+
+/** 用户主动打断的会话键（runTurn 结束时取走；不打断的回合不会留下记录）。 */
+const abortRequested = new Set<string>();
+
 /** 对账（server 端点用）：先内存账本，miss 再读会话 JSONL 尾条（重启兜底，T9）。 */
 export async function turnLastOf(agentId: string, sessionId: string): Promise<{ turn: TurnRecord | null }> {
   const record = turnLedger.get(`${agentId}\u0000${sessionId}`);
@@ -378,26 +415,32 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   const projectIdForLog = await projectIdOfSession(agentId, sessionId);
   const turnId = newTurnId();
   startTurn(agentId, sessionId, turnId);
-  publish(agentId, { sessionId, type: "turn", turnId, state: "running" });
+  publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "running" });
   void log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId, agentId, projectId: projectIdForLog });
-  markRunning(agentId, { sessionId, startedAt: new Date().toISOString() });
+  markRunning(agentId, { sessionId, projectId: projectIdForLog, startedAt: new Date().toISOString() });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
     if (mapped !== undefined) publish(agentId, { sessionId, ...mapped });
   });
+  const requestKey = `${agentId}\u0000${sessionId}`;
+  abortRequested.delete(requestKey);
   try {
     await target.session.prompt(text);
-    // 回合账本 done（turn 终态先到位，再发收尾事件）
+    const aborted = abortRequested.delete(requestKey);
+    // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
     finishTurn(agentId, sessionId, turnId, "done");
-    void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog });
-    publish(agentId, { sessionId, type: "turn", turnId, state: "done" });
-    publish(agentId, { sessionId, type: "done" });
+    recordCompletion(agentId, sessionId, aborted, projectIdForLog);
+    void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "done" });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
   } catch (error) {
+    abortRequested.delete(requestKey);
     const message = error instanceof Error ? error.message : String(error);
     finishTurn(agentId, sessionId, turnId, "error");
+    recordCompletion(agentId, sessionId, false, projectIdForLog);
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
-    publish(agentId, { sessionId, type: "turn", turnId, state: "error" });
-    publish(agentId, { sessionId, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown" });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown", turnId });
   } finally {
     unsubscribe();
     clearRunning(agentId, sessionId);
@@ -472,6 +515,8 @@ function sessionModelOf(manager: SessionManager): { provider: string; id: string
 
 /** 标记"用户显式换过模型"的 Pi 自定义条目（不参与模型上下文；只用于区分默认/覆盖）。 */
 const MODEL_OVERRIDE_ENTRY = "lifeos_model_override";
+/** 标记"用户显式换过思考级别"（`/thinking`）：没有它才跟随 Agent 默认（C120）。 */
+const THINKING_OVERRIDE_ENTRY = "lifeos_thinking_override";
 
 type SessionManagerLike = ReturnType<typeof SessionManager.create>;
 
@@ -486,6 +531,10 @@ function hasOverrideIn(manager: SessionManagerLike): boolean {
 
 function hasModelOverride(session: HostedSession): boolean {
   return hasOverrideIn(session.sessionManager);
+}
+
+function hasThinkingOverrideIn(manager: SessionManagerLike): boolean {
+  return manager.getBranch().some((entry) => entry.type === "custom" && entry.customType === THINKING_OVERRIDE_ENTRY);
 }
 
 /**
@@ -512,6 +561,28 @@ async function adoptAgentDefault(
       try { await session.setModel(target); } catch { /* 默认模型此刻不可用（缺 key 等）：保持原样，下次再试 */ }
     }
   }
+  // 思考级别同规则（C120）：没被 `/thinking` 覆盖过 → 跟随配置；覆盖过 → 保留。
+  const wantThinking = resolution?.choice.defaultThinkingLevel;
+  const thinkingDecision = decideRestoreThinking({
+    stored: session.thinkingLevel,
+    agentDefault: wantThinking,
+    overridden: hasThinkingOverrideIn(manager),
+  });
+  if (thinkingDecision === "follow" && wantThinking !== undefined) {
+    try { session.setThinkingLevel(wantThinking as ThinkingOption); } catch { /* 不支持该档位：保持原样 */ }
+  }
+}
+
+/** 把新的默认思考级别同步给"没被 `/thinking` 覆盖过、且不在跑"的会话；返回改了几个。 */
+export function applyAgentDefaultThinking(agentId: string, level: string): number {
+  let applied = 0;
+  for (const [sessionId, state] of stateOf(agentId).sessions) {
+    if (isRunning(agentId, sessionId)) continue;
+    if (hasThinkingOverrideIn(state.session.sessionManager)) continue;
+    if (state.session.thinkingLevel === level) continue;
+    try { state.session.setThinkingLevel(level as ThinkingOption); applied += 1; } catch { /* 不支持：跳过 */ }
+  }
+  return applied;
 }
 
 /** 把 Agent 的新默认模型同步给"没被 `/model` 覆盖过"的会话；返回实际改了几个。 */
@@ -539,6 +610,7 @@ export async function applyAgentDefaultModel(agentId: string, provider: string, 
 export async function abortSession(agentId: string, sessionId: string): Promise<boolean> {
   const state = stateOf(agentId).sessions.get(sessionId);
   if (state === undefined) return false;
+  abortRequested.add(`${agentId}\u0000${sessionId}`);
   await state.session.abort();
   return true;
 }
@@ -628,7 +700,20 @@ export function setSessionThinking(agentId: string, sessionId: string, level: Th
   const state = stateOf(agentId).sessions.get(sessionId);
   if (state === undefined) return { ok: false };
   state.session.setThinkingLevel(level);
+  state.session.sessionManager.appendCustomEntry(THINKING_OVERRIDE_ENTRY, { level, at: new Date().toISOString() });
   return { ok: true, level: state.session.thinkingLevel };
+}
+
+/** 每个家目录只清理一次孤儿未读（启动后第一次建立事件流前）。 */
+const viewsPruned = new Set<string>();
+export async function pruneSessionViewsOnce(): Promise<void> {
+  const home = resolveHome();
+  if (viewsPruned.has(home)) return;
+  viewsPruned.add(home);
+  await sessionViewsReady();
+  // 旧记录回填项目（状态映射的项目层需要），回填不到的再按孤儿清理
+  await sessionViewsOf().backfill((agentId, sessionId) => projectIdOfSession(agentId, sessionId)).catch(() => undefined);
+  await sessionViewsOf().prune((agentId, sessionId) => sessionExists(agentId, sessionId)).catch(() => undefined);
 }
 
 /** 删除会话：移除文件与内存态；正在运行的拒绝。 */
@@ -638,6 +723,7 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined && !state.sessions.has(sessionId)) return "not_found";
   if (found !== undefined) await rm(found.path, { force: true });
+  sessionViewsOf().forget(agentId, sessionId);   // 已删会话不得留下未读点
   state.sessions.delete(sessionId);
   state.pending.delete(sessionId);
   return "deleted";

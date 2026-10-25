@@ -130,7 +130,7 @@ pnpm home:install
 
 | 模式 | 什么时候用 | 命令 |
 |---|---|---|
-| **开发（debug）** | 你在改代码：后端改完自动重启、前端页面热更新 | `pnpm dev:all`（一条命令同时起前后端）<br>也可以分开：`pnpm dev`（后端）+ `pnpm dev:web`（前端） |
+| **开发（debug）** | 你在改代码：后端改完自动重启（会先等正在跑的回合结束，不会中途打断）、前端页面热更新 | `pnpm dev:all`（一条命令同时起前后端）<br>也可以分开：`pnpm dev`（后端）+ `pnpm dev:web`（前端） |
 | **使用 / 发布（release）** | 你只是想用它：构建一次，之后随时启动 | `pnpm build` → `pnpm start` |
 
 - 开发模式：浏览器打开前端地址（Vite 默认 `http://localhost:5173`），它会把 `/api` 代理到后端

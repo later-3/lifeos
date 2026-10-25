@@ -108,6 +108,14 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
   const counter = { n: 0 };
   if (!await isDir(home)) return { errors: [`家目录不存在：${home}`], warnings, checked: 0 };
 
+  // 运行数据目录（程序写入、不入库）同样要有说明文件（协议 §5.2）：存在才检查，不存在不报错。
+  for (const runtime of ["logs", "state"]) {
+    const dir = join(home, runtime);
+    if (!await isDir(dir)) continue;
+    counter.n += 1;
+    if (!await isFile(join(dir, "AGENTS.md"))) errors.push(`缺少说明文件 AGENTS.md：${runtime}/（运行数据目录）`);
+  }
+
   // 协议目录
   const harness = join(home, "interaction-harness");
   for (const file of ["protocol.md", "AGENTS.md"]) {

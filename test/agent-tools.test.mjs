@@ -1,6 +1,7 @@
 // Life OS 自有工具的离线测试（不经过模型）：直接调 execute，看它把 ~/.lifeos 建成什么样。
 // 依据：pi/packages/coding-agent/docs/extensions.md §Tools（throw = 失败结果；content + details 必填）。
 import { test } from "node:test";
+import { subscribeBus } from "../src/events.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, access, stat, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +10,6 @@ import { installHome } from "../src/home.ts";
 
 const rejects = async (promise, message) => { await promise.then(() => assert.fail(message), () => undefined); };
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "../src/agent-tools.ts";
-import { subscribeAgent } from "../src/agent-host.ts";
 
 async function freshHome() {
   const home = await mkdtemp(join(tmpdir(), "lifeos-tools-"));
@@ -204,7 +204,13 @@ test("lifeos_project_add / list / remove：绑定、幂等、移除后不再列�
   const home = await freshHome();
   // 闭环在写实现里广播（src/projects.ts）：这里订阅事件流来断言，而不是让工具自己 notify
   const events = [];
-  const unsubscribe = subscribeAgent("lifeosagent", 0, (event) => { if (event.type === "agents_changed") events.push(event); });
+  const bus = subscribeBus({
+    id: "agent-tools-test",
+    offer: (event) => { if (event.type === "agents_changed") events.push(event); return true; },
+    overflowed: () => undefined,
+  });
+  bus.ready();
+  const unsubscribe = () => bus.close();
   const tools = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
   const tool = (name) => tools.find((item) => item.name === name);
   const dir = await mkdtemp(join(tmpdir(), "lifeos-proj-"));

@@ -26,7 +26,7 @@ import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, joinHeaderSegments } from "./header-strip";
+import { buildHeaderSegments, joinHeaderSegments, taskTitleKey } from "./header-strip";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -34,6 +34,46 @@ import { buildHeaderSegments, joinHeaderSegments } from "./header-strip";
 type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type UsageSummary = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
+/**
+ * 状态标记（任务 0008，项目行与 Agent 行共用）：运行中 = 绿色呼吸点；未读 = 数量徽标（个数，>0 才显示）。
+ * 颜色与拍板语义一致：未读是绿色（不是蓝色——蓝色是交互态）。
+ */
+function StatusMarks({ status, unit }: { status: { running: boolean; unread: number } | undefined; unit: "会话" | "项目" }) {
+  if (status === undefined) return null;
+  return (
+    // 状态徽标是动态数据（随用户正常使用变化）：截图基线遮掉，只比骨架（testing 2.9）
+    <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
+      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" title="生成中" />}
+      {status.unread > 0 && (
+        // 数字语义（任务 0009）：Project 层 = 待查看的会话个数；Agent 层 = 待查看的 Project 个数
+        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-success-soft px-1.5 text-micro font-medium tabular-nums text-success"
+          aria-label={`${status.unread} 个${unit}待查看`} title={`${status.unread} 个${unit}待查看`}>
+          {status.unread}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
+const STREAM_EVENT_NAMES = [
+  "turn", "done", "error", "agents_changed",
+  "message_start", "message_end", "delta", "thinking", "thinking_end",
+  "tool_call", "tool_start", "tool_update", "tool_result", "retrying", "retry_end",
+] as const;
+
+/** 流陈旧阈值 = 服务端心跳间隔的 2.5 倍；看门狗检查间隔。 */
+const STREAM_STALE_MS = 25_000;
+const STREAM_WATCHDOG_MS = 5_000;
+
+/** 全局快照（连接即发）：connectionId 用于焦点上报；seq 是事件基线；running/unread 是服务端真相。 */
+type StreamSnapshot = {
+  connectionId: string;
+  seq: number;
+  running: Array<{ agentId: string; sessionId: string; turnId?: string; startedAt: string }>;
+  unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
+};
+
 type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
@@ -42,7 +82,7 @@ type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
 type TurnEventSegment = { type: "turn"; turnId: string; state: "running" | "done" | "error" };
-type AgentEvent = { seq: number; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" } | TurnEventSegment);
+type AgentEvent = { seq: number; agentId?: string; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" } | TurnEventSegment);
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
@@ -68,10 +108,14 @@ function timeAgo(iso: string): string {
 }
 
 /** 列头：40px，11px 小标签 + 收起钮（唯一收起入口）。列头只写"这一列是什么"，徽标留给行内数据。 */
-function ColumnHeader({ label, hint, onHide }: { label: string; hint?: string; onHide: () => void }) {
+function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
       <Label className="min-w-0 truncate">{label}</Label>
+      {/* 数据统计：列头里的总数（助手/项目/会话各自有多少个），安静地跟在标题后面 */}
+      {count !== undefined && (
+        <span aria-label={`${label} ${count} 个`} className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
+      )}
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-ink-500">· {hint}</span>}
       <span className="ml-auto" />
       <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
@@ -102,6 +146,8 @@ export default function App() {
   const composingRef = useRef(false);
   const lastCompositionEndRef = useRef(0);
   const busyRef = useRef(false);          // 供回调读的即时 busy（state 有渲染延迟）
+  /** busy 属于哪个会话：切会话/切 Agent 后旧 busy 不得拿去对账新会话（C120）。 */
+  const busySessionRef = useRef<string | undefined>(undefined);
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
   const lostCheckRef = useRef(false);    // 判丢检查互斥（异步查 running 时不要重入）
@@ -115,7 +161,6 @@ export default function App() {
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
-  const [streamSeq, setStreamSeq] = useState(0);
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
   const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
@@ -163,7 +208,13 @@ export default function App() {
   const ctx = useRef<{ agentId?: string }>({});
   const selectedProjectRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedProjectRef.current = selectedProjectId; }, [selectedProjectId]);
-  const snapshotSeq = useRef(0);
+  /** 全局事件流的基线序号（快照时取得）：不超过它的事件是快照之前的重放，丢弃。 */
+  const baselineRef = useRef(0);
+  /** 本连接的 id（PUT /api/events/focus 要带）；断线重连后由新快照更新。 */
+  const connectionRef = useRef<string | undefined>(undefined);
+
+  /** 当前活动回合的 turnId（C119）：终态必须匹配它，旧回合的 done 不得关闭新回合。 */
+  const activeTurnIdRef = useRef<string | null>(null);
   const streaming = useRef(false);
   const scrollRef = useRef<HTMLElement>(null);
   const followTail = useRef(true);
@@ -172,6 +223,13 @@ export default function App() {
 
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
   useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
+  // 焦点上报（任务 0007）：切会话/切 Agent/页面可见性变化 → 服务端据此路由细节流，并在可见时记已读
+  useEffect(() => { sendFocus(); }, [agent?.id, sessionId]);
+  useEffect(() => {
+    const onVisibility = () => sendFocus();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
   useEffect(() => { if (agent !== undefined) writeLast(LAST_AGENT, agent.id); }, [agent?.id]);
 
   // 输入草稿：按会话归属（切会话换草稿、刷新不丢）；发送时清空，失败回填。
@@ -363,6 +421,7 @@ export default function App() {
       turnMetricsPendingRef.current = false;
       setTurnMetrics({ output, ttftSeconds: ttft, tokPerSecond: output / seconds });
     }
+    return data;
   }
 
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
@@ -423,9 +482,33 @@ export default function App() {
     setTurnStatus(undefined);
     setActiveTool(undefined);
     setSessionId(sid);
+    current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
+    activeTurnIdRef.current = null;
+    busySessionRef.current = undefined;
+    busyRef.current = false;
     streaming.current = false;
     setBusy(false);
-    await loadMessages(a.id, sid);
+    const data = await loadMessages(a.id, sid);
+    // 切回来时这一轮可能还在跑：必须恢复生成态，否则下一条会被当成"新回合"（C120）
+    if (current.current === sid && data?.meta?.running === true) {
+      busyRef.current = true;
+      busySessionRef.current = sid;
+      setBusy(true);
+      setTurnStep(3);
+      lastEventAtRef.current = Date.now();
+      streaming.current = data.messages.length > 0 && data.messages[data.messages.length - 1]?.role === "assistant";
+    } else if (current.current === sid) {
+      setRunFacts((f) => settleStopped(f, sid, Date.now()));   // 服务端说不在跑：清掉可能残留的运行点
+      // 最近一轮若是被中断（lost）：状态条给出原因，而不是只剩一个"重新发送"按钮（任务 0006）
+      void fetch(`/api/agents/${a.id}/sessions/${sid}/turns/last`)
+        .then((response) => (response.ok ? response.json() as Promise<{ turn?: { state: string } | null }> : undefined))
+        .then((body) => {
+          if (current.current !== sid) return;
+          const notice = lostNoticeFor(body?.turn);
+          if (notice !== undefined) setTurnStatus(notice);
+        })
+        .catch(() => undefined);
+    }
     // 打开会话也要保证“有效默认”已加载：顶部在非覆盖分支显示它。
     void refreshAgentDefaultModel(a.id);
   }
@@ -433,8 +516,10 @@ export default function App() {
   async function selectAgent(a: Agent) {
     setAgent(a);
     ctx.current = { agentId: a.id };
-    setStreamSeq(0);
-    snapshotSeq.current = 0;
+    current.current = undefined;
+    activeTurnIdRef.current = null;
+    busySessionRef.current = undefined;
+    busyRef.current = false;
     streaming.current = false;
     setBusy(false);
     setSessionId(undefined);
@@ -445,6 +530,7 @@ export default function App() {
     setShowSessions(true);
     void refreshAgentDefaultModel(a.id);
     const next = await fetchGroups(a.id);
+    rememberGroups(a.id, next);
     setGroups(next);
     const remembered = readLast(lastSessionKey(a.id));
     const owner = next.find((group) => group.sessions.some((item) => item.sessionId === remembered));
@@ -472,142 +558,306 @@ export default function App() {
     const id = ctx.current.agentId;
     if (id === undefined) return undefined;
     const next = await fetchGroups(id);
+    rememberGroups(id, next);
     setGroups(next);
     return next;
   }
 
+  /** 记下列表里每个会话属于哪个 Agent（Agent 级注意点用）。 */
+  function rememberGroups(agentId: string, next: Group[]): void {
+    setRunFacts((f) => rememberMeta(f, next.flatMap((group) => group.sessions.map((item) => ({ sessionId: item.sessionId, agentId, projectId: group.project.id })))));
+  }
+
+  // —— 全局事件流（任务 0007）——
+  // 一条连接承载所有 Agent：回合级事件（turn/done/error/agents_changed）发给所有连接，细节事件只给焦点。
+  // 分流规则在 event-router.ts（纯函数，有测试）；这里只执行动作。
+  // 处理函数每次渲染都换新（读到最新的 agent/会话/列表），由 ref 转发——EventSource 全局只建一次。
+  const streamHandlers = useRef<{ snapshot: (snapshot: StreamSnapshot) => void; event: (payload: AgentEvent) => void } | undefined>(undefined);
+  streamHandlers.current = { snapshot: onStreamSnapshot, event: onStreamEvent };
+
   useEffect(() => {
-    const agentId = agent?.id;
-    if (agentId === undefined) return;
-    const stream = new EventSource(`/api/agents/${agentId}/events?since=${streamSeq}`);
-    logger.info("transport", "sse-open", { since: streamSeq });
-    stream.addEventListener("snapshot", (event) => {
-      logger.debug("transport", "sse-snapshot"); // debug 只本地，不上报
-      const snapshot = JSON.parse((event as MessageEvent).data) as { seq: number; running: { sessionId: string }[] };
-      setRunFacts((f) => applyRunEvent(f, { type: "snapshot", running: snapshot.running }, Date.now(), sessionId));
-      snapshotSeq.current = snapshot.seq;
-      setStreamSeq(snapshot.seq);
-      lastEventAtRef.current = Date.now();
-      const running = snapshot.running.some((run) => run.sessionId === current.current);
-      // 断线重连时快照说"不在跑"但 UI 还在生成态 → 说明那一轮已丢（后端重启等）→ 收尾并重载
-      if (!running && busyRef.current) void reconcileLostRun("运行已中断（连接恢复时该会话已不在运行）");
-      busyRef.current = running;
-      setBusy(running);
-    });
-    // 一条助手消息里的块是有序的（思考/文本/工具交替），全部交给 stream-blocks 的纯函数归并。
-    const onStream = (event: Event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as AgentEvent;
-      setStreamSeq(payload.seq);
-      if (payload.seq <= snapshotSeq.current) return;
-      if (payload.sessionId !== current.current) return;
-      if (payload.type === "done" || payload.type === "error" || payload.type === "agents_changed") return;
-      if (payload.type === "turn") {
-        setRunFacts((f) => applyRunEvent(f, payload, Date.now(), sessionId));
-        return;   // turn 事件只进运行事实，不进消息管道
-      }
-      lastEventAtRef.current = Date.now();
-      if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
-      const tailIsStreaming = streaming.current;
-      if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
-      const next = applyStreamEvent(streamRef.current, payload);
-      streamRef.current = next;
-      setPhase(next.phase);
-      setActiveTool(next.activeTool);
-      const blocks = blocksOfStream(next);
-      // 最终回答取最后一段 text；过程文本仍在 blocks 里可见，不把整轮块拼成一个答案。
-      const text = finalTextOfStream(next) || textOfBlocks(blocks);
-      busyRef.current = true;
-      setBusy(true);
-      streaming.current = true;
-      setMessages((list) => {
-        const last = list[list.length - 1];
-        if (!tailIsStreaming || last === undefined || last.role !== "assistant") {
-          return [...list, { role: "assistant", text, blocks, streaming: true }];
-        }
-        return [...list.slice(0, -1), { ...last, text, blocks, streaming: true }];
+    let stream: EventSource | undefined;
+    let lastSeen = Date.now();
+    // 建立（或重建）连接：每次都从新快照开始（服务端快照优先，C119/任务 0007）
+    const connect = () => {
+      stream?.close();
+      lastSeen = Date.now();
+      stream = new EventSource("/api/events");
+      logger.info("transport", "sse-open", {});
+      const touch = () => { lastSeen = Date.now(); };
+      stream.addEventListener("ping", touch);
+      stream.addEventListener("snapshot", (event) => {
+        touch();
+        logger.debug("transport", "sse-snapshot");   // debug 只本地，不上报
+        streamHandlers.current?.snapshot(JSON.parse((event as MessageEvent).data) as StreamSnapshot);
       });
-    };
-    for (const name of ["message_start", "message_end", "delta", "thinking", "thinking_end", "tool_call", "tool_start", "tool_update", "tool_result"] as const) stream.addEventListener(name, onStream);
-    // Pi 的自动重试：显示"失败原因 + 第几次/共几次"，结束后收起
-    stream.addEventListener("retrying", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; attempt: number; maxAttempts: number; delayMs: number; message: string };
-      if (payload.sessionId !== undefined && payload.sessionId !== current.current) return;
-      lastEventAtRef.current = Date.now();
-      setRetry({ attempt: payload.attempt, maxAttempts: payload.maxAttempts, delayMs: payload.delayMs, message: payload.message, startedAt: Date.now() });
-      busyRef.current = true;
-      setBusy(true);
-    });
-    stream.addEventListener("retry_end", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string };
-      if (payload.sessionId !== undefined && payload.sessionId !== current.current) return;
-      lastEventAtRef.current = Date.now();
-      setRetry(undefined);
-    });
-    const finish = (event: MessageEvent, outcome: "done" | "error" = "done") => {
-      const payload = JSON.parse(event.data) as AgentEvent;
-      setStreamSeq(payload.seq);
-      void reloadGroups();                                  // 别的会话结束也要更新列表的"运行中"点
-      if (payload.sessionId !== current.current) return;    // 不是当前会话 → 不动 busy（否则会提前结束生成态）
-      streaming.current = false;
-      busyRef.current = false;
-      setBusy(false);
-      setTurnStep(4);
-      setRetry(undefined);
-      const elapsed = Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
-      setTurnStatus({ text: `4/4 · ${outcome === "done" ? "完成" : "失败"} · ${elapsed}s` });
-      if (current.current !== undefined) void loadMessages(agentId, current.current);
-    };
-    stream.addEventListener("done", (event) => finish(event as MessageEvent));
-    // 运行边界错误（prompt 抛出）：按分类给出人能读懂的原因，再收尾
-    stream.addEventListener("error", (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as { sessionId?: string; message?: string; kind?: FailureKind };
-      if (payload.sessionId === undefined || payload.sessionId === current.current) {
-        toast(`${failureLabel(payload.kind)}${payload.message === undefined ? "" : ` · ${payload.message}`}`, "error");
+      for (const name of STREAM_EVENT_NAMES) {
+        stream.addEventListener(name, (event) => {
+          touch();
+          const data = (event as MessageEvent).data;
+          // 连接级 error（没有 data）不是服务端事件：交给看门狗与 EventSource 自身的重连
+          if (typeof data !== "string" || data === "") return;
+          streamHandlers.current?.event(JSON.parse(data) as AgentEvent);
+        });
       }
-      finish(event as MessageEvent, "error");
+    };
+    connect();
+    // 看门狗：经代理的断开可能不触发 error，EventSource 不会自己重连 → 陈旧就主动重建
+    const watchdog = setInterval(() => {
+      if (stream === undefined) return;
+      if (stream.readyState === EventSource.CLOSED || isStreamStale(lastSeen, Date.now(), STREAM_STALE_MS)) {
+        logger.warn("transport", "sse-stale", { readyState: stream.readyState });
+        connect();
+      }
+    }, STREAM_WATCHDOG_MS);
+    return () => {
+      clearInterval(watchdog);
+      stream?.close();
+    };
+  }, []);
+
+  /** 焦点上报的当前值（只读 ref，任何时候调用都是最新的）。 */
+  function currentFocus(): RouteFocus {
+    return { agentId: ctx.current.agentId, sessionId: current.current, visible: document.visibilityState === "visible" };
+  }
+
+  /** 把焦点告诉服务端（细节流路由 + 可见时记已读）。连接未建立时跳过，连接建立后快照里会再报一次。 */
+  function sendFocus(): void {
+    const connectionId = connectionRef.current;
+    if (connectionId === undefined) return;
+    const focus = currentFocus();
+    void fetch("/api/events/focus", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionId, agentId: focus.agentId, sessionId: focus.sessionId, visible: focus.visible }),
+    }).catch(() => undefined);
+  }
+
+  /** 快照（连接即发，之后只推快照之后的事件）：运行与未读以服务端为准；当前会话在跑则补齐消息。 */
+  function onStreamSnapshot(snapshot: StreamSnapshot): void {
+    connectionRef.current = snapshot.connectionId;
+    baselineRef.current = snapshot.seq;
+    setRunFacts((f) => applySnapshotFacts(f, { running: snapshot.running, unread: snapshot.unread }, Date.now()));
+    lastEventAtRef.current = Date.now();
+    const aid = ctx.current.agentId;
+    const cur = current.current;
+    const here = snapshot.running.find((entry) => entry.agentId === aid && entry.sessionId === cur);
+    // 断线重连时快照说"不在跑"但本会话 UI 还在生成态 → 只有 busy 属于当前会话才收尾（C120）
+    if (here === undefined && busyRef.current && busyBelongsTo(busySessionRef.current, cur)) {
+      void reconcileLostRun("运行已中断（连接恢复时该会话已不在运行）");
+    }
+    if (here !== undefined) {
+      activeTurnIdRef.current = here.turnId ?? null;
+      if (!busyRef.current && aid !== undefined && cur !== undefined) {
+        // 这一轮在后台跑着（或断线期间跑着）：补齐已生成的内容，之后的 delta 由焦点流接上
+        void loadMessages(aid, cur).then((data) => {
+          if (current.current === cur && data !== undefined) streaming.current = data.messages[data.messages.length - 1]?.role === "assistant";
+        });
+      }
+    }
+    busyRef.current = here !== undefined;
+    busySessionRef.current = here !== undefined ? cur : undefined;
+    setBusy(here !== undefined);
+    sendFocus();
+  }
+
+  /** 一条事件：路由为动作，逐个执行。 */
+  function onStreamEvent(payload: AgentEvent): void {
+    if (payload.agentId !== undefined && "sessionId" in payload && typeof payload.sessionId === "string") {
+      const sessionId = payload.sessionId;
+      const agentId = payload.agentId;
+      const projectId = "projectId" in payload && typeof payload.projectId === "string" ? payload.projectId : undefined;
+      setRunFacts((f) => rememberMeta(f, [{ sessionId, agentId, projectId }]));
+    }
+    for (const action of routeEvent(payload as unknown as RouteEvent, currentFocus(), baselineRef.current)) runStreamAction(action, payload);
+  }
+
+  function runStreamAction(action: RouteAction, payload: AgentEvent): void {
+    switch (action.kind) {
+      case "drop":
+        return;
+      case "run": {
+        setRunFacts((f) => applyRunEvent(f, payload as never, Date.now(), current.current));
+        if (payload.type === "turn" && "sessionId" in payload && payload.sessionId === current.current) applyFocusedTurn(payload);
+        return;
+      }
+      case "message":
+        if (payload.type === "done") return finishFocused(payload, "done");
+        if (payload.type === "error") return finishFocused(payload, "error");
+        if (payload.type === "retrying") return applyRetrying(payload);
+        if (payload.type === "retry_end") { lastEventAtRef.current = Date.now(); setRetry(undefined); return; }
+        applyStreamMessage(payload);
+        return;
+      case "refresh-groups":
+        if (action.agentId === ctx.current.agentId) void reloadGroups();   // 列表的运行点/未读点随之刷新
+        return;
+      case "completion": {
+        const sid = action.sessionId;
+        const agentName = agents.find((item) => item.id === action.agentId)?.name ?? "助手";
+        const known = groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sid)?.title;
+        const announce = (label: string) => toast(`${agentName} · ${label} ${action.outcome === "done" ? "已完成" : "失败"}`, action.outcome === "done" ? "success" : "error", {
+          label: "查看",
+          run: () => void openFromNotice(action.agentId, sid),
+        });
+        if (known !== undefined && known !== "") { announce(known.slice(0, 24)); return; }
+        // 后台 Agent 的列表没有加载：按需取该 Agent 的会话标题（取不到就用短 id，提示照常出现）
+        void fetch(`/api/agents/${action.agentId}/sessions`)
+          .then((response) => (response.ok ? response.json() as Promise<{ items: Array<{ sessionId: string; title?: string }> }> : undefined))
+          .then((body) => {
+            const title = body?.items.find((item) => item.sessionId === sid)?.title;
+            announce(title !== undefined && title !== "" ? title.slice(0, 24) : `会话 ${sid.slice(-6)}`);
+          })
+          .catch(() => announce(`会话 ${sid.slice(-6)}`));
+        return;
+      }
+      case "agents-changed":
+        void onAgentsChanged();
+        return;
+    }
+  }
+
+  /** 焦点会话的一轮开始/结束（回合级事件里属于当前会话的部分）。 */
+  function applyFocusedTurn(payload: AgentEvent): void {
+    if (payload.type !== "turn" || !("turnId" in payload)) return;
+    if (payload.state === "running") {
+      activeTurnIdRef.current = payload.turnId;
+      busyRef.current = true;
+      busySessionRef.current = current.current;
+      setBusy(true);
+    } else if (activeTurnIdRef.current === payload.turnId) activeTurnIdRef.current = null;
+  }
+
+  /** 细节事件（delta/thinking/tool_* …）：焦点会话的消息管道（一条助手消息里的块有序，交给 stream-blocks 归并）。 */
+  function applyStreamMessage(payload: AgentEvent): void {
+    lastEventAtRef.current = Date.now();
+    if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
+    const tailIsStreaming = streaming.current;
+    if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
+    const next = applyStreamEvent(streamRef.current, payload as never);
+    streamRef.current = next;
+    setPhase(next.phase);
+    setActiveTool(next.activeTool);
+    const blocks = blocksOfStream(next);
+    // 最终回答取最后一段 text；过程文本仍在 blocks 里可见，不把整轮块拼成一个答案。
+    const text = finalTextOfStream(next) || textOfBlocks(blocks);
+    busyRef.current = true;
+    busySessionRef.current = current.current;
+    setBusy(true);
+    streaming.current = true;
+    setMessages((list) => {
+      const last = list[list.length - 1];
+      if (!tailIsStreaming || last === undefined || last.role !== "assistant") {
+        return [...list, { role: "assistant", text, blocks, streaming: true }];
+      }
+      return [...list.slice(0, -1), { ...last, text, blocks, streaming: true }];
     });
-    // 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新
-    stream.addEventListener("agents_changed", () => {
-      void (async () => {
-        const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
-        setAgents(data.items);
-        if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
-          await selectAgent(data.items[0]);
+  }
+
+  /** Pi 的自动重试：显示"失败原因 + 第几次/共几次"。 */
+  function applyRetrying(payload: AgentEvent): void {
+    if (payload.type !== "retrying") return;
+    const data = payload as unknown as { attempt: number; maxAttempts: number; delayMs: number; message: string };
+    lastEventAtRef.current = Date.now();
+    setRetry({ attempt: data.attempt, maxAttempts: data.maxAttempts, delayMs: data.delayMs, message: data.message, startedAt: Date.now() });
+    busyRef.current = true;
+    busySessionRef.current = current.current;
+    setBusy(true);
+  }
+
+  /** 焦点会话的终态：收尾生成态、按需重载消息。非焦点的终态已由路由转成完成提示。 */
+  function finishFocused(payload: AgentEvent, outcome: "done" | "error"): void {
+    const turnId = "turnId" in payload ? payload.turnId : undefined;
+    if (isStaleTerminal(turnId, activeTurnIdRef.current)) return;
+    if (outcome === "error" && "message" in payload) {
+      const data = payload as unknown as { message?: string; kind?: FailureKind };
+      toast(`${failureLabel(data.kind)}${data.message === undefined ? "" : ` · ${data.message}`}`, "error");
+    }
+    activeTurnIdRef.current = null;
+    busySessionRef.current = undefined;
+    streaming.current = false;
+    busyRef.current = false;
+    setBusy(false);
+    setTurnStep(4);
+    setRetry(undefined);
+    const elapsed = Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
+    setTurnStatus({ text: `4/4 · ${outcome === "done" ? "完成" : "失败"} · ${elapsed}s` });
+    if (current.current !== undefined && ctx.current.agentId !== undefined) void loadMessages(ctx.current.agentId, current.current);
+  }
+
+  /** 从完成提示切过去：切 Agent（如需）→ 项目 → 会话。 */
+  async function openFromNotice(agentId: string, sessionId: string): Promise<void> {
+    const target = agents.find((item) => item.id === agentId);
+    if (target === undefined) return;
+    await selectAgent(target);
+    const next = await fetchGroups(agentId);
+    rememberGroups(agentId, next);
+    setGroups(next);
+    const owner = next.find((group) => group.sessions.some((item) => item.sessionId === sessionId));
+    if (owner !== undefined) setSelectedProjectId(owner.project.id);
+    await openSession(target, sessionId);
+  }
+
+  /** 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新。 */
+  async function onAgentsChanged(): Promise<void> {
+    const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
+    setAgents(data.items);
+    if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
+      await selectAgent(data.items[0]);
+    } else {
+      const next = await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
+      const pid = selectedProjectRef.current;
+      if (next !== undefined && pid !== undefined && !next.some((g) => g.project.id === pid)) {
+        // 当前项目被工具/别处移除：立即回退到默认/第一个项目，不把选中态留在已删除项目上
+        const fallback = next.find((g) => g.project.isDefault) ?? next[0];
+        if (fallback !== undefined && agent !== undefined) {
+          setSelectedProjectId(fallback.project.id);
+          const latest = pickLatest(fallback.sessions);
+          if (latest !== undefined) await openSession(agent, latest.sessionId);
+          else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
         } else {
-          const next = await reloadGroups();   // 项目/会话也可能变了（lifeos_project_* 工具的写操作走这条），不刷新=没闭环
-          const pid = selectedProjectRef.current;
-          if (next !== undefined && pid !== undefined && !next.some((g) => g.project.id === pid)) {
-            // 当前项目被工具/别处移除：立即回退到默认/第一个项目，不把选中态留在已删除项目上
-            const fallback = next.find((g) => g.project.isDefault) ?? next[0];
-            if (fallback !== undefined && agent !== undefined) {
-              setSelectedProjectId(fallback.project.id);
-              const latest = pickLatest(fallback.sessions);
-              if (latest !== undefined) await openSession(agent, latest.sessionId);
-              else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
-            } else {
-              setSelectedProjectId(undefined);
-              setSessionId(undefined);
-              setMessages([]);
-              setMeta(undefined);
-            }
-          } else if (next !== undefined && current.current !== undefined && !next.some((g) => g.sessions.some((s) => s.sessionId === current.current))) {
-            // 当前会话被工具/别处删除：回退到该项目最新会话，没有就清空
-            const group = next.find((g) => g.project.id === pid);
-            const latest = pickLatest(group?.sessions ?? []);
-            if (latest !== undefined && agent !== undefined) await openSession(agent, latest.sessionId);
-            else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
-          }
-          // 默认模型可能变了（配置保存）→ 无会话时刷新默认模型；有会话时刷新 meta
-          if (ctx.current.agentId !== undefined) {
-            void refreshAgentDefaultModel(ctx.current.agentId);
-            if (!busyRef.current && current.current !== undefined) void refreshMeta(ctx.current.agentId, current.current);
-          }
+          setSelectedProjectId(undefined);
+          setSessionId(undefined);
+          setMessages([]);
+          setMeta(undefined);
         }
+      } else if (next !== undefined && current.current !== undefined && !next.some((g) => g.sessions.some((s) => s.sessionId === current.current))) {
+        // 当前会话被工具/别处删除：回退到该项目最新会话，没有就清空
+        const group = next.find((g) => g.project.id === pid);
+        const latest = pickLatest(group?.sessions ?? []);
+        if (latest !== undefined && agent !== undefined) await openSession(agent, latest.sessionId);
+        else { setSessionId(undefined); setMessages([]); setMeta(undefined); }
+      }
+      // 默认模型可能变了（配置保存）→ 无会话时刷新默认模型；有会话时刷新 meta
+      if (ctx.current.agentId !== undefined) {
+        void refreshAgentDefaultModel(ctx.current.agentId);
+        if (!busyRef.current && current.current !== undefined) void refreshMeta(ctx.current.agentId, current.current);
+      }
+    }
+  }
+
+  // 页面唤醒 / 网络恢复时以后端为准对账（C119，对齐 pi-web 的 visibility/online reconcile）：
+  // 不依赖事件重放；只问"这一轮还在跑吗"，不在跑就交给 reconcileLostRun（完成/中断三分支）。
+  useEffect(() => {
+    const reconcileTransport = () => {
+      const aid = ctx.current.agentId;
+      const sid = busySessionRef.current;
+      if (aid === undefined || sid === undefined || !busyRef.current || sid !== current.current) return;
+      void (async () => {
+        try {
+          const data = await (await fetch(`/api/agents/${aid}/sessions/${sid}`)).json() as { meta?: { running?: boolean } };
+          if (data.meta?.running === true) return;
+          void reconcileLostRun("连接恢复：后端已不再运行这一轮", { agentId: aid, sessionId: sid });
+        } catch { /* 网络还没恢复：等下一次 */ }
       })();
-    });
-    return () => stream.close();
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") reconcileTransport(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", reconcileTransport);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", reconcileTransport);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent?.id, streamSeq === 0]);
+  }, [agent?.id, sessionId]);
 
   // 首屏：URL 三键 > 上次会话 > 上次 agent > 第一个 agent
   useEffect(() => {
@@ -770,9 +1020,10 @@ export default function App() {
       if (response?.status === 409 && (await response.json().catch(() => ({ }) as { error?: { code?: string } })).error?.code === "session_idle") {
         toast("会话已空闲：改为新回合发送", "success");     // 决策 b 的透明化：一次提示，随后走普通发送
         // 落入下方普通发送分支（busyRef 会被重置）
-        busyRef.current = false; setBusy(false);
+        busyRef.current = false; busySessionRef.current = undefined; setBusy(false);
       } else if (response?.ok === true) {
         setInput("");
+        busySessionRef.current = sid;
         setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }]);
         toast("已插话（steer，不影响当前轮继续）");
         if (sid !== undefined) setRunFacts((f) => queueAdd(f, sid, { behavior: "steer", text }));
@@ -781,6 +1032,7 @@ export default function App() {
     }
     if (submittingRef.current) return;
     submittingRef.current = true;
+    activeTurnIdRef.current = null;      // C119：新回合等 turn(running) 事件来认领 turnId
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
     streamRef.current = createStreamState();
     setPhase("waiting");
@@ -789,6 +1041,7 @@ export default function App() {
     setActiveTool(undefined);
     lastEventAtRef.current = Date.now();   // 发送即重置心跳：否则"页面静置>60s 后发送"会被误判成丢轮
     busyRef.current = true;
+    busySessionRef.current = sid;
     setBusy(true);
     streaming.current = true;
     followTail.current = true;
@@ -798,6 +1051,7 @@ export default function App() {
       setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
       setInput(text);                   // 失败回填草稿
       busyRef.current = false;
+      busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
       turnMetricsPendingRef.current = false;
@@ -874,7 +1128,10 @@ export default function App() {
     if (response?.ok !== true) { toast("任务列表加载失败", "error"); return; }
     const data = await response.json() as { items?: TaskItem[] };
     const items = data.items ?? [];
-    if (items.length > 0) setTaskTitles((previous) => ({ ...previous, ...Object.fromEntries(items.map((task) => [task.id, task.title])) }));
+    if (items.length > 0) {
+      const scope = { agentId: agent.id, projectId: pid };
+      setTaskTitles((previous) => ({ ...previous, ...Object.fromEntries(items.map((task) => [taskTitleKey(scope.agentId, scope.projectId, task.id), task.title])) }));
+    }
     if (items.length === 0) { toast("这个项目还没有任务", "error"); return; }
     setPalette({ index: 0, items: items.map((task) => ({
       key: task.id,
@@ -958,20 +1215,25 @@ export default function App() {
   }
 
   /** 恢复三分支（协议 FR-13）：先对账(1.2 端点/JSONL 兜底)再定文案 —— 已完成 / 中断(带重发) / 不可知·按丢失处理 */
-  async function reconcileLostRun(fallbackReason: string) {
-    const aid = agent?.id; const sid = sessionId;
-    if (aid !== undefined && sid !== undefined && !busyRef.current) return;
+  async function reconcileLostRun(fallbackReason: string, target?: { agentId: string; sessionId: string }) {
+    const aid = target?.agentId ?? agent?.id; const sid = target?.sessionId ?? sessionId;
+    if (!busyRef.current) return;
     if (aid === undefined || sid === undefined) { recoverLostRun(fallbackReason); return; }
+    // C120：只对账 busy 所属、且仍是当前会话的那一轮；切走之后晚到的对账不得改新会话
+    if (busySessionRef.current !== sid || sid !== current.current) return;
+    logger.warn("run", "reconcile-lost", { reason: fallbackReason, sessionId: sid, turnId: activeTurnIdRef.current ?? undefined });
     try {
       const data = await (await fetch(`/api/agents/${aid}/sessions/${sid}/turns/last`)).json() as { turn?: { state: string } | null };
+      if (sid !== current.current) return;   // 等响应期间已切走：不得改新会话（C120）
       const state = data.turn?.state;
       if (state === "done") {
         // 分支1：已完成（响应在下方）—— 不再是"错误"提示
-        busyRef.current = false; streaming.current = false; setBusy(false);
+        busyRef.current = false; busySessionRef.current = undefined; streaming.current = false; setBusy(false);
+        activeTurnIdRef.current = null;
         setTurnStep(4); setRetry(undefined);
         setTurnStatus({ text: "本轮已完成：连接恢复时对账成功，结果在下方" });
         toast("本轮已完成：连接恢复时对账成功，结果在下方", "success");
-        if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
+        void loadMessages(aid, sid);
         return;
       }
       if (state === "running") {
@@ -979,23 +1241,29 @@ export default function App() {
         lastEventAtRef.current = Date.now();
         return;
       }
-      recoverLostRun("受理之后中断：后端已不再运行这一轮（带重发）");   // 分支2：lost/无回合
+      recoverLostRun("受理之后中断：后端已不再运行这一轮（带重发）", { agentId: aid, sessionId: sid });   // 分支2：lost/无回合
     } catch {
-      recoverLostRun(fallbackReason);   // 端点不可达：退回旧文案（保守）
+      recoverLostRun(fallbackReason, { agentId: aid, sessionId: sid });   // 端点不可达：退回旧文案（保守）
     }
   }
 
   /** 运行"跑丢了"（后端重启 / 断线）：清生成态、重载消息，尾部空回复处会给重试。 */
-  function recoverLostRun(reason: string) {
+  function recoverLostRun(reason: string, target?: { agentId: string; sessionId: string }) {
+    const aid = target?.agentId ?? agent?.id;
+    const sid = target?.sessionId ?? sessionId;
     if (!busyRef.current) return;
+    if (sid !== undefined && busySessionRef.current !== sid) return;   // 不收拾别人的回合
+    logger.warn("run", "recover-lost", { reason, sessionId: sid });
+    activeTurnIdRef.current = null;
     busyRef.current = false;
+    busySessionRef.current = undefined;
     streaming.current = false;
     setBusy(false);
     setTurnStep(4);
     setRetry(undefined);
     setTurnStatus({ text: reason });
     toast(reason, "error");
-    if (agent !== undefined && current.current !== undefined) void loadMessages(agent.id, current.current);
+    if (aid !== undefined && sid !== undefined && sid === current.current) void loadMessages(aid, sid);
   }
 
   // Esc 打断（不在输入法组字、没有对话框打开时）；生成中每 5s 检查一次心跳
@@ -1013,15 +1281,15 @@ export default function App() {
       if (Date.now() - lastEventAtRef.current <= 60_000) return;
       // 判丢前先问后端"这一轮还在跑吗"：模型很慢/无流式时，60 秒没有事件不等于丢了
       const agentId = ctx.current.agentId;
-      const sid = current.current;
-      if (agentId === undefined || sid === undefined) return;
+      const sid = busySessionRef.current;
+      if (agentId === undefined || sid === undefined || sid !== current.current) return;
       lostCheckRef.current = true;
       void (async () => {
         try {
           const response = await fetch(`/api/agents/${agentId}/sessions/${sid}`);
           const data = await response.json() as { meta?: { running?: boolean } };
           if (data.meta?.running === true) { lastEventAtRef.current = Date.now(); return; }   // 还活着：再给一个窗口
-          void reconcileLostRun("受理之后中断：后端已不再运行这一轮（进程重启或连接断开）");
+          void reconcileLostRun("受理之后中断：后端已不再运行这一轮（进程重启或连接断开）", { agentId, sessionId: sid });
         } catch {
           lastEventAtRef.current = Date.now();   // 连后端都查不到：先不判丢，等下一个窗口
         } finally {
@@ -1045,16 +1313,24 @@ export default function App() {
   // 头部状态条 task 段：activeTaskId 有值而标题缺失时，按需拉一次任务清单（Task 0002；同 /task 调色板同一端点）。加载失败时该段回退为只显示 ID。
   useEffect(() => {
     const taskId = meta?.activeTaskId;
-    if (agent === undefined || taskId == null) return;
-    if (taskTitles[taskId] !== undefined) return;
+    const aid = agent?.id;
+    if (aid === undefined || taskId == null) return;
     const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+    const key = taskTitleKey(aid, pid, taskId);
+    if (taskTitles[key] !== undefined) return;
     let cancelled = false;
-    void fetch(`/api/agents/${agent.id}/projects/${pid}/tasks`)
+    void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
-      .then((data) => { if (!cancelled && data?.items !== undefined) setTaskTitles(Object.fromEntries(data.items.map((task) => [task.id, task.title]))); })
+      .then((data) => {
+        if (cancelled || data?.items === undefined) return;
+        setTaskTitles((previous) => ({
+          ...previous,
+          ...Object.fromEntries(data.items!.map((task) => [taskTitleKey(aid, pid, task.id), task.title])),
+        }));
+      })
       .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
     return () => { cancelled = true; };
-  }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId]);
+  }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId, taskTitles]);
 
   const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
@@ -1075,12 +1351,20 @@ export default function App() {
     { key: "sessions", label: "会话", active: showSessions, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("sessions") },
   ];
 
+  /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
+  // 状态映射（任务 0008）：会话 → 项目 → Agent 的运行与未读全部由同一份会话事实派生
+  const statusFacts: StatusFacts = {
+    sessions: runFacts.meta,
+    running: [...new Set([...runFacts.snapRunning, ...Object.keys(runFacts.lastTurn).filter((sid) => runFacts.lastTurn[sid]?.state === "running")])],
+    unread: Object.keys(runFacts.unread).filter((sid) => runFacts.unread[sid] === true),
+  };
+  const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
     <>
       {!folded.nav && (
         <>
           <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
-            <ColumnHeader label="助手" onHide={() => setShowNav(false)} />
+            <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
@@ -1091,6 +1375,7 @@ export default function App() {
                     <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
                   </button>
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                  <StatusMarks status={derived.agents[item.id]} unit="项目" />
                   <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
                     <IconButton label="删除助手" size="sm"
                       onClick={(event) => {
@@ -1118,7 +1403,7 @@ export default function App() {
       {!folded.projects && (
         <>
           <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken">
-            <ColumnHeader label="项目" onHide={() => setShowProjects(false)} />
+            <ColumnHeader label="项目" count={groups.length} onHide={() => setShowProjects(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="project-rows">
               {!loaded && <Skeleton rows={2} />}
@@ -1128,9 +1413,9 @@ export default function App() {
                   onClick={() => void selectProject(group.project)}>
                   {/* 行里只写名称：默认项目不标注（圆点会被误读成"运行中"，与状态点语义冲突） */}
                   <span className="min-w-0 flex-1 truncate">{group.project.name}</span>
-                  {/* 固定槽位：计数常显，操作图标原地显隐 → hover 不位移 */}
+                  <StatusMarks status={derived.projects[projectKey(agent?.id ?? "", group.project.id)]} unit="会话" />
+                  {/* 行右侧只表达"待查看"（绿点 / 数字）：会话总数在列头统计里，不在这里重复（同一位置两种含义会混淆）。操作图标原地显隐 → hover 不位移 */}
                   <span className="relative flex w-11 shrink-0 items-center justify-end">
-                    <span className="text-micro tabular-nums text-ink-500 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">{group.sessions.length}</span>
                     {group.project.path !== undefined && (
                       <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                         <IconButton label="从该助手移除项目" size="sm"
@@ -1168,6 +1453,7 @@ export default function App() {
             {/* 第3列列头：项目列可见时写"会话"（避免与相邻行重复）；项目列收起时才写项目名（补回上下文） */}
             <ColumnHeader label={folded.projects ? currentGroup?.project.name ?? "会话" : "会话"}
               hint={folded.projects ? "会话" : undefined}
+              count={currentGroup?.sessions.length}
               onHide={() => setShowSessions(false)} />
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2" data-shot-mask="session-rows">
               {currentGroup === undefined && <EmptyState title="先选择项目" />}
@@ -1193,9 +1479,9 @@ export default function App() {
                     <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
                   )}
                   <span className="relative flex w-24 shrink-0 items-center justify-end">
-                    {(() => { const runNow = item.running || isRunning(runFacts, item.sessionId); const unread = hasUnread(runFacts, item.sessionId);
+                    {(() => { const own = derived.sessions[item.sessionId]; const runNow = item.running || own?.running === true || isRunning(runFacts, item.sessionId); const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
                       if (runNow) return <span className={`h-1.5 w-1.5 rounded-full bg-success animate-pulse`} title="生成中" />;
-                      if (unread) return <span className="h-1.5 w-1.5 rounded-full bg-accent" title="完成未读" />;
+                      if (unread) return <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />;
                       return <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>;
                     })()}
                     <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
@@ -1267,7 +1553,8 @@ export default function App() {
           ) : (
             <IconButton label="打开导航" onClick={() => openMobileNav("agents")}><IconMenu2 size={18} /></IconButton>
           ))}
-          <div className="min-w-0">
+          {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
+          <div className="min-w-0" data-shot-mask="header-data">
             <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
@@ -1277,7 +1564,9 @@ export default function App() {
                 headerModel: headerModel ?? null,
                 thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : undefined,
                 activeTaskId: meta?.activeTaskId ?? undefined,
-                taskTitle: meta?.activeTaskId != null ? taskTitles[meta.activeTaskId] : undefined,
+                taskTitle: meta?.activeTaskId != null
+                  ? taskTitles[taskTitleKey(agent?.id ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", meta.activeTaskId)]
+                  : undefined,
               }))}
             </p>
           </div>
@@ -1567,4 +1856,8 @@ function IconArrowUpIcon() {
   );
 }
 import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, isRunning, hasUnread, queueAdd, queueClear } from "./run-facts";
+import { emptyRunFacts, markViewed, applyRunEvent, applySnapshotFacts, isRunning, hasUnread, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
+import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
+import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
+import { lostNoticeFor } from "./turn-notice";
+import { busyBelongsTo, isStaleTerminal } from "./event-guards";

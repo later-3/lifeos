@@ -3,11 +3,16 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { writeTextAtomic } from "./atomic-file.ts";
+import { createBoundedSink } from "./bounded-sink.ts";
+import { setFocusOf, subscribeBus } from "./events.ts";
+import { isDraining, runningOf, setDraining } from "./session-runtime.ts";
+import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
-  projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
-  setSessionModel, setSessionTask, setSessionThinking, snapshotOf, subscribeAgent, THINKING_LEVELS,
+  applyAgentDefaultThinking, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
+  setSessionModel, setSessionTask, setSessionThinking, globalSnapshot, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -17,6 +22,14 @@ import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
 import { randomUUID } from "node:crypto";
+
+/** 每连接发送积压上限（字节）：超过即视为过载，关闭连接让客户端重连（对齐 pi-web 的高水位 512KB）。 */
+const STREAM_HIGH_WATER_BYTES = 512 * 1024;
+/**
+ * 心跳间隔（具名事件 `ping`，客户端可见）：客户端据此判断连接是否已死（经代理的断开可能不触发 error）。
+ * 注释帧（`: ping`）浏览器的 EventSource 看不见，所以必须是具名事件。
+ */
+const STREAM_PING_MS = 10_000;
 
 // 项目相关字段只剩 hiddenProjectIds（"从列表移除"的 UI 状态，可逆）。
 // boundProjectIds 是旧设计的死字段（写而不读），已删；旧文件里的同名键在写回时被剥掉。
@@ -98,13 +111,6 @@ async function readModelsProviders(): Promise<Record<string, string[]>> {
 }
 const agentConfigPath = (id: string) => join(agentsRoot(), id, "projects", "workspace", "config.json");
 
-/** 原子写文本文件（tmp + rename）。 */
-async function writeTextAtomic(path: string, text: string): Promise<void> {
-  const tmp = `${path}.tmp`;
-  await writeFile(tmp, text, { encoding: "utf8", mode: 0o600 });
-  await rename(tmp, path);
-}
-
 /** 头像魔数嗅探：png / jpeg / webp。 */
 function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
   if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return { ext: "png", mime: "image/png" };
@@ -113,7 +119,7 @@ function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
   return undefined;
 }
 
-function problem(code: string, message: string, status: 400 | 404 | 409) {
+function problem(code: string, message: string, status: 400 | 404 | 409 | 503) {
   return { body: { error: { code, message } }, status } as const;
 }
 
@@ -223,7 +229,7 @@ app.use(async (c, next) => {
   app.get("/api/agents/:id/sessions", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const running = snapshotOf(agent.id).running;
+    const running = runningOf(agent.id);
     const items = (await listSessions(agent.id, agent.defaultProjectId ?? "workspace", agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
     return c.json({ items });
   });
@@ -244,7 +250,7 @@ app.use(async (c, next) => {
     if (await resolveProject(agent, pid) === undefined) {
       const error = problem("project_not_found", "找不到这个 project（未注册或未绑定）", 404); return c.json(error.body, error.status);
     }
-    const running = snapshotOf(agent.id).running;
+    const running = runningOf(agent.id);
     const items = (await listSessions(agent.id, pid, agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
     return c.json({ items });
   });
@@ -403,6 +409,9 @@ app.use(async (c, next) => {
   });
 
   app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {
+    if (isDraining()) {
+      const error = problem("backend_draining", "后端正在等待重启（开发热更新）：正在跑的回合结束后会自动重启，请稍后再发", 503); return c.json(error.body, error.status);
+    }
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const body = await c.req.json().catch(() => undefined) as { text?: unknown; behavior?: unknown } | undefined;
@@ -508,16 +517,64 @@ app.use(async (c, next) => {
   });
 
   // 一条流承载该 Agent 的所有会话：先快照，再按序号推事件（since 可续传）。
-  app.get("/api/agents/:id/events", (c) => {
-    const agentId = c.req.param("id");
-    const since = Number(c.req.query("since") ?? "0") || 0;
+  // —— 全局事件流（任务 0007，对齐 Codex/opencode 的全局总线 + 焦点路由；见 events.ts 的投递契约）——
+  // 一条连接承载所有 Agent 的回合级事件；细节级事件只给焦点连接。
+  // 快照与订阅在同一个同步块里生成（之后才 await），保证快照与缓冲不重复；过载即关闭，客户端重连拿新快照。
+  app.get("/api/events", (c) => {
     return streamSSE(c, async (stream) => {
-      await stream.writeSSE({ event: "snapshot", data: JSON.stringify(snapshotOf(agentId)) });
-      await new Promise<void>((resolve) => {
-        const unsubscribe = subscribeAgent(agentId, since, (event) => { void stream.writeSSE({ event: event.type, data: JSON.stringify(event) }); });
-        c.req.raw.signal.addEventListener("abort", () => { unsubscribe(); void stream.close(); resolve(); });
+      await pruneSessionViewsOnce();   // 先清孤儿未读，再生成快照（否则快照会把已删会话的蓝点带给界面）
+      const connectionId = randomUUID();
+      let finished: () => void = () => undefined;
+      const finishedPromise = new Promise<void>((resolve) => { finished = resolve; });
+      const sink = createBoundedSink({
+        write: (event) => stream.writeSSE({ event: event.type, id: String(event.seq), data: JSON.stringify(event) }),
+        limitBytes: STREAM_HIGH_WATER_BYTES,
       });
+      const bus = subscribeBus({
+        id: connectionId,
+        offer: (event) => sink.offer(event),
+        overflowed: () => { void stream.close(); finished(); },   // 过载：关闭，客户端重连
+      });
+      // 同步块：订阅之后立刻取快照（bus.seq 即基线）
+      const snapshot = { connectionId, seq: bus.seq, ...globalSnapshot() };
+      const ping = setInterval(() => { void stream.writeSSE({ event: "ping", data: "{}" }).catch(() => finished()); }, STREAM_PING_MS);
+      try {
+        await stream.writeSSE({ event: "snapshot", id: String(bus.seq), data: JSON.stringify(snapshot) });
+        bus.ready();
+        stream.onAbort(() => finished());
+        c.req.raw.signal.addEventListener("abort", () => finished());
+        await finishedPromise;
+      } finally {
+        clearInterval(ping);
+        bus.close();
+        sink.close();
+      }
     });
+  });
+
+  // 焦点上报：客户端说"我正在看哪个会话、页面是否可见"。细节流据此路由；可见时顺手记为已读。
+  app.put("/api/events/focus", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { connectionId?: unknown; agentId?: unknown; sessionId?: unknown; visible?: unknown } | undefined;
+    if (body === undefined || typeof body.connectionId !== "string" || typeof body.visible !== "boolean") {
+      const error = problem("invalid_request", "需要 connectionId（字符串）与 visible（布尔）", 400); return c.json(error.body, error.status);
+    }
+    const hasTarget = typeof body.agentId === "string" && body.agentId !== "" && typeof body.sessionId === "string" && body.sessionId !== "";
+    const focus = hasTarget
+      ? { agentId: body.agentId as string, sessionId: body.sessionId as string, visible: body.visible }
+      : undefined;
+    if (!setFocusOf(body.connectionId, focus)) {
+      const error = problem("connection_not_found", "事件连接不存在（已断开）；请重连后重新上报焦点", 404); return c.json(error.body, error.status);
+    }
+    if (focus !== undefined && focus.visible) sessionViewsOf().markViewed(focus.agentId, focus.sessionId, new Date().toISOString());
+    return c.json({ ok: true });
+  });
+
+  // 运行态（诊断与开发 supervisor 用）：跨 Agent 正在跑的回合。
+  app.get("/api/runtime", (c) => c.json({ running: globalSnapshot().running, draining: isDraining() }));
+  // 排空：拒绝新回合，已在跑的继续跑到结束。supervisor 据 running 计数决定何时重启（进程重启后排空标记自然清除）。
+  app.post("/api/runtime/drain", (c) => {
+    setDraining(true);
+    return c.json({ draining: true, running: globalSnapshot().running.length });
   });
 
   // —— Agent 配置（2026-10-18 用户需求：基础信息 / 身份 / 头像 / 模型解析 / 个人模型默认落 workspace）——
@@ -647,9 +704,10 @@ app.use(async (c, next) => {
     await writeTextAtomic(agentConfigPath(agent.id), JSON.stringify(config, null, 2) + "\n");
     // 未用 `/model` 覆盖过的会话跟随新默认（用户 2026-10-20：默认变了，顶部/实际模型都要跟着变）
     const applied = await applyAgentDefaultModel(agent.id, config.defaultProvider, config.defaultModel);
-    // 头部模型可能因此变化（未覆盖的会话跟随默认）→ 广播让前端刷新 meta（写操作必须闭环到界面）
+    const appliedThinking = config.defaultThinkingLevel === undefined ? 0 : applyAgentDefaultThinking(agent.id, config.defaultThinkingLevel);
+    // 头部模型/思考级别可能因此变化（未覆盖的会话跟随默认）→ 广播让前端刷新 meta（写操作必须闭环到界面）
     broadcast({ type: "agents_changed" });
-    return c.json({ config, applied });
+    return c.json({ config, applied, appliedThinking });
   });
 
   // —— 文件浏览器（.lifeos/projects/lifeos/knowledge/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——

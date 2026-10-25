@@ -89,7 +89,7 @@
 - 落点：`agents/<id>/projects/<pid>/sessions/<时间戳>_<会话id>.jsonl`（Pi 格式，append-only；文件即事实）。
 - 出厂预置一条默认会话（模板 JSONL）；显示名 = `session_info.name` ‖ 首条用户消息。
 - 刚建、还没发消息的会话不在磁盘上（Pi 延迟落盘）→ 后端把它们并入列表（pending）。
-- 事件流：`GET /api/agents/:id/events`（SSE）一条流承载该 Agent 的**所有**会话；每条带 `seq`，`?since=` 可续传。**事件名全集与语义的唯一事实源 = `conversation.md`**（映射实现在 `src/stream-events.ts`）；接口设计约束见 `specs/code/api/`。
+- 事件流（任务 0007，2026-10-25 起）：**一条全局流** `GET /api/events` 承载**所有 Agent** 的事件；每条带全局 `seq`、`agentId`（回合级事件）与 SSE `id`。投递分两级：**回合级**（`turn` / `done` / `error` / `agents_changed`）发给所有连接，保证后台 Agent 的完成/失败实时可见；**细节级**（`delta` / `thinking` / `tool_*` / `retrying` …）只发给**焦点连接**（`PUT /api/events/focus` 上报的 agentId+sessionId），非焦点会话的 token 不占用连接与界面。**连接先发 snapshot**（`connectionId`、基线 `seq`、跨 Agent 的 `running`（带 turnId）、服务端 `unread`、回合账本），快照与订阅在同一个同步块里生成，之后只推快照之后的事件；**过载即断线**（每连接发送积压超过 512KB → 关闭，客户端重连拿新快照，绝不静默丢事件）；10 秒具名 `ping` 心跳（客户端 25 秒无任何帧即判陈旧并重连，C124）。运行态与未读都是服务端事实（`session-runtime.ts` / `session-views.ts`，未读持久化到 `state/session-views.json`）。实现：`src/events.ts`（总线）、`src/bounded-sink.ts`（有界发送）、`frontend/src/event-router.ts`（分流纯函数）。**事件名全集与语义的唯一事实源 = `conversation.md`**（映射实现在 `src/stream-events.ts`）；接口设计约束见 `specs/code/api/`。
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
 - **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别 · **切换 activeTask**（写自定义条目，下一轮重新装配）。（注意：Task 切换不是 Pi 原生 API，属于 Life OS 的会话上下文）
 - **前端交互**（对照基线：Pi CLI / Pi Web，2026-10-19）：交互事实（断/插话/心跳/斜杠面板/历史浏览）的唯一事实源 = `knowledge/design/chat.md` 与 `knowledge/architecture/conversation.md`；本文件不重复。代码条文：前端键序契约 = `specs/code/frontend/` 2.5、判丢心跳 = 2.9。
@@ -99,6 +99,7 @@
 - **工具块状态**：`running` 只在"这一轮还在跑"时成立（`frontend/src/tool-state.ts`）；这一轮已结束但没拿到结果 = `missing`，显示**未完成**（不转圈）。工具结果**只按 `toolCallId` 精确配对**（曾用"最后一个没有结果的调用"兜底，导致同一条消息里两个调用的结果互串，`ls` 永远"执行中"）。
 - 模型选择：**有效默认** = `agents/<id>/projects/workspace/config.json`（Agent 个人）→ `config/settings.json`（系统）→ `config/models.json` **清单第一项**（Life OS 隐式默认，与 Agent 配置弹窗 fallback 同源）→ 清单为空才 Pi 回落；`GET /api/agents/:id/config` 返回 `config/effective/source`，顶部显示与新会话创建共用这一个裁决；**恢复旧会话不传 model**（尊重会话里的 `model_change`）。新建会话的模型与来源会打一行日志 `[assembly] 新建会话 … · 模型 <provider>/<id>（来源 …）`，排查"怎么用了这个模型"先看它。
 - **会话级切换**（`/model` `/thinking`，走 Pi `setModel` / `setThinkingLevel`）：只改当前会话（Pi 写 `model_change`），不动 Agent 默认、不动全局；`setModel` 会校验 provider 是否配了 key，失败原因（如 `No API key for …`）原样显示，不吞成"切换失败"。
+- **思考级别与模型同规则**（2026-10-24）：没对本会话用过 `/thinking` → 跟随 Agent 默认（`defaultThinkingLevel`）；用过 → 保留会话覆盖。覆盖判定用显式自定义条目 `lifeos_thinking_override`（`setSessionThinking` 写入），不靠值猜；恢复会话与新默认保存都会同步未覆盖且不在跑的会话（`applyAgentDefaultThinking`）。
 - **顶部模型显示规则**（2026-10-20/10-22 用户定）：**没对本会话用过 `/model`** → 显示 Agent 的**有效默认**（不是拿会话值反猜），默认变了顶部跟着变；**用过 `/model`** → 显示会话覆盖模型（`model_change` 持久），之后默认再变也不影响它。判定覆盖用**显式标记**（Pi 自定义条目 `lifeos_model_override`，不参与模型上下文），不靠"值相等"猜。**实现**：`src/model-follow.ts` 做判定（纯函数、穷举测试）；只认 `/model` 写的显式覆盖标记（早期 `legacy:true` 标记一律忽略）；没有标记 → 一律跟随当前有效默认。保存默认 → `applyAgentDefaultModel` 同步未覆盖且**不在跑**的打开中会话 + 广播 `agents_changed`（前端刷新有效默认与 meta）；**打开/重开**会话时若未覆盖且模型不是默认 → 跟随。
 - **一轮的路径**（失败归属的骨架）：① 前端发送（本地插入用户消息 + 左侧本轮占位）→ ② 新建会话（仅无会话）→ ③ 后端受理（202，`void runTurn`）→ ④ 后端开跑（登记 running、订阅 Pi 事件）→ ⑤ Pi 模型循环（思考/文本/工具调用与结果，临时错误自动重试）→ ⑥ 收尾（`done`，或抛错 → `error` 带归类）→ ⑦ 前端重读会话（文件是事实源）。哪一步失败，左侧就写哪一步；具体显示映射见 `.lifeos/projects/lifeos/knowledge/design/chat.md` §3.3。
 
@@ -138,3 +139,5 @@
 ## 7 前端怎么选中（现状）
 
 URL 三键 `?agent=&project=&session=`；缺省回落到上次选择 → 第一个 Agent/项目/会话。
+
+- **状态映射**（任务 0008）：服务端只存会话级事实（运行快照、未读快照、回合事件，均带 `agentId`/`projectId`）；前端 `status-map.ts` 纯函数派生项目与 Agent 的运行/未读数量，不另存聚合。运行事实仓库 `run-facts.ts` 的 `meta` 保存会话归属。未读记录的 `projectId` 在启动时回填，孤儿记录清理。语义见 `requirements/conversation.md` 第 6 节。

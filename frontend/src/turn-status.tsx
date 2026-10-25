@@ -46,6 +46,7 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
   return (
     <div className="mx-auto flex min-h-7 w-full max-w-reading flex-wrap items-center gap-x-3 gap-y-1"
       data-testid="turn-status-content"
+      data-shot-mask="turn-status"
       title="↑ 会话输入 tokens · ↓ 会话输出 tokens · ◔ 上下文占用 · ⚡ 上一轮输出速度">
       <div className="flex min-w-0 flex-wrap items-center">
         {busy ? (

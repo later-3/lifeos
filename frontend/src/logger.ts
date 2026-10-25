@@ -27,7 +27,7 @@ function enqueue(level: LogLevel, module: string, msg: string, details?: Record<
   if (level === "debug") return;                    // debug 只本地，上报不收
   if (level === "info" && Math.random() > INFO_SAMPLE) return;   // info 采样（specs 2.11）
   queue.push(row);
-  if (level === "error" || queue.length >= UPLOAD_BATCH_MAX) void flush();
+  if (level === "error" || level === "warn" || queue.length >= UPLOAD_BATCH_MAX) void flush();
 }
 
 /** 批量上报；失败静默（列不为空，等于自发丢订阅——绝不阻塞 UI 流）。 */

@@ -18,3 +18,4 @@
 | 11 | Prompt 目前只按层级组装，组装后不能编辑 | **Prompt 编辑**：组装后修改/删除/新增 section/内容 | 先设计编辑边界、持久化与回滚，再实现；当前不做 |
 
 | 12 | 用户已讨论（2026-10-24）：像手机弹通知一样的网页通知功能 可顺手做，不要与呈现层强绑定——先在第一包落"运行事实 store"（run/未读/队列的唯一事实源），通知只是它的一个订阅者（Web Notification API + Permission + 可选 push） | 网页通知（Web Notification） | 等用户挖坑时再立 task；本条是待办登记 |
+| 13 | 任务 0007 已做**页面打开时**的后台完成提示（全局事件流 + 焦点路由 + 服务端未读）；页面关闭/标签页后台时没有系统级通知 | 网页推送通知（Web Push：VAPID 密钥 + Service Worker 订阅，参考旧版 pi-web `lib/web-push.ts` / `rpc-manager.ts:2742`，HEAD 已删除） | 设计订阅存储与密钥轮换；完成事件复用 `session-views` 的完成事实，不另起通道；手机端 PWA 场景优先 |

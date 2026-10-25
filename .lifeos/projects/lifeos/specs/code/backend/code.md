@@ -61,3 +61,28 @@
 - 大模块清单（后端）：http / agent-host / assembly / tasks / registry / fs / sse（fn 为辅行）；前端另立文件，大模块：transport / run / ui；
 - `debug` 静默默认，`info` 起可读；**正文与凭据零出现**——会话正文在会话 JSONL，密钥永不入日志；
 - 每次 HTTP 常驻一条请求行（method/path/status/millis/requestId）；每回合终态一行 turn 事件（受理/完成/错误/丢失），便于事后按 turnId 单轮回放。
+
+### 2.11 "默认跟随"必须覆盖模型与思考级别，显式覆盖必须落标记
+
+- 规则：Agent 默认的模型与思考级别是同一套语义——未被用户显式覆盖的会话（含恢复的旧会话）必须跟随最新默认；显式覆盖必须写 Pi 自定义条目（`lifeos_model_override` / `lifeos_thinking_override`），不得靠"值相等"猜。
+- 依据：2026-10-24 C120（lifeosagent 配 `max`，旧会话仍是 `medium`）。机器检查：`test/model-follow.test.mjs`。
+
+### 2.12 事件分两级投递；过载即断线，绝不静默丢；快照与订阅同一同步块
+
+- 规则：全局事件流中，**回合级**（turn/done/error/agents_changed）发给所有连接（不做焦点过滤）；**细节级**（delta/thinking/tool_*/retrying…）只发给焦点连接。每个连接按字节积压计数，超过上限或写入失败 → 摘除并关闭，客户端重连拿新快照；**不得静默丢弃**任何事件。快照与订阅必须在同一个同步块里生成（之后才允许 await），否则快照与缓冲会重复一条终态。
+- 依据：2026-10-25 C122（参考项目的丢事件契约与 Open WebUI 的全量广播各有缺陷，取其正确部分）。机器检查：`test/event-bus.test.mjs`（T30–T36）、`test/bounded-sink.test.mjs`（T37–T38）、`test/sse-endpoint.test.mjs`（T43–T46）。
+
+### 2.13 运行数据目录也必须有说明文件，检查器必须覆盖它们
+
+- 规则：程序写入的运行目录（`logs/`、`state/`、`memory/data/` 等）由**创建者**写入 `AGENTS.md`（已存在不覆盖，`wx` 写入）；`home:check` 对存在的运行目录强制检查（不存在不报错）。
+- 依据：2026-10-25 C122/C121 的排查中发现 `logs/` 与 `state/` 长期没有说明文件，而检查器对它们沉默。机器检查：`test/home-runtime-notes.test.mjs`（T58）。
+
+### 2.14 长连接必须有客户端可见的心跳（具名事件），不能只靠注释帧
+
+- 规则：服务端的心跳必须是具名事件（客户端可以监听并据此判断陈旧），不能只发注释帧（浏览器 EventSource 看不见）；心跳间隔与客户端陈旧阈值成对设定（阈值 ≥ 2 倍间隔）。
+- 依据：2026-10-25 C124（注释心跳无法检测断开，页面假活着）。机器检查：`test/sse-endpoint.test.mjs`（心跳与连接契约）。
+
+### 2.15 运行与未读事实必须携带会话归属（agentId / projectId），并能回填与清理
+
+- 规则：运行快照、未读快照、回合级事件都必须带 `projectId`（前端的项目层聚合依赖它）；未读记录缺 `projectId` 时启动回填；回填不到或会话已不存在的记录清理（落盘）。
+- 依据：2026-10-25 C125（缺 projectId 导致无法向上聚合；删除会话残留未读）。机器检查：`test/session-views.test.mjs`（T57、T60、T65）、`test/sse-endpoint.test.mjs`（T66）。

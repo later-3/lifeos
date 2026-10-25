@@ -79,7 +79,7 @@ export function DirectoryPicker({ onCancel, onSelect, startPath }: {
           className={`${controlClass} h-9 min-w-0 flex-1 font-mono text-meta`} />
       </form>
 
-      <div className="max-h-80 min-h-40 overflow-y-auto" data-shot-mask="picker-list">
+      <div className="max-h-80 min-h-40 overflow-y-auto" data-shot-mask="picker-list" data-shot-mask-clip="picker-list">
         {loading && <Skeleton rows={6} />}
         {!loading && dirs.length === 0 && <EmptyState title="没有子目录" hint="可以直接选择当前目录。" />}
         {!loading && dirs.map((name) => {

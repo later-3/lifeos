@@ -45,7 +45,7 @@
 
 ### 3.1 选择与下钻
 
-- 选 Agent → 自动定位默认/最近 Project → 最近 Session；重置流游标并重订该 Agent 的 SSE。
+- 选 Agent → 自动定位默认/最近 Project → 最近 Session；断开并重订该 Agent 的 SSE（重连即重新快照，不带游标）。
 - 选 Project → 切换该项目的会话列；选 Session → 载入消息。
 - 点当前已展开的列图标 = 收起；点其它列图标 = 展开；展开前若右侧面板开着，先关它。
 

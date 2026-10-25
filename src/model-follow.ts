@@ -27,3 +27,14 @@ export function decideRestoreModel(input: {
   if (input.stored === undefined || input.agentDefault === undefined) return "keep";
   return same(input.stored, input.agentDefault) ? "keep" : "follow";       // 没换过 → 跟随默认
 }
+
+/** 思考级别与模型同规则：没用过 `/thinking` 显式覆盖的会话，跟随 Agent 默认；覆盖过则保留。 */
+export function decideRestoreThinking(input: {
+  stored: string | undefined;
+  agentDefault: string | undefined;
+  overridden: boolean;
+}): RestoreDecision {
+  if (input.overridden) return "keep";
+  if (input.stored === undefined || input.agentDefault === undefined) return "keep";
+  return input.stored === input.agentDefault ? "keep" : "follow";
+}

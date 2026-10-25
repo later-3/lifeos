@@ -69,7 +69,9 @@ install-receipt.json    安装收据
 | `POST /api/agents/:id/sessions/:sid/compact` | **压缩上下文**（Pi `compact()`；会先 abort 当前 run） |
 | `POST /api/agents/:id/sessions/:sid/model` | **会话级切模型** `{provider, model}`（Pi `setModel()`：写 `model_change`、不动全局默认）。失败分三种：404 `session_not_found` / 404 `model_not_found` / **409 `model_rejected`（Pi 原文案，如 `No API key for …`）** |
 | `POST /api/agents/:id/sessions/:sid/thinking` | **会话级思考级别** `{level}`（Pi `setThinkingLevel()` 会按模型能力夹取；返回**实际生效值**，非法档位 400） |
-| `GET /api/agents/:id/events`（SSE） | 一条流承载该 Agent 的全部会话：`snapshot` / `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / **`retrying`** / **`retry_end`** / `done` / `error`（带 `kind` 失败归类）/ **`agents_changed`**（助手创建/归档后广播，前端据此自动重取列表）；每条带 `seq`，`?since=` 可续传；**事件名 = 事件类型**（映射见 `src/stream-events.ts`） |
+| `GET /api/events`（SSE，全局） | 一条流承载**所有 Agent**：`snapshot`（`connectionId`、基线 `seq`、跨 Agent 运行列表、服务端未读）→ 回合级 `turn` / `done` / `error`（带 `kind`）/ `agents_changed` 发给所有连接；细节级 `thinking` / `thinking_end` / `delta` / `tool_call` / `tool_result` / `retrying` / `retry_end` 只发给焦点连接；每条带全局 `seq` 与 `agentId`；过载即断线（客户端重连重取快照）；10 秒具名 `ping` 心跳（客户端 25 秒无任何帧即判陈旧并重连，C124）。事件名 = 事件类型（映射见 `src/stream-events.ts`） |
+| `PUT /api/events/focus` | 上报焦点：`{connectionId, agentId, sessionId, visible}`；可见时顺手记为已读；未知连接 404 |
+| `GET /api/runtime` · `POST /api/runtime/drain` | 运行态（跨 Agent 在跑的回合）· 排空（开发 supervisor 用：拒绝新回合，等现有回合结束） |
 | `GET /api/agents/:id/sessions/:sid/entries` | **会话历史**：原始条目只读直出（`offset/limit` 分页、`labels`、`leafId`）；不投影、不改写，与会话 JSONL 逐条一致 |
 | `PUT /api/agents/:id/sessions/:sid` | 重命名会话（写 Pi `session_info` 展示名） |
 | `DELETE /api/agents/:id/sessions/:sid` | 删除会话（运行中 409） |
@@ -87,7 +89,7 @@ install-receipt.json    安装收据
 
 | 命令 | 做什么 |
 |---|---|
-| `pnpm dev` | 后端 `node --experimental-strip-types --watch src/main.ts`（默认 43120；`--port=` 可换） |
+| `pnpm dev` | 开发 supervisor（`scripts/dev-supervisor.mjs`）：监听 `src/`，改动后先排空、等运行中的回合结束，再重启后端（默认 43120）；**不会在回合中途杀进程** |
 | `pnpm dev:web` | 前端 Vite dev（5173，代理 `/api` 到后端） |
 | `pnpm build` | 后端 esbuild → `dist/server.mjs`；前端 → `frontend/dist` |
 | `pnpm start` | `node dist/server.mjs`（同时托管 `frontend/dist` 静态文件） |
@@ -112,7 +114,7 @@ install-receipt.json    安装收据
 
 ## 10 事件流（现状）
 
-- **一条流承载一个 Agent 的所有会话**：`GET /api/agents/:id/events?since=<seq>`。
-- **接上先给快照**（`snapshot`：当前 `seq` + 正在运行的会话列表）→ 刷新/断线可用 `since` 续传，多标签页各自带 `since` 订阅同一条流。
+- **一条全局流承载所有 Agent**：`GET /api/events`（任务 0007）。回合级事件全连接可见，细节级只给焦点（`PUT /api/events/focus`）。
+- **接上先给快照**（`snapshot`：`connectionId`、基线 `seq`、跨 Agent 运行列表、服务端未读）；不回放历史；过载即断线，客户端重连重取快照。
 - **发消息是命令，不是订阅**：`POST …/sessions/:sid/messages` 返回 `202 { accepted: true }`，输出只走事件流（运行与传输解耦）。
 - **运行注册表**在服务端按 `sessionId` 记录运行状态（running/done/error），供快照与列表使用。
