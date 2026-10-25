@@ -18,6 +18,7 @@ import type { ModelRef } from "./model-follow-types.ts";
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
 import { sessionViewsOf, sessionViewsReady } from "./session-views.ts";
+import { titleFromFirstMessage } from "./session-title.ts";
 import { clearRunning, isRunning, markRunning, runningAll, runningOf, type RunSnapshot } from "./session-runtime.ts";
 import { randomBytes } from "node:crypto";
 import { readTurnVerdict, type TurnVerdict } from "./turn-verdict.ts";
@@ -401,6 +402,23 @@ export async function sessionExists(agentId: string, sessionId: string): Promise
   return (await findSessionFile(agentId, sessionId)) !== undefined;
 }
 
+/**
+ * 首条消息发出即命名（任务 0010）：Pi 要等助手回复才把会话落盘，而列表标题读的是落盘后的文件，
+ * 所以这里把标题写进内存会话名（与重命名同一个 SDK 方法，落盘时写入的内容与之一致）。
+ * 必须在 POST 返回前同步完成，调用方（路由）保证：新发出的第一条消息才命名；已有名字的（重命名过）不覆盖。
+ */
+export function nameSessionFromFirstMessage(agentId: string, sessionId: string, text: string): boolean {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  const sessionManager = state.session.sessionManager;
+  if (sessionManager.getSessionName()) return false;
+  const title = titleFromFirstMessage(text);
+  if (title === "") return false;
+  sessionManager.appendSessionInfo(title);
+  broadcast({ type: "agents_changed" });   // 侧栏重取列表：标题立刻可见
+  return true;
+}
+
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
 export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
   const state = stateOf(agentId);
@@ -444,7 +462,9 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   } finally {
     unsubscribe();
     clearRunning(agentId, sessionId);
-    state.pending.delete(sessionId);   // 首轮消息后 Pi 已落盘，文件列表接管
+    // 待落盘登记：只有文件真的落盘了才交给文件列表接管。首轮失败时 Pi 不会落盘（要等助手回复），
+    // 直接删登记会让会话从列表消失（2026-10-25 实测：模型不可用时新会话隐身，标题也丢）。
+    if (await findSessionFile(agentId, sessionId) !== undefined) state.pending.delete(sessionId);
   }
 }
 

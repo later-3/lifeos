@@ -11,7 +11,7 @@ import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
-  applyAgentDefaultThinking, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
+  applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionTask, setSessionThinking, globalSnapshot, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
@@ -438,6 +438,7 @@ app.use(async (c, next) => {
       }
       return c.json({ queued: verdict.queued }, 202);
     }
+    nameSessionFromFirstMessage(agent.id, sessionId, body.text);   // 同步命名：返回 202 时标题已生效（任务 0010）
     void runTurn(agent.id, sessionId, body.text);
     return c.json({ accepted: true }, 202);
   });
