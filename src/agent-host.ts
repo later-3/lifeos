@@ -2,6 +2,7 @@
 // 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §12.2），这里只负责加载。
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } from "./assembly.ts";
+import type { ImageAttachment } from "./image-input.ts";
 import { ensureDailyShard, ensureDefaultTask, listTasks } from "./tasks.ts";
 import { readProjectManifests } from "./projects.ts";
 import { ensureAgentProjectLayer } from "./project-skeleton.ts";
@@ -403,7 +404,7 @@ export async function sessionExists(agentId: string, sessionId: string): Promise
 }
 
 /**
- * 首条消息发出即命名（任务 0010）：Pi 要等助手回复才把会话落盘，而列表标题读的是落盘后的文件，
+ * 首条消息发出即命名（会话维护，提交 a08a21e）：Pi 要等助手回复才把会话落盘，而列表标题读的是落盘后的文件，
  * 所以这里把标题写进内存会话名（与重命名同一个 SDK 方法，落盘时写入的内容与之一致）。
  * 必须在 POST 返回前同步完成，调用方（路由）保证：新发出的第一条消息才命名；已有名字的（重命名过）不覆盖。
  */
@@ -420,7 +421,7 @@ export function nameSessionFromFirstMessage(agentId: string, sessionId: string, 
 }
 
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
-export async function runTurn(agentId: string, sessionId: string, text: string): Promise<void> {
+export async function runTurn(agentId: string, sessionId: string, text: string, images?: ImageAttachment[]): Promise<void> {
   const state = stateOf(agentId);
   const target = state.sessions.get(sessionId);
   if (target === undefined) return;
@@ -443,7 +444,8 @@ export async function runTurn(agentId: string, sessionId: string, text: string):
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
   try {
-    await target.session.prompt(text);
+    // 图片走 Pi 原生 images 通道（PromptOptions.images）；Pi 会在进入历史前按 inputLimits 规范化
+    await target.session.prompt(text, images !== undefined && images.length > 0 ? { images } : undefined);
     const aborted = abortRequested.delete(requestKey);
     // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
     finishTurn(agentId, sessionId, turnId, "done");
@@ -762,7 +764,24 @@ export async function renameSession(agentId: string, sessionId: string, name: st
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
 type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean };
-type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock;
+type ImageBlock = { type: "image"; data: string; mimeType: string };
+type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
+
+/** 会话历史里已有的图片总字节：会话图片预算（不是张数）的计量依据。 */
+export function sessionImageBytesOf(state: SessionState): number {
+  let total = 0;
+  for (const message of state.session.sessionManager.buildSessionProjection().messages) {
+    if (message.role !== "user") continue;
+    for (const part of Array.isArray(message.content) ? message.content : []) {
+      const image = part as { type?: string; data?: unknown };
+      if (image.type === "image" && typeof image.data === "string") {
+        const padding = image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0;
+        total += Math.max(0, Math.floor((image.data.length * 3) / 4) - padding);
+      }
+    }
+  }
+  return total;
+}
 
 /** 消息（含结构化块）：text/thinking/toolCall 按 Pi 真实内容块返回，toolResult 挂回对应调用
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
@@ -772,7 +791,16 @@ export function messagesOf(state: SessionState) {
   for (const message of state.session.sessionManager.buildSessionProjection().messages) {
     if (message.role === "user") {
       const text = textOf(message);
-      out.push({ role: "user", text, blocks: [{ type: "text", text }] });
+      // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
+      const blocks: MessageBlock[] = [];
+      if (text !== "") blocks.push({ type: "text", text });
+      for (const part of Array.isArray(message.content) ? message.content : []) {
+        const image = part as { type?: string; data?: unknown; mimeType?: unknown };
+        if (image.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string") {
+          blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
+        }
+      }
+      out.push({ role: "user", text, blocks });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {

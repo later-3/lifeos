@@ -10,7 +10,7 @@ import { isDraining, runningOf, setDraining } from "./session-runtime.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
-  abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, pendingSessions,
+  abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
   setSessionModel, setSessionTask, setSessionThinking, globalSnapshot, THINKING_LEVELS,
 } from "./agent-host.ts";
@@ -22,6 +22,8 @@ import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
 import { randomUUID } from "node:crypto";
+import { bodyLimit } from "hono/body-limit";
+import { declaredImageSupport, MAX_SESSION_IMAGE_BYTES, validateImages } from "./image-input.ts";
 
 /** 每连接发送积压上限（字节）：超过即视为过载，关闭连接让客户端重连（对齐 pi-web 的高水位 512KB）。 */
 const STREAM_HIGH_WATER_BYTES = 512 * 1024;
@@ -99,6 +101,21 @@ async function readModelsConfig(): Promise<Record<string, unknown>> {
     .then((text) => (JSON.parse(text) as { providers?: Record<string, unknown> }).providers ?? {}, () => ({}));
 }
 
+/**
+ * 模型是否声明图片输入：读 models.json 里该 provider/model 的 `input` 数组。
+ * 返回 undefined 表示无法判断（模型不在清单里）——此时不拦，交给 provider 自己报错，
+ * 避免"清单没同步"导致用户明明能发图却被我们挡住。
+ */
+async function declaredModelImageSupport(choice: { defaultProvider: string; defaultModel: string } | undefined): Promise<boolean | undefined> {
+  if (choice === undefined) return undefined;
+  const providers = await readModelsConfig();
+  const provider = providers[choice.defaultProvider] as { models?: unknown } | undefined;
+  if (provider === undefined || !Array.isArray(provider.models)) return undefined;
+  const model = provider.models.find((item) => (item as { id?: string }).id === choice.defaultModel) as { input?: unknown } | undefined;
+  if (model === undefined) return undefined;
+  return declaredImageSupport(model.input);
+}
+
 /** provider → model id 列表（保存 Agent 默认模型时的校验用）。 */
 async function readModelsProviders(): Promise<Record<string, string[]>> {
   const providers = await readModelsConfig();
@@ -119,7 +136,7 @@ function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
   return undefined;
 }
 
-function problem(code: string, message: string, status: 400 | 404 | 409 | 503) {
+function problem(code: string, message: string, status: 400 | 404 | 409 | 413 | 422 | 503) {
   return { body: { error: { code, message } }, status } as const;
 }
 
@@ -408,19 +425,43 @@ app.use(async (c, next) => {
     return c.json({ written });
   });
 
-  app.post("/api/agents/:id/sessions/:sessionId/messages", async (c) => {
+  // 请求体上限 = 网关实测能带走的量（32MB 通过、64MB 断开）；超出直接 413，不进入解析
+  const messagesBodyLimit = bodyLimit({
+    maxSize: MAX_SESSION_IMAGE_BYTES * 2,
+    onError: (c) => {
+      const error = problem("payload_too_large", `请求体超过 ${(MAX_SESSION_IMAGE_BYTES * 2) / (1024 * 1024)}MB`, 413);
+      return c.json(error.body, error.status);
+    },
+  });
+  app.post("/api/agents/:id/sessions/:sessionId/messages", messagesBodyLimit, async (c) => {
     if (isDraining()) {
       const error = problem("backend_draining", "后端正在等待重启（开发热更新）：正在跑的回合结束后会自动重启，请稍后再发", 503); return c.json(error.body, error.status);
     }
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const body = await c.req.json().catch(() => undefined) as { text?: unknown; behavior?: unknown } | undefined;
+    const body = await c.req.json().catch(() => undefined) as { text?: unknown; behavior?: unknown; images?: unknown } | undefined;
     if (body === undefined || typeof body.text !== "string" || body.text.trim() === "") {
       const error = problem("invalid_request", "需要 text 字段（非空字符串）", 400); return c.json(error.body, error.status);
     }
     const sessionId = c.req.param("sessionId");
-    if (await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId)) === undefined) {
+    const state = await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId));
+    if (state === undefined) {
       const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+    }
+    // 图片校验：张数、单张大小、魔数、会话字节预算（docs/design/image-input.md 约束表）
+    const images = validateImages(body.images, sessionImageBytesOf(state));
+    if (!images.ok) {
+      const error = problem(images.code, images.message, images.code === "too_many_images" || images.code === "session_image_budget_exceeded" ? 422 : 400);
+      return c.json(error.body, error.status);
+    }
+    if (images.images.length > 0) {
+      // 能力门控：模型没声明图片输入就明确拒绝，而不是让 provider 报一个看不懂的错
+      const choice = await resolveModelChoice(agent.id);
+      const support = await declaredModelImageSupport(choice?.choice);
+      if (support === false) {
+        const error = problem("model_no_image_input", `当前模型 ${choice?.choice.defaultModel ?? ""} 未声明图片输入能力，请换一个支持看图的模型`, 400);
+        return c.json(error.body, error.status);
+      }
     }
     // 生成中投入输入：对接 Pi 原生 steer / followUp（不自造客户端队列）
     const behavior = body.behavior === "steer" || body.behavior === "followUp" ? body.behavior : undefined;
@@ -438,9 +479,9 @@ app.use(async (c, next) => {
       }
       return c.json({ queued: verdict.queued }, 202);
     }
-    nameSessionFromFirstMessage(agent.id, sessionId, body.text);   // 同步命名：返回 202 时标题已生效（任务 0010）
-    void runTurn(agent.id, sessionId, body.text);
-    return c.json({ accepted: true }, 202);
+    nameSessionFromFirstMessage(agent.id, sessionId, body.text);   // 同步命名：返回 202 时标题已生效（会话维护，提交 a08a21e）
+    void runTurn(agent.id, sessionId, body.text, images.images);
+    return c.json({ accepted: true, images: images.images.length }, 202);
   });
 
   // 打断（Pi abort()）：run 的 finally 会照常发 done，前端据此收尾

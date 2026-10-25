@@ -1,4 +1,4 @@
-// T70：标题在首条消息发出时就生效（任务 0010）——不等 Pi 把会话落盘（落盘要等助手回复）。
+// T70：标题在首条消息发出时就生效（会话维护，提交 a08a21e）——不等 Pi 把会话落盘（落盘要等助手回复）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

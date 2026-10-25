@@ -18,4 +18,5 @@
 | 11 | Prompt 目前只按层级组装，组装后不能编辑 | **Prompt 编辑**：组装后修改/删除/新增 section/内容 | 先设计编辑边界、持久化与回滚，再实现；当前不做 |
 
 | 12 | 用户已讨论（2026-10-24）：像手机弹通知一样的网页通知功能 可顺手做，不要与呈现层强绑定——先在第一包落"运行事实 store"（run/未读/队列的唯一事实源），通知只是它的一个订阅者（Web Notification API + Permission + 可选 push） | 网页通知（Web Notification） | 等用户挖坑时再立 task；本条是待办登记 |
-| 13 | 任务 0007 已做**页面打开时**的后台完成提示（全局事件流 + 焦点路由 + 服务端未读）；页面关闭/标签页后台时没有系统级通知 | 网页推送通知（Web Push：VAPID 密钥 + Service Worker 订阅，参考旧版 pi-web `lib/web-push.ts` / `rpc-manager.ts:2742`，HEAD 已删除） | 设计订阅存储与密钥轮换；完成事件复用 `session-views` 的完成事实，不另起通道；手机端 PWA 场景优先 |
+| 13 | 任务 0007 已做**页面打开时**的后台完成提示（全局事件流 + 焦点路由 + 服务端未读）；页面关闭/标签页后台时没有系统级通知 | 网页推送通知（Web Push：VAPID 密钥 + Service Worker 订阅，参考pi-web `upstream/main e533d9b` 的 `lib/web-push.ts` / `lib/rpc-manager.ts:2742`） | 设计订阅存储与密钥轮换；完成事件复用 `session-views` 的完成事实，不另起通道；手机端 PWA 场景优先 |
+| 14 | 图片输入已实现（`knowledge/design/image-input.md`）；门控读 `models.json` 的 `input` 声明。**实测（2026-10-25）**：默认模型 `command/z-ai/glm-5.3-flash` 对纯色图 5 次中 4 次答对，但同一张蓝图先后答"白色/蓝色/红色"——声明对、能力不稳 | 模型看图能力的**实测记录**（声明 ≠ 稳定性） | 对每个候选模型跑纯色/文字截图小样本（≥5 次），把结果记成可用性等级，并在界面提示"该模型看图可能不准"；不要只依赖手写 `input` 声明 |

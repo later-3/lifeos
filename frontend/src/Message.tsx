@@ -25,6 +25,7 @@ import { toolState } from "./tool-state";
 
 export type Block =
   | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string }
   | { type: "thinking"; text: string; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
@@ -128,12 +129,21 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   const bar = <MessageActionBar side={role} actions={actions} hovered={hovered} suppressed={suppressed} />;
   if (role === "user") {
+    // 用户消息原来只渲染文字气泡，图片块被整段忽略：发出去的图在界面上不存在（本轮修复）
+    const images = blocks.filter((block): block is Extract<Block, { type: "image" }> => block.type === "image");
     return (
       <div className={`flex flex-col gap-1 ${align === "end" ? "items-end" : "items-start"}`}
         data-testid="message" data-role="user" {...hover}>
-        <div className="max-w-bubble rounded-bubble rounded-br-md bg-message-user px-4 py-2.5 text-white" data-testid="message-text" data-message-kind="user">
-          <Markdown text={text} inverse />
-        </div>
+        {text !== "" && (
+          <div className="max-w-bubble rounded-bubble rounded-br-md bg-message-user px-4 py-2.5 text-white" data-testid="message-text" data-message-kind="user">
+            <Markdown text={text} inverse />
+          </div>
+        )}
+        {images.length > 0 && (
+          <div className="flex max-w-bubble flex-wrap justify-end gap-2">
+            {images.map((image, index) => <ImageBlockView key={index} block={image} />)}
+          </div>
+        )}
         {bar}
       </div>
     );
@@ -223,7 +233,20 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
   );
 }
 
+function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> }) {
+  // 用户发的图：缩略图一屏可见，点开看原图（data URL 自包含，不需要额外请求）
+  return (
+    <a href={`data:${block.mimeType};base64,${block.data}`} target="_blank" rel="noreferrer"
+      data-testid="message-image" className="mt-1 inline-block">
+      <img src={`data:${block.mimeType};base64,${block.data}`} alt="用户发送的图片"
+        data-shot-mask="message-image"
+        className="max-h-64 max-w-full rounded border border-line object-contain" />
+    </a>
+  );
+}
+
 function BlockView({ block, live, forceOpen = false }: { block: Block; live: boolean; forceOpen?: boolean }) {
+  if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
     return <div data-testid="message-text"><Markdown text={block.text} /></div>;

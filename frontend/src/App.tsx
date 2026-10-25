@@ -2,8 +2,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconMenu2, IconPencil, IconPlus, IconTrash, IconX,
+  IconMenu2, IconPencil, IconPhoto, IconPlus, IconTrash, IconX,
 } from "@tabler/icons-react";
+import {
+  addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
+  CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
+} from "./attachments";
 import { useFold } from "./design/fold";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -114,7 +118,7 @@ function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: st
       <Label className="min-w-0 truncate">{label}</Label>
       {/* 数据统计：列头里的总数（助手/项目/会话各自有多少个），安静地跟在标题后面 */}
       {count !== undefined && (
-        <span aria-label={`${label} ${count} 个`} className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
+        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
       )}
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-ink-500">· {hint}</span>}
       <span className="ml-auto" />
@@ -132,6 +136,60 @@ function DragHandle({ onStart }: { onStart: (event: ReactMouseEvent) => void }) 
   );
 }
 
+/** 读成 data URL 的 base64 部分（不含前缀）。 */
+function readAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      if (comma < 0) reject(new Error("读取图片失败"));
+      else resolve(result.slice(comma + 1));
+    };
+    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * 按 pi-web 上游的档位压缩（docs/design/image-input.md 约束表）：
+ * 超过 1MB 才压、最长边 1024、JPEG 0.85；压缩结果由调用方按字节比较，不更小就用原图。
+ */
+async function fileToImage(file: File): Promise<{ data: string; mimeType: string }> {
+  const original = async () => ({ data: await readAsBase64(file), mimeType: file.type });
+  if (!shouldCompressImage(file.size, file.type) || typeof createImageBitmap !== "function") return original();
+  const bitmap = await createImageBitmap(file).catch(() => null);
+  if (bitmap === null) return original();
+  try {
+    const size = scaledSize(bitmap.width, bitmap.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext("2d");
+    if (context === null) return original();
+    context.fillStyle = "#fff";                 // JPEG 无透明：先铺白，否则透明区会变黑
+    context.fillRect(0, 0, size.width, size.height);
+    context.drawImage(bitmap, 0, 0, size.width, size.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", CLIENT_JPEG_QUALITY);
+    const comma = dataUrl.indexOf(",");
+    const data = comma < 0 ? "" : dataUrl.slice(comma + 1);
+    if (data === "") return original();
+    return { data, mimeType: "image/jpeg" };
+  } catch {
+    return original();
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** 本地回显的用户消息块：文字在前、图片在后，与后端 messagesOf 的顺序一致。 */
+function userBlocks(text: string, images: readonly PendingImage[]): Block[] {
+  const blocks: Block[] = [];
+  if (text !== "") blocks.push({ type: "text", text });
+  for (const image of images) blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
+  return blocks;
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agent, setAgent] = useState<Agent>();
@@ -141,6 +199,11 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
+  // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
+  const [attachments, setAttachments] = useState<PendingImage[]>([]);
+  const attachmentsRef = useRef<PendingImage[]>([]);
+  const attachmentSeq = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 输入法组字：组字中/刚提交 100ms 内的 Enter 不发送（照 Pi Web ChatInput 的判定，见 reference-baseline）
   const composingRef = useRef(false);
@@ -973,9 +1036,31 @@ export default function App() {
    * - 发送失败（网络/4xx）→ **回填草稿**，不静默吃掉用户输入；
    * - `submittingRef` 防快速连按 Enter 重复提交。
    */
+  // 附件状态与 ref 同步：sendText 可能从跨渲染的回调（sendTextRef）进来，读 ref 才不会拿到旧值
+  useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+
+  /** 把用户选的/粘贴的/拖入的文件逐个变成附件；超限或非法时提示并跳过。 */
+  async function collectImages(files: readonly File[]) {
+    if (files.length === 0) return;
+    let next = attachmentsRef.current;
+    let added = 0;
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) { toast(`只能发送图片：${file.name || "未命名"}`, "error"); continue; }
+      const converted = await fileToImage(file).catch(() => undefined);
+      if (converted === undefined) { toast("读取图片失败", "error"); continue; }
+      attachmentSeq.current += 1;
+      const verdict = addImage(next, { id: String(attachmentSeq.current), ...converted });
+      if (!verdict.ok) { toast(verdict.message, "error"); continue; }
+      next = verdict.images;
+      added += 1;
+    }
+    if (added > 0) { setAttachments(next); attachmentsRef.current = next; }
+  }
+
   async function sendText(raw: string) {
     const text = raw.trim();
-    if (text === "" || agent === undefined) return;
+    const pending = attachmentsRef.current;      // 本次发送携带的图片（发送成功才真正清空）
+    if ((text === "" && pending.length === 0) || agent === undefined) return;
     if (!busyRef.current) {
       setTurnStep(1);
       turnStartedAtRef.current = Date.now();
@@ -1024,7 +1109,8 @@ export default function App() {
       } else if (response?.ok === true) {
         setInput("");
         busySessionRef.current = sid;
-        setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }]);
+        setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }]);
+        if (pending.length > 0) { setAttachments([]); attachmentsRef.current = []; }
         toast("已插话（steer，不影响当前轮继续）");
         if (sid !== undefined) setRunFacts((f) => queueAdd(f, sid, { behavior: "steer", text }));
         return;
@@ -1034,6 +1120,7 @@ export default function App() {
     submittingRef.current = true;
     activeTurnIdRef.current = null;      // C119：新回合等 turn(running) 事件来认领 turnId
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
+    setAttachments([]); attachmentsRef.current = [];
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -1046,10 +1133,11 @@ export default function App() {
     streaming.current = true;
     followTail.current = true;
     setAtBottom(true);
-    setMessages((list) => [...list, { role: "user", text, blocks: [{ type: "text", text }] }, { role: "assistant", text: "", blocks: [], streaming: true }]);
+    setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }, { role: "assistant", text: "", blocks: [], streaming: true }]);
     const fail = (message: string) => {
       setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
       setInput(text);                   // 失败回填草稿
+      if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
       busyRef.current = false;
       busySessionRef.current = undefined;
       setBusy(false);
@@ -1058,7 +1146,8 @@ export default function App() {
     };
     try {
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }),
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(pending.length > 0 ? { text, images: toRequestImages(pending) } : { text }),
       });
       if (!response.ok) {
         const error = await response.json() as { error?: { message?: string } };
@@ -1649,6 +1738,13 @@ export default function App() {
               </div>
             )}
             <div data-testid="composer"
+              onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
+              onDrop={(event) => {
+                const files = Array.from(event.dataTransfer.files);
+                if (files.length === 0) return;
+                event.preventDefault();
+                void collectImages(files);
+              }}
               className="rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
@@ -1663,9 +1759,37 @@ export default function App() {
                   ))}
                 </div>
               )}
+              {/* 附件托盘：只有有图时出现，所以无图的基线不变 */}
+              {attachments.length > 0 && (
+                <div data-testid="composer-attachments" className="flex flex-wrap items-end gap-2 border-b border-line px-3 py-2">
+                  {attachments.map((image) => (
+                    <div key={image.id} className="relative">
+                      <img src={`data:${image.mimeType};base64,${image.data}`} alt="" data-shot-mask="attachment-thumb"
+                        className="h-14 w-14 rounded object-cover ring-1 ring-line" />
+                      <button type="button" aria-label="移除图片"
+                        onClick={() => { const next = removeImage(attachmentsRef.current, image.id); setAttachments(next); attachmentsRef.current = next; }}
+                        className="absolute -right-1 -top-1 rounded-full bg-ink-900 p-0.5 text-surface ring-1 ring-line">
+                        <IconX size={10} />
+                      </button>
+                    </div>
+                  ))}
+                  <span className="pb-1 text-micro text-ink-500">{attachmentSummary(attachments)}</span>
+                </div>
+              )}
+              <input ref={fileInputRef} type="file" hidden multiple
+                accept={IMAGE_MIME_TYPES.join(",")}
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";           // 允许连续选同一张图
+                  void collectImages(files);
+                }} />
               <div className="flex items-end gap-2 p-1.5">
+                <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                  data-testid="attach-image" className="mb-0.5 shrink-0">
+                  <IconPhoto size={16} />
+                </IconButton>
                 <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
-                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · 生成中 Enter 插话 · Esc 打断 · / 查看命令"}
+                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · 生成中 Enter 插话\n· Esc 打断 · / 查看命令"}
                 onChange={(event) => {
                   const next = event.target.value;
                   setInput(next);
@@ -1675,6 +1799,12 @@ export default function App() {
                   } else if (palette !== undefined && !next.startsWith("/")) {
                     setPalette(undefined);
                   }
+                }}
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+                  if (files.length === 0) return;   // 纯文本粘贴走默认行为
+                  event.preventDefault();
+                  void collectImages(files);
                 }}
                 onKeyDown={(event) => {
                   // 调色板打开时：↑/↓ 选择、Enter 执行、Esc 关闭
