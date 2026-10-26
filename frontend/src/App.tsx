@@ -1785,7 +1785,7 @@ export default function App() {
                 event.preventDefault();
                 void collectImages(files);
               }}
-              className="rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              className="relative rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
                   {palette.items.map((item, index) => (
@@ -1884,9 +1884,10 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="composer-autogrow w-full min-w-0 resize-none bg-transparent px-4 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
-              {/* 底部工具行：次要工具居左、hint、主操作（发送/停止）居右；同属 composer 容器（chat.md §3.5） */}
-              <div className="flex items-center gap-2 px-2 pb-2">
+                className="composer-autogrow w-full min-w-0 resize-none bg-transparent pl-4 pr-16 pt-2 pb-14 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+              {/* 发送/停止钮内嵌右下角（ChatGPT/Claude 同型）：不再设独立底部行。
+                绝对定位保证textarea单行或满高时按钮都锚在框右下；textarea 的 pb-14 空出按钮区。 */}
+              <div className="absolute inset-x-3 bottom-1.5 z-10 flex items-center gap-2">
                 {isMobile && (
                   <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                     data-testid="attach-image" className="shrink-0">
