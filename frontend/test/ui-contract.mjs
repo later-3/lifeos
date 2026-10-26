@@ -399,17 +399,14 @@ const composerShape = await page.evaluate(() => {
 check("composer 是单一容器", composerShape.exists && composerShape.action, JSON.stringify(composerShape));
 check("textarea 有可访问名", composerShape.aria === "输入消息", String(composerShape.aria));
 
-// 自动高度 1–8 行（chat.md §3.5）
+// 自动高度 1–8 行（chat.md §3.5；composer-autogrow = CSS field-sizing，原生方案下无内联 height，只断言行为）
 const autoTextarea = page.locator("textarea").first();
 const heightBefore = await autoTextarea.evaluate((el) => el.getBoundingClientRect().height);
 await autoTextarea.fill(Array.from({ length: 20 }, (_, i) => `line-${i}`).join("\n"));
 await page.waitForTimeout(120);
-const heightAfter = await autoTextarea.evaluate((el) => ({
-  height: el.getBoundingClientRect().height,
-  style: Number.parseFloat(el.style.height || "0"),
-}));
-check("输入框自动 1–8 行", heightAfter.height > heightBefore && heightAfter.style > 0 && heightAfter.style <= 178,
-  `${heightBefore.toFixed(1)} → ${heightAfter.height.toFixed(1)} (style=${heightAfter.style})`);
+const heightAfter = await autoTextarea.evaluate((el) => el.getBoundingClientRect().height);
+check("输入框自动 1–8 行", heightAfter > heightBefore && heightAfter <= 178,
+  `${heightBefore.toFixed(1)} → ${heightAfter.toFixed(1)} (cap=176+padding)`);
 await autoTextarea.fill("");
 await page.waitForTimeout(80);
 
