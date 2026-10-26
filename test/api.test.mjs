@@ -791,6 +791,8 @@ test("失败分类：超时/网络/鉴权/中断/截断/空回复各有 kind（�
     const kinds = messages.filter((m) => m.role === "assistant").map((m) => m.failure);
     assert.deepEqual(kinds, ["timeout", "aborted", "empty", "network", "auth", "truncated"]);
     assert.equal(messages[1].error, "Request timed out.", "原始原因保留给界面展示");
+    // 失败块要显示时刻：没有时间戳，历史失败会被误读成"现在一直在超时"（2026-10-26 实测）
+    assert.ok(messages.every((m) => typeof m.at === "number"), "每条消息都应带时间戳");
   } finally { server.close(); }
 });
 

@@ -81,7 +81,7 @@ type StreamSnapshot = {
 type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
-type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; error?: string; failure?: FailureKind };
+type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
@@ -1701,8 +1701,10 @@ export default function App() {
                 const plan = resend?.index === index ? resend : undefined;
                 return (
                   <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
+                    {...(message.at !== undefined ? { at: message.at } : {})}
                     {...(message.error !== undefined ? { error: message.error } : {})}
                     {...(message.failure !== undefined ? { failure: message.failure } : {})}
+                    {...(message.failure !== undefined && index !== messages.length - 1 ? { historical: true } : {})}
                     {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
                 );
               })}

@@ -784,8 +784,17 @@ export function sessionImageBytesOf(state: SessionState): number {
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
-  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; error?: string; failure?: FailureKind }> = [];
-  for (const message of state.session.sessionManager.buildSessionProjection().messages) {
+  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind }> = [];
+  // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
+  // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
+  const projection = state.session.sessionManager.buildSessionProjection();
+  const items = projection.entries.flatMap((entry) => {
+    const raw = (entry.sourceEntry as { timestamp?: unknown }).timestamp;
+    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+    const at = Number.isNaN(parsed) ? undefined : parsed;
+    return entry.messages.map((message) => ({ message, at }));
+  });
+  for (const { message, at } of items) {
     if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
@@ -797,7 +806,7 @@ export function messagesOf(state: SessionState) {
           blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
         }
       }
-      out.push({ role: "user", text, blocks });
+      out.push({ role: "user", text, blocks, ...(at !== undefined ? { at } : {}) });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
@@ -812,6 +821,7 @@ export function messagesOf(state: SessionState) {
       const kind = classifyFailure({ ...(raw.stopReason !== undefined ? { stopReason: raw.stopReason } : {}), ...(errorText !== undefined ? { errorMessage: errorText } : {}), hasContent: blocks.length > 0 || text.trim() !== "" });
       out.push({
         role: "assistant", text, blocks,
+        ...(at !== undefined ? { at } : {}),
         ...(kind !== undefined ? { failure: kind } : {}),
         ...(errorText !== undefined ? { error: errorText } : {}),
       });
