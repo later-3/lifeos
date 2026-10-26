@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { writeTextAtomic } from "./atomic-file.ts";
 import { createBoundedSink } from "./bounded-sink.ts";
 import { setFocusOf, subscribeBus } from "./events.ts";
-import { isDraining, runningOf, setDraining } from "./session-runtime.ts";
+import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining } from "./session-runtime.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
@@ -212,6 +212,12 @@ export function createApp() {
 
 // 请求行（协议 P1·1.5 / specs 2.10）：每个 HTTP 请求一行 method/path/status/millis/requestId。
 app.use(async (c, next) => {
+  const expiredFor = expireDrainIfStale();
+  if (expiredFor !== undefined) {
+    void log.error("session-runtime", "expireDrainIfStale", "排空超时：重启没有发生，已恢复受理", {
+      details: { expectedBy: "dev-supervisor", drainedForMs: expiredFor, ttlMs: 60_000 },
+    });
+  }
   const requestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
   await next();
@@ -605,7 +611,11 @@ app.use(async (c, next) => {
   });
 
   // 运行态（诊断与开发 supervisor 用）：跨 Agent 正在跑的回合。
-  app.get("/api/runtime", (c) => c.json({ running: globalSnapshot().running, draining: isDraining() }));
+  app.get("/api/runtime", (c) => c.json({
+    running: globalSnapshot().running,
+    draining: isDraining(),
+    ...(drainingForMs() !== undefined ? { drainingForMs: drainingForMs() } : {}),
+  }));
   // 排空：拒绝新回合，已在跑的继续跑到结束。supervisor 据 running 计数决定何时重启（进程重启后排空标记自然清除）。
   app.post("/api/runtime/drain", (c) => {
     setDraining(true);

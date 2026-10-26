@@ -2,6 +2,7 @@
 // 监听 src/ 的改动；有改动时**先问后端有没有回合在跑**，有就等它们结束再重启，绝不在回合中途杀进程。
 // 决策逻辑在 dev-supervisor-core.mjs（有测试）。前端由 Vite 热更新，不经过这里。
 import { spawn } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { watch } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,14 @@ let debounce;
 let polling;
 let stopping = false;
 
-const log = (msg) => console.log(`[dev-supervisor] ${msg}`);
+// 日志同时落盘：supervisor 的 stdout 在跑 pnpm dev:all 的那个终端里，出事后翻不到。
+// 2026-10-26 排空卡住时就是因为没有日志，无法判断卡在哪一步。
+const logFile = process.env.LIFEOS_SUPERVISOR_LOG ?? "/tmp/lifeos-dev-supervisor.log";
+const log = (msg) => {
+  const line = `[${new Date().toISOString()}] ${msg}`;
+  console.log(`[dev-supervisor] ${msg}`);
+  try { appendFileSync(logFile, `${line}\n`); } catch { /* 日志失败不阻断重启 */ }
+};
 
 let drainRequested = false;
 
@@ -53,6 +61,7 @@ function start() {
   log("启动后端（无 --watch；改动由 supervisor 在回合结束后重启）");
   const mine = spawn(process.execPath, args, { cwd: root, stdio: "inherit" });
   child = mine;
+  log(`后端进程 pid=${String(mine.pid ?? "-")}`);
   mine.on("exit", (code, signal) => {
     if (child === mine) child = undefined;
     if (stopping || mine.lifeosStopping === true) return;   // 主动停止：不是意外退出，不重启（由调用方重启）
