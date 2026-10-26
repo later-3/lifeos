@@ -1736,20 +1736,32 @@ export default function App() {
           )}
         </div>
 
-        {/* 固定状态条：在消息滚动区外、输入框上方；位置不随消息滚动 */}
-        <div className="shrink-0 px-4 sm:px-6" data-testid="turn-status-bar">
-          <TurnStatusBar busy={busy} step={turnStep} phase={phase}
-            {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
-            {...(activeTool !== undefined ? { activeTool } : {})}
-            {...(retry !== undefined ? { retry } : {})}
-            {...(turnStatus !== undefined ? { status: turnStatus } : {})}
-            {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
-            {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-            {...(meta?.context !== undefined ? { context: meta.context } : {})} />
-        </div>
-
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
+            {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
+                左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
+                手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
+            <div data-testid="composer-dock"
+              className={`${!(isMobile && !busy && turnStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} mb-1 flex min-h-9 items-center gap-3 rounded-panel bg-surface px-3 py-1 ring-1 ring-line`}>
+              <div className="min-w-0 flex-1" data-testid="turn-status-bar">
+                <TurnStatusBar busy={busy} step={turnStep} phase={phase}
+                  {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                  {...(activeTool !== undefined ? { activeTool } : {})}
+                  {...(retry !== undefined ? { retry } : {})}
+                  {...(turnStatus !== undefined ? { status: turnStatus } : {})}
+                  {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
+                  {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
+                  {...(meta?.context !== undefined ? { context: meta.context } : {})} />
+              </div>
+              {!isMobile && (
+                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1 border-l border-line pl-2.5">
+                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                    data-testid="attach-image" className="shrink-0">
+                    <IconPhoto size={16} />
+                  </IconButton>
+                </div>
+              )}
+            </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (
@@ -1872,10 +1884,12 @@ export default function App() {
                 className="composer-autogrow w-full min-w-0 resize-none bg-transparent px-4 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
               {/* 底部工具行：次要工具居左、hint、主操作（发送/停止）居右；同属 composer 容器（chat.md §3.5） */}
               <div className="flex items-center gap-2 px-2 pb-2">
-                <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                  data-testid="attach-image" className="shrink-0">
-                  <IconPhoto size={16} />
-                </IconButton>
+                {isMobile && (
+                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                    data-testid="attach-image" className="shrink-0">
+                    <IconPhoto size={16} />
+                  </IconButton>
+                )}
                 <span className="hidden min-w-0 truncate text-micro text-ink-500 sm:block">Enter 发送 · Esc 打断 · / 命令</span>
                 {busy ? (
                   <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
