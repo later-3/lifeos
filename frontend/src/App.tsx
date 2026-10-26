@@ -1824,7 +1824,7 @@ export default function App() {
                   void collectImages(files);
                 }} />
               <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
-                  placeholder="输入消息"
+                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
                   setInput(next);
@@ -1893,7 +1893,6 @@ export default function App() {
                     <IconPhoto size={16} />
                   </IconButton>
                 )}
-                <span className="hidden min-w-0 truncate text-micro text-ink-500 sm:block">Enter 发送 · Esc 打断 · / 命令</span>
                 {busy ? (
                   <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
                     className="ml-auto rounded-full">
