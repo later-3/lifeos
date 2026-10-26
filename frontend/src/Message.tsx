@@ -242,22 +242,23 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
-          {block.images !== undefined && block.images.length > 0 && (
-            // 工具读到的图片（Pi 的 read）：与 TUI 一样展示出来，点开看原图
-            <div className="flex flex-wrap gap-2 border-t border-line bg-sunken px-3 py-2" data-testid="tool-image">
-              {block.images.map((image, index) => (
-                <a key={index} href={`data:${image.mimeType};base64,${image.data}`} target="_blank" rel="noreferrer">
-                  <img src={`data:${image.mimeType};base64,${image.data}`} alt={`工具读到的图片 ${index + 1}`}
-                    data-shot-mask="tool-image"
-                    className="max-h-48 max-w-full rounded border border-line object-contain" />
-                </a>
-              ))}
-            </div>
-          )}
           {block.result !== undefined && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line bg-sunken px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{block.result}{block.truncated === true ? "\n…（界面只显示前 8KB，完整结果见会话文件）" : ""}</pre>
           )}
         </>
+      )}
+      {block.images !== undefined && block.images.length > 0 && (
+        // 工具读到的图片（Pi 的 read）：不受收起状态控制（Task 0002 2026-10-26 用户拍板 a）。
+        // 图片是一等输出，存在就要看得见；不能躲在需要点击才展开的容器里。
+        <div className="flex flex-wrap gap-2 border-t border-line bg-sunken px-3 py-2" data-testid="tool-image">
+          {block.images.map((image, index) => (
+            <a key={index} href={`data:${image.mimeType};base64,${image.data}`} target="_blank" rel="noreferrer">
+              <img src={`data:${image.mimeType};base64,${image.data}`} alt={`工具读到的图片 ${index + 1}`}
+                data-shot-mask="tool-image"
+                className="max-h-48 max-w-full rounded border border-line object-contain" />
+            </a>
+          ))}
+        </div>
       )}
     </div>
   );

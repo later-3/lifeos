@@ -452,12 +452,27 @@ export default function App() {
   // 面板放不下就收起（视口挤压保护）
   useEffect(() => { if (!isMobile && panelOpen && !box.panelFits) setPanelOpen(false); }, [isMobile, panelOpen, box.panelFits, setPanelOpen]);
 
-  // 输入框自适应高度（1–8 行）
+  // 输入框自适应：支持 field-sizing 的浏览器走 CSS（composer-autogrow，tokens 定义）；
+  // 其余浏览器 JS 兜底，直到高度连续 20 帧稳定才停（避开冷启动时样式未注入的假测量）。
   useEffect(() => {
     const node = inputRef.current;
-    if (node === null) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 176)}px`;
+    if (node === null || "field-sizing" in node.style) return;
+    const measure = () => {
+      node.style.height = "auto";
+      const max = parseFloat(getComputedStyle(node).getPropertyValue("--composer-max-height")) || 176;
+      node.style.height = `${Math.min(node.scrollHeight, max)}px`;
+    };
+    let stable = 0;
+    let prev = "";
+    let rafId = 0;
+    const tick = () => {
+      measure();
+      stable = node.style.height === prev ? stable + 1 : 0;
+      prev = node.style.height;
+      if (stable < 20) rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [input]);
 
   async function fetchGroups(id: string): Promise<Group[]> {
@@ -1725,20 +1740,35 @@ export default function App() {
           )}
         </div>
 
-        {/* 固定状态条：在消息滚动区外、输入框上方；位置不随消息滚动 */}
-        <div className="shrink-0 px-4 sm:px-6" data-testid="turn-status-bar">
-          <TurnStatusBar busy={busy} step={turnStep} phase={phase}
-            {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
-            {...(activeTool !== undefined ? { activeTool } : {})}
-            {...(retry !== undefined ? { retry } : {})}
-            {...(turnStatus !== undefined ? { status: turnStatus } : {})}
-            {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
-            {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-            {...(meta?.context !== undefined ? { context: meta.context } : {})} />
-        </div>
-
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
+            {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
+                左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
+                手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
+            {/* composer dock：一行共享、不带壳（2026-10-26 用户反馈“框框丑”“——裸行才是低位状态条该有的样子）。
+                左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
+                手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
+            <div data-testid="composer-dock"
+              className={`${!(isMobile && !busy && turnStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
+              <div className="min-w-0 flex-1" data-testid="turn-status-bar">
+                <TurnStatusBar busy={busy} step={turnStep} phase={phase}
+                  {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                  {...(activeTool !== undefined ? { activeTool } : {})}
+                  {...(retry !== undefined ? { retry } : {})}
+                  {...(turnStatus !== undefined ? { status: turnStatus } : {})}
+                  {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
+                  {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
+                  {...(meta?.context !== undefined ? { context: meta.context } : {})} />
+              </div>
+              {!isMobile && (
+                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
+                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                    data-testid="attach-image" className="shrink-0">
+                    <IconPhoto size={16} />
+                  </IconButton>
+                </div>
+              )}
+            </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (
@@ -1759,7 +1789,7 @@ export default function App() {
                 event.preventDefault();
                 void collectImages(files);
               }}
-              className="rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
                   {palette.items.map((item, index) => (
@@ -1797,13 +1827,10 @@ export default function App() {
                   event.target.value = "";           // 允许连续选同一张图
                   void collectImages(files);
                 }} />
-              <div className="flex items-end gap-2 p-1.5">
-                <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                  data-testid="attach-image" className="mb-0.5 shrink-0">
-                  <IconPhoto size={16} />
-                </IconButton>
+              {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 } */}
+              <div className="flex items-end gap-2 pb-2 pl-2 pr-2">
                 <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
-                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · 生成中 Enter 插话\n· Esc 打断 · / 查看命令"}
+                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
                   setInput(next);
@@ -1863,17 +1890,28 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
-              {busy ? (
-                <IconButton label="停止（Esc）" size="lg" tone="solid" onClick={() => void stop()}>
-                  <IconPlayerStopIcon />
-                </IconButton>
-              ) : (
-                <IconButton label="发送" size="lg" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
-                  onClick={() => void send()}>
-                  <IconArrowUpIcon />
-                </IconButton>
-              )}
+                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-4 pr-2 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+                {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
+                  <div className="flex items-end justify-end gap-2 pb-0 pl-2 pr-2">
+                  {isMobile && (
+                    <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                      data-testid="attach-image" className="shrink-0">
+                      <IconPhoto size={16} />
+                    </IconButton>
+                  )}
+                  {busy ? (
+                    <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
+                      className="rounded-full">
+                      <IconPlayerStopIcon />
+                    </IconButton>
+                  ) : (
+                    <IconButton label="发送" size="xl" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
+                      onClick={() => void send()}
+                      className="rounded-full">
+                      <IconArrowUpIcon />
+                    </IconButton>
+                  )}
+                </div>
               </div>
             </div>
           </div>

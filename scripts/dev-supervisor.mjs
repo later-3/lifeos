@@ -9,7 +9,8 @@ import { decideRestart } from "./dev-supervisor-core.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const backend = process.env.LIFEOS_API ?? "http://127.0.0.1:43120";
-const args = ["--experimental-strip-types", "src/main.ts"];
+// 透传额外参数给后端（如 --port=43130）；supervisor 只保留自身控制参数。
+const args = ["--experimental-strip-types", "src/main.ts", ...process.argv.slice(2)];
 const POLL_MS = 1000;
 const DEBOUNCE_MS = 300;
 
