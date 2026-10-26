@@ -107,16 +107,35 @@ export function applySnapshotFacts(
   },
   now: number,
 ): RunFacts {
+  const withRunning = applyRunningFacts(facts, snapshot.running, now);
+  let meta = withRunning.meta;
+  for (const entry of snapshot.unread) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+  const unread: Record<string, true | undefined> = {};
+  for (const entry of snapshot.unread) unread[entry.sessionId] = true;
+  return { ...withRunning, unread, meta };
+}
+
+/**
+ * 只对账"运行中"事实（不发快照的连接也能用）。
+ *
+ * 为什么需要：`done` 事件可能被漏掉——标签页在后台被节流、连接处于半开、
+ * 或者客户端自己的乱序守卫把它丢掉；这些情况下 SSE 心跳仍然正常，
+ * 看门狗不会重连，绿点就永远亮着（2026-10-26 实测：回合 09:50 已完成，10:14 还在闪）。
+ * 服务端持有事实，所以定期拿 `/api/runtime` 对账一次即可收敛，且不碰未读与归属。
+ */
+export function applyRunningFacts(
+  facts: RunFacts,
+  running: Array<{ sessionId: string; agentId?: string; projectId?: string }>,
+  now: number,
+): RunFacts {
   let meta = facts.meta;
-  for (const entry of [...snapshot.running, ...snapshot.unread]) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
-  const runningIds = [...new Set(snapshot.running.map((entry) => entry.sessionId))];
+  for (const entry of running) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+  const runningIds = [...new Set(running.map((entry) => entry.sessionId))];
   const lastTurn: Record<string, TurnFact | undefined> = { ...facts.lastTurn };
   for (const [sessionId, fact] of Object.entries(lastTurn)) {
     if (fact?.state === "running" && !runningIds.includes(sessionId)) lastTurn[sessionId] = { ...fact, state: "done", at: now };
   }
-  const unread: Record<string, true | undefined> = {};
-  for (const entry of snapshot.unread) unread[entry.sessionId] = true;
-  return { ...facts, snapRunning: runningIds, lastTurn, unread, meta };
+  return { ...facts, snapRunning: runningIds, lastTurn, meta };
 }
 
 /** 批量写入会话归属（列表加载、事件携带时）：只补全，不清空。 */

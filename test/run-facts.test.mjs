@@ -68,7 +68,7 @@ test("T7g settleStopped：服务端明确不在跑 → 清残留运行点，不�
 });
 
 // T56：快照是服务端真相（任务 0007）——跨 Agent 的运行集合整体替换；快照里没有的残留"运行中"必须清掉（断线期间已结束的回合）。
-import { applySnapshotFacts } from "../frontend/src/run-facts.ts";
+import { applyRunningFacts, applySnapshotFacts } from "../frontend/src/run-facts.ts";
 test("T56 快照整体替换：运行集合与未读来自服务端；断线期间已结束的残留运行点被清掉", async () => {
   let f = applyRunEvent(emptyRunFacts(), { sessionId: "old", type: "turn", turnId: "t0", state: "running" }, 1);
   f = applyRunEvent(f, { sessionId: "other", type: "turn", turnId: "t9", state: "done" }, 2);   // 本地留下的未读
@@ -92,4 +92,24 @@ test("T62b 快照与 turn 事件都把会话归属写入 meta；后来的事件�
   assert.deepEqual(f.meta.S2, { agentId: "b", projectId: "p9" });
   f = applyRunEvent(f, { sessionId: "S3", agentId: "a", projectId: "p2", type: "turn", turnId: "t", state: "running" }, 1);
   assert.deepEqual(f.meta.S3, { agentId: "a", projectId: "p2" });
+});
+
+test("applyRunningFacts：服务端说不在跑 → 清掉残留的运行事实（漏掉 done 时靠它对账）", () => {
+  const facts = {
+    ...emptyRunFacts(),
+    snapRunning: ["s1"],
+    lastTurn: { s1: { turnId: "t1", state: "running", at: 1 } },
+    unread: { s2: true },
+    meta: {},
+  };
+  const next = applyRunningFacts(facts, [], 999);
+  assert.deepEqual(next.snapRunning, [], "运行集合以服务端为准");
+  assert.equal(next.lastTurn.s1.state, "done", "残留的 running 账本要收尾");
+  assert.deepEqual(next.unread, { s2: true }, "未读不归它管，必须原样保留");
+});
+
+test("applyRunningFacts：服务端说在跑 → 补上并写归属", () => {
+  const next = applyRunningFacts({ ...emptyRunFacts() }, [{ sessionId: "s9", agentId: "a1", projectId: "p1" }], 5);
+  assert.deepEqual(next.snapRunning, ["s9"]);
+  assert.equal(next.meta.s9?.agentId, "a1");
 });

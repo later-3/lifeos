@@ -68,6 +68,8 @@ const STREAM_EVENT_NAMES = [
 
 /** 流陈旧阈值 = 服务端心跳间隔的 2.5 倍；看门狗检查间隔。 */
 const STREAM_STALE_MS = 25_000;
+/** 运行态对账间隔：与 SSE 心跳无关的兜底，收敛"漏掉 done 事件"的绿点。 */
+const RUN_RECONCILE_MS = 30_000;
 const STREAM_WATCHDOG_MS = 5_000;
 
 /** 全局快照（连接即发）：connectionId 用于焦点上报；seq 是事件基线；running/unread 是服务端真相。 */
@@ -515,6 +517,24 @@ export default function App() {
   }
 
   /** 无会话时刷新头部默认模型；配置保存会广播 agents_changed，最终走到这里。 */
+  // 运行态定期对账（2026-10-26）：`done` 事件可能漏掉（标签页后台被节流、半开连接、
+  // 或客户端乱序守卫丢弃），而心跳正常时看门狗不会重连，绿色呼吸点就永久亮着。
+  // 服务端持事实，所以每 30 秒用 /api/runtime 收敛一次；只动运行态，不碰未读与归属。
+  useEffect(() => {
+    let cancelled = false;
+    const reconcileRunning = async () => {
+      if (document.visibilityState !== "visible") return;   // 后台标签页不做无意义请求
+      const response = await fetch("/api/runtime").catch(() => undefined);
+      if (cancelled || response?.ok !== true) return;
+      const data = await response.json().catch(() => undefined) as { running?: Array<{ sessionId: string; agentId?: string; projectId?: string }> } | undefined;
+      if (cancelled || data?.running === undefined) return;
+      setRunFacts((facts) => applyRunningFacts(facts, data.running ?? [], Date.now()));
+    };
+    const timer = window.setInterval(() => { void reconcileRunning(); }, RUN_RECONCILE_MS);
+    void reconcileRunning();                                  // 打开页面先对一次
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
   async function refreshAgentDefaultModel(id: string) {
     const response = await fetch(`/api/agents/${id}/config`).catch(() => undefined);
     const data = response?.ok === true
@@ -2038,7 +2058,7 @@ function IconArrowUpIcon() {
   );
 }
 import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, applySnapshotFacts, isRunning, hasUnread, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
+import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, isRunning, hasUnread, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
 import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { lostNoticeFor } from "./turn-notice";
