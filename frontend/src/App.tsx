@@ -29,7 +29,7 @@ import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream,
 import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
-import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
@@ -1920,16 +1920,14 @@ export default function App() {
                     </IconButton>
                   )}
                   {busy ? (
-                    <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
-                      className="rounded-full">
+                    <ComposerButton label="停止（Esc）" onClick={() => void stop()}>
                       <IconPlayerStopIcon />
-                    </IconButton>
+                    </ComposerButton>
                   ) : (
-                    <IconButton label="发送" size="xl" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
-                      onClick={() => void send()}
-                      className="rounded-full">
+                    <ComposerButton label="发送" disabled={input.trim() === "" || selectedProjectId === undefined}
+                      onClick={() => void send()}>
                       <IconArrowUpIcon />
-                    </IconButton>
+                    </ComposerButton>
                   )}
                 </div>
               </div>

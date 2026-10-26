@@ -48,6 +48,24 @@ export function IconButton({ label, active = false, tone = "default", size = "md
   );
 }
 
+/**
+ * composer 发送/停止钮：触达 44（主操作档，frontend-spec §2），视觉圆 32（≈2.1× 输入文字 15px，
+ * 三家 A 级参考 2.0–2.5 比例区间的中值，见 reference-baseline "composer 视觉"行；用户拍板 Task 0002 a）。
+ * 视觉小圆与触达解耦：内圈直径 32，外圈命中 44。
+ */
+export function ComposerButton({ label, tone = "solid", disabled = false, onClick, children }: {
+  label: string; tone?: "solid"; disabled?: boolean; onClick?: () => void; children: ReactNode;
+}) {
+  return (
+    <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick}
+      className="group inline-flex h-11 w-11 shrink-0 items-center justify-center justify-self-end rounded-full disabled:cursor-not-allowed">
+      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent text-white" : ""}`}>
+        {children}
+      </span>
+    </button>
+  );
+}
+
 /** 分区小标签（列头、模态分节）——11px + 加字距，和正文拉开层级。 */
 export function Label({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <span className={`text-micro font-medium tracking-wide text-ink-500 ${className}`}>{children}</span>;
