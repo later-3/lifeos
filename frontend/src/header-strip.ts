@@ -9,6 +9,33 @@ export function taskTitleKey(agentId: string, projectId: string, taskId: string)
   return `${agentId}\u0000${projectId}\u0000${taskId}`;
 }
 
+/** 头部 task 段的取值来源。 */
+export type HeaderTask = { id: string; title?: string };
+
+/**
+ * task 段显示哪一个 Task。
+ *
+ * 规则（有依据）：Task 是**会话级**状态（activeTaskId 存在会话文件里），所以
+ * - 有会话：只显示该会话的 Task；会话没有 Task 时不拿默认 Task 顶上（那会撒谎——下一轮并不进默认 Task）。
+ * - 无会话：显示**项目的默认 Task**（`src/tasks.ts` 的 ensureDefaultTask，isDefault: true）。
+ *   依据：新建会话必然绑到默认 Task（createSession → ensureDefaultTask），首条消息就落在这里。
+ */
+export function headerTaskOf(input: {
+  hasSession: boolean;
+  sessionTaskId?: string | null;
+  sessionTaskTitle?: string;
+  projectDefaultTask?: HeaderTask;
+}): HeaderTask | undefined {
+  if (input.hasSession) {
+    if (input.sessionTaskId == null || input.sessionTaskId === "") return undefined;
+    return {
+      id: input.sessionTaskId,
+      ...(input.sessionTaskTitle !== undefined ? { title: input.sessionTaskTitle } : {}),
+    };
+  }
+  return input.projectDefaultTask;
+}
+
 export type HeaderStripInput = {
   agentName: string;
   projectName: string;

@@ -94,7 +94,6 @@
 - **生成中**：Enter 走 Pi 原生 `steer` 插话；API 也支持 `followUp`/排队，但当前 UI 不显示队列，页面文档不能把该行为写成“排队”。
 - **高度**：自动 1–8 行，超过后内部滚动。
 - **草稿**：按会话（或待建会话的 Agent+项目）归属；发送失败回填，不静默丢弃。
-- **`/task`**：列出当前项目的 Task；选择后只更新 `activeTaskId`，**下一轮生效**，当前正在跑的轮次不换上下文；任务列表来自项目任务目录，不另建索引。
 - **可访问**：textarea 必须有 `aria-label="输入消息"`；placeholder 不作为唯一可访问名；调色板行在手机 ≥44。
 - **手机**：placeholder 只写“输入消息”，不塞键盘快捷键；composer 固定在键盘上方；调色板、发送/停止不 hover-only。
 - **未来扩展**：排队、通知横幅必须进同一 composer 容器，不散落到 header 或状态条。
@@ -107,7 +106,7 @@
 | 列折叠 | 完全独立；收起进全局 44px 导航轨（常数与实现见 `specs/frontend-development/frontend-spec.md` §3） | 并列折叠仍保聊天宽度 |
 | 列拖宽 | 列间 1px 分隔线拖动 | 夹紧区间；宽度 localStorage；方向按把手位置 |
 | 左侧图标轨 | 常驻 44px（全局规则见 `specs/frontend-development/frontend-spec.md` §3），高亮 = 该列展开 | 不做 hover 自动展开；不做多列互斥 |
-| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
+| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
 | 固定状态条 | 消息滚动区外、输入框上方；左边 4 步/阶段/耗时数字，右边 `⚡速度 · ↑输入 ↓输出 ◔上下文`（均有 tooltip） | 不随消息滚；不写“本轮”前缀；符号必须有 tooltip |
 | 输入框 | 单容器 composer（见 §3.5）；草稿按会话归属；Enter 发送/插话；输入法组字不发送 | 发送失败回填草稿；`submittingRef` 防重复 |
 | 消息区 | 阅读列居中；用户深色气泡，助手贴白底；思考/工具/成功/失败用不同 token 背景 | 禁 HTML 透传；思考/工具可折叠；每个块带 `data-message-kind` |

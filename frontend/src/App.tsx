@@ -30,7 +30,7 @@ import { TurnInspector } from "./SessionHistory";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -240,6 +240,8 @@ export default function App() {
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
   // 头部状态条 task 段：activeTaskId → 任务标题（Task 0002）；缺失时按需拉一次清单（缺段只显示 ID）。
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
+  /** 项目默认 Task 缓存（key = taskTitleKey(agent, project, "default")）：无会话时头部显示它 */
+  const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
@@ -972,9 +974,17 @@ export default function App() {
     const response = await fetch(`/api/agents/${agent.id}/projects`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }),
     });
-    const data = await response.json() as { project?: { id: string }; error?: { message: string } };
+    const data = await response.json() as {
+      project?: { id: string; name?: string };
+      defaultTask?: { id: string; title: string };
+      error?: { message: string };
+    };
     if (!response.ok || data.project === undefined) return data.error?.message ?? "注册失败";
     const pid = data.project.id;
+    // 绑定即创建默认 Task（src/projects.ts）：这里是它唯一的用户可见确认，别让它静默发生
+    if (data.defaultTask !== undefined) {
+      toast(`已添加项目 ${data.project.name ?? pid} · 默认 Task ${data.defaultTask.id} ${data.defaultTask.title}`, "success");
+    }
     setAddingProject(false);
     const next = await reloadGroups();
     const target = (next ?? []).find((g) => g.project.id === pid);
@@ -1208,39 +1218,6 @@ export default function App() {
     if (items.length === 0) toast("模型清单是空的", "error");
   }
 
-  // 切换后必须重读会话：头部的"当前模型/思考级别"来自接口 meta，不刷新就会一直显示旧值
-  /** /task：列出当前项目的任务，选中后只切换 activeTaskId；下一轮 prompt 生效。 */
-  async function openTaskPalette() {
-    if (agent === undefined || sessionId === undefined) { toast("先选中会话", "error"); return; }
-    const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
-    const response = await fetch(`/api/agents/${agent.id}/projects/${pid}/tasks`).catch(() => undefined);
-    if (response?.ok !== true) { toast("任务列表加载失败", "error"); return; }
-    const data = await response.json() as { items?: TaskItem[] };
-    const items = data.items ?? [];
-    if (items.length > 0) {
-      const scope = { agentId: agent.id, projectId: pid };
-      setTaskTitles((previous) => ({ ...previous, ...Object.fromEntries(items.map((task) => [taskTitleKey(scope.agentId, scope.projectId, task.id), task.title])) }));
-    }
-    if (items.length === 0) { toast("这个项目还没有任务", "error"); return; }
-    setPalette({ index: 0, items: items.map((task) => ({
-      key: task.id,
-      label: task.id,
-      hint: `${task.status}${task.isDefault ? " · 默认" : ""}${task.date !== undefined ? ` · ${task.date}` : ""}`,
-      run: () => { void applyTask(task.id); },
-    })) });
-  }
-
-  async function applyTask(taskId: string) {
-    if (agent === undefined || sessionId === undefined) return;
-    const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/task`, {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId }),
-    }).catch(() => undefined);
-    const body = response?.ok === true ? undefined : await response?.json().catch(() => undefined) as { error?: { message?: string } } | undefined;
-    if (response?.ok !== true) { toast(body?.error?.message ?? "切换 Task 失败", "error"); return; }
-    setMeta((previous) => previous === undefined ? previous : { ...previous, activeTaskId: taskId });
-    toast(`已切换到 ${taskId}；下一轮生效`, "success");
-  }
-
   async function applyModel(provider: string, model: string) {
     if (agent === undefined || sessionId === undefined) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/model`, {
@@ -1268,7 +1245,6 @@ export default function App() {
   const COMMANDS: PaletteItem[] = [
     { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", run: () => void compactNow() },
     { key: "/model", label: "/model", hint: "切换本会话模型", run: () => void openModelPalette() },
-    { key: "/task", label: "/task", hint: "切换当前 Task（下一轮生效）", run: () => void openTaskPalette() },
     { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
     { key: "/name", label: "/name <名称>", hint: "重命名会话", run: () => setInput("/name ") },
     { key: "/new", label: "/new", hint: "新建会话", run: () => void newSession() },
@@ -1399,7 +1375,19 @@ export default function App() {
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
 
-  // 头部状态条 task 段：activeTaskId 有值而标题缺失时，按需拉一次任务清单（Task 0002；同 /task 调色板同一端点）。加载失败时该段回退为只显示 ID。
+  // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
+  const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
+  const projectDefaultTask = projectDefaultTasks[taskTitleKey(headerTaskScope.agentId, headerTaskScope.projectId, "default")];
+  const headerTask = headerTaskOf({
+    hasSession: sessionId !== undefined,
+    sessionTaskId: meta?.activeTaskId,
+    ...(meta?.activeTaskId != null
+      ? { sessionTaskTitle: taskTitles[taskTitleKey(headerTaskScope.agentId, headerTaskScope.projectId, meta.activeTaskId)] }
+      : {}),
+    ...(projectDefaultTask !== undefined ? { projectDefaultTask } : {}),
+  });
+
+  // 头部状态条 task 段：activeTaskId 有值而标题缺失时，按需拉一次任务清单（Task 0002；头部 task 段与默认 Task 共用这个端点）。加载失败时该段回退为只显示 ID。
   useEffect(() => {
     const taskId = meta?.activeTaskId;
     const aid = agent?.id;
@@ -1420,6 +1408,27 @@ export default function App() {
       .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
     return () => { cancelled = true; };
   }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId, taskTitles]);
+
+  // 无会话时头部也要有 task 段：显示**项目默认 Task**（新建会话必然绑到它，见 headerTaskOf 的注释）。
+  // 有会话时不拉这个列表——会话的 Task 由 activeTaskId 决定，拿默认顶上会撒谎。
+  useEffect(() => {
+    const aid = agent?.id;
+    const pid = currentGroup?.project.id ?? selectedProjectId;
+    if (aid === undefined || pid === undefined || sessionId !== undefined) return;
+    const key = taskTitleKey(aid, pid, "default");
+    if (projectDefaultTasks[key] !== undefined) return;
+    let cancelled = false;
+    void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
+      .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
+      .then((data) => {
+        if (cancelled || data?.items === undefined) return;
+        const fallback = data.items.find((task) => task.isDefault === true);
+        if (fallback === undefined) return;   // 项目还没有默认 Task：该段缺席，不编造
+        setProjectDefaultTasks((previous) => ({ ...previous, [key]: { id: fallback.id, title: fallback.title } }));
+      })
+      .catch(() => { /* 失败可见性：该段缺席即可，不打断 */ });
+    return () => { cancelled = true; };
+  }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 
   const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
 
@@ -1454,7 +1463,8 @@ export default function App() {
         <>
           <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2">
+            {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="agent-rows">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
@@ -1652,10 +1662,8 @@ export default function App() {
                 sessionTitle,
                 headerModel: headerModel ?? null,
                 thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : undefined,
-                activeTaskId: meta?.activeTaskId ?? undefined,
-                taskTitle: meta?.activeTaskId != null
-                  ? taskTitles[taskTitleKey(agent?.id ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", meta.activeTaskId)]
-                  : undefined,
+                activeTaskId: headerTask?.id,
+                taskTitle: headerTask?.title,
               }))}
             </p>
           </div>

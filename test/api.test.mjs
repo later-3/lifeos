@@ -344,18 +344,14 @@ test("会话切换 Task：只更新 activeTaskId 与下一轮装配，校验项�
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/tasks`)).json();
     assert.ok(list.items.some((item) => item.id === task.task.id), "任务列表接口应返回当前项目任务");
 
-    const switched = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/task`, {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: task.task.id }),
-    });
-    assert.equal(switched.status, 200);
+    // 切换只存在于对话里（Agent 工具 lifeos_task_enter）；没有独立的 HTTP 切换端点。
+    const { setSessionTask } = await import("../src/agent-host.ts");
+    assert.equal((await setSessionTask("lifeosagent", sid, task.task.id)).ok, true);
     const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
     assert.equal(after.meta.activeTaskId, task.task.id, "切换后 meta 立即反映 activeTaskId");
 
-    const missing = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/task`, {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ taskId: "9999" }),
-    });
-    assert.equal(missing.status, 404);
-    assert.equal((await missing.json()).error.code, "task_not_found");
+    const missing = await setSessionTask("lifeosagent", sid, "9999");
+    assert.deepEqual(missing, { ok: false, reason: "task_not_found" }, "不在本项目里的 Task 必须被拒");
 
     // 下一轮装配直接读新 Task（这里不真跑模型，直接验证装配函数）
     const { buildPromptParts } = await import("../src/assembly.ts");

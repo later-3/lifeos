@@ -421,8 +421,11 @@ await page.waitForTimeout(300);
 const paletteItems = await page.evaluate(() => [...document.querySelectorAll("button")]
   .map((button) => (button.textContent ?? "").trim())
   .filter((text) => text.startsWith("/")));
-check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")) && paletteItems.some((text) => text.startsWith("/task")),
+check("斜杠命令面板：输入 / 列出命令", paletteItems.some((text) => text.startsWith("/compact")) && paletteItems.some((text) => text.startsWith("/model")) && paletteItems.some((text) => text.startsWith("/name")),
   paletteItems.slice(0, 7).join(" | "));
+// 回归守卫：自造的 /task 已删除（切换只在对话里：建即进入 / 按编号接手）
+check("斜杠命令面板：没有自造的 /task", !paletteItems.some((text) => text.startsWith("/task")),
+  paletteItems.filter((text) => text.startsWith("/task")).join(" | ") || "无");
 const paletteInsideComposer = await page.evaluate(() => {
   const container = document.querySelector('[data-testid="composer"]');
   const palette = document.querySelector('div[aria-label="斜杠命令"]');

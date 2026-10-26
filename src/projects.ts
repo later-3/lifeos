@@ -8,13 +8,13 @@
 // - manifest 只落家目录，**不写进用户项目目录**（保持用户仓库干净）。
 // - 共享 workspace 是顶层特殊项目 `projects/workspace/`；Agent 私有同名 `agents/<id>/projects/workspace/`。
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { sanitizeSegment } from "./segments.ts";
 import { ensureGlobalProject, readGlobalProject, type GlobalProject } from "./project-registry.ts";
 import { ensureAgentProjectLayer } from "./project-skeleton.ts";
-import { ensureDefaultTask } from "./tasks.ts";
+import { ensureDefaultTask, type TaskSummary } from "./tasks.ts";
 import { readAgent, writeAgent } from "./agents.ts";
 import { broadcast } from "./events.ts";
 
@@ -33,7 +33,7 @@ export async function uniqueSegment(agentId: string, base: string): Promise<stri
   for (let n = 2; taken.has(candidate); n += 1) candidate = `${base.slice(0, 55)}-${n}`;
   return candidate;
 }
-export type ProjectError = { code: string; message: string; status: 400 | 404 };
+export type ProjectError = { code: string; message: string; status: 400 | 404 | 422 };
 
 const agentProjectsRoot = (agentId: string) => join(resolveHome(), "agents", agentId, "projects");
 
@@ -118,10 +118,14 @@ export async function listAgentProjects(agentId: string): Promise<ProjectItem[]>
 }
 
 /** 注册并绑定：同 path 幂等复用；之前"从列表移除"过的话摘掉 hidden 标记（重新出现）。 */
-export async function bindProject(agentId: string, path: string): Promise<{ project: ProjectItem; created: boolean; changed: boolean } | ProjectError> {
+export async function bindProject(agentId: string, path: string): Promise<{ project: ProjectItem; created: boolean; changed: boolean; defaultTask: TaskSummary } | ProjectError> {
   const agent = await readAgent(agentId);
   if (agent === undefined) return { code: "agent_not_found", message: "找不到这个 Agent", status: 404 };
-  const registered = await registerProject(agentId, path);
+  const registered = await registerProject(agentId, path).catch((error: unknown) => {
+    // 项目骨架或默认 Task 建不出来：返回可读错误，且（新建绑定时）已回滚到"没添加过"的状态
+    if (error instanceof DefaultTaskFailed) return { code: "default_task_failed" as const, message: error.message, status: 422 as const };
+    throw error;
+  });
   if ("code" in registered) return registered;
   const defaultId = agent.defaultProjectId ?? "workspace";
   const project: ProjectItem = {
@@ -134,7 +138,7 @@ export async function bindProject(agentId: string, path: string): Promise<{ proj
   const changed = registered.created || unhidden;
   // 写操作在共享实现里广播：工具与 HTTP 两条入口都会闭环，不依赖调用方记得 notify
   if (changed) broadcast({ type: "agents_changed" });
-  return { project, created: registered.created, changed };
+  return { project, created: registered.created, changed, defaultTask: registered.defaultTask };
 }
 
 /** 从该 Agent 的列表移除：写 hiddenProjectIds；目录、manifest、会话全部保留；默认项目不可移除。 */
@@ -151,7 +155,7 @@ export async function unbindProject(agentId: string, pid: string): Promise<"unbo
   return "unbound";
 }
 
-export async function registerProject(agentId: string, path: string): Promise<{ project: ProjectManifest; created: boolean } | ProjectError> {
+export async function registerProject(agentId: string, path: string): Promise<{ project: ProjectManifest; created: boolean; defaultTask: TaskSummary } | ProjectError> {
   const target = resolve(path.trim());
   const info = await stat(target).catch(() => undefined);
   if (info === undefined) return { code: "not_found", message: "目录不存在", status: 404 };
@@ -162,30 +166,50 @@ export async function registerProject(agentId: string, path: string): Promise<{ 
       // 已有绑定：确保全局注册表有同 path 的条目，并让 Agent 的绑定目录名 = 全局 id
       const global = await ensureGlobalProject(project.path, project.id);
       const bound = await bindAgentProject(agentId, project.id, global);
-      return { project: bound, created: false };
+      return { project: bound.manifest, created: false, defaultTask: bound.defaultTask };
     }
   }
   const name = basename(target) || target;
   const global = await ensureGlobalProject(target, sanitizeSegment(name));   // 目录名 = 项目名（可读）
   const bound = await bindAgentProject(agentId, undefined, global);
-  return { project: bound, created: true };
+  return { project: bound.manifest, created: true, defaultTask: bound.defaultTask };
 }
 
 /**
  * 把全局项目绑定到 Agent：目录名 = 全局 id（会话/记录/私有记忆都在这个目录下）。
  * 旧绑定目录名不同时顺便改名（会话文件跟着搬）。
  */
-async function bindAgentProject(agentId: string, localId: string | undefined, global: GlobalProject): Promise<ProjectManifest> {
+async function bindAgentProject(agentId: string, localId: string | undefined, global: GlobalProject): Promise<{ manifest: ProjectManifest; defaultTask: TaskSummary }> {
   const targetDir = join(agentProjectsRoot(agentId), global.id);
   const sourceDir = localId !== undefined && localId !== global.id ? join(agentProjectsRoot(agentId), localId) : targetDir;
-  if (sourceDir !== targetDir) {
+  const existedBefore = await stat(targetDir).then((info) => info.isDirectory(), () => false);
+  const moved = sourceDir !== targetDir;
+  if (moved) {
     const targetExists = await stat(targetDir).catch(() => undefined);
     if (targetExists === undefined) await rename(sourceDir, targetDir).catch(() => { /* 并发/已搬走：按现状 */ });
   }
   if (global.path === undefined) throw new Error(`external project ${global.id} has no path`);
   // Agent × 项目层骨架（create-only，协议 §5.1）；身份只在共享层 project.json（协议 §5.3）
   await ensureAgentProjectLayer(targetDir);
-  // 默认 Task：每个 Agent × 项目一个（协议 §6.1）
-  await ensureDefaultTask({ agentId, projectId: global.id });
-  return { schemaVersion: 1, id: global.id, name: global.name, path: global.path };
+  // 默认 Task：每个 Agent × 项目一个（协议 §6.1）。它是绑定的硬前提：
+  // 失败就说明这个项目不能正常用（新建会话会立刻失败），所以不能留下"项目在列表里但用不了"的半成品。
+  let defaultTask: TaskSummary;
+  try {
+    defaultTask = await ensureDefaultTask({ agentId, projectId: global.id });
+  } catch (error) {
+    // 只回滚**本次新建**的绑定目录；搬过来的目录里有会话文件，删掉就是丢数据，绝不动。
+    if (!existedBefore && !moved) await rm(targetDir, { recursive: true, force: true }).catch(() => {});
+    throw new DefaultTaskFailed(global.id, error instanceof Error ? error.message : String(error));
+  }
+  return { manifest: { schemaVersion: 1, id: global.id, name: global.name, path: global.path }, defaultTask };
+}
+
+/** 默认 Task 建不出来：带上原因，让 HTTP / 工具层能给可读错误，而不是 500 纯文本。 */
+export class DefaultTaskFailed extends Error {
+  readonly projectId: string;
+  constructor(projectId: string, reason: string) {
+    super(`默认 Task 创建失败：${reason}`);
+    this.name = "DefaultTaskFailed";
+    this.projectId = projectId;
+  }
 }

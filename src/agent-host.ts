@@ -162,7 +162,11 @@ async function createHostedSession(
       agentId,
       projectId,
       // 建 Task 即进入它：会话指针指向新 Task（下一轮装配读取），与用户在界面里 /task 切换是同一件事
-      onEnterTask: (taskId) => enterTask(agentId, sessionManager, taskId),
+      // 进入即切换（协议 §7）：写会话指针，下一轮装配生效；校验与写指针共用 setSessionTask
+      onEnterTask: async (taskId) => {
+        const result = await setSessionTask(agentId, sessionManager.getSessionId(), taskId);
+        if (!result.ok) throw new Error(`无法进入 Task ${taskId}：${result.reason}`);
+      },
     }),
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
@@ -669,13 +673,6 @@ export async function compactSession(agentId: string, sessionId: string): Promis
 export type SetTaskResult =
   | { ok: true; taskId: string }
   | { ok: false; reason: "session_not_found" | "task_not_found" };
-
-/** 进入 Task（协议 §7）：写会话指针（自定义条目）并同步内存状态；下一轮装配读取它。 */
-function enterTask(agentId: string, manager: ReturnType<typeof SessionManager.create>, taskId: string): void {
-  manager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
-  const live = stateOf(agentId).sessions.get(manager.getSessionId());
-  if (live !== undefined) live.taskId = taskId;
-}
 
 /** 切换会话当前 Task：只影响下一轮；当前正在跑的轮次已装配完，不会被中途改写。 */
 export async function setSessionTask(agentId: string, sessionId: string, taskId: string): Promise<SetTaskResult> {
