@@ -23,10 +23,34 @@ export type StreamEvent =
   // 工具的 running/done 由 tool_execution_* 驱动，不再用整轮 busy 推断。
   | { type: "tool_start"; id: string; name: string; arguments: unknown }
   | { type: "tool_update"; id: string }
-  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number }
+  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number; images?: Array<{ data: string; mimeType: string }> }
   // Pi 的自动重试：让界面能显示"失败原因 + 第几次/共几次"（否则失败时界面一片空白）
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
   | { type: "retry_end"; success: boolean };
+
+/** 工具结果里的图片上限：单张字节数与张数（实测 read 出来的图片 13KB–382KB，见 image-input.md）。 */
+export const MAX_TOOL_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_TOOL_IMAGES = 4;
+
+/**
+ * 工具结果里的图片块（Pi 的 `read` 读到图片时返回 image 内容块）。
+ * 之前只取 text，图片被整段丢掉——界面上永远看不到 Agent 读到的图。
+ */
+export function toolResultImages(result: unknown): Array<{ data: string; mimeType: string }> {
+  const content = (result as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  for (const block of content) {
+    if (images.length >= MAX_TOOL_IMAGES) break;
+    const part = block as { type?: unknown; data?: unknown; mimeType?: unknown } | null;
+    if (part === null || part.type !== "image") continue;
+    if (typeof part.data !== "string" || typeof part.mimeType !== "string") continue;
+    if (!part.mimeType.startsWith("image/")) continue;
+    if ((part.data.length * 3) / 4 > MAX_TOOL_IMAGE_BYTES) continue;   // 太大就不内联，界面只显示文字摘要
+    images.push({ data: part.data, mimeType: part.mimeType });
+  }
+  return images;
+}
 
 /** 工具返回值取文本：与 Pi 自己的 `textOf()` 同义（只取 text 块，用换行连接）。 */
 export function toolResultText(result: unknown): { text: string; truncated: boolean } {
@@ -129,8 +153,10 @@ export function toStreamEvent(event: unknown): StreamEvent | undefined {
   if (input.type === "tool_execution_end") {
     if (typeof input.toolCallId !== "string") return undefined;
     const { text, truncated } = toolResultText(input.result);
+    const images = toolResultImages(input.result);
     return {
       type: "tool_result", id: input.toolCallId, isError: input.isError === true, text, truncated,
+      ...(images.length > 0 ? { images } : {}),
       ...(typeof input.durationMs === "number" ? { durationMs: input.durationMs } : {}),
     };
   }

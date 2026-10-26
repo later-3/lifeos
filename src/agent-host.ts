@@ -11,7 +11,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
-import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
+import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
@@ -760,7 +760,7 @@ export async function renameSession(agentId: string, sessionId: string, name: st
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }> };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
@@ -828,6 +828,9 @@ export function messagesOf(state: SessionState) {
         if (call === undefined) continue;
         call.result = result;
         call.isError = message.isError;
+        // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
+        const images = toolResultImages(message);
+        if (images.length > 0) call.images = images;
         break;
       }
     }

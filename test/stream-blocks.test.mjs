@@ -105,3 +105,18 @@ test("工具参数摘要取自 Pi 各工具的真实字段（不是猜测）", (
   assert.equal(argPreview("write", { path: "b.md", content: "12345" }), "b.md · 5 字符");
   assert.equal(argPreview("unknown-tool", {}), "");
 });
+
+test("tool_result 事件带图片时，工具块拿到 images（流式期也能看到图）", () => {
+  let state = createStreamState();
+  state = applyStreamEvent(state, { type: "tool_start", id: "c1", name: "read" });
+  const png = { data: "A".repeat(100), mimeType: "image/png" };
+  state = applyStreamEvent(state, { type: "tool_result", id: "c1", isError: false, text: "Read image file", truncated: false, images: [png] });
+  const blocks = blocksOfStream(state);
+  const call = blocks.find((block) => block.type === "toolCall");
+  assert.deepEqual(call.images, [png]);
+  // 没图的工具结果不产生空数组（避免界面多渲染一块空容器）
+  let plain = createStreamState();
+  plain = applyStreamEvent(plain, { type: "tool_start", id: "c2", name: "ls" });
+  plain = applyStreamEvent(plain, { type: "tool_result", id: "c2", isError: false, text: "a.txt", truncated: false });
+  assert.equal(blocksOfStream(plain).find((block) => block.type === "toolCall").images, undefined);
+});

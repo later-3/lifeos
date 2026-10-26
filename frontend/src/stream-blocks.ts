@@ -17,7 +17,7 @@ export type StreamEvent =
   | { type: "tool_call"; index: number; id: string; name: string; arguments: unknown; segment?: string }
   | { type: "tool_start"; id: string; name: string; arguments: unknown }
   | { type: "tool_update"; id: string }
-  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number }
+  | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number; images?: Array<{ data: string; mimeType: string }> }
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
   | { type: "retry_end"; success: boolean };
 
@@ -209,6 +209,7 @@ export function applyStreamEvent(state: StreamState, event: StreamEvent): Stream
           ...block, running: false, result: event.text, isError: event.isError,
           ...(event.truncated ? { truncated: true } : {}),
           ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+          ...(event.images !== undefined && event.images.length > 0 ? { images: event.images } : {}),
         }
       : block);
     const running = runningToolName(updated);
