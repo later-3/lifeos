@@ -1741,8 +1741,11 @@ export default function App() {
             {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
                 左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
                 手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
+            {/* composer dock：一行共享、不带壳（2026-10-26 用户反馈“框框丑”“——裸行才是低位状态条该有的样子）。
+                左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
+                手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
             <div data-testid="composer-dock"
-              className={`${!(isMobile && !busy && turnStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} mb-1 flex min-h-9 items-center gap-3 rounded-panel bg-surface px-3 py-1 ring-1 ring-line`}>
+              className={`${!(isMobile && !busy && turnStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
               <div className="min-w-0 flex-1" data-testid="turn-status-bar">
                 <TurnStatusBar busy={busy} step={turnStep} phase={phase}
                   {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
@@ -1754,7 +1757,7 @@ export default function App() {
                   {...(meta?.context !== undefined ? { context: meta.context } : {})} />
               </div>
               {!isMobile && (
-                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1 border-l border-line pl-2.5">
+                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
                   <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                     data-testid="attach-image" className="shrink-0">
                     <IconPhoto size={16} />
