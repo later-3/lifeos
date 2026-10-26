@@ -238,6 +238,8 @@ export default function App() {
   const [meta, setMeta] = useState<SessionMeta | undefined>();
   // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
+  /** 无会话时头部 thinking 段用：新会话将拿到的档位（Agent 配置 → settings → Pi 默认） */
+  const [agentDefaultThinking, setAgentDefaultThinking] = useState<string>();
   // 头部状态条 task 段：activeTaskId → 任务标题（Task 0002）；缺失时按需拉一次清单（缺段只显示 ID）。
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
   /** 项目默认 Task 缓存（key = taskTitleKey(agent, project, "default")）：无会话时头部显示它 */
@@ -503,7 +505,7 @@ export default function App() {
     const data = response?.ok === true
       ? await response.json().catch(() => ({})) as {
         config?: { defaultProvider?: string; defaultModel?: string } | null;
-        effective?: { defaultProvider?: string; defaultModel?: string } | null;
+        effective?: { defaultProvider?: string; defaultModel?: string; thinkingLevel?: string } | null;
       }
       : {};
     if (ctx.current.agentId !== id) return;
@@ -517,6 +519,8 @@ export default function App() {
         ? { provider: source.defaultProvider, id: source.defaultModel }
         : undefined,
     );
+    // 档位与模型同源显示：无会话时它表示"新会话将用哪个档位"，不是编造的值（后端给的就是 Pi 的解析结果）
+    setAgentDefaultThinking(typeof effective?.thinkingLevel === "string" ? effective.thinkingLevel : undefined);
   }
 
   function pickLatest(list: SessionItem[]): SessionItem | undefined {
@@ -1661,7 +1665,7 @@ export default function App() {
                 projectName: currentGroup?.project.name ?? "",
                 sessionTitle,
                 headerModel: headerModel ?? null,
-                thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : undefined,
+                thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : agentDefaultThinking,
                 activeTaskId: headerTask?.id,
                 taskTitle: headerTask?.title,
               }))}

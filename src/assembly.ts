@@ -15,6 +15,13 @@ import { resolveTaskDir } from "./tasks.ts";
 
 export type ModelChoice = { defaultProvider: string; defaultModel: string; defaultThinkingLevel?: string };
 
+/**
+ * 新建会话在"没有任何配置"时拿到的思考档位 = Pi 的默认值。
+ * 来源：pi/packages/coding-agent/src/core/defaults.ts 的 `DEFAULT_THINKING_LEVEL`；
+ * test/thinking-default.test.mjs 会读那个文件比对，Pi 改了这里会红。
+ */
+export const DEFAULT_PI_THINKING_LEVEL = "medium";
+
 const readJson = async (path: string): Promise<Record<string, unknown> | undefined> =>
   readFile(path, "utf8").then((text) => JSON.parse(text) as Record<string, unknown>, () => undefined);
 const readText = async (path: string): Promise<string | undefined> =>

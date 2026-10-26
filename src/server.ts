@@ -17,7 +17,7 @@ import {
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
-import { resolveModelChoice } from "./assembly.ts";
+import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
@@ -712,7 +712,12 @@ app.use(async (c, next) => {
       .then((text) => JSON.parse(text), () => null);
     // 顶部/创建会话都要看“有效默认”：Agent 配置 → 系统 settings → 模型清单第一项。
     const resolved = await resolveModelChoice(agent.id);
-    return c.json({ config, effective: resolved?.choice ?? null, source: resolved?.source ?? null });
+    // thinkingLevel 单独给：模型段显示"有效默认"时，档位也要能显示"下一轮会用哪个"（无会话时）
+    const effective = resolved?.choice === undefined ? null : {
+      ...resolved.choice,
+      thinkingLevel: resolved.choice.defaultThinkingLevel ?? DEFAULT_PI_THINKING_LEVEL,
+    };
+    return c.json({ config, effective, source: resolved?.source ?? null });
   });
   app.put("/api/agents/:id/config", async (c) => {
     const agent = await readAgent(c.req.param("id"));
