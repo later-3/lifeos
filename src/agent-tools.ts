@@ -16,7 +16,7 @@ import { resolveMemoryRole, type MemoryScope } from "./memory/resolve.ts";
 /** Life OS 自有工具名（与内置 8 工具一起显式钉进 allowlist，见 agent-host.ts · ALL_TOOL_NAMES）。 */
 export const LIFEOS_TOOL_NAMES = [
   "lifeos_agent_create", "lifeos_agent_delete",
-  "lifeos_task_create", "lifeos_task_list",
+  "lifeos_task_create", "lifeos_task_list", "lifeos_task_enter",
   "lifeos_project_add", "lifeos_project_remove", "lifeos_project_list",
   "lifeos_memory_search", "lifeos_memory_record", "lifeos_memory_delete",
 ] as const;
@@ -25,8 +25,8 @@ export const LIFEOS_TOOL_NAMES = [
 export type ToolContext = {
   agentId: string;
   projectId: string;
-  /** 进入一个 Task（建 Task 即进入它）：由宿主把会话指针指向它，下一轮装配生效。 */
-  onEnterTask?: (taskId: string) => void;
+  /** 进入一个 Task：由宿主把会话指针指向它，下一轮装配生效（建 Task 即进入、接手已有 Task 也走这里）。 */
+  onEnterTask?: (taskId: string) => void | Promise<void>;
 };
 
 export function createAgentTools(ctx: ToolContext) {
@@ -130,7 +130,7 @@ export function createAgentTools(ctx: ToolContext) {
       });
       if ("code" in result) throw new Error(result.message);
       const task = result.task;
-      ctx.onEnterTask?.(task.id);
+      await ctx.onEnterTask?.(task.id);
       const files = task.docs ?? [];
       return {
         content: [{
@@ -160,6 +160,39 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
+  const taskEnter = defineTool({
+    name: "lifeos_task_enter",
+    label: "Enter an existing Life OS task",
+    description:
+      "Point this conversation at an existing task of the current project (takes effect from the next turn). "
+      + "Use it when the user names a task to continue or take over — do not create a duplicate task for the same work. "
+      + "Task switching happens here, in the conversation: there is no separate UI switch command.",
+    promptSnippet: "Enter an existing task of this project by its number (applies from the next turn)",
+    promptGuidelines: [
+      "Use lifeos_task_enter when the user refers to an existing task ('继续 0002', '接手那个 Task').",
+      "Call lifeos_task_list first if you are not sure of the number; never guess an id.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. 0002); the full directory name (0002-some-title) is also accepted" }),
+    }),
+    async execute(_toolCallId, params) {
+      const tasks = await listTasks(ctx);
+      const wanted = params.taskId.trim();
+      const found = tasks.find((task) => task.id === wanted || task.dirName === wanted);
+      if (found === undefined) {
+        throw new Error(`No task ${wanted} in this project. Use lifeos_task_list to see the available tasks.`);
+      }
+      await ctx.onEnterTask?.(found.id);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Now working in task ${found.id} · ${found.title} (takes effect from the next turn).`,
+        }],
+        details: { id: found.id, title: found.title, dirName: found.dirName },
+      };
+    },
+  });
+
   const projectAdd = defineTool({
     name: "lifeos_project_add",
     label: "Add Life OS project",
@@ -186,7 +219,7 @@ export function createAgentTools(ctx: ToolContext) {
             ? `Added project "${result.project.name}" (id: ${result.project.id}) from ${result.project.path}.`
             : `Project already exists: "${result.project.name}" (id: ${result.project.id}) at ${result.project.path}. Nothing was created.`,
         }],
-        details: { project: result.project, created: result.created },
+        details: { project: result.project, created: result.created, defaultTask: result.defaultTask },
       };
     },
   });
@@ -352,5 +385,5 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete];
+  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete];
 }

@@ -30,11 +30,15 @@ export type Block =
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
       result?: string; isError?: boolean; truncated?: boolean; durationMs?: number;
+      /** 工具读到的图片（Pi 的 read）：与 result 文字并列展示 */
+      images?: Array<{ data: string; mimeType: string }>;
       /** 仅客户端：由 tool_execution_start/update/end 驱动，不靠整轮 busy */
       running?: boolean;
     };
 export type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[];
+  /** 消息时间（毫秒）：失败块据此显示"什么时候失败的"，避免历史失败被误读成当前状态 */
+  at?: number;
   /** Pi 的原始失败信息（errorMessage）：作为证据小字显示 */
   error?: string;
   /** 失败归类（超时/连不上/鉴权/限流/服务端/空回复/中断/截断）：决定显示哪句话 */
@@ -114,12 +118,22 @@ function actionsOf(text: string, onRetry: (() => void) | undefined): MessageActi
   return actions;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry }: {
+/** 本地 HH:MM（失败时刻；不显示日期，因为同一会话通常在同一天）。 */
+function formatClock(at: number): string {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+  /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
+  at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
   align?: "end" | "start";
   /** 这一轮失败时的"重新发送"（动作挂在被重发的那条用户消息上） */
   onRetry?: () => void;
+  /** 这条失败不是最后一条消息：标明它是历史记录，不是当前状态 */
+  historical?: boolean;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -157,7 +171,11 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
       ))}
       {(failure !== undefined || error !== undefined) && (
         <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
-          <p className="text-meta text-danger">{failureLabel(failure)}</p>
+          <p className="text-meta text-danger">
+            {failureLabel(failure)}
+            {at !== undefined && <span className="ml-2 font-normal tabular-nums text-ink-500">{formatClock(at)}</span>}
+            {historical === true && <span className="ml-2 font-normal text-ink-500">历史记录</span>}
+          </p>
           {error !== undefined && <p className="text-micro text-ink-500">{error}</p>}
         </div>
       )}
@@ -224,6 +242,18 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
+          {block.images !== undefined && block.images.length > 0 && (
+            // 工具读到的图片（Pi 的 read）：与 TUI 一样展示出来，点开看原图
+            <div className="flex flex-wrap gap-2 border-t border-line bg-sunken px-3 py-2" data-testid="tool-image">
+              {block.images.map((image, index) => (
+                <a key={index} href={`data:${image.mimeType};base64,${image.data}`} target="_blank" rel="noreferrer">
+                  <img src={`data:${image.mimeType};base64,${image.data}`} alt={`工具读到的图片 ${index + 1}`}
+                    data-shot-mask="tool-image"
+                    className="max-h-48 max-w-full rounded border border-line object-contain" />
+                </a>
+              ))}
+            </div>
+          )}
           {block.result !== undefined && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line bg-sunken px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{block.result}{block.truncated === true ? "\n…（界面只显示前 8KB，完整结果见会话文件）" : ""}</pre>
           )}

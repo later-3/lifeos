@@ -12,7 +12,7 @@ import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
-  setSessionModel, setSessionTask, setSessionThinking, globalSnapshot, THINKING_LEVELS,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -195,6 +195,21 @@ function textOf(message: { content?: unknown }): string {
 export function createApp() {
   const app = new Hono();
 
+  // 未捕获异常也要给可读结构：以前抛出去就是 500 纯文本，界面只能说"请求失败"，看不出为什么。
+  app.onError((error, c) => {
+    const requestId = String((c as unknown as { get: (key: string) => unknown }).get("requestId") ?? "-");
+    console.error(`[http] 未处理异常 ${c.req.method} ${c.req.path} #${requestId}:`, error);
+    void log.error("http", "unhandled", "未处理的异常", {
+      details: {
+        requestId, method: c.req.method, path: c.req.path,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+    });
+    const body = { error: { code: "internal_error", message: "服务端内部错误（已记录日志）", requestId } };
+    return c.json(body, 500);
+  });
+
 // 请求行（协议 P1·1.5 / specs 2.10）：每个 HTTP 请求一行 method/path/status/millis/requestId。
 app.use(async (c, next) => {
   const requestId = randomUUID().slice(0, 8);
@@ -315,7 +330,8 @@ app.use(async (c, next) => {
     }
     const bound = await bindProject(agent.id, body.path);
     if ("code" in bound) return fsError(c, bound);
-    return c.json({ project: bound.project }, bound.created ? 201 : 200);
+    // 带上默认 Task：绑定即创建，调用方（界面/工具）不用再猜它叫什么
+    return c.json({ project: bound.project, defaultTask: { id: bound.defaultTask.id, title: bound.defaultTask.title } }, bound.created ? 201 : 200);
   });
 
   // 「从列表移除」（2026-10-18 拍板 A）：写 hiddenProjectIds；目录、manifest、会话/记录全部保留；内置 workspace 不可移除。
@@ -539,29 +555,6 @@ app.use(async (c, next) => {
   });
 
   // 会话当前 Task 切换（activeTaskId）：只影响下一轮；当前 run 已装配的 prompt 不变。
-  app.put("/api/agents/:id/sessions/:sessionId/task", async (c) => {
-    const agent = await readAgent(c.req.param("id"));
-    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const body = await c.req.json().catch(() => undefined) as { taskId?: unknown } | undefined;
-    if (body === undefined || typeof body.taskId !== "string" || body.taskId.trim() === "") {
-      const error = problem("invalid_request", "需要 taskId 字段（非空字符串）", 400); return c.json(error.body, error.status);
-    }
-    const sessionId = c.req.param("sessionId");
-    if (await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId)) === undefined) {
-      const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
-    }
-    const result = await setSessionTask(agent.id, sessionId, body.taskId.trim());
-    if (!result.ok) {
-      if (result.reason === "session_not_found") { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
-      const error = problem("task_not_found", "当前项目找不到这个 Task", 404); return c.json(error.body, error.status);
-    }
-    return c.json({ sessionId, taskId: result.taskId });
-  });
-
-  // 一条流承载该 Agent 的所有会话：先快照，再按序号推事件（since 可续传）。
-  // —— 全局事件流（任务 0007，对齐 Codex/opencode 的全局总线 + 焦点路由；见 events.ts 的投递契约）——
-  // 一条连接承载所有 Agent 的回合级事件；细节级事件只给焦点连接。
-  // 快照与订阅在同一个同步块里生成（之后才 await），保证快照与缓冲不重复；过载即关闭，客户端重连拿新快照。
   app.get("/api/events", (c) => {
     return streamSSE(c, async (stream) => {
       await pruneSessionViewsOnce();   // 先清孤儿未读，再生成快照（否则快照会把已删会话的蓝点带给界面）

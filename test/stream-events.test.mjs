@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_RESULT_CHARS, toStreamEvent, toolResultText } from "../src/stream-events.ts";
+import { MAX_RESULT_CHARS, toStreamEvent, toolResultText, MAX_TOOL_IMAGES, toolResultImages } from "../src/stream-events.ts";
 
 /**
  * 流事件映射的判据：只映射"会话区要实时画的东西"，未知类型一律 undefined（不猜、不造）。
@@ -93,4 +93,28 @@ test("自动重试也映射（界面上要能显示失败原因与第几次）",
   assert.deepEqual(toStreamEvent({ type: "auto_retry_end", success: false }), { type: "retry_end", success: false });
   // 缺字段时给安全默认值（不崩、不造假）
   assert.deepEqual(toStreamEvent({ type: "auto_retry_start" }), { type: "retrying", attempt: 0, maxAttempts: 0, delayMs: 0, message: "" });
+});
+
+test("工具结果里的图片：按 image 块提取，非图片与超大图跳过，张数有上限", () => {
+  const png = { type: "image", data: "A".repeat(400), mimeType: "image/png" };
+  const got = toolResultImages({ content: [{ type: "text", text: "Read image file" }, png] });
+  assert.deepEqual(got, [{ data: png.data, mimeType: "image/png" }]);
+  // 非图片块 / 非法 mime / 缺字段都不算
+  assert.deepEqual(toolResultImages({ content: [{ type: "text", text: "x" }, { type: "image", data: "A", mimeType: "text/plain" }, { type: "image" }] }), []);
+  // 张数上限
+  const many = toolResultImages({ content: Array.from({ length: MAX_TOOL_IMAGES + 3 }, () => png) });
+  assert.equal(many.length, MAX_TOOL_IMAGES);
+  // 非数组内容安全返回空
+  assert.deepEqual(toolResultImages("plain string"), []);
+});
+
+test("tool_execution_end 把图片带进事件（否则界面永远看不到 read 的图）", () => {
+  const png = { type: "image", data: "A".repeat(400), mimeType: "image/png" };
+  const event = toStreamEvent({
+    type: "tool_execution_end", toolCallId: "c1", isError: false,
+    result: { content: [{ type: "text", text: "Read image file [image/png]" }, png] },
+  });
+  assert.equal(event.type, "tool_result");
+  assert.match(event.text, /Read image file/);
+  assert.deepEqual(event.images, [{ data: png.data, mimeType: "image/png" }]);
 });

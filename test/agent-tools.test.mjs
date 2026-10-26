@@ -322,3 +322,36 @@ test("troubleshooting 类型：task.md 遵守区块内容正确", async () => {
   const taskMd = taskFile2; // shared ref
   assert.ok(taskFile2.includes("类型规则："), "有类型规则引用（troubleshooting 类型规则）");
 });
+
+test("lifeos_task_enter：按编号进入已有 Task（含完整目录名），未知编号报错", async () => {
+  const { installHome } = await import("../src/home.ts");
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const home = await mkdtemp(join(tmpdir(), "lifeos-tools-"));
+  await installHome(process.cwd(), home);
+  process.env.LIFEOS_HOME = home;
+  try {
+    const entered = [];
+    const tools = createAgentTools({ agentId: "lifeosagent", projectId: "workspace", onEnterTask: (taskId) => { entered.push(taskId); } });
+    const enter = tools.find((tool) => tool.name === "lifeos_task_enter");
+    assert.ok(enter !== undefined, "必须注册 lifeos_task_enter");
+    const create = tools.find((tool) => tool.name === "lifeos_task_create");
+    const created = await run(create, { title: "enter-probe", type: "general", category: "G" });
+    const id = created.details.id;
+    entered.length = 0;
+
+    // 只给编号
+    const byId = await run(enter, { taskId: id });
+    assert.deepEqual(entered, [id]);
+    assert.match(byId.content[0].text, new RegExp(`Now working in task ${id}`));
+    // 完整目录名也认
+    entered.length = 0;
+    await run(enter, { taskId: `${id}-enter-probe` });
+    assert.deepEqual(entered, [id]);
+    // 未知编号：报错，且不改指针
+    entered.length = 0;
+    await assert.rejects(async () => await run(enter, { taskId: "9999" }), /No task 9999/);
+    assert.deepEqual(entered, []);
+  } finally { await import("node:fs/promises").then(({ rm }) => rm(home, { recursive: true, force: true })); }
+});

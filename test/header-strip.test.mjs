@@ -1,7 +1,7 @@
 // Task 0002 P1：header strip 分段容器纯函数——段顺序/可见性/去重/空态回退/拼装语义。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHeaderSegments, joinHeaderSegments, taskTitleKey } from "../frontend/src/header-strip.ts";
+import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "../frontend/src/header-strip.ts";
 
 const base = {
   agentName: "coder",
@@ -61,4 +61,30 @@ test("task 标题缓存键必须带 agent+project：同号 Task 不得串标题�
   const b = taskTitleKey("coder", "lifeos", "0002");
   assert.notEqual(a, b);
   assert.equal(taskTitleKey("coder", "lifeos", "0002"), b, "同作用域同号必须命中同一条");
+});
+
+test("headerTaskOf：有会话用会话的 Task，绝不拿默认 Task 顶替", () => {
+  const fallback = { id: "0001", title: "默认" };
+  assert.deepEqual(headerTaskOf({ hasSession: true, sessionTaskId: "0002", sessionTaskTitle: "输入框优化", projectDefaultTask: fallback }),
+    { id: "0002", title: "输入框优化" });
+  // 会话存在但没有 Task：不能显示默认 Task（下一轮并不会进默认 Task，那是撒谎）
+  assert.equal(headerTaskOf({ hasSession: true, sessionTaskId: null, projectDefaultTask: fallback }), undefined);
+  assert.equal(headerTaskOf({ hasSession: true, sessionTaskId: "", projectDefaultTask: fallback }), undefined);
+});
+
+test("headerTaskOf：无会话时显示项目默认 Task（新建会话必然绑到它）", () => {
+  assert.deepEqual(headerTaskOf({ hasSession: false, projectDefaultTask: { id: "0001", title: "默认" } }),
+    { id: "0001", title: "默认" });
+  // 项目还没有默认 Task（或清单加载失败）：该段缺席，不编造
+  assert.equal(headerTaskOf({ hasSession: false }), undefined);
+});
+
+test("无会话 + 默认 Task：头部确实产出 task 段（端到端组合）", () => {
+  const task = headerTaskOf({ hasSession: false, projectDefaultTask: { id: "0001", title: "默认" } });
+  const segments = buildHeaderSegments({
+    agentName: "Frontend Developer", projectName: "lifeos", sessionTitle: "",
+    headerModel: { provider: "command", id: "z-ai/glm-5.3-flash" }, thinkingLevel: undefined,
+    activeTaskId: task?.id, taskTitle: task?.title,
+  });
+  assert.equal(joinHeaderSegments(segments), "Frontend Developer · lifeos · command/z-ai/glm-5.3-flash · 0001 默认");
 });

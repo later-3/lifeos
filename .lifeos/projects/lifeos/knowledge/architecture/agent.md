@@ -25,7 +25,7 @@
 - **写操作闭环在共享实现里**（2026-10-20 架构修正）：`agents.ts`（创建/归档）与 `projects.ts`（绑定/移除）在写成功后广播 `agents_changed`，工具与 HTTP 两条入口自动生效——**不依赖调用方记得 notify**。事件总线在 `src/events.ts`、运行态在 `src/session-runtime.ts`，两者都不 import `agent-host`，因此 `agents/projects` 可以静态 import 而不是内联 `await import()`。
 - **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**；目录平铺，日期写在 `task.md` 的 `日期：YYYY-MM-DD`，不建日期目录）。
 - **默认 Task（协议 §6.1，2026-10-23 更新）**：每个 Agent × 项目一个，目录 `tasks/0001-default/`，类型 `daily`；新建会话与每次交互时 `ensureDailyShard` 取/建默认 Task 并确保当天的 `daily/<日期>.md` 存在；会话用自定义条目 `lifeos_active_task` 记录 `activeTaskId`（存 Task ID `NNNN`），普通会话共享默认 Task，不是绑定。
-- **中途切换（2026-10-22 完成）**：`PUT /api/agents/:id/sessions/:sid/task` 校验 Task 属于当前项目 → 追加 `lifeos_active_task` → 更新 meta；**只影响下一轮**（当前 run 的 prompt 已装配完），切换不重建会话。前端用 `/task` 调色板选择，头部显示 `Task <id>`。旧会话首次打开时若没有该条目，补当天默认 Task（不伪造历史 Task）。
+- **进入/接手 Task（2026-10-26 修正）**：切换只发生在对话里——Agent 用 `lifeos_task_create`（建即进入）或 `lifeos_task_enter`（接手已有）写会话的 `ACTIVE_TASK_ENTRY` 指针，下一轮装配生效；没有独立的 UI 切换命令，也没有 `PUT …/task` 端点（原先那条是自造的，已删）。
 - **模板选择（选一份，不合并，协议 §3.7）**：`agents/<id>/projects/<pid>/task-types/<type>/` → `projects/<pid>/task-types/<type>/` → `interaction-harness/task-types/<type>/`。
 - **`task.md` 是唯一状态源**（`ID: NNNN`、类型 daily/development/general、类别、状态、负责人、目标、必需文档、当前指针）+ **「本任务遵守」**（协议 · 类型规则 · 共享 workspace 规范 · 项目共享规范 · Agent × 项目规范 · 项目仓库 `AGENTS.md` 存在才写）。
 - **类型 + 类别一起决定必需文档**（照 `task-types/<type>/template.json`，`TEMPLATE.md` 是给人读的说明；类型由目录声明、装配时按目录加载）：

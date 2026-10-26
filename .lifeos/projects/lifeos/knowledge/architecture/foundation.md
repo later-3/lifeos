@@ -61,7 +61,7 @@ install-receipt.json    安装收据
 | `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表（项目存在即 200，私有目录未建返回空列表） |
 | `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd：workspace = `~/.lifeos`；外部项目 = 项目 path**） |
 | `GET /api/agents/:id/projects/:pid/tasks` | 当前项目的任务清单（读 `tasks/*/task.md`，用于 `/task` 切换器） |
-| `PUT /api/agents/:id/sessions/:sid/task` | 切换会话 `activeTaskId`；校验 Task 属于当前项目；只影响下一轮，当前 run 不变 |
+
 | `POST /api/agents/:id/sessions` | 在默认 project（workspace）下新建会话（前端「＋新建会话」入口） |
 | `GET /api/agents/:id/sessions/:sid` | 读消息（含 `thinking` / `toolCall` / `toolResult` 块）+ **`meta`**（会话当前 `model`、`thinkingLevel`、**`running`**（这一轮是否在跑，前端判丢前先查它）、**`modelOverridden`**（是否用 `/model` 覆盖过））；失败的那条 assistant 带 **`error`**（Pi 原始 `errorMessage`）与 **`failure`**（归类：`timeout/network/auth/rate_limit/server/empty/aborted/truncated/unknown`，见 `src/failure.ts`）；工具结果**只按 `toolCallId` 配对** |
 | `POST /api/agents/:id/sessions/:sid/messages` | 发一条消息（202 受理；run 在后台，输出走 SSE）；**`behavior: "steer"\|"followUp"`** = 生成中投入输入，直接走 Pi 原生 `steer()`/`followUp()` 队列 |

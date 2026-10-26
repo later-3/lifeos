@@ -11,7 +11,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
-import { toStreamEvent, type StreamEvent } from "./stream-events.ts";
+import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
@@ -162,7 +162,11 @@ async function createHostedSession(
       agentId,
       projectId,
       // 建 Task 即进入它：会话指针指向新 Task（下一轮装配读取），与用户在界面里 /task 切换是同一件事
-      onEnterTask: (taskId) => enterTask(agentId, sessionManager, taskId),
+      // 进入即切换（协议 §7）：写会话指针，下一轮装配生效；校验与写指针共用 setSessionTask
+      onEnterTask: async (taskId) => {
+        const result = await setSessionTask(agentId, sessionManager.getSessionId(), taskId);
+        if (!result.ok) throw new Error(`无法进入 Task ${taskId}：${result.reason}`);
+      },
     }),
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
@@ -670,13 +674,6 @@ export type SetTaskResult =
   | { ok: true; taskId: string }
   | { ok: false; reason: "session_not_found" | "task_not_found" };
 
-/** 进入 Task（协议 §7）：写会话指针（自定义条目）并同步内存状态；下一轮装配读取它。 */
-function enterTask(agentId: string, manager: ReturnType<typeof SessionManager.create>, taskId: string): void {
-  manager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
-  const live = stateOf(agentId).sessions.get(manager.getSessionId());
-  if (live !== undefined) live.taskId = taskId;
-}
-
 /** 切换会话当前 Task：只影响下一轮；当前正在跑的轮次已装配完，不会被中途改写。 */
 export async function setSessionTask(agentId: string, sessionId: string, taskId: string): Promise<SetTaskResult> {
   const state = stateOf(agentId).sessions.get(sessionId);
@@ -763,7 +760,7 @@ export async function renameSession(agentId: string, sessionId: string, name: st
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }> };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
@@ -787,8 +784,17 @@ export function sessionImageBytesOf(state: SessionState): number {
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
-  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; error?: string; failure?: FailureKind }> = [];
-  for (const message of state.session.sessionManager.buildSessionProjection().messages) {
+  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind }> = [];
+  // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
+  // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
+  const projection = state.session.sessionManager.buildSessionProjection();
+  const items = projection.entries.flatMap((entry) => {
+    const raw = (entry.sourceEntry as { timestamp?: unknown }).timestamp;
+    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+    const at = Number.isNaN(parsed) ? undefined : parsed;
+    return entry.messages.map((message) => ({ message, at }));
+  });
+  for (const { message, at } of items) {
     if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
@@ -800,7 +806,7 @@ export function messagesOf(state: SessionState) {
           blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
         }
       }
-      out.push({ role: "user", text, blocks });
+      out.push({ role: "user", text, blocks, ...(at !== undefined ? { at } : {}) });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
@@ -815,6 +821,7 @@ export function messagesOf(state: SessionState) {
       const kind = classifyFailure({ ...(raw.stopReason !== undefined ? { stopReason: raw.stopReason } : {}), ...(errorText !== undefined ? { errorMessage: errorText } : {}), hasContent: blocks.length > 0 || text.trim() !== "" });
       out.push({
         role: "assistant", text, blocks,
+        ...(at !== undefined ? { at } : {}),
         ...(kind !== undefined ? { failure: kind } : {}),
         ...(errorText !== undefined ? { error: errorText } : {}),
       });
@@ -831,6 +838,9 @@ export function messagesOf(state: SessionState) {
         if (call === undefined) continue;
         call.result = result;
         call.isError = message.isError;
+        // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
+        const images = toolResultImages(message);
+        if (images.length > 0) call.images = images;
         break;
       }
     }
