@@ -4,7 +4,7 @@ import { start, startOn } from "./server-harness.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installHome } from "../src/home.ts";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import assert from "node:assert/strict";
 
 test("GET /api/agents 列出默认 Agent", async () => {
@@ -93,9 +93,10 @@ test("三层结构：project 列表 = projects/ 目录（名称即目录名）�
   const { server, base } = await start();
   try {
     const projects = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
+    // 项目名 = 安装路径的目录 basename（project-registry.ts:80）；测试从任意 worktree 跑都可能，所以不硬编码仓库名。
     assert.deepEqual(projects.items, [
       { id: "workspace", name: "workspace", isDefault: true },
-      { id: "lifeos", name: "lifeos", isDefault: false, path: process.cwd() },
+      { id: "lifeos", name: basename(process.cwd()), isDefault: false, path: process.cwd() },
     ], "出厂绑定：默认 workspace + LifeOS 项目（path 为安装时的仓库根）");
 
     const sessions = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
