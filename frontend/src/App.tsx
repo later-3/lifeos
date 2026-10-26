@@ -1827,8 +1827,8 @@ export default function App() {
                   event.target.value = "";           // 允许连续选同一张图
                   void collectImages(files);
                 }} />
-              {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 } */}
-              <div className="flex items-end gap-2 pb-2 pl-2 pr-2">
+              {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 */}
+              <div className="flex items-end gap-2 py-2 pl-2 pr-2">
                 <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {

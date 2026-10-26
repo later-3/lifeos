@@ -76,10 +76,16 @@
 }
 
 /* composer 自适应：支持 field-sizing 的浏览器原生生效（含字体加载重排）；
-   不支持的由 App 的 auto-grow 兜底。上下限只在这里（--composer-max-height / 单行起点由 padding 决定）。 */
+   不支持的由 App 的 auto-grow 兜底。上下限只在这里（--composer-max-height / 单行起点由 padding 决定）。
+   焦点指示移交：textarea 的 outline 由 composer 容器的 focus-within ring 承担（只见一个环），
+   否则全局 :focus-visible 兜底会在内层再画一个环，出现双框；容器环仍是可见焦点样式，不丢键盘可用性。 */
 @utility composer-autogrow {
   field-sizing: content;
   max-height: var(--composer-max-height);
+
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 /* 全面屏顶部安全区：全屏 header/面板顶部使用；桌面 env 为 0，不改变布局。 */
