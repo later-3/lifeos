@@ -82,21 +82,22 @@
 - 面板可拖宽（左缘把手，右拉变小），宽度持久化；放不下就明确降级，不静默吞点击。
 - 完整历史：回合 → 请求/回复；请求侧 system 分区标“本次变更/沿用上一轮”；回复侧工具结果按 `toolCallId` 配对；Esc 关闭。
 
-### 3.5 输入框（模型 A：单容器 composer）
+### 3.5 输入框（模型 A：单容器 composer + composer dock）
 
-用户 2026-10-22 选择模型 A；参考证据见 `reference-baseline.md` 的“输入框对象结构”行。
+用户 2026-10-22 选模型 A（对象归属）；2026-10-26 补视觉与 dock 分层（同 Task 0002 复盘）。参考证据：`reference-baseline.md` 的“输入框对象结构”与“composer 视觉”行。
 
-- **区域**：一个 composer 容器包含两层：
-  1. 上层槽：`/` 调色板，以及未来排队/通知横幅（当前没有排队 UI）；
-  2. 下层槽：textarea + 发送/停止按钮。
-  容器持有唯一的 focus ring；调色板不做成与输入框无关的独立浮层。
+- **结构**：composer 区域 = 一个 dock + 一张输入卡，两者同宽居中（阅读列）：
+  1. **composer dock（裸行，无框无底色）**：左区 = 回合事实（TurnStatusBar 数据对象不变，只是渲染进来：步骤/耗时/重试/指标，符号 tooltip 忧在）；右区 = 输入工具注册槽（`composer-tools`，📷 图片为第一槽，语音/@文件等往里排，按钮同右端钉住）。手机：工具钮回输入卡底行右端，左区无内容时整行隐藏（规则性降级，非特例）。
+  2. **输入卡（`composer` 单容器）**：自上而下 = 排队条/调色板（未来横幅同层）→ 附件缩略图行（`composer-attachments`，多图并排）→ 输入行（textarea + 发送/停止钮在同一 flex 行，`items-end`：单行时占位提示与按钮同行，多行时按钮随末行右端对齐）。
+- **容器持有唯一的 focus ring**（`focus-within:ring-accent`），聚焦时整个卡一个环；textarea 的 focus 指示在设计系统内**移交**给容器（tokens.css `composer-autogrow` 作用域内 outline:none），禁止出现内层第二个环。调色板不做成与输入框无关的独立浮层。
 - **键盘**：Enter 发送、Shift+Enter 换行、IME 组字及 100ms 宽限；调色板打开时 ↑/↓ 选择、Enter 执行、Esc 关闭；空输入 ↑/↓ 浏览本进程输入历史；生成中全局 Esc 打断（组字中除外）。
-- **生成中**：Enter 走 Pi 原生 `steer` 插话；API 也支持 `followUp`/排队，但当前 UI 不显示队列，页面文档不能把该行为写成“排队”。
-- **高度**：自动 1–8 行，超过后内部滚动。
+- **生成中**：Enter 走 Pi 原生 `steer` 插话；API 也支持 `followUp`/排队；排队条已实现（`run-queue`，仅可见展示）。
+- **高度**：CSS 原生自适应（`composer-autogrow` = `field-sizing: content`，不支持浏览器 JS 兜底），下限 = 单行，上限 = `tokens.css` 的 `--composer-max-height`（8 行），超出内部滚动。
+- **占位符**：单句；桌面在同行附键盘提示（如“输入消息 · Enter 发送 · Esc 打断 · / 命令”），**禁止**用 `\n` 排版多行说明；手机只写“输入消息”（mobile.md §3）。
+- **按钮**：发送/停止 = 主操作，手机桌面均 ≥44（IconButton `xl`），圆形（`full` 档），随末行右端对齐，不设独立底部行。
 - **草稿**：按会话（或待建会话的 Agent+项目）归属；发送失败回填，不静默丢弃。
 - **可访问**：textarea 必须有 `aria-label="输入消息"`；placeholder 不作为唯一可访问名；调色板行在手机 ≥44。
-- **手机**：placeholder 只写“输入消息”，不塞键盘快捷键；composer 固定在键盘上方；调色板、发送/停止不 hover-only。
-- **未来扩展**：排队、通知横幅必须进同一 composer 容器，不散落到 header 或状态条。
+- **未来扩展**：排队、通知横幅进输入卡容器；新输入工具加进 dock 右区注册槽，不改其他区域排版。
 
 ## 4 布局
 

@@ -87,8 +87,8 @@ cd ~/Code/lifeos-dev/<agentId>
 LIFEOS_HOME=~/.lifeos-dev/<agentId> pnpm home:install
 
 # 3) 开发实例（两个进程；改源码只重启这一个）
-#    后端：pnpm 需要用 -- 透传端口（实测 pnpm run dev -- --port=43130 可用）
-LIFEOS_HOME=~/.lifeos-dev/<agentId> pnpm run dev -- --port=43130
+#    后端：dev-supervisor 不透传 pnpm 附加参数——用 node 直调（2026-10-26 实测）；supervisor 已支持透传，但文档以实测路径为准
+LIFEOS_HOME=~/.lifeos-dev/<agentId> node scripts/dev-supervisor.mjs --port=43130
 #    前端：vite 用 exec 传端口（实测可用）；它绑定 localhost，用 http://localhost:5174 访问
 VITE_DEV_API=http://127.0.0.1:43130 pnpm --dir frontend exec vite --port 5174
 ```
