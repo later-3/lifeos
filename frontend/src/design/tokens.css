@@ -53,6 +53,9 @@
   --radius-panel: 10px;
   --radius-bubble: 14px;
 
+  /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
+  --composer-max-height: 11rem;
+
   /* 阅读列宽度：正文行宽上限，避免超宽屏一行 200 字 */
   --container-reading: 860px;
   --container-bubble: 720px;
@@ -70,6 +73,13 @@
 /* 手机安全区：composer/全屏 sheet 的底部至少 1rem，再叠加 home indicator。 */
 @utility pb-safe {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* composer 自适应：支持 field-sizing 的浏览器原生生效（含字体加载重排）；
+   不支持的由 App 的 auto-grow 兜底。上下限只在这里（--composer-max-height / 单行起点由 padding 决定）。 */
+@utility composer-autogrow {
+  field-sizing: content;
+  max-height: var(--composer-max-height);
 }
 
 /* 全面屏顶部安全区：全屏 header/面板顶部使用；桌面 env 为 0，不改变布局。 */

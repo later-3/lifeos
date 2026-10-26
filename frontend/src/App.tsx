@@ -448,12 +448,27 @@ export default function App() {
   // 面板放不下就收起（视口挤压保护）
   useEffect(() => { if (!isMobile && panelOpen && !box.panelFits) setPanelOpen(false); }, [isMobile, panelOpen, box.panelFits, setPanelOpen]);
 
-  // 输入框自适应高度（1–8 行）
+  // 输入框自适应：支持 field-sizing 的浏览器走 CSS（composer-autogrow，tokens 定义）；
+  // 其余浏览器 JS 兜底，直到高度连续 20 帧稳定才停（避开冷启动时样式未注入的假测量）。
   useEffect(() => {
     const node = inputRef.current;
-    if (node === null) return;
-    node.style.height = "auto";
-    node.style.height = `${Math.min(node.scrollHeight, 176)}px`;
+    if (node === null || "field-sizing" in node.style) return;
+    const measure = () => {
+      node.style.height = "auto";
+      const max = parseFloat(getComputedStyle(node).getPropertyValue("--composer-max-height")) || 176;
+      node.style.height = `${Math.min(node.scrollHeight, max)}px`;
+    };
+    let stable = 0;
+    let prev = "";
+    let rafId = 0;
+    const tick = () => {
+      measure();
+      stable = node.style.height === prev ? stable + 1 : 0;
+      prev = node.style.height;
+      if (stable < 20) rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [input]);
 
   async function fetchGroups(id: string): Promise<Group[]> {
@@ -1783,13 +1798,8 @@ export default function App() {
                   event.target.value = "";           // 允许连续选同一张图
                   void collectImages(files);
                 }} />
-              <div className="flex items-end gap-2 p-1.5">
-                <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                  data-testid="attach-image" className="mb-0.5 shrink-0">
-                  <IconPhoto size={16} />
-                </IconButton>
-                <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
-                  placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · 生成中 Enter 插话\n· Esc 打断 · / 查看命令"}
+              <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
+                  placeholder="输入消息"
                 onChange={(event) => {
                   const next = event.target.value;
                   setInput(next);
@@ -1849,17 +1859,26 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="max-h-44 flex-1 resize-none bg-transparent px-2.5 py-1.5 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
-              {busy ? (
-                <IconButton label="停止（Esc）" size="lg" tone="solid" onClick={() => void stop()}>
-                  <IconPlayerStopIcon />
+                className="composer-autogrow w-full min-w-0 resize-none bg-transparent px-4 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+              {/* 底部工具行：次要工具居左、hint、主操作（发送/停止）居右；同属 composer 容器（chat.md §3.5） */}
+              <div className="flex items-center gap-2 px-2 pb-2">
+                <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                  data-testid="attach-image" className="shrink-0">
+                  <IconPhoto size={16} />
                 </IconButton>
-              ) : (
-                <IconButton label="发送" size="lg" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
-                  onClick={() => void send()}>
-                  <IconArrowUpIcon />
-                </IconButton>
-              )}
+                <span className="hidden min-w-0 truncate text-micro text-ink-500 sm:block">Enter 发送 · Esc 打断 · / 命令</span>
+                {busy ? (
+                  <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
+                    className="ml-auto rounded-full">
+                    <IconPlayerStopIcon />
+                  </IconButton>
+                ) : (
+                  <IconButton label="发送" size="xl" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
+                    onClick={() => void send()}
+                    className="ml-auto rounded-full">
+                    <IconArrowUpIcon />
+                  </IconButton>
+                )}
               </div>
             </div>
           </div>

@@ -34,9 +34,9 @@ export function Button({ variant = "secondary", size = "md", className = "", chi
 
 /** 图标按钮：28×28 起（命中区下限），lg=32。tone 决定"主操作"是否用品牌色。 */
 export function IconButton({ label, active = false, tone = "default", size = "md", className = "", children, ...rest }: {
-  label: string; active?: boolean; tone?: "default" | "accent" | "solid"; size?: "sm" | "md" | "lg"; children: ReactNode;
+  label: string; active?: boolean; tone?: "default" | "accent" | "solid"; size?: "sm" | "md" | "lg" | "xl"; children: ReactNode;
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "title">) {
-  const box = size === "lg" ? "h-11 w-11 sm:h-8 sm:w-8" : "h-11 w-11 sm:h-7 sm:w-7";
+  const box = size === "xl" ? "h-11 w-11" : size === "lg" ? "h-11 w-11 sm:h-8 sm:w-8" : "h-11 w-11 sm:h-7 sm:w-7";
   const look = tone === "solid"
     ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-500"
     : active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900";
