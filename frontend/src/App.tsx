@@ -1785,7 +1785,7 @@ export default function App() {
                 event.preventDefault();
                 void collectImages(files);
               }}
-              className="relative rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
                   {palette.items.map((item, index) => (
@@ -1823,7 +1823,9 @@ export default function App() {
                   event.target.value = "";           // 允许连续选同一张图
                   void collectImages(files);
                 }} />
-              <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
+              {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 } */}
+              <div className="flex items-end gap-2 pb-2 pl-2 pr-2">
+                <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
@@ -1884,28 +1886,28 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="composer-autogrow w-full min-w-0 resize-none bg-transparent pl-4 pr-16 pt-2 pb-14 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
-              {/* 发送/停止钮内嵌右下角（ChatGPT/Claude 同型）：不再设独立底部行。
-                绝对定位保证textarea单行或满高时按钮都锚在框右下；textarea 的 pb-14 空出按钮区。 */}
-              <div className="absolute inset-x-3 bottom-1.5 z-10 flex items-center gap-2">
-                {isMobile && (
-                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                    data-testid="attach-image" className="shrink-0">
-                    <IconPhoto size={16} />
-                  </IconButton>
-                )}
-                {busy ? (
-                  <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
-                    className="ml-auto rounded-full">
-                    <IconPlayerStopIcon />
-                  </IconButton>
-                ) : (
-                  <IconButton label="发送" size="xl" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
-                    onClick={() => void send()}
-                    className="ml-auto rounded-full">
-                    <IconArrowUpIcon />
-                  </IconButton>
-                )}
+                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-4 pr-2 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+                {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
+                  <div className="flex items-end justify-end gap-2 pb-0 pl-2 pr-2">
+                  {isMobile && (
+                    <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
+                      data-testid="attach-image" className="shrink-0">
+                      <IconPhoto size={16} />
+                    </IconButton>
+                  )}
+                  {busy ? (
+                    <IconButton label="停止（Esc）" size="xl" tone="solid" onClick={() => void stop()}
+                      className="rounded-full">
+                      <IconPlayerStopIcon />
+                    </IconButton>
+                  ) : (
+                    <IconButton label="发送" size="xl" tone="solid" disabled={input.trim() === "" || selectedProjectId === undefined}
+                      onClick={() => void send()}
+                      className="rounded-full">
+                      <IconArrowUpIcon />
+                    </IconButton>
+                  )}
+                </div>
               </div>
             </div>
           </div>
