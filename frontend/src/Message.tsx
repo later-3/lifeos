@@ -11,6 +11,7 @@ import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
 import { toolState } from "./tool-state";
+import { ImageTrigger } from "./design/image-viewer";
 
 /**
  * 消息渲染（Markdown + 结构化块）。
@@ -252,11 +253,12 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
         // 图片是一等输出，存在就要看得见；不能躲在需要点击才展开的容器里。
         <div className="flex flex-wrap gap-2 border-t border-line bg-sunken px-3 py-2" data-testid="tool-image">
           {block.images.map((image, index) => (
-            <a key={index} href={`data:${image.mimeType};base64,${image.data}`} target="_blank" rel="noreferrer">
+            <ImageTrigger key={index} src={`data:${image.mimeType};base64,${image.data}`}
+              alt={`工具读到的图片 ${index + 1}`} testId="tool-image-trigger">
               <img src={`data:${image.mimeType};base64,${image.data}`} alt={`工具读到的图片 ${index + 1}`}
                 data-shot-mask="tool-image"
                 className="max-h-48 max-w-full rounded border border-line object-contain" />
-            </a>
+            </ImageTrigger>
           ))}
         </div>
       )}
@@ -265,14 +267,14 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
 }
 
 function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> }) {
-  // 用户发的图：缩略图一屏可见，点开看原图（data URL 自包含，不需要额外请求）
+  // 用户发的图：缩略图一屏可见；点击 = 页面内浮层放大（不新开页面，用户 2026-10-27 指定）
   return (
-    <a href={`data:${block.mimeType};base64,${block.data}`} target="_blank" rel="noreferrer"
-      data-testid="message-image" className="mt-1 inline-block">
+    <ImageTrigger src={`data:${block.mimeType};base64,${block.data}`} alt="用户发送的图片"
+      testId="message-image" className="mt-1 inline-block">
       <img src={`data:${block.mimeType};base64,${block.data}`} alt="用户发送的图片"
         data-shot-mask="message-image"
         className="max-h-64 max-w-full rounded border border-line object-contain" />
-    </a>
+    </ImageTrigger>
   );
 }
 

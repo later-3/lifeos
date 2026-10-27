@@ -13,6 +13,7 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { DirectoryPicker } from "./DirectoryPicker";
+import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
 import { useColumnWidth } from "./useColumnWidth";
@@ -1828,8 +1829,10 @@ export default function App() {
                 <div data-testid="composer-attachments" className="flex flex-wrap items-end gap-2 border-b border-line px-3 py-2">
                   {attachments.map((image) => (
                     <div key={image.id} className="relative">
-                      <img src={`data:${image.mimeType};base64,${image.data}`} alt="" data-shot-mask="attachment-thumb"
-                        className="h-14 w-14 rounded object-cover ring-1 ring-line" />
+                      <ImageTrigger src={`data:${image.mimeType};base64,${image.data}`} alt="待发送的图片" testId="attachment-thumb-trigger">
+                        <img src={`data:${image.mimeType};base64,${image.data}`} alt="" data-shot-mask="attachment-thumb"
+                          className="h-14 w-14 rounded object-cover ring-1 ring-line" />
+                      </ImageTrigger>
                       <button type="button" aria-label="移除图片"
                         onClick={() => { const next = removeImage(attachmentsRef.current, image.id); setAttachments(next); attachmentsRef.current = next; }}
                         className="absolute -right-1 -top-1 rounded-full bg-ink-900 p-0.5 text-surface ring-1 ring-line">

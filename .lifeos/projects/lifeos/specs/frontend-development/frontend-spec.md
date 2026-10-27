@@ -173,6 +173,7 @@ pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mob
 
 - 视觉变化：`pnpm test:ui:update` 后必须看 diff；基线更新单独提交。
 - 截图只比骨架：会话正文、历史正文用 `data-shot-mask` 遮罩，避免真实数据漂移。
+- **基线红先判"是不是用户数据进图"**：助手名/描述/头像/身份/模型清单这类**数据**必须 mock 或遮罩到进不了基线（模态截图走 route mock，见 `ui-contract.mjs` 的 modal 项）；**不得靠 `pnpm test:ui:update` 把漂移推后**——那只是让今天绿、明天又红（2026-10-27 实测：新建一个助手，modal.png 漂 3.27%；昨天刷了基线，今天又红）。
 - 页面自检：没有任意值、没有页面级控件、没有未登记的 `outline-none`。
 - 具体命令与门禁实现见 `AGENTS.md` 与 `frontend/test/ui-contract.mjs`；本文只写规则，不复制脚本。
 

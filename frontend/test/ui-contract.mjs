@@ -1044,9 +1044,10 @@ const shotBrowser = await playwright.chromium.launch({
   headless: true, executablePath: playwright.chromium.executablePath(),
   args: ["--no-proxy-server", "--font-render-hinting=none", "--disable-lcd-text"],
 });
-async function capture(width, setup, clipTo) {
+async function capture(width, setup, clipTo, install) {
   const shotPage = await shotBrowser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
   await shotPage.clock.install({ time: FROZEN_TIME });
+  if (install !== undefined) await install(shotPage);   // 路由 mock 必须在首屏请求之前装上
   await shotPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await shotPage.waitForTimeout(500);
   if (setup !== undefined) await setup(shotPage);
@@ -1115,10 +1116,44 @@ const SHOTS = [
     });
     await shotPage.locator('button[aria-label^="配置 "]').first().click();
     await shotPage.waitForTimeout(400);
-  }, '[role="dialog"]'],
+  }, '[role="dialog"]', async (shotPage) => {
+    // 模态里的名字/描述/头像/身份/模型清单都是用户数据：用户新建或改一个助手，截图就漂
+    // （2026-10-27 实测：新建"云起"后 modal.png 漂 3.27%）。这里固定成与基线一致的契约内容。
+    const identity = readFileSync(join(HERE, "fixtures", "agent-identity.md"), "utf8");
+    await shotPage.route(/\/api\/agents$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        items: [{
+          // 用**真实存在的** Agent id：项目/分组等接口仍走真实数据，只有名字/描述/头像这类
+          // 会出现在模态里的字段被固定；换成不存在的 id 会让分组接口 404（连带影响首屏）
+          schemaVersion: 1, id: "agent-e776", name: "Home Devices",
+          description: "专职维护家庭设备台账：服务器、笔记本等设备的登记、操作手册、工具登记与待补项跟踪",
+          defaultProjectId: "workspace",
+        }],
+      }) });
+    });
+    await shotPage.route(/\/api\/agents\/[^/]+\/identity$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text: identity }) });
+    });
+    await shotPage.route(/\/api\/models-config$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        providers: [{
+          id: "command", baseUrl: "https://api.commandcode.ai/provider/v1",
+          models: [{
+            id: "z-ai/glm-5.3-flash", name: "GLM-5.3 Flash (Command Code)",
+            reasoning: true, input: ["text", "image"],
+            thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "high", max: "max" },
+          }],
+        }],
+        settings: null,
+      }) });
+    });
+  }],
 ];
-for (const [name, width, setup, clipTo] of SHOTS) {
-  const buffer = await capture(width, setup, clipTo);
+for (const [name, width, setup, clipTo, install] of SHOTS) {
+  const buffer = await capture(width, setup, clipTo, install);
   writeFileSync(join(SHOT_DIR, name), buffer);
   const basePath = join(BASELINE_DIR, name);
   if (UPDATE_BASELINE || !existsSync(basePath)) {
@@ -1150,6 +1185,58 @@ await shotBrowser.close();
     }));
   });
   check("P1·1.4 三态点：会话列表行可捕捉", sessionStates.length >= 1, `${sessionStates.length} 行`);
+}
+
+// —— 图片查看器（用户 2026-10-27：不新开页面，浮层里放大缩小）——
+// 入口用"附件托盘缩略图"，它与消息图片共用同一个组件，且不依赖会话里恰好有图片
+const viewerPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+try {
+  await viewerPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await viewerPage.waitForTimeout(700);
+  await viewerPage.setInputFiles('input[type=file]', join(HERE, "ui-baseline", "picker.png"));
+  await viewerPage.waitForSelector("[data-testid=attachment-thumb-trigger]", { timeout: 8000 });
+  await viewerPage.locator("[data-testid=attachment-thumb-trigger]").click();
+  await viewerPage.waitForSelector("[data-testid=image-viewer]", { timeout: 8000 });
+
+  const dialog = await viewerPage.locator("[data-testid=image-viewer]").evaluate((el) => ({
+    role: el.getAttribute("role"), modal: el.getAttribute("aria-modal"),
+  }));
+  check("图片查看器：页面内打开（role=dialog + aria-modal）", dialog.role === "dialog" && dialog.modal === "true", JSON.stringify(dialog));
+  check("图片查看器：不新开标签页", viewerPage.context().pages().length === 1, `标签页数 ${viewerPage.context().pages().length}`);
+
+  const widthOf = async () => {
+    const box = await viewerPage.locator("[data-testid=image-viewer-img]").boundingBox();
+    return box === null ? 0 : Math.round(box.width);
+  };
+  const baseW = await widthOf();
+  const pct = () => viewerPage.locator("[data-testid=zoom-reset]").innerText();
+  const pct0 = await pct();
+  await viewerPage.locator("[data-testid=zoom-in]").click();
+  await viewerPage.waitForTimeout(350);
+  const zoomW = await widthOf();
+  const pct1 = await pct();
+  await viewerPage.locator("[data-testid=zoom-reset]").click();
+  await viewerPage.waitForTimeout(350);
+  const resetW = await widthOf();
+  const pct2 = await pct();
+  check("图片查看器：放大改变显示尺寸", zoomW > baseW && pct1 !== pct0, `${baseW}→${zoomW}px (${pct0}→${pct1})`);
+  check("图片查看器：重置回到适应窗口", resetW === baseW && pct2 === "100%", `${resetW}px ${pct2}`);
+
+  // 命中区（闸 3）：浮层里的控件也要够大
+  const small = await viewerPage.evaluate(() =>
+    [...document.querySelectorAll("[data-testid=image-viewer] button")]
+      .map((el) => el.getBoundingClientRect())
+      .filter((box) => box.width < 28 || box.height < 28)
+      .map((box) => `${Math.round(box.width)}×${Math.round(box.height)}`));
+  check("图片查看器：控件命中区 ≥ 28", small.length === 0, small.join(" | "));
+
+  await viewerPage.keyboard.press("Escape");
+  await viewerPage.waitForTimeout(350);
+  check("图片查看器：Esc 关闭", (await viewerPage.locator("[data-testid=image-viewer]").count()) === 0, "关闭");
+  const remove = viewerPage.locator('button[aria-label="移除图片"]');
+  if (await remove.count() > 0) await remove.first().click();   // 清掉测试附件，别影响后续状态
+} finally {
+  await viewerPage.close();
 }
 
 await browser.close();
