@@ -57,7 +57,7 @@ install-receipt.json    安装收据
 | `GET /api/agents/:id/projects` | 项目列表 = **扫描 `agents/<id>/projects/` 目录 − `hiddenProjectIds`**；**目录名 = 项目名**（可读、允许中文；旧 uuid 目录懒迁移，`legacyId` 供旧 URL 反查）；默认项目在前 |
 | `POST /api/agents/:id/projects` | **打开目录**（校验目录 → 全局项目按 path 幂等取 id → 绑定到 Agent；不写用户目录） |
 | `DELETE /api/agents/:id/projects/:pid` | **从列表移除**（写 `hiddenProjectIds`；目录、manifest、会话、记录全部保留；`workspace` 不可移除 400） |
-| `GET /api/agents/:id/sessions` | 该 Agent 的会话列表（带 `running` 标记；未落盘的新会话按 pending 计入） |
+| `GET /api/agents/:id/sessions` | 该 Agent 的会话列表（带 `running` 标记；未落盘但**已命名**的会话按 pending 计入，没发过消息的草稿不计入） |
 | `GET /api/agents/:id/projects/:pid/sessions` | 某 project 下的会话列表（项目存在即 200，私有目录未建返回空列表） |
 | `POST /api/agents/:id/projects/:pid/sessions` | 在某 project 下新建会话（**cwd：workspace = `~/.lifeos`；外部项目 = 项目 path**） |
 | `GET /api/agents/:id/projects/:pid/tasks` | 当前项目的任务清单（读 `tasks/*/task.md`，用于 `/task` 切换器） |

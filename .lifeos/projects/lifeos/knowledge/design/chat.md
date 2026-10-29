@@ -51,7 +51,7 @@
 
 ### 3.2 会话与项目
 
-- 新建会话（底部“＋新建会话”）；无会话时输入框仍可用，首条消息 = 建会话 + 发送。
+- 新建会话（底部“＋新建会话”）= **前端草稿**：只清空聊天区，不建服务端会话、列表不出新条目（Task 0006，2026-10-29；参考 Pi Web `handleNewSession`）。已经处在草稿里时该按钮禁用；无会话时输入框仍可用，首条消息 = 建会话 + 发送。
 - 重命名（`session_info`）、删除（确认；删当前会话则定位最近）；运行中删除 409。
 - 项目从该 Agent 移除：行内 hover 操作；不移除目录/会话/manifest；默认项目不可移除。
 
@@ -95,7 +95,7 @@
 - **高度**：CSS 原生自适应（`composer-autogrow` = `field-sizing: content`，不支持浏览器 JS 兜底），下限 = 单行，上限 = `tokens.css` 的 `--composer-max-height`（8 行），超出内部滚动。
 - **占位符**：单句；桌面在同行附键盘提示（如“输入消息 · Enter 发送 · Esc 打断 · / 命令”），**禁止**用 `\n` 排版多行说明；手机只写“输入消息”（mobile.md §3）。
 - **按钮**：发送/停止 = 主操作，手机桌面均 ≥44（IconButton `xl`），圆形（`full` 档），随末行右端对齐，不设独立底部行。
-- **草稿**：按会话（或待建会话的 Agent+项目）归属；发送失败回填，不静默丢弃。
+- **草稿**：按会话（或待建会话的 Agent+项目）归属；发送失败回填，不静默丢弃。新建会话的草稿按“助手+项目”各一份，跨项目互不影响；刷新带 `?agent&project`（无 `session`）回到草稿，无参数仍打开上次会话。草稿态斜杠命令置灰并提示“发送后可用”，手敲命令被拦截（不当消息发出）。首条消息被明确拒绝（非 2xx）时删除刚建的会话并退回草稿；网络错误不删（不知道是否送达）。
 - **可访问**：textarea 必须有 `aria-label="输入消息"`；placeholder 不作为唯一可访问名；调色板行在手机 ≥44。
 - **未来扩展**：排队、通知横幅进输入卡容器；新输入工具加进 dock 右区注册槽，不改其他区域排版。
 
@@ -107,7 +107,7 @@
 | 列折叠 | 完全独立；收起进全局 44px 导航轨（常数与实现见 `specs/frontend-development/frontend-spec.md` §3） | 并列折叠仍保聊天宽度 |
 | 列拖宽 | 列间 1px 分隔线拖动 | 夹紧区间；宽度 localStorage；方向按把手位置 |
 | 左侧图标轨 | 常驻 44px（全局规则见 `specs/frontend-development/frontend-spec.md` §3），高亮 = 该列展开 | 不做 hover 自动展开；不做多列互斥 |
-| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；**无会话时显示"新会话将用的档位"**（Agent 配置 → 系统 settings → Pi 默认 `medium`，来自 `/api/agents/:id/config` 的 `effective.thinkingLevel`，与模型段同源）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
+| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话时标题显示“新会话”（草稿态没有会话标题）；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；**无会话时显示"新会话将用的档位"**（Agent 配置 → 系统 settings → Pi 默认 `medium`，来自 `/api/agents/:id/config` 的 `effective.thinkingLevel`，与模型段同源）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
 | 固定状态条 | 消息滚动区外、输入框上方；左边 4 步/阶段/耗时数字，右边 `⚡速度 · ↑输入 ↓输出 ◔上下文`（均有 tooltip） | 不随消息滚；不写“本轮”前缀；符号必须有 tooltip |
 | 输入框 | 单容器 composer（见 §3.5）；草稿按会话归属；Enter 发送/插话；输入法组字不发送 | 发送失败回填草稿；`submittingRef` 防重复 |
 | 消息区 | 阅读列居中；用户深色气泡，助手贴白底；思考/工具/成功/失败用不同 token 背景 | 禁 HTML 透传；思考/工具可折叠；每个块带 `data-message-kind` |

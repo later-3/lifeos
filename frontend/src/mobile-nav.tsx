@@ -15,7 +15,7 @@ export type Level = "agents" | "projects" | "sessions";
  * 手机导航：多级 drill-down（助手 → 项目 → 会话），而不是“点一下就关”。
  * 参考 iOS/Linear/ChatGPT 手机端：选中上一级进入下一级，header 有返回；选到会话才关闭。
  */
-export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId,
+export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId, canNewSession,
   onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent }: {
   open: boolean;
   level: Level;
@@ -27,6 +27,8 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
   agent?: AgentLite;
   projectId?: string;
   sessionId?: string;
+  /** 当前是否还能“新建会话”：已经在草稿里就不行（决策：草稿态禁点新建会话）。 */
+  canNewSession: boolean;
   onSelectAgent: (agent: AgentLite) => Promise<void> | void;
   onSelectProject: (project: ProjectLite) => Promise<void> | void;
   onOpenSession: (sessionId: string) => void;
@@ -97,7 +99,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
         ) : level === "projects" ? (
           <Button className="w-full" onClick={onAddProject}><IconPlus size={16} /> 添加项目</Button>
         ) : (
-          <Button className="w-full" onClick={onNewSession}><IconPlus size={16} /> 新建会话</Button>
+          <Button className="w-full disabled:bg-sunken disabled:ring-0" disabled={!canNewSession} onClick={onNewSession}><IconPlus size={16} /> 新建会话</Button>
         )}
       </footer>
     </div>

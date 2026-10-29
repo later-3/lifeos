@@ -22,7 +22,7 @@ test("T70b 首条消息发出后、回合结束前，会话列表里已经有标
     const created = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`, { method: "POST" })).json();
     const sid = created.sessionId;
     const before = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
-    assert.equal(before.items.find((i) => i.sessionId === sid)?.title ?? "", "", "未发消息：没有标题");
+    assert.equal(before.items.find((i) => i.sessionId === sid), undefined, "未发消息：草稿不进列表（列表只列承载过用户动作的会话）");
     await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}/messages`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "帮我规划下周的设备巡检" }),
     });
