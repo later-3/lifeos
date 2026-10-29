@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconMenu2, IconPencil, IconPhoto, IconPlus, IconTrash, IconX,
+  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconPlus, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
@@ -92,7 +92,7 @@ type TaskItem = { id: string; title: string; status: string; type: string; categ
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
-type PaletteItem = { key: string; label: string; hint?: string; run: () => void };
+type PaletteItem = { key: string; label: string; hint?: string; run: () => void; /** 当前状态下不可用（草稿态）：置灰、说明原因，点了不执行 */ disabled?: boolean };
 type TurnEventSegment = { type: "turn"; turnId: string; state: "running" | "done" | "error" };
 type AgentEvent = { seq: number; agentId?: string; sessionId?: string } & (StreamEvent | { type: "done" } | { type: "error"; message?: string } | { type: "agents_changed" } | TurnEventSegment);
 
@@ -314,13 +314,16 @@ export default function App() {
     if (draftKey === undefined) { setInputState(""); return; }
     try { setInputState(localStorage.getItem(`${DRAFT_PREFIX}${draftKey}`) ?? ""); } catch { setInputState(""); }
   }, [draftKey]);
+  function writeDraftFor(key: string | undefined, text: string) {
+    if (key === undefined) return;
+    try {
+      if (text === "") localStorage.removeItem(`${DRAFT_PREFIX}${key}`);
+      else localStorage.setItem(`${DRAFT_PREFIX}${key}`, text);
+    } catch { /* 忽略 */ }
+  }
   function setInput(text: string) {
     setInputState(text);
-    if (draftKey === undefined) return;
-    try {
-      if (text === "") localStorage.removeItem(`${DRAFT_PREFIX}${draftKey}`);
-      else localStorage.setItem(`${DRAFT_PREFIX}${draftKey}`, text);
-    } catch { /* 忽略 */ }
+    writeDraftFor(draftKey, text);
   }
 
   // 只在"贴底"时跟随；流式期间直接设 scrollTop（smooth 会追不上 delta，产生抖动）。
@@ -582,7 +585,9 @@ export default function App() {
     if (agent?.id === item.id && next[0] !== undefined) await selectAgent(next[0]);
   }
 
-  async function openSession(a: Agent, sid: string) {
+  /** 换会话与开草稿共用的清理：流、历史、状态条、busy 归零；消息清空。
+   *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
+  function resetChatState() {
     setHistory(undefined);
     setTurnMetrics(undefined);
     turnMetricsPendingRef.current = false;
@@ -591,13 +596,19 @@ export default function App() {
     setRetry(undefined);
     setTurnStatus(undefined);
     setActiveTool(undefined);
-    setSessionId(sid);
-    current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
     activeTurnIdRef.current = null;
     busySessionRef.current = undefined;
     busyRef.current = false;
     streaming.current = false;
     setBusy(false);
+    setMessages([]);
+    setMeta(undefined);
+  }
+
+  async function openSession(a: Agent, sid: string) {
+    resetChatState();
+    setSessionId(sid);
+    current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
     const data = await loadMessages(a.id, sid);
     // 切回来时这一轮可能还在跑：必须恢复生成态，否则下一条会被当成"新回合"（C120）
     if (current.current === sid && data?.meta?.running === true) {
@@ -999,6 +1010,9 @@ export default function App() {
         ?? groups.find((g) => g.sessions.some((session) => candidates.includes(session.sessionId)))
         ?? groups.find((g) => g.project.isDefault) ?? groups[0];
       setSelectedProjectId(group?.project.id);
+      // URL 给了项目、没给会话 = 草稿（点过“新建会话”的状态）：不打开任何会话（2026-10-29 决策）。
+      // 完全没有参数时仍走下面的“接着上次会话”，不改打开应用的习惯。
+      if (wantGroup !== undefined && wantSession === null) { setLoaded(true); return; }
       const target = candidates.find((sid) => group?.sessions.some((session) => session.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
       if (target !== undefined) await openSession(found, target);
       setLoaded(true);
@@ -1006,12 +1020,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function newSession() {
-    if (agent === undefined) return;
-    const created = await (await fetch(`/api/agents/${agent.id}/projects/${selectedProjectId ?? "workspace"}/sessions`, { method: "POST" })).json() as { sessionId: string };
-    await reloadGroups();
+  /** 新建会话 = 前端草稿：只清空聊天区，不建任何服务端会话（2026-10-29 用户拍板）。
+   *  参考 Pi Web `components/AppShell.tsx:901-954 handleNewSession`：点“新建会话”零请求，首条消息才建会话。
+   *  已经处于草稿时不再重复（三个入口已禁用，这里只是兜底）：判据 `sessionId === undefined`。 */
+  function newSession() {
+    if (agent === undefined || sessionId === undefined) return;
+    resetChatState();
+    setSessionId(undefined);      // draftKey 随之落到 agent/project；URL 去 session
+    current.current = undefined;
     setShowSessions(true);
-    await openSession(agent, created.sessionId);
+    // 桌面把光标放进输入框；手机不抢焦点，否则会弹键盘（参考 Pi Web AppShell.tsx:945-953）。
+    if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   async function registerProject(path: string): Promise<string | null> {
@@ -1128,6 +1147,7 @@ export default function App() {
     // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
     // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
     let sid = sessionId;
+    let createdJustNow = false;      // 本次发送才建的会话（失败补偿要删掉它，见下）
     if (sid === undefined) {
       if (selectedProjectId === undefined || submittingRef.current || busyRef.current) return;
       submittingRef.current = true;
@@ -1141,6 +1161,7 @@ export default function App() {
           return;
         }
         sid = ((await created.json()) as { sessionId: string }).sessionId;
+        createdJustNow = true;
         setSessionId(sid);
         setMessages([]);
         void reloadGroups();
@@ -1206,6 +1227,22 @@ export default function App() {
       });
       if (!response.ok) {
         const error = await response.json() as { error?: { message?: string } };
+        if (createdJustNow) {
+          // 首条消息被明确拒绝（非 2xx）：刚建的会话里没有写入任何内容，删掉并退回草稿（2026-10-29 决策）。
+          // 参考项目不删（Pi Web 靠列表过滤 + 空闲回收）；我们没有空闲回收，留着就是一个看不见也删不掉的会话。
+          await fetch(`/api/agents/${agent.id}/sessions/${sid}`, { method: "DELETE" }).catch(() => undefined);
+          const backToDraft = selectedProjectId === undefined ? undefined : `${agent.id}/${selectedProjectId}`;
+          writeDraftFor(backToDraft, text);      // 文字挂回项目草稿键（退回草稿后 draftKey 换成它）
+          resetChatState();
+          setSessionId(undefined);
+          current.current = undefined;
+          setInputState(text);
+          setTurnStep(1);
+          if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
+          void reloadGroups();
+          toast(`发送失败：${error.error?.message ?? "请求被拒绝"}`, "error");
+          return;
+        }
         fail(`[出错] ${error.error?.message ?? "请求失败"}`);
       } else {
         setTurnStep(2);   // 2/4：后端受理（202）
@@ -1287,22 +1324,29 @@ export default function App() {
     if (ok) void loadMessages(agent.id, sessionId);
   }
 
+  // 草稿态（还没有会话）所有命令都无法执行：置灰并说明“发送后可用”（决策 ②；参考 Open WebUI 只列可用的命令）。
+  const draftMode = sessionId === undefined;
   const COMMANDS: PaletteItem[] = [
-    { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", run: () => void compactNow() },
-    { key: "/model", label: "/model", hint: "切换本会话模型", run: () => void openModelPalette() },
-    { key: "/thinking", label: "/thinking", hint: "切换思考级别", run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
-    { key: "/name", label: "/name <名称>", hint: "重命名会话", run: () => setInput("/name ") },
-    { key: "/new", label: "/new", hint: "新建会话", run: () => void newSession() },
-    { key: "/copy", label: "/copy", hint: "复制最后一条回复", run: copyLastAssistant },
-    { key: "/export", label: "/export", hint: "导出为 Markdown", run: exportMarkdown },
-    { key: "/abort", label: "/abort", hint: "打断当前回复（Esc）", run: () => void stop() },
+    { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", disabled: draftMode, run: () => void compactNow() },
+    { key: "/model", label: "/model", hint: "切换本会话模型", disabled: draftMode, run: () => void openModelPalette() },
+    { key: "/thinking", label: "/thinking", hint: "切换思考级别", disabled: draftMode, run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
+    { key: "/name", label: "/name <名称>", hint: "重命名会话", disabled: draftMode, run: () => setInput("/name ") },
+    { key: "/new", label: "/new", hint: "新建会话", disabled: draftMode, run: () => void newSession() },
+    { key: "/copy", label: "/copy", hint: "复制最后一条回复", disabled: draftMode, run: copyLastAssistant },
+    { key: "/export", label: "/export", hint: "导出为 Markdown", disabled: draftMode, run: exportMarkdown },
+    { key: "/abort", label: "/abort", hint: "打断当前回复（Esc）", disabled: draftMode, run: () => void stop() },
   ];
+
+  /** 草稿态拒绝执行命令时的说明：/new 是“已经在新会话里”，其余是“发送后才有会话可操作”。 */
+  function commandOffNotice(key: string): string {
+    return key === "/new" ? "当前已在新建会话" : "发送第一条消息后，命令才可用";
+  }
 
   async function runSlash(command: string) {
     const [name, ...rest] = command.trim().split(/\s+/);
     const arg = rest.join(" ").trim();
     if (name === "/name" && arg !== "") {
-      if (agent === undefined || sessionId === undefined) return;
+      if (agent === undefined || sessionId === undefined) { setInput(""); toast(commandOffNotice("/name"), "error"); return; }
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}`, {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: arg }),
       }).catch(() => undefined);
@@ -1311,7 +1355,11 @@ export default function App() {
       return;
     }
     const hit = COMMANDS.find((item) => item.key === name);
-    if (hit !== undefined) { setInput(""); hit.run(); return; }
+    if (hit !== undefined) {
+      // 手敲命令也要拦：否则 "/model" 会被当成一条消息发出去（草稿态没有会话可操作）
+      if (hit.disabled === true) { setInput(""); toast(commandOffNotice(hit.key), "error"); return; }
+      setInput(""); hit.run(); return;
+    }
     toast(`未知命令 ${name}（按 / 看列表）`, "error");
   }
 
@@ -1661,9 +1709,11 @@ export default function App() {
               ))}
             </div>
             <div className="px-1.5 py-2">
-              <Button size="sm" className="w-full" onClick={() => void newSession()}>
-                <IconPlus size={14} /> 新建会话
-              </Button>
+              <span className="block" title={sessionId === undefined ? "已经在新建会话里：直接输入并发送即可" : undefined}>
+                <Button size="sm" className="w-full disabled:bg-sunken disabled:ring-0" disabled={sessionId === undefined} onClick={() => void newSession()}>
+                  <IconPlus size={14} /> 新建会话
+                </Button>
+              </span>
             </div>
           </aside>
           <DragHandle onStart={(event) => beginDrag("c3", event)} />
@@ -1699,7 +1749,7 @@ export default function App() {
           ))}
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
-            <h1 className="truncate text-body font-semibold text-ink-900">{sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
+            <h1 className="truncate text-body font-semibold text-ink-900">{loaded && sessionId === undefined ? "新会话" : sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
@@ -1818,16 +1868,30 @@ export default function App() {
               }}
               className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
               {palette !== undefined && (
-                <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden border-b border-line bg-sunken p-1">
-                  {palette.items.map((item, index) => (
-                    <button key={item.key} type="button"
-                      onMouseEnter={() => setPalette({ ...palette, index })}
-                      onClick={() => { setPalette(undefined); item.run(); }}
-                      className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors max-sm:min-h-11 ${index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"}`}>
-                      <span className="shrink-0 font-mono">{item.label}</span>
-                      {item.hint !== undefined && <span className="ml-auto min-w-0 truncate text-micro text-ink-500">{item.hint}</span>}
-                    </button>
-                  ))}
+                <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden rounded-t-panel border-b border-line bg-sunken p-1">
+                  {/* 草稿态：一句说明放在面板顶部，下面各行只留命令名（不逐行重复“发送后可用”） */}
+                  {draftMode && (
+                    <p className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1 text-micro text-ink-700">
+                      <IconInfoCircle size={12} className="shrink-0 text-ink-500" aria-hidden="true" />
+                      发送第一条消息后，命令才可用
+                    </p>
+                  )}
+                  {palette.items.map((item, index) => {
+                    const off = item.disabled === true;
+                    return (
+                      <button key={item.key} type="button" disabled={off}
+                        onMouseEnter={() => { if (!off) setPalette({ ...palette, index }); }}
+                        onClick={() => { setPalette(undefined); item.run(); }}
+                        className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors max-sm:min-h-11 disabled:cursor-not-allowed ${
+                          off ? "text-ink-500" : index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"
+                        }`}>
+                        <span className="shrink-0 font-mono">{item.label}</span>
+                        {item.hint !== undefined && (
+                          <span className={`ml-auto min-w-0 truncate text-micro ${off ? "text-ink-500/70" : "text-ink-500"}`}>{item.hint}</span>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               {/* 附件托盘：只有有图时出现，所以无图的基线不变 */}
@@ -1882,13 +1946,21 @@ export default function App() {
                     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                       event.preventDefault();
                       const delta = event.key === "ArrowDown" ? 1 : -1;
-                      setPalette({ ...palette, index: (palette.index + delta + palette.items.length) % palette.items.length });
+                      const total = palette.items.length;
+                      let next = palette.index;
+                      // 跳过置灰项：焦点不会停在“按了也没反应”的条目上
+                      for (let step = 1; step <= total; step += 1) {
+                        const candidate = (palette.index + delta * step + total * total) % total;
+                        if (palette.items[candidate]?.disabled !== true) { next = candidate; break; }
+                      }
+                      setPalette({ ...palette, index: next });
                       return;
                     }
                     if (event.key === "Enter") {
                       event.preventDefault();
                       const item = palette.items[palette.index];
                       setPalette(undefined);
+                      if (item?.disabled === true) { toast(commandOffNotice(item.key), "error"); return; }
                       item?.run();
                       return;
                     }
@@ -2037,6 +2109,7 @@ export default function App() {
         agents={agents} groups={groups} {...(agent !== undefined ? { agent } : {})}
         {...(selectedProjectId !== undefined ? { projectId: selectedProjectId } : {})}
         {...(sessionId !== undefined ? { sessionId } : {})}
+        canNewSession={sessionId !== undefined}
         onSelectAgent={async (item) => { const full = agents.find((entry) => entry.id === item.id); if (full !== undefined) await selectAgent(full); }}
         onSelectProject={async (project) => { const full = groups.find((group) => group.project.id === project.id)?.project; if (full !== undefined) await selectProject(full); }}
         onOpenSession={(sid) => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) void openSession(agent, sid); }}

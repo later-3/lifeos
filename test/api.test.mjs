@@ -84,8 +84,8 @@ test("手动新建的会话是空白的（开场只属于出厂默认会话）",
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}`)).json();
     assert.deepEqual(messages, []);
     const list = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
-    const createdItem = list.items.find((item) => item.sessionId === sessionId);
-    assert.notEqual(createdItem?.isDefault, true, "手动新建的会话不应被标为默认");
+    assert.equal(list.items.find((item) => item.sessionId === sessionId), undefined,
+      "没发消息的新会话不进列表（草稿不占列表；默认标记只可能落在出厂会话上，见上一条用例）");
   } finally { server.close(); }
 });
 
@@ -118,7 +118,12 @@ test("project 列表按目录扫描：新增目录即出现（名称=目录名�
     await mkdir(join(root, ".hidden"), { recursive: true });
 
     const projects = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
-    assert.deepEqual(projects.items.map((item) => item.id), ["workspace", "demo-project", "lifeos"], "默认项目在前，其余按名字排序");
+    // 排序 = 默认项目在前，其余按 name.localeCompare（src/projects.ts:116）。
+    // 不能硬编码顺序：LifeOS 项目的 name 是 checkout 目录名（任意 worktree 都可能跑测试）。
+    assert.equal(projects.items[0].id, "workspace", "默认项目在前");
+    const rest = projects.items.slice(1);
+    assert.deepEqual(rest.map((item) => item.name), [...rest.map((item) => item.name)].sort((a, b) => a.localeCompare(b)), "其余按名字排序");
+    assert.ok(rest.some((item) => item.id === "demo-project"), "新增目录即出现");
     assert.equal(projects.items[0].name, "workspace", "内置项目显示目录名，不用「工作区」这类展示名");
     const demo = projects.items.find((item) => item.id === "demo-project");
     assert.equal(demo?.name, "demo-project", "显示名必须等于目录名");
@@ -388,7 +393,7 @@ test("按 project 建会话：落对目录、cwd 正确（workspace=家目录，
     assert.equal(w.status, 200);
     const wSid = (await w.json()).sessionId;
     const wList = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
-    assert.ok(wList.items.some((i) => i.sessionId === wSid && i.messages === 0), "未落盘的新会话必须出现在列表（pending 并入）");
+    assert.equal(wList.items.some((i) => i.sessionId === wSid), false, "没发消息的新会话不进列表（草稿不占列表；发出首条消息后才出现）");
     const { getSession } = await import("../src/agent-host.ts");
     const wState = await getSession("lifeosagent", wSid, home);
     assert.ok(wState, "内存态应可取回");
@@ -413,9 +418,9 @@ test("按 project 建会话：落对目录、cwd 正确（workspace=家目录，
     const stranger = await fetch(`${base}/api/agents/lifeosagent/projects/11111111-2222-4733-8444-555555555555/sessions`, { method: "POST" });
     assert.equal(stranger.status, 404);
 
-    // 列表：外部项目私有目录已存在 → 会话列表 1 条
+    // 列表：会话还没发过消息 = 草稿，不列（用户拍板 2026-10-29）；列表与内存态是两件事
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/${pid}/sessions`)).json();
-    assert.equal(list.items.length, 1);
+    assert.equal(list.items.length, 0);
   } finally { server.close(); }
 });
 
