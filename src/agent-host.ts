@@ -1,7 +1,11 @@
 // 进程内 Agent 宿主：会话 id 用 Pi 生成的 id；一轮的输出进“按 Agent 的事件流”（带序号，可续传）。
 // 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §12.2），这里只负责加载。
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { buildPromptParts, createLifeOsPromptExtension, resolveModelChoice } from "./assembly.ts";
+import { planElision } from "./image-budget.ts";
+import { appendAttachmentRefs, attachmentFileSizeCached, gcAttachments, imageBlocksOfRefs } from "./attachments.ts";
+import { parseImageRefs } from "./image-note.ts";
+import { readLimits, recordObservedToFile, resolveBudget, type Budget } from "./payload-limit.ts";
+import { buildPromptParts, createLifeOsImageBudgetExtension, createLifeOsPromptExtension, createLifeOsReadPathExtension, resolveModelChoice } from "./assembly.ts";
 import type { ImageAttachment } from "./image-input.ts";
 import { ensureDailyShard, ensureDefaultTask, listTasks } from "./tasks.ts";
 import { readProjectManifests } from "./projects.ts";
@@ -96,7 +100,11 @@ export async function createHostedResourceLoader(input: {
     agentDir: input.configDir,
     settingsManager: input.settingsManager,
     noContextFiles: true,
-    extensionFactories: [createLifeOsPromptExtension(input.getParts ?? input.parts)],
+    extensionFactories: [
+      createLifeOsPromptExtension(input.getParts ?? input.parts),
+      createLifeOsImageBudgetExtension(),
+      createLifeOsReadPathExtension(),
+    ],
   });
   await loader.reload();
   return loader;
@@ -424,6 +432,21 @@ export function nameSessionFromFirstMessage(agentId: string, sessionId: string, 
   return true;
 }
 
+/** 网关"请求体过大"的错误族（不绑单个 provider 的文案；P5 会归因到 FailureKind）。 */
+const PAYLOAD_TOO_LARGE = /payload.?too.?large|request body.{0,20}(too large|exceed)|413/i;
+
+/**
+ * 观测记账（Task 0012 · P3）：用本轮估算的 body 字节更新 state/payload-limits.json。
+ * 失败不阻断对话——观测只是"下一次更准"，不是功能本身。
+ */
+async function recordPayloadObservation(target: SessionState, outcome: "ok" | "too_large"): Promise<void> {
+  const providerId = target.session.model?.provider ?? "";
+  if (providerId === "") return;
+  const bodyBytes = payloadEstimateOf(target).estimated;
+  if (bodyBytes <= 0) return;
+  await recordObservedToFile(resolveHome(), { providerId, bodyBytes, outcome }).catch(() => undefined);
+}
+
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
 export async function runTurn(agentId: string, sessionId: string, text: string, images?: ImageAttachment[]): Promise<void> {
   const state = stateOf(agentId);
@@ -448,8 +471,17 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
   try {
-    // 图片走 Pi 原生 images 通道（PromptOptions.images）；Pi 会在进入历史前按 inputLimits 规范化
-    await target.session.prompt(text, images !== undefined && images.length > 0 ? { images } : undefined);
+    // P7b / D7：用户图先落盘，**发出去的消息只带引用行**（历史里没有 base64 → 压缩路径也不会带大图）；
+    // 当轮可见性由 context 钩子的重注入保证（引用行在最后一条 user 消息里，走 A 段全量）。
+    // 落盘失败 → 该张回退成 inline，功能降级但不丢图。
+    const attachments = images !== undefined && images.length > 0
+      ? await appendAttachmentRefs(resolveHome(), text, images)
+      : undefined;
+    const promptText = attachments?.text ?? text;
+    const fallbackImages = attachments !== undefined && attachments.failed.length > 0 ? attachments.failed : undefined;
+    await target.session.prompt(promptText, fallbackImages !== undefined && fallbackImages.length > 0 ? { images: fallbackImages } : undefined);
+    // 观测记账（Task 0012 · P3）：成功发出去的 body 字节 = 上限的下界。只在"更大"时写盘。
+    await recordPayloadObservation(target, "ok");
     const aborted = abortRequested.delete(requestKey);
     // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
     finishTurn(agentId, sessionId, turnId, "done");
@@ -460,6 +492,8 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   } catch (error) {
     abortRequested.delete(requestKey);
     const message = error instanceof Error ? error.message : String(error);
+    // 被网关以"请求体过大"拒过 → 记上界，下一次解析会自动降到 0.8× 该值
+    if (PAYLOAD_TOO_LARGE.test(message)) await recordPayloadObservation(target, "too_large");
     finishTurn(agentId, sessionId, turnId, "error");
     recordCompletion(agentId, sessionId, false, projectIdForLog);
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
@@ -526,6 +560,72 @@ export function sessionMeta(agentId: string, state: SessionState): {
     activeTaskId: state.taskId ?? null,
     usage: sessionUsage(state),
     context: context === undefined ? null : { percent: context.percent, window: context.contextWindow },
+  };
+}
+
+/**
+ * 请求体字节估算（Task 0012 · P1）：**图片 base64 编码后字节 + 文本 UTF-8 字节**。
+ * 图片必须按**编码后**长度算（base64 比二进制大 1/3，网关限的是编码后的请求体）——
+ * 按解码字节算会少算 25%，正因如此 0010 那套估算一直看着"还有余量"。
+ * 只估算"随请求重发的全部历史"，不含系统提示与工具 schema（那部分留在 reserve 里）。
+ * 这是观测值，不是策略：淘汰在 P3 才接。
+ */
+export function payloadEstimateOf(state: SessionState, projection?: ReturnType<SessionState["session"]["sessionManager"]["buildSessionProjection"]>): { images: number; text: number; estimated: number } {
+  let images = 0;
+  let text = 0;
+  for (const message of (projection ?? state.session.sessionManager.buildSessionProjection()).messages) {
+    // AgentMessage 是联合类型（含没有 content 的 bash 执行消息），按字段探测而不是强转
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === "string") { text += Buffer.byteLength(content, "utf8"); continue; }
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const block = part as { type?: string; data?: unknown; text?: unknown };
+      if (block.type === "image" && typeof block.data === "string") images += block.data.length;
+      else if (block.type === "text" && typeof block.text === "string") {
+        let textBytes = Buffer.byteLength(block.text, "utf8");
+        // P7b：引用化后，"会重注入的附件"按 base64 后字节计入（≈ 重注入后真正上线的尺寸）
+        for (const ref of parseImageRefs(block.text)) {
+          const fileBytes = attachmentFileSizeCached(ref);
+          if (fileBytes > 0) images += Math.ceil(fileBytes / 3) * 4;
+        }
+        text += textBytes;
+      }
+    }
+  }
+  return { images, text, estimated: images + text };
+}
+
+/**
+ * 会话的请求体画像（Task 0012 · P1）：估算 + 上限从哪来。
+ * `limit === null` 表示没有任何来源 ⇒ P3 不会启用淘汰（宁可回落 token 压缩，也不猜数字）。
+ */
+export async function payloadMetaOf(state: SessionState): Promise<{
+  images: number; text: number; estimated: number;
+  /** 淘汰之后真正会发出去的估算（`estimated` 是存储量；两者不同，界面要显示这个） */
+  effective: number;
+  limit: number | null; source: Budget["source"] | null; triggerBytes: number | null; targetBytes: number | null;
+}> {
+  const model = state.session.model;
+  const limits = await readLimits(resolveHome());
+  const budget = resolveBudget({
+    providerId: model?.provider ?? "",
+    modelLimit: model?.inputLimits?.maxRequestBytes,
+    config: limits.config,
+    state: limits.state,
+  });
+  // 同一次投影复用（估算 + 淘汰各扫一遍即可，不重复构建）
+  const projection = state.session.sessionManager.buildSessionProjection();
+  const estimate = payloadEstimateOf(state, projection);
+  const effectiveImages = budget === undefined
+    ? estimate.images
+    : planElision(imageSizesOf(projection.messages), budget).kept;
+  return {
+    ...estimate,
+    effective: effectiveImages + estimate.text,
+    limit: budget?.limit ?? null,
+    source: budget?.source ?? null,
+    triggerBytes: budget?.triggerBytes ?? null,
+    targetBytes: budget?.targetBytes ?? null,
   };
 }
 
@@ -723,6 +823,30 @@ export function setSessionThinking(agentId: string, sessionId: string, level: Th
   return { ok: true, level: state.session.thinkingLevel };
 }
 
+
+/**
+ * 按出现顺序取会话里"会被发出去的图片字节"：inline 取 base64 长度；引用取附件的 base64 等价。
+ * 与 `planElision` 配套 → meta.effective 与真实发送共用同一套规则（P7b 实测：不共用会显示 418B / 实发 560KB）。
+ */
+function imageSizesOf(messages: readonly unknown[]): number[] {
+  const sizes: number[] = [];
+  for (const message of messages) {
+    const content = (message as { content?: unknown } | null | undefined)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      const part = block as { type?: string; data?: unknown; text?: unknown };
+      if (part.type === "image" && typeof part.data === "string") { sizes.push(part.data.length); continue; }
+      if (part.type === "text" && typeof part.text === "string") {
+        for (const ref of parseImageRefs(part.text)) {
+          const fileBytes = attachmentFileSizeCached(ref);
+          if (fileBytes > 0) sizes.push(Math.ceil(fileBytes / 3) * 4);
+        }
+      }
+    }
+  }
+  return sizes;
+}
+
 /** 每个家目录只清理一次孤儿未读（启动后第一次建立事件流前）。 */
 const viewsPruned = new Set<string>();
 export async function pruneSessionViewsOnce(): Promise<void> {
@@ -742,6 +866,17 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined && !state.sessions.has(sessionId)) return "not_found";
   if (found !== undefined) await rm(found.path, { force: true });
+  // 附件可能仍被**其它**会话引用（内容 hash 共享）→ 只清"无人引用 + 7 天前"的孤儿（P8①）。
+  // 失败不影响删会话本身：附件多留只是占磁盘，误删才是事故。
+  void gcAttachments(resolveHome())
+    .then((result) => {
+      if (result.removed > 0) {
+        void log.info("agent-host", "gcAttachments", "清理孤儿附件", {
+          details: { removed: result.removed, removedBytes: result.removedBytes, kept: result.kept, scannedRefs: result.scannedRefs },
+        });
+      }
+    })
+    .catch(() => undefined);
   sessionViewsOf().forget(agentId, sessionId);   // 已删会话不得留下未读点
   state.sessions.delete(sessionId);
   state.pending.delete(sessionId);
@@ -770,10 +905,15 @@ export function sessionImageBytesOf(state: SessionState): number {
   for (const message of state.session.sessionManager.buildSessionProjection().messages) {
     if (message.role !== "user") continue;
     for (const part of Array.isArray(message.content) ? message.content : []) {
-      const image = part as { type?: string; data?: unknown };
+      const image = part as { type?: string; data?: unknown; text?: unknown };
       if (image.type === "image" && typeof image.data === "string") {
         const padding = image.data.endsWith("==") ? 2 : image.data.endsWith("=") ? 1 : 0;
         total += Math.max(0, Math.floor((image.data.length * 3) / 4) - padding);
+        continue;
+      }
+      // P7b：引用化后用户图在文本里 → 按附件文件**二进制字节**计（与 inline 同口径，16MB 准入不被静默废掉）
+      if (image.type === "text" && typeof image.text === "string") {
+        for (const ref of parseImageRefs(image.text)) total += attachmentFileSizeCached(ref);
       }
     }
   }
@@ -806,6 +946,8 @@ export function messagesOf(state: SessionState) {
           blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
         }
       }
+      // D7：引用化后用户消息里只有引用行 —— 显示时按附件目录还原（老会话已有图块则原样，见 imageBlocksOfRefs）
+      for (const refBlock of imageBlocksOfRefs(message)) blocks.push(refBlock);
       out.push({ role: "user", text, blocks, ...(at !== undefined ? { at } : {}) });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
@@ -839,7 +981,8 @@ export function messagesOf(state: SessionState) {
         call.result = result;
         call.isError = message.isError;
         // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
-        const images = toolResultImages(message);
+        const direct = toolResultImages(message);
+        const images = direct.length > 0 ? direct : imageBlocksOfRefs(message);   // D7：引用行 → 附件还原
         if (images.length > 0) call.images = images;
         break;
       }

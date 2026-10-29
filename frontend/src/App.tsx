@@ -81,7 +81,12 @@ type StreamSnapshot = {
   unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
 };
 
-type SessionMeta = { model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean; activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null };
+type SessionMeta = {
+  model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean;
+  activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null;
+  /** 请求体画像（Task 0012 P1）：图片/文本字节 + 上限来源 */
+  payload?: { images: number; text: number; estimated: number; effective?: number; limit: number | null; source: string | null; triggerBytes: number | null; targetBytes: number | null };
+};
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind };
@@ -1829,7 +1834,8 @@ export default function App() {
                   {...(turnStatus !== undefined ? { status: turnStatus } : {})}
                   {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
                   {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-                  {...(meta?.context !== undefined ? { context: meta.context } : {})} />
+                  {...(meta?.context !== undefined ? { context: meta.context } : {})}
+                  {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})} />
               </div>
               {!isMobile && (
                 <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">

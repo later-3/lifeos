@@ -3,7 +3,8 @@
  * 种类与 `src/failure.ts` 的 FAILURE_KINDS 对齐（test/failure.test.mjs 会检查两边不漏项）。
  */
 export type FailureKind =
-  | "aborted" | "truncated" | "empty" | "timeout" | "network" | "auth" | "rate_limit" | "server" | "unknown";
+  | "aborted" | "truncated" | "empty" | "timeout" | "network" | "auth" | "rate_limit" | "server"
+  | "payload_too_large" | "unknown";
 
 const LABELS: Record<FailureKind, string> = {
   aborted: "本轮已中断",
@@ -14,6 +15,7 @@ const LABELS: Record<FailureKind, string> = {
   auth: "模型服务拒绝鉴权：检查 API key 或该模型的访问权限",
   rate_limit: "模型服务限流或额度不足",
   server: "模型服务内部错误",
+  payload_too_large: "请求体太大被网关拒绝：历史图片过多，删掉一些或新建会话（重试没有用）",
   unknown: "模型调用失败",
 };
 
