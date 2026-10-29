@@ -11,7 +11,7 @@ import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
-  applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta,
+  applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
@@ -418,7 +418,9 @@ app.use(async (c, next) => {
       });
     }
     return c.json({
-      sessionId: c.req.param("sessionId"), messages: messagesOf(state), meta: sessionMeta(agent.id, state),
+      sessionId: c.req.param("sessionId"), messages: messagesOf(state),
+      // payload 是观测（Task 0012 P1）：图片/文本字节 + 上限从哪来；limit=null 表示该 provider 未声明上限
+      meta: { ...sessionMeta(agent.id, state), payload: await payloadMetaOf(state) },
       ...(integrity !== undefined ? { integrity } : {}),
     });
   });
@@ -447,7 +449,8 @@ app.use(async (c, next) => {
     return c.json({ written });
   });
 
-  // 请求体上限 = 网关实测能带走的量（32MB 通过、64MB 断开）；超出直接 413，不进入解析
+  // 入站请求体上限（浏览器 → Life OS）。注意：这是**我们自己的**限额，与"出站到网关"的 3.5MB 上限是两件事
+  // （后者见 knowledge/design/image-input.md 与 src/payload-limit.ts，且校验发生在鉴权之后，探针测不到）
   const messagesBodyLimit = bodyLimit({
     maxSize: MAX_SESSION_IMAGE_BYTES * 2,
     onError: (c) => {

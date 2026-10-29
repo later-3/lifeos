@@ -8,12 +8,16 @@
 // 限流、服务端 5xx、模型返回空、被中断、被截断。笼统一句"模型调用失败"等于没解释。
 
 export const FAILURE_KINDS = [
-  "aborted", "truncated", "empty", "timeout", "network", "auth", "rate_limit", "server", "unknown",
+  "aborted", "truncated", "empty", "timeout", "network", "auth", "rate_limit", "server", "payload_too_large", "unknown",
 ] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 const AUTH = /(401|403|unauthorized|forbidden|invalid api key|no api key|authentication|permission denied)/i;
 const RATE_LIMIT = /(429|rate.?limit|too many requests|quota|insufficient_quota)/i;
+// 请求体过大（Task 0012）：**确定性失败**，重试无意义。必须在 SERVER 之前判——
+// 网关的 413 报文里带 `"type":"server_error"`，否则会被归成"服务端错误"并触发 Pi 的自动重试。
+/** 供 agent-host（记账）与 assembly（回合内自救）共用；单一事实源，避免两处漂移。 */
+export const PAYLOAD_TOO_LARGE = /(\b413\b|payload.?too.?large|maximum request body|request body.{0,24}(too large|exceed))/i;
 // 网络层：连不上 / 连上被断。放在 timeout 前面判——"connection timed out" 属于连不上，
 // 而 Pi 自己的 "Request timed out." 才属于"等回复超时"。
 const NETWORK = /(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|fetch failed|getaddrinfo|socket hang up|connection (refused|reset|closed|timed out)|network.?error|upstream.?connect|other side closed)/i;
@@ -28,6 +32,7 @@ export function classifyFailure(input: { stopReason?: string; errorMessage?: str
   if (message !== "") {
     if (AUTH.test(message)) return "auth";
     if (RATE_LIMIT.test(message)) return "rate_limit";
+    if (PAYLOAD_TOO_LARGE.test(message)) return "payload_too_large";
     if (NETWORK.test(message)) return "network";
     if (TIMEOUT.test(message)) return "timeout";
     if (SERVER.test(message)) return "server";

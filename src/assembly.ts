@@ -9,6 +9,12 @@
 import { readdir, readFile } from "node:fs/promises";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { applyImageBudget, imageBytesOf } from "./image-budget.ts";
+import { formatImageNote, isImageNoteText } from "./image-note.ts";
+import { reinjectRecentImages } from "./attachments.ts";
+import { log } from "./logging.ts";
+import { PAYLOAD_TOO_LARGE } from "./failure.ts";
+import { readLimits, recordObservedToFile } from "./payload-limit.ts";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest } from "./projects.ts";
 import { resolveTaskDir } from "./tasks.ts";
@@ -251,6 +257,106 @@ export function createLifeOsPromptExtension(source: PromptPartsSource): InlineEx
           ...(rules !== undefined ? { rules } : {}),
           lifeos_interaction_harness: parts.harnessSection,
         };
+      });
+    },
+  } satisfies InlineExtension;
+}
+
+/**
+ * `read` 读图带路径（Task 0012 · P4 / 方案 A 的前提）。
+ *
+ * Pi 的 `read` 只回 `Read image file [image/png]`（`tools/read.ts:145`），**没有路径**——
+ * 那么图片被淘汰后模型就指不回去。这里用 `tool_result` 事件把那一行换成
+ * `screenshot <绝对路径> [<w>x<h>] <大小>`，图块本身不动。
+ *
+ * - 只处理 `toolName === "read"` 且结果里真有 image 块的情况；
+ * - 绝对路径按 `ctx.cwd` 解析（读 tool 的入参可能是相对路径）；
+ * - 不改 Pi 子模块，也不改会话文件。
+ */
+export function createLifeOsReadPathExtension(): InlineExtension {
+  return {
+    name: "lifeos-read-path",
+    hidden: true,
+    factory: (pi) => {
+      pi.on("tool_result", (event, ctx) => {
+        if (event.toolName !== "read") return;
+        const blocks = event.content;
+        if (!Array.isArray(blocks) || !blocks.some((block) => block.type === "image")) return;
+        const rawPath = event.input?.path;
+        if (typeof rawPath !== "string" || rawPath === "") return;
+        const absolutePath = isAbsolute(rawPath) ? rawPath : resolve(ctx.cwd, rawPath);
+        const image = blocks.find((block) => block.type === "image");
+        if (image === undefined || image.type !== "image") return;
+        const note = formatImageNote({ path: absolutePath, base64: image.data, mimeType: image.mimeType });
+        const content = blocks.map((block) =>
+          block.type === "text" && isImageNoteText(block.text) ? { type: "text" as const, text: note } : block);
+        const first = content[0];
+        // 图块前面必须有这条说明（Pi 也可能是纯 image 块开头）：没有文本块就插到最前
+        const hasNote = content.some((block) => block.type === "text" && block.text === note);
+        const withNote = hasNote ? content : [{ type: "text" as const, text: note }, ...(first === undefined ? [] : content)];
+        // D7：**存储里不再带图**——文件本来就在磁盘上（read 读的就是它），
+        // 只留引用行；当轮可见性由 context 钩子的重注入保证（P7）。
+        return { content: withNote.filter((block) => block.type !== "image") };
+      });
+    },
+  } satisfies InlineExtension;
+}
+
+/** 请求时重注入最近几张图片的引用（hermes `_MAX_KEEP_IMAGES` 的同类取值：3）。 */
+const KEEP_REINJECTED_IMAGES = 3;
+
+export function createLifeOsImageBudgetExtension(): InlineExtension {
+  return {
+    name: "lifeos-image-budget",
+    hidden: true,
+    factory: (pi) => {
+      pi.on("context", async (event, ctx) => {
+        const model = ctx.model ?? undefined;
+        // D7：先重注入最近 3 张（刚读的图必须当轮在场），再跑预算兜底——
+        // 重注入的结果就是"这次真正要发的 messages"，后面所有判断都基于它。
+        const reinjected = await reinjectRecentImages(event.messages, KEEP_REINJECTED_IMAGES,
+          { allowImages: model === undefined || model.input === undefined || model.input.includes("image") });
+        const handBack = (): { messages: typeof reinjected.messages } | undefined =>
+          reinjected.changed ? { messages: reinjected.messages } : undefined;
+        // 回合内自救（hermes `conversation_loop.py:3374-3395` 的 413→压缩→重试，搬到我们这层）：
+        // pi 每次重试都会重跑本钩子，而**失败的 413 消息已经落盘**——扫到就当场记上界，
+        // 紧接着解析到的预算就会更小，这一次重试自然发得更少。不动 pi 的重试循环。
+        const providerId = model?.provider ?? "";
+        if (providerId !== "") {
+          const recent = ctx.sessionManager.getEntries().slice(-16);
+          const rejected = recent.some((entry) => {
+            const message = (entry as { message?: { role?: string; errorMessage?: string } }).message;
+            return message?.role === "assistant"
+              && typeof message.errorMessage === "string"
+              && PAYLOAD_TOO_LARGE.test(message.errorMessage);
+          });
+          if (rejected) {
+            const bodyBytes = imageBytesOf(reinjected.messages);
+            if (bodyBytes > 0) {
+              await recordObservedToFile(resolveHome(), { providerId, bodyBytes, outcome: "too_large" }).catch(() => undefined);
+              void log.info("agent-host", "imageBudget", "上一次请求被判体积超限，本次收紧预算", { details: { providerId, bodyBytes } });
+            }
+          }
+        }
+        const limits = await readLimits(resolveHome());
+        const applied = applyImageBudget(reinjected.messages, model, limits);
+        // 没有上限来源（未声明的 provider）→ 不猜数字，只交回重注入结果
+        if (applied === undefined) return handBack();
+        const { budget, result } = applied;
+        if (budget.undersized) {
+          void log.warn("agent-host", "imageBudget", "请求体上限太小，淘汰无法回到安全区", {
+            details: { limit: budget.limit, source: budget.source, triggerBytes: budget.triggerBytes },
+          });
+        }
+        if (result.droppedCount === 0) return handBack();
+        void log.info("agent-host", "imageBudget", "淘汰历史图片", {
+          details: {
+            dropped: result.droppedCount, keptImages: result.keptImages,
+            bytesBefore: result.bytesBefore, bytesAfter: result.bytesAfter,
+            triggerBytes: budget.triggerBytes, targetBytes: budget.targetBytes, source: budget.source,
+          },
+        });
+        return { messages: result.messages };
       });
     },
   } satisfies InlineExtension;

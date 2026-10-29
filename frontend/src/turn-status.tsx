@@ -3,6 +3,7 @@ import { WorkingRow } from "./Message";
 import { IconButton } from "./design/ui";
 import { useToast } from "./design/toast";
 import type { Phase } from "./stream-blocks";
+import { payloadStatusText, type PayloadStat } from "./payload-status";
 import { compactTokens, type TurnStep } from "./working";
 
 type Retry = { attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number };
@@ -28,7 +29,7 @@ function StatusMetric({ symbol, value, label, title, tone = "text-ink-500" }: {
  * 间距层级：图标↔数值 4px；输入↔输出 8px；不同指标组 12px。
  * 符号均有 tooltip；参考 Codex/Claude/Gemini status line、LobeHub TokenTag、Pi TUI footer。
  */
-export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, metrics, usage, context, turnId }: {
+export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, metrics, usage, context, payload, turnId }: {
   busy: boolean;
   step: TurnStep;
   phase: Phase;
@@ -38,11 +39,14 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
   metrics?: Metrics;
   usage?: Usage;
   context?: Context | null;
+  /** 请求体（Task 0012 · P5）：`1.9/3.0MB`，上限未知时只显示用量 */
+  payload?: PayloadStat;
   turnId?: string;
 }) {
   const toast = useToast();
   const hasUsage = usage !== undefined && usage.totalTokens > 0;
-  if (!busy && status === undefined && metrics === undefined && !hasUsage) return null;
+  const payloadText = payloadStatusText(payload);
+  if (!busy && status === undefined && metrics === undefined && !hasUsage && payloadText === undefined) return null;
   return (
     <div className="mx-auto flex min-h-7 w-full max-w-reading flex-wrap items-center gap-x-3 gap-y-1"
       data-testid="turn-status-content"
@@ -74,6 +78,10 @@ export function TurnStatusBar({ busy, step, phase, activeTool, retry, status, me
             <StatusMetric symbol="↑" value={compactTokens(usage.input)} label="输入" title="会话累计输入 tokens" />
             <StatusMetric symbol="↓" value={compactTokens(usage.output)} label="输出" title="会话累计输出 tokens" />
           </span>
+        )}
+        {payloadText !== undefined && (
+          <StatusMetric symbol="▲" value={payloadText} label="请求体"
+            title={`本轮请求体 ${payloadText}（含历史图片；超过上限会被网关 413 拒绝）`} />
         )}
         {context !== undefined && context !== null && context.window > 0 && (
           <StatusMetric symbol="◔"

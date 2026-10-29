@@ -45,3 +45,19 @@ test("前后端不漏项：每个后端种类都有界面文案", () => {
   }
   assert.equal(failureLabel(undefined), "模型调用失败");
 });
+
+test("请求体过大（Task 0012）：真实 413 报文归到 payload_too_large，而不是 server（报文里带 server_error）", () => {
+  const real = [
+    '413: {"message":"{\\"error\\":{\\"message\\":\\"Payload too large. The maximum request body is 3.5 MB,',
+    'which is a limit on the encoded request and is separate from the model context window.\\",',
+    '\\"code\\":\\"payload_too_large\\"}","type":"server_error"}',
+  ].join(" ");
+  assert.equal(classify(real), "payload_too_large");
+  assert.equal(classify("Payload too large"), "payload_too_large");
+  assert.equal(classify("413 Payload Too Large"), "payload_too_large");
+  // 不能误伤 5xx 与普通超时
+  assert.equal(classify("503 Service Unavailable"), "server");
+  assert.equal(classify("Request timed out."), "timeout");
+  // 前端文案必须覆盖新种类
+  assert.match(failureLabel("payload_too_large"), /重试没有用/);
+});
