@@ -161,7 +161,7 @@ Life OS（~/.lifeos）
 提交前必须全绿：
 
 ```bash
-pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:jump && pnpm test:pwa && pnpm build
+pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:draft && pnpm test:jump && pnpm test:pwa && pnpm build
 ```
 
 | 闸 | 拦什么 |
@@ -169,6 +169,7 @@ pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mob
 | token | 任意值、裸调色板、`outline-none` |
 | primitive | 页面自绘控件、同一控件多实现 |
 | 契约 | 布局不变量、对比度、命中区、键盘/焦点、模态语义 |
+| 草稿契约 | 点“新建会话”不建会话、列表不出现空条目、刷新回到草稿、首条消息被拒会退回草稿（`frontend/test/new-session-draft.mjs`） |
 | 截图基线 | 视觉悄悄变化；变化必须人眼确认，不能直接刷掉 |
 
 - 视觉变化：`pnpm test:ui:update` 后必须看 diff；基线更新单独提交。

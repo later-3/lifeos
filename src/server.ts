@@ -170,13 +170,16 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
     if (sessionId === "") continue;
     items.push({ sessionId, title: displayName !== "" ? displayName : title, updatedAt: (await stat(path)).mtime.toISOString(), messages: lines.length, isDefault: sessionId === defaultSessionId });
   }
-  // 合并未落盘的内存会话（Pi 延迟写文件：无消息的新会话只存在于内存——不并入则“新建会话”在列表里隐身）。
+  // 合并未落盘的内存会话：Pi 延迟写文件，首条消息发出到落盘之间只存在于内存——
+  // 不并入的话，模型不可用（首轮失败）的新会话会从列表消失、标题也丢（C127）。
+  // 只收**有名字**的：还没有名字的会话等于“点了新建会话但没发”的草稿，不进列表（列表只列承载过用户动作的会话）。
   const fileIds = new Set(items.map((item) => item.sessionId));
   for (const pending of pendingSessions(agentId)) {
     if (pending.projectId !== projectId || fileIds.has(pending.sessionId)) continue;
+    if (pending.name === undefined || pending.name === "") continue;
     items.push({
       sessionId: pending.sessionId,
-      title: pending.name ?? "",
+      title: pending.name,
       updatedAt: pending.at,
       messages: 0,
       isDefault: pending.sessionId === defaultSessionId,

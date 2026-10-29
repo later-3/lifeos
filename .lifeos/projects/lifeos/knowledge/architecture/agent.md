@@ -88,7 +88,7 @@
 
 - 落点：`agents/<id>/projects/<pid>/sessions/<时间戳>_<会话id>.jsonl`（Pi 格式，append-only；文件即事实）。
 - 出厂预置一条默认会话（模板 JSONL）；显示名 = `session_info.name` ‖ 首条用户消息。
-- 刚建、还没发消息的会话不在磁盘上（Pi 延迟落盘）→ 后端把它们并入列表（pending）。
+- 未落盘的会话（Pi 延迟落盘）只并入**有名字**的：首条消息发出时命名（`nameSessionFromFirstMessage`），此后即便回合失败也还在列表（C127）。点了“新建会话”但没发的会话只是前端草稿，**不进列表**（Task 0006，2026-10-29）。
 - 事件流（任务 0007，2026-10-25 起）：**一条全局流** `GET /api/events` 承载**所有 Agent** 的事件；每条带全局 `seq`、`agentId`（回合级事件）与 SSE `id`。投递分两级：**回合级**（`turn` / `done` / `error` / `agents_changed`）发给所有连接，保证后台 Agent 的完成/失败实时可见；**细节级**（`delta` / `thinking` / `tool_*` / `retrying` …）只发给**焦点连接**（`PUT /api/events/focus` 上报的 agentId+sessionId），非焦点会话的 token 不占用连接与界面。**连接先发 snapshot**（`connectionId`、基线 `seq`、跨 Agent 的 `running`（带 turnId）、服务端 `unread`、回合账本），快照与订阅在同一个同步块里生成，之后只推快照之后的事件；**过载即断线**（每连接发送积压超过 512KB → 关闭，客户端重连拿新快照，绝不静默丢事件）；10 秒具名 `ping` 心跳（客户端 25 秒无任何帧即判陈旧并重连，C124）。运行态与未读都是服务端事实（`session-runtime.ts` / `session-views.ts`，未读持久化到 `state/session-views.json`）。实现：`src/events.ts`（总线）、`src/bounded-sink.ts`（有界发送）、`frontend/src/event-router.ts`（分流纯函数）。**事件名全集与语义的唯一事实源 = `conversation.md`**（映射实现在 `src/stream-events.ts`）；接口设计约束见 `specs/code/api/`。
 - **会话 cwd 由它所属项目决定**（`cwdOfSession()`）：`workspace` → `~/.lifeos`；外部项目 → `project.json.path`。**与后端进程从哪个目录启动无关**（曾经用 `process.cwd()`，恢复旧会话时工具作用域会跑偏到后端启动目录）。
 - **会话能力（全部对接 Pi 原生 API，不自造）**：`abort()` 打断 · `steer()` 生成中插话 · `followUp()` 本轮后处理 · `compact()` 压缩上下文 · `setModel()` 会话级切模型（写 `model_change`，不动全局默认）· `setThinkingLevel()` 思考级别 · **切换 activeTask**（写自定义条目，下一轮重新装配）。（注意：Task 切换不是 Pi 原生 API，属于 Life OS 的会话上下文）
