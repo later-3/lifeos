@@ -899,16 +899,17 @@ test("重开会话（跨进程重启）：没被 /model 覆盖过的一律跟随
 });
 
 test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务端强制，不只靠前端禁用）", async () => {
-  const home = await mkdtemp(join(tmpdir(), "lifeos-peer-api-"));
-  const installed = await installHome(process.cwd(), home);
-  process.env.LIFEOS_HOME = home;
-  assert.equal(installed.status, "installed", "家目录应当装好");
-  const target = await createAgent({ name: "Peer Api Target" });
-  assert.ok("id" in target, `createAgent 失败：${JSON.stringify(target)}`);
-  const peer = await peerConversation("lifeosagent", target.id, "workspace", home);
-  assert.ok(peer.ok);
-  const { server, base } = await startOn(home);   // 必须用同一个家目录：start() 会另建新家
+  // 用 start() 的家目录与实例（与其他 api 用例同源），避免自建进程级全局状态。
+  const { server, base, home } = await start();
   try {
+    const created = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Peer Api Target" }),
+    });
+    assert.equal(created.status, 201, "建目标 Agent 应成功（POST 创建返回 201）");
+    const target = (await created.json()).agent;
+    const peer = await peerConversation("lifeosagent", target.id, "workspace", home);
+    assert.ok(peer.ok, "对话会话应当能建出来");
+
     const response = await fetch(`${base}/api/agents/${target.id}/sessions/${peer.conversation.sessionId}/messages`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "我能插话吗" }),
     });
@@ -916,5 +917,5 @@ test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务�
     const body = await response.json();
     assert.equal(body.error.code, "peer_conversation_readonly");
     assert.match(body.error.message, /lifeosagent/, "错误里要点名是谁发起的");
-  } finally { server.close(); await rm(home, { recursive: true, force: true }); }
+  } finally { server.close(); }
 });
