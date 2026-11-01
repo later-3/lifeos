@@ -287,7 +287,15 @@ export default function App() {
   // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
   const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
   const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
+  /** 打开对话抽屉之前右侧面板是否已经开着：关闭抽屉时还原，避免留下空面板。 */
+  const panelWasOpenBeforePeer = useRef(false);
   useEffect(() => { peerTargetRef.current = peerTarget; }, [peerTarget]);
+
+  /** 关闭对话抽屉：还原"打开前"的右侧面板状态（用户本来没开面板就一并关掉）。 */
+  function closePeerPanel(): void {
+    setPeerTarget(undefined);
+    if (!panelWasOpenBeforePeer.current) setPanelOpen(false);
+  }
 
   /** 全局事件流的基线序号（快照时取得）：不超过它的事件是快照之前的重放，丢弃。 */
   const baselineRef = useRef(0);
@@ -1822,7 +1830,12 @@ export default function App() {
                 const plan = resend?.index === index ? resend : undefined;
                 return (
                   <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
-                    onOpenPeer={setPeerTarget}
+                    onOpenPeer={(target) => {
+                      // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
+                      panelWasOpenBeforePeer.current = panelOpen;
+                      setPeerTarget(target);
+                      setPanelOpen(true);
+                    }}
                     {...(message.at !== undefined ? { at: message.at } : {})}
                     {...(message.error !== undefined ? { error: message.error } : {})}
                     {...(message.failure !== undefined ? { failure: message.failure } : {})}
@@ -2064,7 +2077,7 @@ export default function App() {
             className={`flex shrink-0 overflow-hidden bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
-                <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={() => setPeerTarget(undefined)} />
+                <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
               </div>
             ) : isMobile ? (
               showTree ? (
@@ -2083,7 +2096,7 @@ export default function App() {
               <>
                 {peerTarget !== undefined ? (
                   <div className="min-w-0 flex-1 overflow-hidden">
-                    <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={() => setPeerTarget(undefined)} />
+                    <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
                   </div>
                 ) : showTree ? (
                   <>

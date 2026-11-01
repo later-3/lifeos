@@ -255,19 +255,26 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
         <span className={`ml-auto shrink-0 text-micro ${tone}`}
           {...(state === "missing" ? { title: "这一轮已结束，但没有拿到工具结果（可能被中断）" } : {})}>{status}</span>
         {seconds !== undefined && <span className="shrink-0 tabular-nums text-micro text-ink-700">{seconds}</span>}
+        {canOpenPeer && (
+          // 与其他 Agent 的对话：详情入口常显——它不在"展开"里，否则用户根本不知道有这个入口
+          <span role="button" tabIndex={0} data-testid="open-peer"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! });
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.stopPropagation();
+              onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! });
+            }}
+            className="ml-1 shrink-0 rounded border border-line px-1.5 py-0.5 text-micro text-accent hover:bg-hover">
+            查看对话过程
+          </span>
+        )}
       </button>
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
-          {canOpenPeer && (
-            <div className="border-t border-line bg-sunken px-3 py-2">
-              <button type="button" data-testid="open-peer"
-                onClick={() => onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! })}
-                className="rounded-panel bg-accent px-2 py-1 text-micro text-white hover:opacity-90">
-                查看对话过程
-              </button>
-            </div>
-          )}
           {block.result !== undefined && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line bg-sunken px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{block.result}{block.truncated === true ? "\n…（界面只显示前 8KB，完整结果见会话文件）" : ""}</pre>
           )}
