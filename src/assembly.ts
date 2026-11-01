@@ -315,7 +315,12 @@ export function createLifeOsImageBudgetExtension(): InlineExtension {
         // D7：先重注入最近 3 张（刚读的图必须当轮在场），再跑预算兜底——
         // 重注入的结果就是"这次真正要发的 messages"，后面所有判断都基于它。
         const reinjected = await reinjectRecentImages(event.messages, KEEP_REINJECTED_IMAGES,
-          { allowImages: model === undefined || model.input === undefined || model.input.includes("image") });
+          {
+            allowImages: model === undefined || model.input === undefined || model.input.includes("image"),
+            // D7 之后重注入是「从磁盘读原图」，不再经过 Pi 的 processImage →
+            // 这里必须显式把模型档位传下去，否则 `inputLimits.images.resize` 对读图路径无效。
+            resize: model?.inputLimits?.images?.resize,
+          });
         const handBack = (): { messages: typeof reinjected.messages } | undefined =>
           reinjected.changed ? { messages: reinjected.messages } : undefined;
         // 回合内自救（hermes `conversation_loop.py:3374-3395` 的 413→压缩→重试，搬到我们这层）：
@@ -346,6 +351,17 @@ export function createLifeOsImageBudgetExtension(): InlineExtension {
         if (budget.undersized) {
           void log.warn("agent-host", "imageBudget", "请求体上限太小，淘汰无法回到安全区", {
             details: { limit: budget.limit, source: budget.source, triggerBytes: budget.triggerBytes },
+          });
+        }
+        // 保护区内仍越硬线：说明单张图本身就超限（分档后仍可能），或模型没声明 resize 档位。
+        // 只告警不改行为（R5 软偏好 + S1 硬线），但要能指向该补什么。
+        if (result.droppedCount > 0 && result.keptImages < KEEP_REINJECTED_IMAGES) {
+          void log.warn("agent-host", "imageBudget", "单张图片超过请求体预算，已连同最近图一起省略", {
+            details: {
+              dropped: result.droppedCount, keptImages: result.keptImages,
+              bytesAfter: result.bytesAfter, hardBytes: budget.hardBytes,
+              resize: model?.inputLimits?.images?.resize ?? null,
+            },
           });
         }
         if (result.droppedCount === 0) return handBack();

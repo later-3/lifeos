@@ -35,9 +35,34 @@
 | 客户端压缩长边 | 1024px | A：pi-web `components/ChatInput.tsx:428` | `frontend/src/attachments.ts` `CLIENT_MAX_IMAGE_SIDE` |
 | 客户端 JPEG 质量 | 0.85 | A：pi-web `components/ChatInput.tsx:429` | `frontend/src/attachments.ts` `CLIENT_JPEG_QUALITY` |
 | GIF 是否压缩 | 不压缩 | A：pi-web `components/ChatInput.tsx:433` | `frontend/src/attachments.ts` `shouldCompressImage` |
-| Pi 图片缩放 | 用 Pi 默认（最长边 2000、4.5MB base64） | A：Pi `utils/image-resize-core.ts:32-37` | 不覆盖；`models.json` 可配 `inputLimits.images.resize` |
+| 请求时的图片缩放 | 按模型 `inputLimits.images.resize` 缩（`amr-link` 现为 1568×1568 / 400KB base64 / JPEG 75） | A：Pi `utils/image-resize-core.ts:32-37`（Pi 默认 2000×2000 / 4.5MB，我们用 `models.json` 收紧）；C：2026-11-01 实测 `amr-link` 6MB body 触发 Cloudflare 524（120s） | `src/attachments.ts` `readAttachmentForRequest`：**重注入也过一遍缩放**（V1，见下） |
+| 抓取的派生图（Agent `read` 读到的图） | 走同一档位 | 同上（同一条 `readAttachmentForRequest`） | 同上 |
 
 **说明：** 会话层限制用**字节**而不是张数：每回合重建上下文后**所有图都会被重新上传**，而单张图的字节与其 token 成本不成比例（一张截图约 50 字节/token，文本约 3–4 字节/token）。参考产品也都不按张数限制会话（详见 `0010/evidence` G 节）。
+
+## V1 修订（2026-11-01）：重注入绕过 Pi 的单图缩放（已修）
+
+**现象**：一张 3200×2400 的图（4.55MB PNG）经 Agent `read` 后，进请求体的是 **6.06MB base64 原图**，越过 `payload-limits` 的硬线被整张丢弃——模型当轮**什么都看不到**。
+
+**根因**（D7 引用化留下的漏洞，不是配置问题）：
+
+1. `read` 读图时 Pi 的 `processImage` 确实按 `inputLimits.images.resize` 缩好了；
+2. 但我们的 `tool_result` 钩子（`src/assembly.ts` `createLifeOsReadPathExtension`）把 image 块**整个过滤掉**（D7：存储里不留 base64），缩好的字节随之丢弃；
+3. `context` 钩子重注入时**从磁盘读原图**，不再经过 `processImage` → 缩放档位对这条路径完全失效。
+
+`0012/02-design.md` §3.3 ① 当时写的「pi 的单图规范化 `normalizeToolResultImages` 已在」，在 D7 之后**只对用户上传图成立，对工具读图不成立**。
+
+**修法**：`src/attachments.ts` 的 `readAttachmentForRequest()` —— 重注入读盘后按 `model.inputLimits.images.resize` 缩放，缓存键 = 路径 + 档位（切模型会重新编码，同档位只解一次）。缩放器用 Pi 导出的 `resizeImage`，不自己写解码。失败则降级用原图（不丢图）。
+
+**实测（`amr-link` 预算 3.5MB → trigger 2.5MB / hard 3.0MB）**：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 1 张 3200×2400 参考图 | 6.36MB → **丢 1/1，模型看不到** | 0.22MB → 保留 |
+| 一轮读 5 张 | 30MB → 全丢 | 1.10MB → 全保留 |
+| 缩放耗时（首次 / 命中缓存） | — | 1063ms / 0ms |
+
+断言在 `test/attachments-reinject.test.mjs` 末四条。
 
 **依赖外部变化的数字：** 出站请求体上限来自**网关**（当前 command 网关 3.5MB，2026-10-28 用带鉴权的真实请求测得）。**体积校验发生在鉴权与模型校验之后**——所以用"不存在的模型名"去撑 body 的探针测不到它（会先拿到 400），0010 的 32MB 结论即因此失效。
 

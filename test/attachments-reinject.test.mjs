@@ -249,3 +249,75 @@ test("P6 · 压缩读到的存储里没有 image 块（todo #17 的根治证明�
   // 老会话（D8 不迁移）按设计仍带图 → 由 P2–P5 的运行时淘汰兜底
   assert.equal(imageCount(withInline, "22222222-2222-3333-4444-555555555555"), 1, "老格式：D8 保持原样");
 });
+
+// ===== 2026-11-01 修复：D7 引用化后「单图规范化」链路断裂 =====
+//
+// 02-design §3.3 ① 写明「pi 的单图规范化 normalizeToolResultImages 已在」，
+// 但 D7 把图改成「落盘 + 历史只留引用行」后，重注入是**从磁盘读原图**，
+// 不再经过 Pi 的 processImage → 一张 3200×2400 PNG 以 6.06MB 进请求体，
+// 越过 hardBytes 后被 boundImages 整张丢弃，模型当轮看不到图。
+// 这三条断言锁住修复：档位生效、切档位后重编码、无档位时保持原样。
+
+import { readAttachmentForRequest, setImageResizerForTests } from "../src/attachments.ts";
+
+const PROFILE = { maxWidth: 1568, maxHeight: 1568, maxBytes: 400000, jpegQuality: 75 };
+
+/** 记录被调用的档位，返回固定的"缩小后"字节（不跑 WASM，测试快且可断言）。 */
+function fakeResizer() {
+  const calls = [];
+  setImageResizerForTests(async (bytes, mimeType, profile) => {
+    calls.push({ mimeType, ...profile });
+    return { data: "R".repeat(1400), mimeType: "image/jpeg", wasResized: true };
+  });
+  return calls;
+}
+
+test("重注入按模型档位缩放：大图不再以原图字节进请求体", async () => {
+  const { refs } = await homeWith(1);
+  const calls = fakeResizer();
+  try {
+    const out = await reinjectRecentImages([refMessage(refs[0])], 3, { resize: PROFILE });
+    const images = out.messages.flatMap((m) => m.content).filter((b) => b.type === "image");
+    assert.equal(images.length, 1);
+    assert.equal(images[0].mimeType, "image/jpeg", "缩放后应是 JPEG（原图是 PNG）");
+    assert.ok(images[0].data.length < 2000, "进请求体的应是缩小后的字节，不是原图");
+    assert.equal(calls.length, 1, "缩放器被调用一次");
+    assert.deepEqual(calls[0], { mimeType: "image/png", ...PROFILE }, "档位原样传给 Pi 的 resizeImage");
+  } finally { setImageResizerForTests(undefined); }
+});
+
+test("档位变化会重新编码；同一档位命中缓存只解一次", async () => {
+  const { refs } = await homeWith(1);
+  const calls = fakeResizer();
+  try {
+    await readAttachmentForRequest(refs[0], PROFILE);
+    await readAttachmentForRequest(refs[0], PROFILE);
+    assert.equal(calls.length, 1, "同一「路径 + 档位」只解码一次（切换轮次的性能前提）");
+
+    await readAttachmentForRequest(refs[0], { ...PROFILE, maxWidth: 1024, maxHeight: 1024 });
+    assert.equal(calls.length, 2, "档位不同 → 必须重新编码（缓存键含档位）");
+    assert.equal(calls[1].maxWidth, 1024);
+  } finally { setImageResizerForTests(undefined); }
+});
+
+test("没有档位（模型未声明 resize）→ 不缩放，保持原字节", async () => {
+  const { refs } = await homeWith(1);
+  const calls = fakeResizer();
+  try {
+    const out = await readAttachmentForRequest(refs[0], undefined);
+    assert.equal(calls.length, 0, "没有档位就不该调用缩放器");
+    assert.equal(out.wasResized, false);
+    assert.equal(out.mimeType, "image/png", "扩展名仍是 png");
+  } finally { setImageResizerForTests(undefined); }
+});
+
+test("缩放失败 → 降级用原图（不丢图，与 D7 的 fallback 同一原则）", async () => {
+  const { refs } = await homeWith(1);
+  setImageResizerForTests(async () => { throw new Error("photon 不可用"); });
+  try {
+    const out = await readAttachmentForRequest(refs[0], PROFILE);
+    assert.ok(out !== undefined, "异常不能变成「图丢了」");
+    assert.equal(out.wasResized, false);
+    assert.equal(out.mimeType, "image/png");
+  } finally { setImageResizerForTests(undefined); }
+});

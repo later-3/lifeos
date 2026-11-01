@@ -106,6 +106,118 @@ export async function readAttachmentCached(absolutePath: string): Promise<string
 /** 仅测试/热重载用：清空缓存。 */
 export function clearAttachmentCache(): void {
   attachmentCache.clear();
+  attachmentResizeCache.clear();
+}
+
+/**
+ * 请求时的图片缩放档位（Pi `Model.inputLimits.images.resize` 的形状，字段都可缺省）。
+ * 字段留空时用 Pi 的默认值（2000×2000 / 4.5MB base64 / JPEG 80）。
+ */
+export type ImageResizeProfile = {
+  maxWidth?: number | undefined;
+  maxHeight?: number | undefined;
+  maxBytes?: number | undefined;
+  jpegQuality?: number | undefined;
+};
+
+/** 缓存键用：把缺省补齐成 Pi 的默认值，避免「字段缺失」与「显式默认」算出两个缓存条目。 */
+function profileKey(profile: ImageResizeProfile): string {
+  return `${profile.maxWidth ?? 2000}x${profile.maxHeight ?? 2000}/${profile.maxBytes ?? 4718592}/${profile.jpegQuality ?? 80}`;
+}
+
+/**
+ * 传给 Pi 的缩放参数：去掉值为 undefined 的字段。
+ * 本项目开了 `exactOptionalPropertyTypes`，而 Pi 的 `ImageResizeOptions` 是可选的 number，
+ * 直接透传会被类型拒绝；这里逐个拷贝（不丢字段，也不改变语义）。
+ */
+function resizeOptionsOf(profile: ImageResizeProfile) {
+  const options: { maxWidth?: number; maxHeight?: number; maxBytes?: number; jpegQuality?: number } = {};
+  if (profile.maxWidth !== undefined) options.maxWidth = profile.maxWidth;
+  if (profile.maxHeight !== undefined) options.maxHeight = profile.maxHeight;
+  if (profile.maxBytes !== undefined) options.maxBytes = profile.maxBytes;
+  if (profile.jpegQuality !== undefined) options.jpegQuality = profile.jpegQuality;
+  return options;
+}
+
+/** 重注入用的一张图：已按模型档位缩过（或确认无需缩放）。 */
+export type ImageReinject = { data: string; mimeType: string; wasResized: boolean };
+
+/**
+ * 缩放结果缓存：键 = 绝对路径 + 档位。
+ * 附件不可变（内容 hash 命名）→ 同一「路径 + 档位」永远同一结果，可以永久缓存。
+ * 键里必须带档位：切模型后档位变了要重新编码（不同档位是不同的字节）。
+ */
+const attachmentResizeCache = new Map<string, ImageReinject | undefined>();
+
+type Resizer = (bytes: Uint8Array, mimeType: string, profile: ImageResizeProfile) => Promise<ImageReinject | null>;
+
+/** 可注入的缩放实现（默认用 Pi 导出的 `resizeImage`；测试可替换，避免每用例几百毫秒 WASM 解码）。 */
+let imageResizer: Resizer | undefined;
+
+/** 仅测试用：替换/还原缩放实现。传 undefined 还原真实实现。 */
+export function setImageResizerForTests(resizer: Resizer | undefined): void {
+  imageResizer = resizer;
+  attachmentResizeCache.clear();
+}
+
+/** 附件扩展名 → mime（缩放器要按真实格式解码）。 */
+function mimeTypeOfPath(absolutePath: string): string {
+  const lower = absolutePath.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".avif")) return "image/avif";
+  return "image/png";
+}
+
+/**
+ * 真实缩放：用 Pi 自己的 `resizeImage`（导出接口，内部 Photon WASM + worker 线程）。
+ * 不自己写解码/编码——与 Pi 对 `read` 结果、用户粘贴图用的是同一条路径，行为一致。
+ */
+async function defaultResizer(bytes: Uint8Array, mimeType: string, profile: ImageResizeProfile): Promise<ImageReinject | null> {
+  const { resizeImage } = await import("@earendil-works/pi-coding-agent");
+  const resized = await resizeImage(bytes, mimeType, resizeOptionsOf(profile));
+  if (resized === null) return null;
+  return { data: resized.data, mimeType: resized.mimeType, wasResized: resized.wasResized };
+}
+
+/**
+ * 重注入专用读取：读盘 → 按当前模型档位缩放 → 缓存。
+ *
+ * 为什么必须有这一步（2026-11-01 补，修复 D7 引入的链路断裂）：
+ * - `02-design.md` §3.3 ① 写明「pi 的单图规范化 `normalizeToolResultImages` 已在」；
+ * - 但 D7 把图片改成「落盘 + 历史只留引用行」，重注入是**从磁盘读原图**，
+ *   不再经过 Pi 的 `processImage` → 单图规范化对这条路径**完全失效**；
+ * - 后果：一张 3200×2400 PNG 以 6.06MB base64 进请求体，直接越过 `payload-limits` 的硬线，
+ *   被 `boundImages` 当作「保护区内也越线」整张丢弃 → 模型当轮什么都看不到。
+ *
+ * 这里补的就是设计里那条「已在」的链路：让 `inputLimits.images.resize` 对读图路径真正生效。
+ * 失败（WASM 不可用等）→ 返回原图字节，功能降级但不丢图（与 D7 的 fallback 同一原则）。
+ */
+export async function readAttachmentForRequest(
+  absolutePath: string,
+  profile: ImageResizeProfile | undefined,
+): Promise<ImageReinject | undefined> {
+  const key = profile === undefined
+    ? `${absolutePath}\u0000raw`
+    : `${absolutePath}\u0000${profileKey(profile)}`;
+  if (attachmentResizeCache.has(key)) return attachmentResizeCache.get(key);
+  const data = await readAttachment(absolutePath);
+  if (data === undefined) { attachmentResizeCache.set(key, undefined); return undefined; }
+  const mimeType = mimeTypeOfPath(absolutePath);
+  let out: ImageReinject = { data, mimeType, wasResized: false };
+  if (profile !== undefined) {
+    try {
+      const bytes = new Uint8Array(Buffer.from(data, "base64"));
+      const resized = await (imageResizer ?? defaultResizer)(bytes, mimeType, profile);
+      if (resized !== null) out = resized;
+    } catch {
+      // 缩放失败 → 用原图（降级，不丢图）
+    }
+  }
+  attachmentResizeCache.set(key, out);
+  return out;
 }
 
 export type ReinjectResult = {
@@ -133,8 +245,12 @@ const MISSING_MARK = "（该图片文件已丢失：附件可能被清理，请�
 export async function reinjectRecentImages(
   messages: AgentMessage[],
   keepRecent: number,
-  /** 模型没有 image 输入能力时必须 false：注入了也会被 provider 拒（0010 的门控同款判据）。 */
-  options?: { allowImages?: boolean },
+  /**
+   * - `allowImages: false` —— 模型没有 image 输入能力时不注入（注入了也会被 provider 拒，0010 门控同款判据）；
+   * - `resize` —— 当前模型的 `inputLimits.images.resize`：重注入的图按它缩放后才进请求体
+   *   （补回 D7 断掉的「单图规范化」，见 `readAttachmentForRequest`）。
+   */
+  options?: { allowImages?: boolean; resize?: ImageResizeProfile | undefined },
 ): Promise<ReinjectResult> {
   if (keepRecent < 0 || options?.allowImages === false) return { messages, injected: 0, missing: 0, changed: false };
   let injected = 0;
@@ -172,18 +288,13 @@ export async function reinjectRecentImages(
       const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
       for (const ref of refs) {
         if (!inCurrentTurn && injected >= keepRecent) break;
-        const data = await readAttachmentCached(ref);
-        if (data === undefined) {                       // 确认丢失 → 请求副本里标记（每次结果一致 → 前缀稳定）
+        const read = await readAttachmentForRequest(ref, options?.resize);
+        if (read === undefined) {                       // 确认丢失 → 请求副本里标记（每次结果一致 → 前缀稳定）
           missing += 1;
           if (!text.includes("已丢失")) text = `${text.replace(/\s*$/, "")}${MISSING_MARK}`;
           continue;
         }
-        const ext = ref.toLowerCase();
-        images.push({
-          type: "image",
-          data,
-          mimeType: /\.jpe?g$/.test(ext) ? "image/jpeg" : /\.webp$/.test(ext) ? "image/webp" : "image/png",
-        });
+        images.push({ type: "image", data: read.data, mimeType: read.mimeType });
         injected += 1;
       }
       rebuilt.push(text === (part.text as string) ? block : { type: "text", text });
