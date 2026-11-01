@@ -14,7 +14,8 @@ import { log } from "./logging.ts";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
-import { LIFEOS_TOOL_NAMES, createAgentTools } from "./agent-tools.ts";
+import { createAgentTools } from "./agent-tools.ts";
+import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
@@ -125,9 +126,10 @@ async function createHostedSession(
 ): Promise<{ session: SessionState["session"]; modelRuntime: ModelRuntimeInstance; modelLabel: string | undefined }> {
   const cwd = sessionManager.getCwd();
   const configDir = join(resolveHome(), "config");
+  // 模型凭据/清单默认走本家目录；开发实例可用路径级覆盖指向真实配置（只读路径，不复制凭据）。
   const modelRuntime = await ModelRuntime.create({
-    authPath: join(configDir, "auth.json"),
-    modelsPath: join(configDir, "models.json"),
+    authPath: process.env.LIFEOS_AUTH_PATH?.trim() || join(configDir, "auth.json"),
+    modelsPath: process.env.LIFEOS_MODELS_PATH?.trim() || join(configDir, "models.json"),
   });
   const settingsManager = SettingsManager.create(cwd, configDir);
 

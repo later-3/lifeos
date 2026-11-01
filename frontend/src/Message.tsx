@@ -227,6 +227,11 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
   const preview = argPreview(block.name, block.arguments);
   const tone = state === "error" ? "text-danger" : state === "done" ? "text-success" : "text-ink-700";
   const status = state === "error" ? "出错" : state === "done" ? "完成" : state === "running" ? "执行中" : "未完成";
+  // 与其他 Agent 对话（Task 0013）：这类工具会产生一条**对方的会话**，用户要能一眼分辨并点进去。
+  const peerTarget = block.name === "lifeos_ask" || block.name === "lifeos_send"
+    ? (typeof (block.arguments as Record<string, unknown> | undefined)?.agent === "string"
+      ? String((block.arguments as Record<string, unknown>).agent) : undefined)
+    : undefined;
   const seconds = running ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
   const surface = state === "error" ? "bg-message-tool-error" : state === "done" ? "bg-message-tool-done" : "bg-message-tool";
   return (
@@ -234,7 +239,11 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
       <button type="button" onClick={toggle}
         className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-700 transition-colors hover:bg-hover max-sm:min-h-11">
         {running ? <Spinner size={12} className="text-accent" /> : <IconTool size={14} className="shrink-0 text-ink-300" />}
-        <span className="shrink-0 font-medium">{block.name}</span>
+        <span className="shrink-0 font-medium">{peerTarget === undefined ? block.name : "与 Agent 对话"}</span>
+        {peerTarget !== undefined && (
+          <span className="shrink-0 rounded-full bg-sunken px-1.5 py-0.5 font-mono text-micro text-ink-700"
+            data-testid="peer-agent">{peerTarget}</span>
+        )}
         {preview !== "" && <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-700">{preview}</span>}
         <span className={`ml-auto shrink-0 text-micro ${tone}`}
           {...(state === "missing" ? { title: "这一轮已结束，但没有拿到工具结果（可能被中断）" } : {})}>{status}</span>
