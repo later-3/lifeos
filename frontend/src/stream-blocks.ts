@@ -230,6 +230,13 @@ export function argPreview(toolName: string, args: unknown): string {
   const extra = first("pattern") !== undefined && first("path") !== undefined ? ` ${String(record.pattern)}` : "";
   if (toolName === "edit") { const edits = record.edits; return `${String(record.path ?? "")}${Array.isArray(edits) ? ` · ${edits.length} 处` : ""}`; }
   if (toolName === "write") return `${String(record.path ?? "")} · ${typeof record.content === "string" ? record.content.length : 0} 字符`;
+  // 与其他 Agent 对话（Task 0013 · M1）：摘要 = "→ 目标Agent · 消息首句"
+  if (toolName === "lifeos_ask" || toolName === "lifeos_send") {
+    const agent = String(record.agent ?? "");
+    const message = typeof record.message === "string" ? record.message.replace(/\s+/g, " ").trim() : "";
+    const short = message.length > 60 ? `${message.slice(0, 60)}…` : message;
+    return agent === "" ? short : `→ ${agent}${short === "" ? "" : ` · ${short}`}`;
+  }
   if (toolName === "grep" || toolName === "find") return `${String(record.pattern ?? "")}${record.path === undefined ? "" : ` @ ${String(record.path)}`}`;
   return `${inline}${extra}`.trim();
 }

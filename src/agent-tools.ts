@@ -12,14 +12,15 @@ import { bindProject, listAgentProjects, unbindProject } from "./projects.ts";
 import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./memory/index.ts";
 import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
 import { resolveMemoryRole, type MemoryScope } from "./memory/resolve.ts";
+import {
+  ASK_DEFAULT_TIMEOUT_MS, lastReply, namePeerSession, peerConversation, resolvePeer,
+} from "./peer.ts";
+import { getSession, runTurn } from "./agent-host.ts";
+import { resolveHome } from "./home.ts";
+import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 
-/** Life OS 自有工具名（与内置 8 工具一起显式钉进 allowlist，见 agent-host.ts · ALL_TOOL_NAMES）。 */
-export const LIFEOS_TOOL_NAMES = [
-  "lifeos_agent_create", "lifeos_agent_delete",
-  "lifeos_task_create", "lifeos_task_list", "lifeos_task_enter",
-  "lifeos_project_add", "lifeos_project_remove", "lifeos_project_list",
-  "lifeos_memory_search", "lifeos_memory_record", "lifeos_memory_delete",
-] as const;
+export { LIFEOS_TOOL_NAMES };
+
 
 /** 工具要绑定"当前会话是谁、在哪个项目"——都由会话自身推导，模型不用传（也不会传错）。 */
 export type ToolContext = {
@@ -385,5 +386,102 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete];
+  // ── 与其他 Agent 对话（Task 0013 · M1）────────────────────────────────────
+  // 目标 Agent 的会话就是一条普通会话：建在它自己的项目里，出现在列表、有 Task、有未读。
+  const peerErrorText = (code: string, target: string): string =>
+    code === "self"
+      ? "You cannot message yourself. Pick another Life OS agent."
+      : code === "archived"
+        ? `Agent "${target}" is archived; unarchive it first or pick another agent.`
+        : `No Life OS agent with id "${target}". Use the agent list to pick an existing one.`;
+
+  const ask = defineTool({
+    name: "lifeos_ask",
+    label: "Ask another Life OS agent (waits for the answer)",
+    description:
+      "Ask another Life OS agent and WAIT for its answer. The target agent answers in its own full session "
+      + "(its own identity, harness rules, task and tools), so treat it as a colleague, not a function. "
+      + "Use it when you need the answer before you can reply to the user. "
+      + "Conversations are reused: asking the same agent again continues the same conversation with its prior context. "
+      + "Do NOT use it for long jobs — use lifeos_send instead, or this turn stays blocked until it finishes.",
+    promptSnippet: "Ask another agent a question and wait for its answer (multi-turn, same conversation reused)",
+    promptGuidelines: [
+      "Prefer lifeos_ask for questions you need answered before replying; prefer lifeos_send for work that takes a long time.",
+      "Write the message as you would to a colleague: state the goal, the constraints, and what you need back.",
+      "If the target replies that it needs clarification, decide yourself: answer it or ask the user — do not loop blindly.",
+    ],
+    parameters: Type.Object({
+      agent: Type.String({ description: "Target Life OS agent id (e.g. 'coder')." }),
+      message: Type.String({ description: "What to ask. Include the context the other agent cannot guess." }),
+      timeoutMs: Type.Optional(Type.Number({ description: "Max wait in ms (default 10 minutes)." })),
+    }),
+    async execute(_toolCallId, params) {
+      const projectId = ctx.projectId;
+      const resolved = await resolvePeer(ctx.agentId, params.agent);
+      if (!resolved.ok) throw new Error(peerErrorText(resolved.code, params.agent));
+      const peer = await peerConversation(ctx.agentId, params.agent, projectId, resolveHome());
+      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent));
+      const { sessionId } = peer.conversation;
+      namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
+
+      const timeoutMs = params.timeoutMs ?? ASK_DEFAULT_TIMEOUT_MS;
+      const turn = runTurn(peer.conversation.agentId, sessionId, params.message);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
+      try {
+        const outcome = await Promise.race([turn.then(() => "done" as const), timeout]);
+        if (outcome === "timeout") {
+          throw new Error(`No answer from agent "${params.agent}" within ${Math.round(timeoutMs / 1000)}s. `
+            + `The conversation (${sessionId}) keeps running; check it before retrying.`);
+        }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      const state = await getSession(peer.conversation.agentId, sessionId, resolveHome());
+      const reply = lastReply(state) ?? "(the other agent finished without a text answer)";
+      return {
+        content: [{ type: "text" as const, text: `Answer from ${params.agent}:
+
+${reply}` }],
+        details: { agent: params.agent, sessionId, conversationCreated: peer.conversation.created },
+      };
+    },
+  });
+
+  const send = defineTool({
+    name: "lifeos_send",
+    label: "Hand work to another Life OS agent (does not wait)",
+    description:
+      "Hand a task to another Life OS agent and return immediately; this turn ends and the other agent keeps working "
+      + "in its own session (visible in the session list). You will see its work in that session; do not poll or sleep. "
+      + "Use it when the user wants to hand off work that may take a while. "
+      + "Conversations are reused per target agent, exactly like lifeos_ask.",
+    promptSnippet: "Hand work to another agent without waiting (returns a receipt; the other session keeps running)",
+    promptGuidelines: [
+      "After lifeos_send, tell the user what you handed off and to whom — do not claim the work is done.",
+      "Never sleep or poll for the result in the same turn; the user can open the other session.",
+    ],
+    parameters: Type.Object({
+      agent: Type.String({ description: "Target Life OS agent id (e.g. 'coder')." }),
+      message: Type.String({ description: "The task, with everything the other agent needs to start." }),
+    }),
+    async execute(_toolCallId, params) {
+      const resolved = await resolvePeer(ctx.agentId, params.agent);
+      if (!resolved.ok) throw new Error(peerErrorText(resolved.code, params.agent));
+      const peer = await peerConversation(ctx.agentId, params.agent, ctx.projectId, resolveHome());
+      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent));
+      const { sessionId } = peer.conversation;
+      namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
+      void runTurn(peer.conversation.agentId, sessionId, params.message);
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Handed off to ${params.agent} (session ${sessionId}); it keeps working in its own session.`,
+        }],
+        details: { agent: params.agent, sessionId, conversationCreated: peer.conversation.created },
+      };
+    },
+  });
+
+  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send];
 }

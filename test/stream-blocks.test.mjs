@@ -120,3 +120,13 @@ test("tool_result 事件带图片时，工具块拿到 images（流式期也能�
   plain = applyStreamEvent(plain, { type: "tool_result", id: "c2", isError: false, text: "a.txt", truncated: false });
   assert.equal(blocksOfStream(plain).find((block) => block.type === "toolCall").images, undefined);
 });
+
+// 与其他 Agent 对话（Task 0013 · M1）：工具块摘要要能看出"跟谁说话、说了什么"
+test("argPreview：lifeos_ask / lifeos_send 显示目标 Agent 与消息首句", () => {
+  assert.equal(argPreview("lifeos_ask", { agent: "coder", message: "问一下周报模板在哪" }), "→ coder · 问一下周报模板在哪");
+  assert.equal(argPreview("lifeos_send", { agent: "tester", message: "跑一遍回归" }), "→ tester · 跑一遍回归");
+  const long = "很长的消息".repeat(30);
+  const preview = argPreview("lifeos_send", { agent: "coder", message: long });
+  assert.ok(preview.includes("→ coder · ") && preview.endsWith("…"), "长消息要截断");
+  assert.equal(argPreview("lifeos_ask", { message: "没填目标" }), "没填目标", "缺 agent 时退化为消息本身");
+});

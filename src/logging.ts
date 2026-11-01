@@ -27,10 +27,15 @@ const LOGS_NOTE = `# logs · 运行日志
 - 怎么用：不要手改；不入库（~/.lifeos/.gitignore 已排除）。
 `;
 
-export async function initLogs(): Promise<void> {
+/** 协议 §5.2：目录由谁创建，谁负责说明文件；懒创建路径（如测试里第一次写日志）也必须补上。 */
+async function ensureLogsDir(): Promise<string> {
   await mkdir(logsDir(), { recursive: true, mode: 0o700 });
-  // 协议 §5.2：运行数据目录也有说明文件（由创建者补上，已存在不覆盖）
   await writeFile(join(logsDir(), "AGENTS.md"), LOGS_NOTE, { flag: "wx", mode: 0o600 }).catch(() => undefined);
+  return logsDir();
+}
+
+export async function initLogs(): Promise<void> {
+  await ensureLogsDir();
   const cutoffMs = Date.now() - 14 * 24 * 60 * 60 * 1000;
   for (const entry of await readdir(logsDir())) {
     const match = /(?:backend|frontend)-(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(entry);
@@ -86,6 +91,7 @@ async function write(level: LogLevel, module: string, fn: string | undefined, ms
     msg,
     ...(sanitize(details) !== undefined ? { details: sanitize(details) } : {}),
   };
+  await ensureLogsDir();
   await appendLine(backendFile(), row);
 }
 
