@@ -28,6 +28,7 @@ import { failureLabel, type FailureKind } from "./failure-text";
 import type { TurnStep } from "./working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
+import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
@@ -283,6 +284,11 @@ export default function App() {
   const ctx = useRef<{ agentId?: string }>({});
   const selectedProjectRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedProjectRef.current = selectedProjectId; }, [selectedProjectId]);
+  // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
+  const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
+  const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
+  useEffect(() => { peerTargetRef.current = peerTarget; }, [peerTarget]);
+
   /** 全局事件流的基线序号（快照时取得）：不超过它的事件是快照之前的重放，丢弃。 */
   const baselineRef = useRef(0);
   /** 本连接的 id（PUT /api/events/focus 要带）；断线重连后由新快照更新。 */
@@ -300,6 +306,8 @@ export default function App() {
   useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
   // 焦点上报（任务 0007）：切会话/切 Agent/页面可见性变化 → 服务端据此路由细节流，并在可见时记已读
   useEffect(() => { sendFocus(); }, [agent?.id, sessionId]);
+  // 打开/关闭"与其他 Agent 对话"抽屉时也要重报：对端会话要加进/移出 watching
+  useEffect(() => { sendFocus(); }, [peerTarget]);
   useEffect(() => {
     const onVisibility = () => sendFocus();
     document.addEventListener("visibilitychange", onVisibility);
@@ -693,6 +701,16 @@ export default function App() {
   // 一条连接承载所有 Agent：回合级事件（turn/done/error/agents_changed）发给所有连接，细节事件只给焦点。
   // 分流规则在 event-router.ts（纯函数，有测试）；这里只执行动作。
   // 处理函数每次渲染都换新（读到最新的 agent/会话/列表），由 ref 转发——EventSource 全局只建一次。
+  // 被动订阅者（右侧"与其他 Agent 对话"面板要自己挑属于对端会话的事件）。
+  // 复用同一条 SSE 连接：服务端把对端会话加进 focus.watching 后，细节事件本来就会推到这里。
+  const liveSubscribers = useRef<Set<(event: unknown) => void>>(new Set());
+  const liveEvents = useRef({
+    subscribe(listener: (event: unknown) => void) {
+      liveSubscribers.current.add(listener);
+      return () => { liveSubscribers.current.delete(listener); };
+    },
+  }).current;
+
   const streamHandlers = useRef<{ snapshot: (snapshot: StreamSnapshot) => void; event: (payload: AgentEvent) => void } | undefined>(undefined);
   streamHandlers.current = { snapshot: onStreamSnapshot, event: onStreamEvent };
 
@@ -718,7 +736,9 @@ export default function App() {
           const data = (event as MessageEvent).data;
           // 连接级 error（没有 data）不是服务端事件：交给看门狗与 EventSource 自身的重连
           if (typeof data !== "string" || data === "") return;
-          streamHandlers.current?.event(JSON.parse(data) as AgentEvent);
+          const parsed = JSON.parse(data) as AgentEvent;
+          streamHandlers.current?.event(parsed);
+          for (const listener of liveSubscribers.current) listener(parsed);
         });
       }
     };
@@ -749,7 +769,13 @@ export default function App() {
     const focus = currentFocus();
     void fetch("/api/events/focus", {
       method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ connectionId, agentId: focus.agentId, sessionId: focus.sessionId, visible: focus.visible }),
+      body: JSON.stringify({
+        connectionId, agentId: focus.agentId, sessionId: focus.sessionId, visible: focus.visible,
+        // 右侧正在看的对端会话：它的 delta/tool 事件也要投到这个连接（服务端 focus.watching）
+        ...(peerTargetRef.current !== undefined
+          ? { watching: [{ agentId: peerTargetRef.current.agentId, sessionId: peerTargetRef.current.sessionId }] }
+          : {}),
+      }),
     }).catch(() => undefined);
   }
 
@@ -1796,6 +1822,7 @@ export default function App() {
                 const plan = resend?.index === index ? resend : undefined;
                 return (
                   <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
+                    onOpenPeer={setPeerTarget}
                     {...(message.at !== undefined ? { at: message.at } : {})}
                     {...(message.error !== undefined ? { error: message.error } : {})}
                     {...(message.failure !== undefined ? { failure: message.failure } : {})}
@@ -2029,13 +2056,17 @@ export default function App() {
         </>
       )}
 
-      {/* 右侧文件面板 */}
-      {panelOpen && (isMobile || box.panel > 0) && (
+      {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
+      {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
           {!isMobile && <DragHandle onStart={(event) => beginDrag("c4", event)} />}
           <aside style={{ width: isMobile ? "100%" : box.panel }}
             className={`flex shrink-0 overflow-hidden bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
-            {isMobile ? (
+            {peerTarget !== undefined ? (
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={() => setPeerTarget(undefined)} />
+              </div>
+            ) : isMobile ? (
               showTree ? (
                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                   <FileTree onOpenFile={(path, name) => { openFile(path, name); setShowTree(false); }}
@@ -2050,7 +2081,11 @@ export default function App() {
               )
             ) : (
               <>
-                {showTree ? (
+                {peerTarget !== undefined ? (
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={() => setPeerTarget(undefined)} />
+                  </div>
+                ) : showTree ? (
                   <>
                     <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
                       <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />

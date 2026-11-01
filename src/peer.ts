@@ -9,6 +9,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readAgent } from "./agents.ts";
+import { bindProject, listAgentProjects } from "./projects.ts";
 import { createSession, getSession, messagesOf, runTurn } from "./agent-host.ts";
 import { resolveHome } from "./home.ts";
 
@@ -76,6 +77,11 @@ export async function peerConversation(
 ): Promise<{ ok: true; conversation: PeerConversation; name: string } | { ok: false; code: PeerErrorCode }> {
   const verdict = await resolvePeer(sourceAgentId, targetAgentId);
   if (!verdict.ok) return verdict;
+
+  // 目标 Agent 必须有同一个项目，否则会话会落进"没有 manifest 的孤儿目录"。
+  const project = await ensurePeerProject(sourceAgentId, targetAgentId, projectId);
+  if (!project.ok) return { ok: false, code: "unknown_agent" };
+  projectId = project.projectId;
 
   const memo = peerIndex.get(indexKey(sourceAgentId, targetAgentId, projectId));
   if (memo !== undefined) return { ok: true, conversation: { agentId: targetAgentId, sessionId: memo, created: false }, name: verdict.name };
@@ -146,6 +152,47 @@ async function persistPeerMarker(sessionId: string, targetAgentId: string, sourc
 }
 
 export const ASK_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * 让目标 Agent 拥有与发起方同名的项目。
+ *
+ * 为什么必须做（代码事实）：`createSession(agentId, cwd, projectId)` 只做 `canonicalProjectId`，
+ * 目标 Agent 没有该项目时会把 projectId 原样拿去建目录——目录里没有 manifest、默认 Task 也挂不上，
+ * 结果就是一条"孤儿项目里的会话"。所以发起对话前先确保目标 Agent 绑定了同一个项目路径。
+ *
+ * 已存在则直接返回（按 id 判定）；不存在则用 `bindProject` 绑同一目录（会一并建骨架与默认 Task）。
+ */
+export async function ensurePeerProject(
+  sourceAgentId: string,
+  targetAgentId: string,
+  projectId: string,
+): Promise<{ ok: true; projectId: string; bound: boolean } | { ok: false; message: string }> {
+  if (projectId === "workspace") return { ok: true, projectId, bound: false };
+  const existing = await listAgentProjects(targetAgentId);
+  if (existing.some((item) => item.id === projectId)) return { ok: true, projectId, bound: false };
+
+  const source = await listAgentProjects(sourceAgentId);
+  const match = source.find((item) => item.id === projectId);
+  if (match === undefined) return { ok: false, message: `发起方没有项目 "${projectId}"，无法在目标 Agent 上建立同名项目` };
+
+  if (match.path === undefined) return { ok: false, message: `项目 "${projectId}" 没有可绑定的目录路径` };
+  const bound = await bindProject(targetAgentId, match.path);
+  if ("code" in bound) return { ok: false, message: `无法把项目 "${projectId}" 绑定到目标 Agent：${bound.message}` };
+  return { ok: true, projectId: bound.project.id, bound: true };
+}
+
+/** 读某条会话上的 peer 标记（它是不是"与其他 Agent 的对话"，以及对方是谁）。 */
+export function peerMarkerOf(manager: { getBranch(): ReadonlyArray<{ type?: string; customType?: string; data?: unknown }> }): string | undefined {
+  const branch = manager.getBranch();
+  for (let i = branch.length - 1; i >= 0; i -= 1) {
+    const entry = branch[i];
+    if (entry?.type !== "custom" || entry.customType !== PEER_ENTRY) continue;
+    const data = entry.data as { peerAgentId?: unknown } | undefined;
+    const peer = data?.peerAgentId;
+    if (typeof peer === "string" && peer !== "") return peer;
+  }
+  return undefined;
+}
 
 /** 给对话会话起标题（只设一次）：`与 <对端Agent> 的对话`，用户一眼能看出这是谁跟谁在说。 */
 export function namePeerSession(state: Awaited<ReturnType<typeof getSession>>, peerName: string): void {

@@ -5,7 +5,8 @@ import { streamSSE } from "hono/streaming";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { writeTextAtomic } from "./atomic-file.ts";
 import { createBoundedSink } from "./bounded-sink.ts";
-import { setFocusOf, subscribeBus } from "./events.ts";
+import { MAX_WATCHING, setFocusOf, subscribeBus } from "./events.ts";
+import { peerMarkerOf } from "./peer.ts";
 import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining } from "./session-runtime.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
@@ -476,6 +477,14 @@ app.use(async (c, next) => {
     if (state === undefined) {
       const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
     }
+    // 与其他 Agent 的对话会话由发起方驱动：用户直接插话会打乱对方正在跑的回合（Task 0013 · M1）。
+    // 挡在服务端：前端禁用只是提示，真正的一致性由这里保证。
+    const peerOf = peerMarkerOf(state.session.sessionManager);
+    if (peerOf !== undefined) {
+      const error = problem("peer_conversation_readonly",
+        `这是与 Agent「${peerOf}」的对话，由对方驱动；请回到发起方的会话里继续，不要直接在这里发言`, 409);
+      return c.json(error.body, error.status);
+    }
     // 图片校验：张数、单张大小、魔数、会话字节预算（docs/design/image-input.md 约束表）
     const images = validateImages(body.images, sessionImageBytesOf(state));
     if (!images.ok) {
@@ -606,8 +615,33 @@ app.use(async (c, next) => {
       const error = problem("invalid_request", "需要 connectionId（字符串）与 visible（布尔）", 400); return c.json(error.body, error.status);
     }
     const hasTarget = typeof body.agentId === "string" && body.agentId !== "" && typeof body.sessionId === "string" && body.sessionId !== "";
+    // 同时查看的会话（右侧抽屉里的对端 Agent 会话）：校验形状 + 去重 + 上限，形状不对直接 400。
+    const rawWatching = (body as { watching?: unknown }).watching;
+    let watching: Array<{ agentId: string; sessionId: string }> = [];
+    if (rawWatching !== undefined) {
+      if (!Array.isArray(rawWatching)) {
+        const error = problem("invalid_request", "watching 必须是数组", 400); return c.json(error.body, error.status);
+      }
+      const seen = new Set<string>();
+      for (const entry of rawWatching) {
+        const item = entry as { agentId?: unknown; sessionId?: unknown };
+        if (typeof item.agentId !== "string" || item.agentId === "" || typeof item.sessionId !== "string" || item.sessionId === "") {
+          const error = problem("invalid_request", "watching 的每一项都需要 agentId 与 sessionId（非空字符串）", 400); return c.json(error.body, error.status);
+        }
+        const key = `${item.agentId}/${item.sessionId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        watching.push({ agentId: item.agentId, sessionId: item.sessionId });
+      }
+      if (watching.length > MAX_WATCHING) {
+        const error = problem("too_many_watching", `同时查看的会话最多 ${MAX_WATCHING} 条`, 400); return c.json(error.body, error.status);
+      }
+    }
     const focus = hasTarget
-      ? { agentId: body.agentId as string, sessionId: body.sessionId as string, visible: body.visible }
+      ? {
+        agentId: body.agentId as string, sessionId: body.sessionId as string, visible: body.visible,
+        ...(watching.length > 0 ? { watching } : {}),
+      }
       : undefined;
     if (!setFocusOf(body.connectionId, focus)) {
       const error = problem("connection_not_found", "事件连接不存在（已断开）；请重连后重新上报焦点", 404); return c.json(error.body, error.status);

@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { installHome } from "../src/home.ts";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
+import { createAgent } from "../src/agents.ts";
+import { peerConversation } from "../src/peer.ts";
+import { rm } from "node:fs/promises";
 
 test("GET /api/agents 列出默认 Agent", async () => {
   const { server, base } = await start();
@@ -893,4 +896,25 @@ test("重开会话（跨进程重启）：没被 /model 覆盖过的一律跟随
     assert.equal((await metaOf(overridden)).model.id, "m2", "覆盖过的会话保留用户选择");
     assert.equal((await metaOf(legacy)).model.id, "m3", "旧会话没被 /model 覆盖过 → 跟随默认（不靠值猜）");
   } finally { server.server.close(); }
+});
+
+test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务端强制，不只靠前端禁用）", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-peer-api-"));
+  const installed = await installHome(process.cwd(), home);
+  process.env.LIFEOS_HOME = home;
+  assert.equal(installed.status, "installed", "家目录应当装好");
+  const target = await createAgent({ name: "Peer Api Target" });
+  assert.ok("id" in target, `createAgent 失败：${JSON.stringify(target)}`);
+  const peer = await peerConversation("lifeosagent", target.id, "workspace", home);
+  assert.ok(peer.ok);
+  const { server, base } = await startOn(home);   // 必须用同一个家目录：start() 会另建新家
+  try {
+    const response = await fetch(`${base}/api/agents/${target.id}/sessions/${peer.conversation.sessionId}/messages`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "我能插话吗" }),
+    });
+    assert.equal(response.status, 409, "必须被拦下");
+    const body = await response.json();
+    assert.equal(body.error.code, "peer_conversation_readonly");
+    assert.match(body.error.message, /lifeosagent/, "错误里要点名是谁发起的");
+  } finally { server.close(); await rm(home, { recursive: true, force: true }); }
 });

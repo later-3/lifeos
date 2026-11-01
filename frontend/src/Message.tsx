@@ -125,7 +125,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
@@ -133,6 +133,8 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   align?: "end" | "start";
   /** 这一轮失败时的"重新发送"（动作挂在被重发的那条用户消息上） */
   onRetry?: () => void;
+  /** 点开"与其他 Agent 对话"的详情（Task 0013 · M1）：工具调用产生了一条对端会话，用户要能看过程 */
+  onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** 这条失败不是最后一条消息：标明它是历史记录，不是当前状态 */
   historical?: boolean;
 }) {
@@ -167,7 +169,7 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
     <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" {...hover}>
       {blocks.map((block, index) => (
         // 段级 live：旧段的思考已结束，不跟着整轮 busy 继续转圈；工具由 running/result 单独判断。
-        <BlockView key={index} block={block} live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
+        <BlockView key={index} block={block} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
           forceOpen={failure !== undefined} />
       ))}
       {(failure !== undefined || error !== undefined) && (
@@ -219,7 +221,7 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
   );
 }
 
-function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCall" }>; live: boolean }) {
+function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { type: "toolCall" }>; live: boolean; onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void }) {
   // 工具状态优先看 tool_execution_start/end 维护的 running；旧历史块没有该字段时才回落到段/轮 live。
   const state = toolState({ hasResult: block.result !== undefined, ...(block.isError !== undefined ? { isError: block.isError } : {}), live: block.running === true || (block.running === undefined && live) });
   const running = state === "running";
@@ -232,6 +234,11 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
     ? (typeof (block.arguments as Record<string, unknown> | undefined)?.agent === "string"
       ? String((block.arguments as Record<string, unknown>).agent) : undefined)
     : undefined;
+  // 对端会话 id：工具结果文本里带 "session <uuid>"（lifeos_ask / lifeos_send 都返回它）。
+  const peerSessionId = peerTarget === undefined
+    ? undefined
+    : /session ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(String(block.result ?? ""))?.[1];
+  const canOpenPeer = peerTarget !== undefined && peerSessionId !== undefined && onOpenPeer !== undefined;
   const seconds = running ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
   const surface = state === "error" ? "bg-message-tool-error" : state === "done" ? "bg-message-tool-done" : "bg-message-tool";
   return (
@@ -252,6 +259,15 @@ function ToolCallBlock({ block, live }: { block: Extract<Block, { type: "toolCal
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
+          {canOpenPeer && (
+            <div className="border-t border-line bg-sunken px-3 py-2">
+              <button type="button" data-testid="open-peer"
+                onClick={() => onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! })}
+                className="rounded-panel bg-accent px-2 py-1 text-micro text-white hover:opacity-90">
+                查看对话过程
+              </button>
+            </div>
+          )}
           {block.result !== undefined && (
             <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap border-t border-line bg-sunken px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{block.result}{block.truncated === true ? "\n…（界面只显示前 8KB，完整结果见会话文件）" : ""}</pre>
           )}
@@ -287,12 +303,12 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
   );
 }
 
-function BlockView({ block, live, forceOpen = false }: { block: Block; live: boolean; forceOpen?: boolean }) {
+function BlockView({ block, live, forceOpen = false, onOpenPeer }: { block: Block; live: boolean; forceOpen?: boolean; onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void }) {
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
     return <div data-testid="message-text"><Markdown text={block.text} /></div>;
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
-  return <ToolCallBlock block={block} live={live} />;
+  return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
 }

@@ -28,7 +28,17 @@ export type AgentEvent = AgentEventPayload & { seq: number; agentId?: string };
 const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed"]);
 export const isDetailEvent = (type: string): boolean => !TURN_LEVEL.has(type);
 
-export type Focus = { agentId: string; sessionId: string; visible: boolean };
+/**
+ * 连接当前在看哪个会话（主会话），外加若干"同时开着看"的会话。
+ *
+ * `watching` 的用途（代码事实）：A 调用 lifeos_ask/lifeos_send 后，右侧会打开对端 Agent 的会话详情；
+ * 那是一条**独立的会话**（另一个 agentId+sessionId），它的 delta/tool 事件原本因 `matchesFocus` 只认主会话
+ * 而被丢掉。把对端会话加进 watching，这批细节事件才会投到同一个连接，抽屉里才能实时看到对方在干活。
+ *
+ * 上限 MAX_WATCHING：防止一个连接订阅无限会话把 token 洪泛放大（与"细节只给在看的人"的初衷一致）。
+ */
+export const MAX_WATCHING = 3;
+export type Focus = { agentId: string; sessionId: string; visible: boolean; watching?: Array<{ agentId: string; sessionId: string }> };
 
 export type Subscriber = {
   readonly id: string;
@@ -47,7 +57,11 @@ const registry = new Map<string, Registration>();
 let seq = 0;
 
 function matchesFocus(focus: Focus | undefined, event: AgentEvent): boolean {
-  return focus !== undefined && focus.agentId === event.agentId && focus.sessionId === (event as { sessionId?: string }).sessionId;
+  if (focus === undefined) return false;
+  const sessionId = (event as { sessionId?: string }).sessionId;
+  if (focus.agentId === event.agentId && focus.sessionId === sessionId) return true;
+  // 同时开着的对端会话（右侧抽屉）：同样的细节事件也要投给这个连接。
+  return (focus.watching ?? []).some((entry) => entry.agentId === event.agentId && entry.sessionId === sessionId);
 }
 
 function deliver(reg: Registration, event: AgentEvent): void {
