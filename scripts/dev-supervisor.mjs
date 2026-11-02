@@ -7,6 +7,11 @@ import { watch } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decideRestart } from "./dev-supervisor-core.mjs";
+import { DEFAULT_LOG, checkIsolation } from "./dev-supervisor-guard.mjs";
+import { readRegistry } from "./dev-ports-core.mjs";
+import { createServer } from "node:net";
+import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const backend = process.env.LIFEOS_API ?? "http://127.0.0.1:43120";
@@ -23,7 +28,7 @@ let stopping = false;
 
 // 日志同时落盘：supervisor 的 stdout 在跑 pnpm dev:all 的那个终端里，出事后翻不到。
 // 2026-10-26 排空卡住时就是因为没有日志，无法判断卡在哪一步。
-const logFile = process.env.LIFEOS_SUPERVISOR_LOG ?? "/tmp/lifeos-dev-supervisor.log";
+const logFile = process.env.LIFEOS_SUPERVISOR_LOG ?? DEFAULT_LOG;
 const log = (msg) => {
   const line = `[${new Date().toISOString()}] ${msg}`;
   console.log(`[dev-supervisor] ${msg}`);
@@ -54,6 +59,47 @@ async function runningCount() {
     return 0;   // 后端不可达：没有回合可以打断
   }
 }
+
+// 启动自检（任务 0016）：保留号 / 共用用户家目录 / 共用主 worktree / 共用默认日志 / 端口已被占用
+// —— 任何一条成立就**打印原因并退出**，不进入"每秒崩溃重启"的循环（那是 2026-11-02 的 91 万行日志）。
+const backendPort = (() => {
+  const found = process.argv.find((arg) => arg.startsWith("--port="));
+  return found === undefined ? 43120 : Number(found.slice("--port=".length));
+})();
+const portBusy = (port) => new Promise((resolve) => {
+  const server = createServer();
+  server.once("error", () => resolve(true));
+  server.once("listening", () => server.close(() => resolve(false)));
+  server.listen(port, "127.0.0.1");
+});
+const ownerOf = (port) => {
+  try {
+    return execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" })
+      .trim().split("\n").slice(1).map((line) => line.split(/\s+/).slice(0, 2).join(" pid=")).join("; ") || "占用者未知";
+  } catch { return "占用者未知"; }
+};
+// 端口必须有来源：从登记表里找这个号属于哪个 Task（Task 0016）。
+const registry = await readRegistry(homedir() + "/.lifeos");
+const registration = Object.entries(registry.instances).find(([, entry]) => entry.backend === backendPort)?.[0];
+const problems = checkIsolation({
+  port: backendPort,
+  home: process.env.LIFEOS_HOME ?? homedir() + "/.lifeos",
+  // 非 worktree（主仓库）本身没有 .git 文件；git rev-parse 能区分
+  worktree: root,
+  logFile,
+  expectedHome: homedir() + "/.lifeos",
+  expectedWorktree: process.env.LIFEOS_MAIN_WORKTREE ?? homedir() + "/Code/lifeos",
+  probe: (await portBusy(backendPort)) ? { busy: true, owner: ownerOf(backendPort) } : { busy: false },
+  registration: registration === undefined ? undefined : { taskId: registration },
+  requireRegistration: true,
+});
+if (problems.length > 0) {
+  console.error("[dev-supervisor] 启动自检未通过，拒绝启动（不会重试）：");
+  for (const problem of problems) console.error(`  · ${problem}`);
+  console.error("[dev-supervisor] 修正方式：node scripts/dev-port.mjs claim --task <NNNN>，按输出起实例。");
+  process.exit(2);
+}
+log(`自检通过：worktree=${root} LIFEOS_HOME=${process.env.LIFEOS_HOME ?? "(默认)"} 端口=${backendPort} 日志=${logFile}`);
 
 /** 启动一个后端进程。同一时刻只允许一个存活的子进程（否则会抢端口，见 2026-10-25 的 EADDRINUSE 循环）。 */
 function start() {

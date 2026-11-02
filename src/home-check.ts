@@ -28,7 +28,10 @@ async function subdirs(path: string): Promise<string[]> {
     .sort();
 }
 
-/** 每个目录都必须有 AGENTS.md（协议 §5.2）；递归检查。 */
+/** 每个目录都必须有 AGENTS.md（协议 §5.2）；递归检查。
+ * **不进 `evidence/`**：协议 §3.7 允许那里放外部项目、克隆的仓库、过程 worktree，
+ * 它们有自己的目录结构与说明文件，不是本协议的协作层，逐目录要求 AGENTS.md 会把
+ * 别人的仓库当成违规（Task 0016 实测：一个 worktree 产生 11 处假错误）。 */
 async function requireNotes(home: string, root: string, errors: string[], counter: { n: number }): Promise<void> {
   for (const name of await subdirs(root)) {
     const dir = join(root, name);
@@ -39,6 +42,7 @@ async function requireNotes(home: string, root: string, errors: string[], counte
       const text = await readFile(note, "utf8").catch(() => "");
       if (text.trim() === "") errors.push(`说明文件为空：${relative(home, dir)}/AGENTS.md`);
     }
+    if (name === "evidence") continue;
     await requireNotes(home, dir, errors, counter);
   }
 }
