@@ -15,6 +15,19 @@
 
 仓库里的 `.lifeos/projects/lifeos/` 是这些内容的**模板来源**；安装后即为 `~/.lifeos/projects/lifeos/`。改规范时改仓库里的原文件，并同步安装副本（或重装），不在两份之间各改一点。
 
+**同步必须是单向的，而且覆盖前先 `diff`（必须，D14）**：
+
+```bash
+# 1) 先看两份到底哪里不同（谁新、差哪些）
+diff -rq .lifeos/projects/lifeos "$HOME/.lifeos/projects/lifeos"
+# 2) 只同步确认过的单向：仓库 → 安装副本（-n 不覆盖已存在文件；要覆盖就逐文件 cp）
+cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
+```
+
+- **禁止**不带 `-n`、不先 `diff` 就 `cp -R` 整个目录：它会用仓库的旧一代盖掉安装副本上更新的一代（已造成损失，见案例 C153）；
+- **禁止**从 `~/.lifeos` 反向写回仓库（安装副本可以临时热修，但当天必须回写到仓库并再 diff 确认一致）；
+- 改完跑 `pnpm home:check` 与 `test/doc-links.test.mjs`。
+
 ## 2 每轮要做的动作（协议 §3、§12）
 
 | 动作 | 落点 |
