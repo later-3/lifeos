@@ -163,16 +163,36 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
     let title = "";
     let displayName = "";
     let sessionId = "";
+    let activeTaskId: string | undefined;
+    let peerAgentId: string | undefined;
     for (const line of lines) {
       try {
-        const entry = JSON.parse(line) as { type?: string; id?: string; name?: string; message?: { role?: string; content?: unknown } };
+        const entry = JSON.parse(line) as {
+          type?: string; id?: string; name?: string; customType?: string;
+          message?: { role?: string; content?: unknown }; data?: { taskId?: unknown; peerAgentId?: unknown };
+        };
         if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
         if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
         if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message);
+        // Task 0015：列表要能回答"这条对话属于哪件事 / 和谁谈"（T16/T17）
+        if (entry.type === "custom" && entry.customType === "lifeos_active_task" && typeof entry.data?.taskId === "string") {
+          activeTaskId = entry.data.taskId;
+        }
+        if (entry.type === "custom" && entry.customType === "lifeos_peer" && typeof entry.data?.peerAgentId === "string") {
+          peerAgentId = entry.data.peerAgentId;
+        }
       } catch { /* 跳过坏行 */ }
     }
     if (sessionId === "") continue;
-    items.push({ sessionId, title: displayName !== "" ? displayName : title, updatedAt: (await stat(path)).mtime.toISOString(), messages: lines.length, isDefault: sessionId === defaultSessionId });
+    items.push({
+      sessionId,
+      title: displayName !== "" ? displayName : title,
+      updatedAt: (await stat(path)).mtime.toISOString(),
+      messages: lines.length,
+      isDefault: sessionId === defaultSessionId,
+      ...(activeTaskId !== undefined ? { activeTaskId } : {}),
+      ...(peerAgentId !== undefined ? { peer: peerAgentId } : {}),
+    });
   }
   // 合并未落盘的内存会话：Pi 延迟写文件，首条消息发出到落盘之间只存在于内存——
   // 不并入的话，模型不可用（首轮失败）的新会话会从列表消失、标题也丢（C127）。
@@ -296,7 +316,25 @@ app.use(async (c, next) => {
       const error = problem("project_not_found", "找不到这个 project（未注册或未绑定）", 404); return c.json(error.body, error.status);
     }
     const running = runningOf(agent.id);
-    const items = (await listSessions(agent.id, pid, agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
+    // 对端解析（Task 0015 · T17）：`lifeos_peer` 里存的是**对端 agentId**（会话建在目标 Agent 的项目里，
+    // 对端就是发起方）。列表要显示"和谁在谈"，所以这里把它展开成 id/name/avatar。
+    const peerIds = new Set<string>();
+    const listed = await listSessions(agent.id, pid, agent.defaultSessionId);
+    for (const item of listed) if (typeof item.peer === "string") peerIds.add(item.peer);
+    // `avatar` 存在 agent.json 里但不在 AgentDefinition 类型上（历史事实，见 POST /avatar 的同一处理）
+    type AvatarSpec = { kind?: string; file?: string; revision?: number };
+    const peers = new Map<string, { id: string; name: string; avatar?: AvatarSpec }>();
+    for (const peerId of peerIds) {
+      const def = await readAgent(peerId);
+      if (def === undefined) continue;
+      const avatar = (def as AgentDefinition & { avatar?: AvatarSpec }).avatar;
+      peers.set(peerId, { id: def.id, name: def.name, ...(avatar !== undefined ? { avatar } : {}) });
+    }
+    const items = listed.map((item) => ({
+      ...item,
+      ...(typeof item.peer === "string" ? { peer: peers.get(item.peer) ?? { id: item.peer, name: item.peer } } : {}),
+      running: running.some((run) => run.sessionId === item.sessionId),
+    }));
     return c.json({ items });
   });
 

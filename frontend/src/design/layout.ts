@@ -20,15 +20,26 @@ export const DEFAULT_HISTORY = 440;
 export const MIN_PANEL = 320;
 export const MIN_VIEWER = 206;
 
-export type Folded = { nav: boolean; projects: boolean; sessions: boolean };
+/**
+ * 折叠状态（Task 0015 · T15 面板合并后）。
+ *
+ * 旧：`{nav, projects, sessions}` —— 项目列表与会话列表各占一列。
+ * 新：`{nav, groups}` —— 项目作为**分组头**并入会话列（P-02 草案，
+ * `knowledge/design/im/groups-panel.md` §5.2）。图标栏 3 → 2，折叠态 8 → 4 种。
+ */
+export type Folded = { nav: boolean; groups: boolean };
 export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: number; c5: number };
 
-export const DEFAULT_WIDTHS: Widths = { c1: 232, c2: 216, c3: 272, c4: 600, c4t: 240, c5: DEFAULT_HISTORY };
+/**
+ * `c2` = 分组面板（项目分组 → 会话行），默认 300、范围 240–440（P-02 已定，不是新数值）。
+ * `c3` 保留在类型里只为兼容既有调用（合并后不再渲染列，值恒为 0）。
+ */
+export const DEFAULT_WIDTHS: Widths = { c1: 232, c2: 300, c3: 0, c4: 600, c4t: 240, c5: DEFAULT_HISTORY };
 
 export const WIDTH_LIMITS: Record<keyof Widths, [number, number]> = {
   c1: [180, 440],
-  c2: [160, 400],
-  c3: [200, 560],
+  c2: [240, 440],
+  c3: [0, 0],
   c4: [320, 1600],
   c4t: [160, 560],
   c5: [MIN_HISTORY, 720],
@@ -68,9 +79,10 @@ export function layout(input: LayoutInput): Layout {
   const rail = RAIL;
 
   const c1 = folded.nav ? 0 : input.widths.c1;
-  const c2 = folded.projects ? 0 : input.widths.c2;
-  const c3 = folded.sessions ? 0 : input.widths.c3;
-  const colHandles = (folded.nav ? 0 : HANDLE) + (folded.projects ? 0 : HANDLE) + (folded.sessions ? 0 : HANDLE);
+  // 合并后只有一列"项目分组 → 会话"；c3 恒为 0（类型保留是为了不惊动历史调用）
+  const c2 = folded.groups ? 0 : input.widths.c2;
+  const c3 = 0;
+  const colHandles = (folded.nav ? 0 : HANDLE) + (folded.groups ? 0 : HANDLE);
   const leftDocked = rail + c1 + c2 + c3 + colHandles;
   // 并列放不下（会把聊天压到 MIN_CHAT 以下）→ 左三列改浮层：聊天只让出图标轨的宽度。
   // 参照 Pi Web / 通用 AppShell：窄屏用 overlay 抽屉，而不是把内容压扁或替用户收列。

@@ -27,6 +27,13 @@
   --color-success: #067647;
   --color-success-soft: #ecfdf3;
 
+  /*
+   * 导航层（Task 0015 · T15 面板合并，P-02）：项目分组 → 会话行的**括线**用它。
+   * 为什么单独一档而不复用 --color-line：括线要"看得见但不抢戏"，
+   * 与行的描边（--color-line）同色会被读成行的边框（design-language §5.1 连接线，ΔL* ≥ 9）。
+   */
+  --color-nav-line: #dcdce1;
+
   /* 消息类型背景：不同类型可区分，但都低饱和；只在这里取值。 */
   --color-message-user: #111113;
   --color-message-thinking: #fafafa;

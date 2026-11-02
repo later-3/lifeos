@@ -12,21 +12,18 @@ import {
  */
 
 const VIEWPORTS = [1024, 1280, 1440, 1600, 1920];
+// Task 0015 · T15 合并后：折叠态从 8 种降到 4 种（P-02 §5.2 / §6：图标栏 3→2）
 const FOLD_COMBOS = [
-  { nav: false, projects: false, sessions: false },
-  { nav: true, projects: false, sessions: false },
-  { nav: false, projects: true, sessions: false },
-  { nav: false, projects: false, sessions: true },
-  { nav: true, projects: true, sessions: false },
-  { nav: true, projects: false, sessions: true },
-  { nav: false, projects: true, sessions: true },
-  { nav: true, projects: true, sessions: true },
+  { nav: false, groups: false },
+  { nav: true, groups: false },
+  { nav: false, groups: true },
+  { nav: true, groups: true },
 ];
 
 function total(box) {
   // 浮层模式下列不占聊天宽度（只占图标轨）
-  const openCols = [box.c1, box.c2, box.c3].filter((width) => width > 0).length;
-  const columns = box.overlayLeft ? 0 : box.c1 + box.c2 + box.c3 + openCols * HANDLE;
+  const openCols = [box.c1, box.c2].filter((width) => width > 0).length;
+  const columns = box.overlayLeft ? 0 : box.c1 + box.c2 + openCols * HANDLE;
   const panel = box.panel > 0 ? box.panel + HANDLE : 0;
   return box.rail + columns + box.chat + panel;
 }
@@ -38,9 +35,9 @@ test("面板/完整历史永不吃掉聊天保底；只有列本身占宽时才�
     for (const requested of FOLD_COMBOS) {
       for (const panelOpen of [false, true]) {
         const box = layout({ viewport, widths: DEFAULT_WIDTHS, requested, panelOpen });
-        const openCols = [box.c1, box.c2, box.c3].filter((width) => width > 0).length;
-        // 浮层模式下左三列不占聊天宽度（只占图标轨）
-        const leftCost = box.overlayLeft ? box.rail : box.rail + box.c1 + box.c2 + box.c3 + openCols * HANDLE;
+        const openCols = [box.c1, box.c2].filter((width) => width > 0).length;
+        // 浮层模式下左列不占聊天宽度（只占图标轨）
+        const leftCost = box.overlayLeft ? box.rail : box.rail + box.c1 + box.c2 + openCols * HANDLE;
         if (viewport - leftCost >= MIN_CHAT) {
           assert.ok(box.chat >= MIN_CHAT, `有空间时必须保底：viewport=${viewport} folded=${JSON.stringify(requested)} chat=${box.chat}`);
         } else {
@@ -71,27 +68,31 @@ test("图标轨常驻：收起/展开都是同一条 44px（不随折叠数变�
 });
 
 test("窄视口不再替用户收起列（点了不会弹回），改为压缩列/聊天", () => {
-  const requested = { nav: false, projects: false, sessions: false };
+  const requested = { nav: false, groups: false };
   const narrow = layout({ viewport: 1024, widths: DEFAULT_WIDTHS, requested, panelOpen: true });
   assert.deepEqual(narrow.folded, requested, "用户的收展状态必须原样生效（旧规则会强制收项目列）");
-  assert.equal(narrow.overlayLeft, true, "1024 并列放不下 → 左三列改浮层");
+  // Task 0015 · T15：合并后 1024 宽**并列放得下**（旧版是 1202 才够）。
+  // 这正是合并的硬理由：13 寸笔记本上不再整体退化成抽屉。
+  assert.equal(narrow.overlayLeft, false, "合并后 1024 宽可以直接并列（阈值 588+420=1008）");
   assert.ok(narrow.chat >= MIN_CHAT, `浮层模式下聊天仍要保底，实际 ${narrow.chat}`);
   assert.equal(total(narrow), 1024, "宽度仍然守恒（浮层不占聊天宽度）");
 
   const tiny = layout({ viewport: 960, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.deepEqual(tiny.folded, requested, "960 也不强制收起会话列");
+  assert.deepEqual(tiny.folded, requested, "960 也不强制收起对话列");
+  assert.equal(tiny.overlayLeft, true, "960 < 1008 → 转浮层");
   assert.equal(total(tiny), 960);
 });
 
 test("宽窗口并列、窄窗口浮层：分界由「并列 + 聊天保底」决定", () => {
-  const requested = { nav: false, projects: false, sessions: false };
+  const requested = { nav: false, groups: false };
   const wide = layout({ viewport: 1600, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
   assert.equal(wide.overlayLeft, false, "1600 够放 → 并列");
-  const border = layout({ viewport: 1202, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.equal(border.overlayLeft, false, "1202 刚好够放（782 + 420）→ 仍并列");
+  // 合并后分界 = leftDocked(588) + MIN_CHAT(420) = 1008
+  const border = layout({ viewport: 1008, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(border.overlayLeft, false, "1008 刚好够放（588 + 420）→ 仍并列");
   assert.ok(border.chat >= MIN_CHAT);
-  const over = layout({ viewport: 1201, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.equal(over.overlayLeft, true, "1201 差 1px → 转浮层");
+  const over = layout({ viewport: 1007, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(over.overlayLeft, true, "1007 差 1px → 转浮层");
   assert.ok(over.chat > MIN_CHAT, "浮层后聊天反而更宽（不让内容被压扁）");
 });
 
@@ -114,7 +115,11 @@ test("拖拽夹紧在声明区间内（c4 上限不再能压到聊天）", () =>
 test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反号）", () => {
   // 左列表：把手在右缘 → 右拉变大
   assert.equal(dragWidth("c1", 232, 40), 272);
-  assert.equal(dragWidth("c2", 216, -40), 176);
+  // c2 = 合并后的"项目分组 → 会话"列：范围 240–440（P-02 §5.2）。
+  // 从 300 往左拉 40 → 260（在区间内，原样生效）
+  assert.equal(dragWidth("c2", 300, -40), 260);
+  // 再往左拉会撞下限 240：夹紧生效，不会退化成 176
+  assert.equal(dragWidth("c2", 300, -100), 240);
   // 右侧停靠面板：把手在左缘 → 左拉变大、右拉变小
   assert.equal(dragWidth("c4", 600, -60), 660);
   assert.equal(dragWidth("c5", 440, -60), 500);
