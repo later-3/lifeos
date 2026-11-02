@@ -21,7 +21,8 @@
 
 **任务 = 有目标、需落盘、可追溯的工作单元**（协议 §3.8）；现在实现的是**用户下达任务**（定时任务未实现，见 todo）。
 
-- **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_project_add`（目录注册并绑定）/ `lifeos_project_remove`（从列表移除，数据保留）/ `lifeos_project_list`（列项目）/ `lifeos_memory_search`（查记忆）/ `lifeos_memory_record`（记事实，scope 必填）/ `lifeos_memory_delete`（硬删除，仅用户明确要求）；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。**幂等**：同一路径重复添加不改变任何东西；默认项目不可移除；移除不动目录、manifest 与会话。
+- **工具**（Pi 工具，名字进白名单）：`lifeos_task_create`（建任务）/ `lifeos_task_list`（按编号列状态）/ `lifeos_task_enter`（接手已有）/ `lifeos_project_add` / `lifeos_project_remove` / `lifeos_project_list` / `lifeos_memory_search` / `lifeos_memory_record` / `lifeos_memory_delete` / **`lifeos_agent_list`**（列 Agent：id/name/description/archived）/ **`lifeos_ask_list`**（列自己与其他 Agent 的对话会话）/ **`lifeos_ask`** / **`lifeos_send`**；**绑定会话上下文**——agent 与 project 由会话自身推导，模型不用传。
+- **与其他 Agent 对话（Task 0015）**：lane = `(发起方, 目标, 项目, 发起方 taskId)`。同一 Task 内复用一个会话、不同 Task 各自一条；默认接回该 lane 最近活跃那条，`newSession:true` 显式另开，`sessionId` 指定具体一条（不存在则报错并列出可用的）。`ask` 返回**状态快照**（state/phase/lastReply 原文/next），超时不是失败；`send` 完成后把回执注入**发起方会话**（去重 + 投递确认 + 带下一步），并回写 Task 参与者。目标在跑时 `ask` 直接返回快照、`send` 走 Pi 原生 `followUp` 排队。
 - **写操作闭环在共享实现里**（2026-10-20 架构修正）：`agents.ts`（创建/归档）与 `projects.ts`（绑定/移除）在写成功后广播 `agents_changed`，工具与 HTTP 两条入口自动生效——**不依赖调用方记得 notify**。事件总线在 `src/events.ts`、运行态在 `src/session-runtime.ts`，两者都不 import `agent-host`，因此 `agents/projects` 可以静态 import 而不是内联 `await import()`。
 - **落点**：`agents/<id>/projects/<项目名>/tasks/<NNNN>-<标题>/`（**per-project 连续编号，中文标题允许**；目录平铺，日期写在 `task.md` 的 `日期：YYYY-MM-DD`，不建日期目录）。
 - **默认 Task（协议 §6.1，2026-10-23 更新）**：每个 Agent × 项目一个，目录 `tasks/0001-default/`，类型 `daily`；新建会话与每次交互时 `ensureDailyShard` 取/建默认 Task 并确保当天的 `daily/<日期>.md` 存在；会话用自定义条目 `lifeos_active_task` 记录 `activeTaskId`（存 Task ID `NNNN`），普通会话共享默认 Task，不是绑定。

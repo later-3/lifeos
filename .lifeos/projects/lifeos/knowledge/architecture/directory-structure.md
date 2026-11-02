@@ -33,6 +33,7 @@ lifeos/
 
 ```
 ~/.lifeos/
+├─ users/<id>/                  用户实体（Task 0015 · T9）：user.json（id/name/avatar/createdAt）+ avatar.*
 ├─ config/                      模型与文件根配置（含密钥，永不进 Git）
 ├─ logs/                       运行日志（backend-<date>.jsonl / frontend-<date>.jsonl；14 天滚动；运行时创建，模板不带——与协议无关的 Life OS 运行产物）
 ├─ interaction-harness/         协议目录：protocol.md · AGENTS.md · skeleton/（目录说明模板）· task-types/（协议默认的任务类型）
@@ -47,6 +48,8 @@ lifeos/
 
 - 默认 Task 是 `tasks/0001-default/`（类型 `daily`）：日常对话按天写进 `daily/<日期>.md`。
 - `project.json` **只在共享层**（`projects/<pid>/`），绑定目录不写身份（协议 §5.3）。
+- `users/` 下**只有一个**目录（一个家目录一个使用者，Obsidian 式）；`id` 是 URL 安全 ASCII，`name` 给人看。
+- 老的 `config/profile.json` 仍可读（迁移回落），**不再写**——它留作回滚点。
 - 没有 `logs/`、`runtime/`；会话与日志随 Agent × 项目 / Task 存放，不另建顶层目录。
 
 ## 3 仓库里的知识与规范（`.lifeos/projects/lifeos/`）

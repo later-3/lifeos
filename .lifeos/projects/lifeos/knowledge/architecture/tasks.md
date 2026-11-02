@@ -10,7 +10,8 @@
 |---|---|---|
 | Task 目录 | `~/.lifeos/agents/<agentId>/projects/<projectId>/tasks/<NNNN-标题>/` | 每个 Agent × 项目一份，互不共享 |
 | Task 身份 | 目录名 `NNNN-标题` + `task.md` 的 `ID / 类型 / 类别 / 状态` | 编号四位，按项目内递增 |
-| 会话指向哪个 Task | 会话 JSONL 里的 `ACTIVE_TASK_ENTRY` 自定义条目（`{ taskId, at }`） | **会话级**，可切换，不把会话钉死在一个 Task |
+| 会话指向哪个 Task | 会话 JSONL 里的 `ACTIVE_TASK_ENTRY` 自定义条目（`{ taskId, at }`） | **会话级**，可切换，不把会话钉死在一个 Task；反查用 `sessionsOfTask()`（全扫，不建索引，Task 0015） |
+| Task 的归属与参与者 | `task.md` 的 `归属：<agentId>/<projectId>/<NNNN>` + `参与者：a, b, user` | **归属 = owner，恒 1**（必须等于目录的 agentId，可校验）；**参与者 ≥ 0**，含其他 Agent 与用户，**可以不含用户**（纯 Agent 自动建的 Task）。2026-11-02 起替掉旧的 `负责人/记录者` |
 | 默认 Task 的判定 | `task.md` 的 `类型：daily`（`src/tasks.ts` `isDefault: type === "daily"`） | `daily` 是系统保留类型，手动新建会被拒（`reserved_type`），所以一个项目最多一个默认 |
 
 ## 2 默认 Task 什么时候创建（四个时机）
@@ -53,6 +54,15 @@ POST /api/agents/:id/projects { path }
 | 添加项目成功后的提示 | `已添加项目 X · 默认 Task 0001 默认` | 绑定即创建的**唯一显式确认** |
 | 对话（唯一切换方式） | 用户说"继续 0002" / "接手那个 Task" → Agent 调 `lifeos_task_enter` 写会话指针，下一轮生效；建 Task（`lifeos_task_create`）本身就进入它 | 没有独立的 UI 切换命令 |
 | Agent 的工具 | `lifeos_task_create` / `lifeos_task_list` | 给 Agent 用，不是人的面板 |
+
+## 4.1 Task 参与者的读写
+
+| 动作 | 位置 | 说明 |
+|---|---|---|
+| 解析 | `src/tasks.ts` `parseParticipants()` | 新字段优先；旧 `负责人/记录者` 兼容（记录者 != owner 时算一个参与者）；owner 永远被排除 |
+| 生成 | `src/tasks.ts` `materialize()` | 新建 Task 写 `归属` + `参与者`（无参与者写 `—`） |
+| 追加 | `src/tasks.ts` `addTaskParticipant()` | 幂等；只改 `参与者：` 一行；老格式没有该行时**不自动改**，等人工决定 |
+| 触发 | `src/peer.ts` `deliverPeerCompletion()` | 与其他 Agent 的对话完成后，把对端写进发起方 Task 的参与者（Task 0015 · T13） |
 
 ## 5 已知边界
 
