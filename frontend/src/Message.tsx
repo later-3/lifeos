@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
+import { ProcessBar } from "./process-bar";
+import type { ProcessStats } from "./process-stats";
 import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
@@ -125,7 +127,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
@@ -137,6 +139,16 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** 这条失败不是最后一条消息：标明它是历史记录，不是当前状态 */
   historical?: boolean;
+  /** 说话人的头像（用户 = 你本人，助手 = 当前 Agent）；不传就不显示头像（老调用点逐步迁移） */
+  avatar?: ReactNode;
+  /** 说话人名字（社交媒体式：头像旁要能看出是谁） */
+  authorName?: string;
+  /**
+   * 过程折叠（2026-11-02）：把中间的工具/思考收成一行统计，最终正文留在外面。
+   * 只在**该轮有过程**（≥1 工具或 ≥1 思考）且**已完成**时由调用方传入。
+   * `textIndexes` = 哪几个块属于"最终正文"（其余块进过程区）。
+   */
+  process?: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] };
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -145,12 +157,25 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const suppressed = role === "assistant" && busy;
   const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   const bar = <MessageActionBar side={role} actions={actions} hovered={hovered} suppressed={suppressed} />;
+
+  // 头部：头像 + 名字 + 时间（两边同一套结构；用户靠右所以头像在右，助手始终头像在左）
+  const headerRight = role === "user" && align === "end";
+  const header = avatar !== undefined || authorName !== undefined ? (
+    <div data-testid="message-header"
+      className={`flex min-w-0 items-center gap-1.5 text-micro text-ink-500 ${headerRight ? "flex-row-reverse" : ""}`}>
+      {avatar}
+      {authorName !== undefined && <span className="min-w-0 truncate font-medium text-ink-700">{authorName}</span>}
+      {at !== undefined && <span className="shrink-0 tabular-nums text-ink-500">{formatClock(at)}</span>}
+    </div>
+  ) : null;
+
   if (role === "user") {
     // 用户消息原来只渲染文字气泡，图片块被整段忽略：发出去的图在界面上不存在（本轮修复）
     const images = blocks.filter((block): block is Extract<Block, { type: "image" }> => block.type === "image");
     return (
       <div className={`flex flex-col gap-1 ${align === "end" ? "items-end" : "items-start"}`}
         data-testid="message" data-role="user" {...hover}>
+        {header}
         {text !== "" && (
           <div className="max-w-bubble rounded-bubble rounded-br-md bg-message-user px-4 py-2.5 text-white" data-testid="message-text" data-message-kind="user">
             <Markdown text={text} inverse />
@@ -165,13 +190,32 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
       </div>
     );
   }
+
+  // 过程折叠：分两组块——进过程区的、留在外面的最终正文
+  const inside = (index: number): boolean =>
+    process !== undefined && !process.textIndexes.includes(index);
+  const renderBlock = (block: Block, index: number, keyScope: string) => (
+    <BlockView key={`${keyScope}-${index}`} block={block} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+      live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
+      forceOpen={failure !== undefined} />
+  );
+
   return (
-    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" {...hover}>
-      {blocks.map((block, index) => (
-        // 段级 live：旧段的思考已结束，不跟着整轮 busy 继续转圈；工具由 running/result 单独判断。
-        <BlockView key={index} block={block} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
-          forceOpen={failure !== undefined} />
-      ))}
+    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-process={process === undefined ? undefined : "folded"} {...hover}>
+      {header}
+      {process !== undefined ? (
+        <>
+          {process.stats.tools > 0 || process.stats.thinking > 0 ? (
+            <ProcessBar stats={process.stats} live={process.live}>
+              {blocks.map((block, index) => inside(index) ? renderBlock(block, index, "p") : null)}
+            </ProcessBar>
+          ) : null}
+          {/* 最终正文：留在外面，一眼可读（多段时按原顺序拼接展示） */}
+          {blocks.map((block, index) => inside(index) ? null : renderBlock(block, index, "t"))}
+        </>
+      ) : (
+        blocks.map((block, index) => renderBlock(block, index, "t"))
+      )}
       {(failure !== undefined || error !== undefined) && (
         <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
           <p className="text-meta text-danger">

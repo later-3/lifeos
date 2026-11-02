@@ -18,6 +18,9 @@ import {
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
+import {
+  MAX_AVATAR_BYTES, avatarExists, normalizeName, readProfile, readProfileAvatar, storeProfileAvatar, writeProfile,
+} from "./profile.ts";
 import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
 import { resolveHome } from "./home.ts";
@@ -729,6 +732,70 @@ app.use(async (c, next) => {
     await writeAgent({ ...agent, avatar } as AgentDefinition);
     return c.json({ avatar });
   });
+  // ===== 用户档案（2026-11-02）：你本人，不是 Agent =====
+  // 与 Agent 头像分开：Agent 存 agents/<id>/avatar/，用户存 config/profile.json + config/profile-avatar-*。
+  // 不引入“用户 Agent”实体，否则数据模型被污染（Agent N:M Project 那套语义不适用人）。
+  app.get("/api/profile", async (c) => {
+    const profile = await readProfile(resolveHome());
+    // 档案里挂着已删除的头像文件时，如实告诉前端“没有头像”，不给出 404 图片地址
+    const hasAvatar = await avatarExists(resolveHome(), profile);
+    return c.json({ name: profile.name, avatar: hasAvatar ? profile.avatar ?? null : null });
+  });
+
+  app.put("/api/profile", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { name?: unknown } | undefined;
+    if (body === undefined) {
+      const error = problem("invalid_request", "需要 JSON 请求体", 400); return c.json(error.body, error.status);
+    }
+    const current = await readProfile(resolveHome());
+    const name = normalizeName(body.name);
+    if (name === undefined) {
+      const error = problem("invalid_request", "名字不能为空", 400); return c.json(error.body, error.status);
+    }
+    await writeProfile(resolveHome(), { ...current, name });
+    return c.json({ name, avatar: current.avatar ?? null });
+  });
+
+  app.post("/api/profile/avatar", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { data?: unknown } | undefined;
+    if (body === undefined || typeof body.data !== "string" || body.data === "") {
+      const error = problem("invalid_request", "需要 { data: <base64> }", 400); return c.json(error.body, error.status);
+    }
+    // 先在内存里量体积：超过上限不落盘（头像只显示 24–32px，1MB 已很宽）
+    const bytes = Buffer.from(body.data, "base64");
+    if (bytes.byteLength === 0) {
+      const error = problem("invalid_image", "图片数据不是合法 base64", 400); return c.json(error.body, error.status);
+    }
+    if (bytes.byteLength > MAX_AVATAR_BYTES) {
+      const error = problem("avatar_too_large", `头像最大 ${MAX_AVATAR_BYTES / (1024 * 1024)}MB`, 413); return c.json(error.body, error.status);
+    }
+    const avatar = await storeProfileAvatar(resolveHome(), body.data);
+    if (avatar === undefined) {
+      const error = problem("unsupported_image_type", "头像支持 png / jpeg / webp（按文件头判断）", 400); return c.json(error.body, error.status);
+    }
+    const current = await readProfile(resolveHome());
+    await writeProfile(resolveHome(), { ...current, avatar });
+    return c.json({ name: current.name, avatar });
+  });
+
+  app.delete("/api/profile/avatar", async (c) => {
+    const current = await readProfile(resolveHome());
+    await writeProfile(resolveHome(), { name: current.name });
+    return c.json({ name: current.name, avatar: null });
+  });
+
+  app.get("/api/profile/avatar", async (c) => {
+    const profile = await readProfile(resolveHome());
+    const buffer = await readProfileAvatar(resolveHome(), profile);
+    if (buffer === undefined) {
+      const error = problem("no_avatar", "未设置图片头像", 404); return c.json(error.body, error.status);
+    }
+    const file = profile.avatar?.file ?? "";
+    const mime = file.endsWith(".png") ? "image/png" : file.endsWith(".webp") ? "image/webp" : "image/jpeg";
+    // 与 Agent 头像同形：Hono 要 Uint8Array<ArrayBuffer>，Buffer 的 buffer 可能是 SharedArrayBuffer
+    return c.body(new Uint8Array(buffer), 200, { "Content-Type": mime, "Cache-Control": "no-store" });
+  });
+
   app.get("/api/agents/:id/avatar", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
