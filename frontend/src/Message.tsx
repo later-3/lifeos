@@ -158,11 +158,20 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const hover = { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) };
   const bar = <MessageActionBar side={role} actions={actions} hovered={hovered} suppressed={suppressed} />;
 
-  // 头部：头像 + 名字 + 时间（两边同一套结构；用户靠右所以头像在右，助手始终头像在左）
+  /**
+   * 头部：**头像 · 名字 · 时间**（Task 0015 修订，用户 2026-11-02）。
+   *
+   * 修的是什么：原来用户侧用 `flex-row-reverse` 让"头像在右"，但 DOM 顺序是
+   * `头像 → 名字 → 时间`，反转后**视觉上变成 `时间 名字 头像`** —— 用户看到的是
+   * "14:51 Xu Later 头像"，读起来是"时间在前、头像在后"，反了。
+   *
+   * 现在的做法：**容器靠右对齐，但内部顺序不反转**（`justify-end` 而不是 `flex-row-reverse`），
+   * 所以两边看到的都是 `头像 · 名字 · 时间`。分侧由**整块靠左/靠右**表达，不由内部顺序表达。
+   */
   const headerRight = role === "user" && align === "end";
   const header = avatar !== undefined || authorName !== undefined ? (
     <div data-testid="message-header"
-      className={`flex min-w-0 items-center gap-1.5 text-micro text-ink-500 ${headerRight ? "flex-row-reverse" : ""}`}>
+      className={`flex min-w-0 items-center gap-1.5 text-micro text-ink-500 ${headerRight ? "justify-end" : ""}`}>
       {avatar}
       {authorName !== undefined && <span className="min-w-0 truncate font-medium text-ink-700">{authorName}</span>}
       {at !== undefined && <span className="shrink-0 tabular-nums text-ink-500">{formatClock(at)}</span>}

@@ -1276,20 +1276,36 @@ try {
       && headerInfo.userHasAvatar && headerInfo.assistantHasAvatar,
       JSON.stringify(headerInfo));
 
-    // 2) 左右分侧：用户靠右（容器 flex-end + 头部反向），助手靠左
+    // 2) 左右分侧：用户**整块**靠右（容器 flex-end），头部**内部顺序两边一致**
+    //    Task 0015 修订：原来用户侧用 flex-row-reverse 反转，视觉上变成「时间 名字 头像」——
+    //    用户指出读起来反了。现在靠 justify-end 让整块靠右，内部仍是「头像 名字 时间」。
     const sides = await page2.evaluate(() => {
       const user = document.querySelector('[data-testid="message"][data-role="user"]');
       const asst = document.querySelector('[data-testid="message"][data-role="assistant"]');
       const header = (el) => el?.querySelector('[data-testid="message-header"]');
+      const kids = (el) => {
+        const h = header(el);
+        if (h === null || h === undefined) return null;
+        return [...h.children].map((c) => (c.textContent ?? "").trim());
+      };
       return {
         userAlign: user === null ? null : getComputedStyle(user).alignItems,
         userHeaderDir: header(user) === null || header(user) === undefined ? null : getComputedStyle(header(user)).flexDirection,
         assistantHeaderDir: header(asst) === null || header(asst) === undefined ? null : getComputedStyle(header(asst)).flexDirection,
+        userKids: kids(user),
+        assistantKids: kids(asst),
       };
     });
-    check("对话区：用户靠右、助手靠左（头像同侧）",
-      sides.userAlign === "flex-end" && sides.userHeaderDir === "row-reverse" && sides.assistantHeaderDir === "row",
+    check("对话区：用户整块靠右、助手靠左",
+      sides.userAlign === "flex-end" && sides.userHeaderDir === "row" && sides.assistantHeaderDir === "row",
       JSON.stringify(sides));
+    // 顺序判据用**形状**而不是内容：两边都是"3 段、第 1 段 1 个字（头像首字母）、最后一段是 HH:MM"
+    const shape = (kids) => (kids === null || kids.length !== 3
+      ? null
+      : { first: kids[0].length, clock: /^\d{2}:\d{2}$/.test(kids[2]) });
+    check("对话区：头部顺序两边一致 = 头像 → 名字 → 时间（不随分侧反转）",
+      JSON.stringify(shape(sides.userKids)) === JSON.stringify(shape(sides.assistantKids)) && shape(sides.userKids)?.clock === true,
+      JSON.stringify({ user: sides.userKids, assistant: sides.assistantKids }));
 
     // 3) 过程条：轻量（无边框/无背景块）、不拉满、文案只有统计没有摘要措辞
     const bar = await page2.evaluate(() => {
