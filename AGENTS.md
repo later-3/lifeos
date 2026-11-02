@@ -18,6 +18,7 @@
 | 检视 / 评审 | `.lifeos/projects/lifeos/specs/review/review.md` → 按范畴核对 `.lifeos/projects/lifeos/specs/code/` 对应条文 |
 | 架构 / 底座 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md`、`.lifeos/projects/lifeos/knowledge/architecture/foundation.md`（事实现状）→ `.lifeos/projects/lifeos/specs/code/architecture/architecture.md`（约束） |
 | 家目录结构 / 安装 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md` → `.lifeos/projects/lifeos/knowledge/architecture/foundation.md` → `pnpm home:check` |
+| 起并行开发实例（worktree / 端口 / 独立家目录） | `.lifeos/projects/lifeos/specs/development-harness/development-harness.md` §7（规则）→ `.lifeos/projects/lifeos/tools/dev-port/AGENTS.md`（命令与排障） |
 | 记忆 | `.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md` + `.lifeos/projects/lifeos/knowledge/requirements/agent-memory.md` |
 | 新参考场景 | `.lifeos/projects/lifeos/knowledge/reference-baseline.md`：找不到场景行先补行，**不许用"行业惯例"当依据** |
 | 远程访问 | 公开机制 `.lifeos/projects/lifeos/knowledge/architecture/remote-access.md`；本机运维记录 `~/.lifeos/projects/lifeos/runbook/`（仅本机，不进仓库） |

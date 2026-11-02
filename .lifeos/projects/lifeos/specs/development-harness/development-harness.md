@@ -76,54 +76,39 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 
 > 起因（2026-10-24）：Coder 在共享 worktree 上开发 Life OS，改前端导致用户页面白屏/语法错误，跑 build/test 触发重启——**开发实例与用户实例必须分开**。
 
-### 7.1 两类实例（必须分离）
+### 7.1 主实例是用户的，不可动（必须）
 
-| | 用户实例（你正在用的） | 开发实例（Coder 等） |
+| | 主实例（用户正在用的） | 开发实例 |
 |---|---|---|
-| 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 独立 worktree，如 `~/Code/lifeos-dev/<agentId>`（`git worktree add`） |
-| 数据 | `~/.lifeos` | 独立 `LIFEOS_HOME=~/.lifeos-dev/<agentId>` |
-| 后端 | 43120 | 43130（`--port`） |
-| 前端 | 5173，或主仓 `frontend/dist` | 5174（`VITE_DEV_API=http://127.0.0.1:43130 pnpm dev:web --port 5174`） |
+| 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 本 Task 的 `evidence/worktree/`（`git worktree add`，协议 §3.7/§12） |
+| 数据 | `~/.lifeos` | 独立 `LIFEOS_HOME=~/.lifeos-dev/<Task 编号>` |
+| 后端 / 前端 | **43120 / 5173（保留号）** | 由 `node scripts/dev-port.mjs claim --task NNNN` 分配 |
+| 日志 | `/tmp/lifeos-dev-supervisor.log` | `LIFEOS_SUPERVISOR_LOG=/tmp/lifeos-<Task 编号>.log` |
 
-- **必须** 开发 Life OS 时使用独立实例；**禁止** 与用户实例共用 worktree、`LIFEOS_HOME`、端口。
-- **必须** 开发实例首次从模板安装独立家目录，不复制用户真实会话（避免写坏真实数据，见 C117）。
-- **应该** 把 worktree 路径、home、端口写进当前 Task 的 `log.md`，便于交接与排查。
+- **必须** 不占、不 kill、不写主实例的三样东西：43120/5173、`~/.lifeos`、主 worktree。冲突时改开发实例自己的一侧。
+- **必须** 开发实例四件套齐全才算隔离：worktree + 独立 `LIFEOS_HOME` + 独立端口 + 独立日志（缺一即 C160 那种串线）。
+- **必须** 端口只从工具取，不抄示例数字：`node scripts/dev-port.mjs claim --task NNNN`；收工 `release`。
+- **必须** 首次在新 worktree 里装独立家目录，不复制用户真实会话（C117）。
+- **应该** 把 worktree / home / 端口写进当前 Task 的 `log.md`，便于交接。
 
-### 7.2 开发实例的启动与验证（应该）
-
-```bash
-# 1) 独立 worktree（一次）
-git worktree add ~/Code/lifeos-dev/<agentId> -b dev/<agentId>
-
-# 2) 独立家目录（一次）
-cd ~/Code/lifeos-dev/<agentId>
-LIFEOS_HOME=~/.lifeos-dev/<agentId> pnpm home:install
-
-# 3) 开发实例（两个进程；改源码只重启这一个）
-#    后端：dev-supervisor 不透传 pnpm 附加参数——用 node 直调（2026-10-26 实测）；supervisor 已支持透传，但文档以实测路径为准
-LIFEOS_HOME=~/.lifeos-dev/<agentId> node scripts/dev-supervisor.mjs --port=43130
-#    前端：vite 用 exec 传端口（实测可用）；它绑定 localhost，用 http://localhost:5174 访问
-VITE_DEV_API=http://127.0.0.1:43130 pnpm --dir frontend exec vite --port 5174
-```
-
-- **应该** 在开发实例里跑 `pnpm verify`、手测、截图对比；
-- **必须** 不在主 worktree 跑 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`。
+**命令与步骤见** `projects/lifeos/tools/dev-port/AGENTS.md`（按需读，不常驻）；端口事实以 `knowledge/architecture/foundation.md` 为准。
 
 ### 7.3 交付与切换（必须走流程）
 
 1. **必须** 开发实例验证通过（测试回执 + 手测证据）；
-2. **必须** 给出变更摘要 + 验证证据 + 预览地址（43130 / 5174）；
+2. **必须** 给出变更摘要 + 验证证据 + 预览地址（`dev-port list` 里该 Task 的端口）；
 3. **必须** 等用户确认；
 4. **必须** 再合并到主 worktree（merge / cherry-pick），不在主 worktree 里边改边跑；
-5. **应该** 在用户同意的时间窗重建并重启用户实例（43120）；
+5. **应该** 在用户同意的时间窗重建并重启主实例（43120/5173）；
 6. **必须** 切换后复验（首页、会话、关键路径），失败按回滚方案退回；
 7. **必须** 把"改了什么、验证了什么、何时切换"记进 Task 的 `log.md`。
 
 ### 7.4 禁止项（必须）
 
-- **禁止** 在用户实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；
+- **禁止** 在主实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；
 - **禁止** 在主 worktree 执行 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`；
-- **禁止** 重启或 kill 用户实例、修改用户 `~/.lifeos` 数据；
+- **禁止** 重启或 kill 主实例、修改用户 `~/.lifeos` 数据；
+- **禁止** 同一 Task 开第二份实例（要并行就另起 Task），也禁止用固定 `43130` 启动（C160 就是这么撞车的）。
 - **禁止** 把"开发中"的状态当成"已交付"。
 
 ### 7.5 例外（可以）

@@ -89,12 +89,15 @@ install-receipt.json    安装收据
 
 | 命令 | 做什么 |
 |---|---|
-| `pnpm dev` | 开发 supervisor（`scripts/dev-supervisor.mjs`）：监听 `src/`，改动后先排空、等运行中的回合结束，再重启后端（默认 43120）；**不会在回合中途杀进程** |
-| `pnpm dev:web` | 前端 Vite dev（5173，代理 `/api` 到后端） |
+| `pnpm dev` | 开发 supervisor（`scripts/dev-supervisor.mjs`）：监听 `src/`，改动后先排空、等运行中的回合结束，再重启后端（默认 43120）；**不会在回合中途杀进程**。启动时先跑隔离自检（保留号 / 共用用户家目录 / 主 worktree / 共享日志 / 端口被占），不通过就 `exit 2` 不重试 |
+| `pnpm dev:web` | 前端 Vite dev（5173，代理 `/api` 到后端）。Vite 监听 `[::1]`，端口占用探测要同时看 IPv4/IPv6 |
+| `node scripts/dev-port.mjs claim/list/release` | 开发实例的端口分配与登记（`~/.lifeos/state/dev-ports.json`，全局唯一不跟 `LIFEOS_HOME`）；保留号 43120/5173 永不分配，号段后端 43130-43199 / 前端 5174-5199 |
 | `pnpm build` | 后端 esbuild → `dist/server.mjs`；前端 → `frontend/dist` |
 | `pnpm start` | `node dist/server.mjs`（同时托管 `frontend/dist` 静态文件） |
 | `pnpm verify` | 门禁：typecheck + lint:tokens + test + test:ui |
 | `pnpm stop` | 按端口优雅结束开发/发布进程（`--port=` 可指定） |
+
+**端口保留（事实，Task 0016）**：主实例固定后端 `43120` / 前端 `5173`，属用户所有；开发实例从 `dev-port` 取号，不得占保留号。
 
 ## 7 依赖
 
