@@ -122,6 +122,18 @@
 /* 无障碍：系统开启"减少动态效果"时停转；状态仍由文案表达（"思考中…"）。 */
 @media (prefers-reduced-motion: reduce) {
   .animate-arc { animation: none; }
+
+  /*
+   * 状态点（Task 0015 · 10.2 ①）：运行态与未读态本来靠"有没有脉冲"区分（D23）。
+   * 关掉动画后两者会变成**一模一样**的实心点 —— 语义直接丢失。
+   * 所以这里换一种**不依赖动画**的区分：运行态改画成**空心圈**（描边），未读仍是实心点。
+   * 形状差异比动画更可靠：静止画面下也读得出"谁在跑、谁有新东西"。
+   */
+  .animate-pulse[data-state-dot="running"] {
+    animation: none;
+    background-color: transparent;
+    box-shadow: inset 0 0 0 2px var(--color-success);
+  }
 }
 
 /*

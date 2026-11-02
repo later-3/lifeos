@@ -43,6 +43,7 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { shortTitleOf } from "../../src/session-title.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -59,7 +60,7 @@ function StatusMarks({ status, unit }: { status: { running: boolean; unread: num
   return (
     // 状态徽标是动态数据（随用户正常使用变化）：截图基线遮掉，只比骨架（testing 2.9）
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
-      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" title="生成中" />}
+      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" data-state-dot="running" title="生成中" />}
       {status.unread > 0 && (
         // 数字语义（任务 0009）：Project 层 = 待查看的会话个数；Agent 层 = 待查看的 Project 个数
         <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-success-soft px-1.5 text-micro font-medium tabular-nums text-success"
@@ -1652,7 +1653,9 @@ export default function App() {
    */
   const titleOf = (item?: SessionItem) => {
     const title = (item?.title ?? "").trim();
-    return title !== "" ? title.slice(0, 50) : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
+    // 显示用短标题（Task 0015 · 10.1）：去掉"请用/我们现在/我想要"这类没有区分度的引导语。
+    // **不改落盘数据**——存进会话文件的仍是原话（titleFromFirstMessage 不变）。
+    return title !== "" ? shortTitleOf(title).slice(0, 50) : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
   const isIdFallback = (item?: SessionItem) => (item?.title ?? "").trim() === "";
@@ -1684,17 +1687,6 @@ export default function App() {
     if (explicit !== undefined) return explicit;
     return agent === undefined ? undefined : { id: agent.id, name: agent.name, ...(agent.avatar !== undefined ? { avatar: agent.avatar } : {}) };
   };
-
-  /**
-   * 进行中的阶段文案（会话行第二行用）：复用 turns status 的既有词表，
-   * 不新造词——"思考中/调用工具/写回复"是用户已经见过的说法。
-   */
-  const activePhaseLabel = busy
-    ? phase === "tool" ? (activeTool !== undefined ? `调用 ${activeTool}` : "调用工具")
-      : phase === "thinking" ? "思考中…"
-        : phase === "text" ? "写回复…"
-          : "等待模型…"
-    : undefined;
 
   const folded = box.folded;
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
@@ -1831,15 +1823,15 @@ export default function App() {
                                       只有 Agent ↔ Agent 的会话，"对方是谁"才是新信息（T17）。 */}
                                   {item.peer !== undefined && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
                                   {item.activeTaskId !== undefined && <span>{item.activeTaskId}</span>}
-                                  {/* 运行中：第二行显示阶段文案（"思考中/调用工具"是新增的信息，右侧仍保留脉冲点）。
-                                      完成未读：**不在这里写字**——右侧的绿点就是它（design-language §5.2
-                                      "状态点：运行 = 脉冲、完成未读 = 绿点，与徽标同槽互斥"）。
-                                      我一开始在这里写了个"新"字，属于同一状态两种表达，已删除。 */}
-                                  {runNow && <><span> · </span><span className="text-success">{activePhaseLabel ?? "生成中…"}</span></>}
+                                  {/* 运行中**不写阶段文案**（Task 0015 · 10.2 ②）：
+                                      `phase` 只有"当前打开会话"一份，列表里每条运行中的会话都用它会显示
+                                      同一条文案（真 bug）。列表拿不到"各会话各自的阶段"，就不给——
+                                      要看过程点进去，那时状态条给的是真实值。
+                                      完成未读也不写字：右侧绿点就是它（design-language §5.2 / D23）。 */}
                                 </>
                               }
                               status={runNow
-                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" title="生成中" />
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
                                 : unread
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
                                   : <span className="text-micro text-ink-500">{timeAgo(item.updatedAt)}</span>} />
