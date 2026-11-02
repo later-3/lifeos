@@ -11,7 +11,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { readAgent } from "./agents.ts";
 import { bindProject, listAgentProjects } from "./projects.ts";
-import { createSession, getSession, messagesOf, runTurn, turnLastOf } from "./agent-host.ts";
+import { createSession, getSession, messagesOf, readSessionEntries, runTurn, turnLastOf } from "./agent-host.ts";
 import { isRunning } from "./session-runtime.ts";
 import { addTaskParticipant } from "./tasks.ts";
 import {
@@ -451,9 +451,23 @@ export async function deliverPeerCompletion(input: PendingPeer & {
   if (completionAlreadySent(targetAgentId, sessionId, turnId)) return false;
 
   const initiator = await getSession(input.initiatorAgentId, input.initiatorSessionId, resolveHome());
-  if (initiator === undefined) return false;
+  if (initiator === undefined) {
+    const { log } = await import("./logging.ts");
+    void log.error("peer", "deliverPeerCompletion", "发起方会话读不到", { details: { agent: input.initiatorAgentId, session: input.initiatorSessionId } });
+    return false;
+  }
 
-  const snapshot = await peerSnapshot(targetAgentId, sessionId, input.initiatorTaskId);
+  // 目标会话的 `prompt()` 刚返回时，projection 可能还没纳入最后一条助手消息
+  // （实测：磁盘上已有 "好的"，但进程内 messagesOf 当场读是空的）。
+  // 回流内容的**主要价值就是那句话**，所以这里等一下再读：轮询到有正文或超时为止。
+  let snapshot = await peerSnapshot(targetAgentId, sessionId, input.initiatorTaskId);
+  if (state === "done" && snapshot.lastReply === undefined) {
+    // 兜底：直接读**落盘**的会话文件（`readSessionEntries` 是会话历史的事实源）。
+    // 为什么需要：目标会话的 `prompt()` 刚返回时，进程内 projection 还没纳入最后一条助手消息
+    // （实测：磁盘上已有"好的"，`messagesOf` 当场读是空的；重试 1.2s 也没变）。
+    const persisted = await lastAssistantTextFromFile(targetAgentId, sessionId);
+    if (persisted !== undefined) snapshot = { ...snapshot, lastReply: persisted };
+  }
   const body = [
     `【与 ${input.peerName} 的对话】${state === "done" ? "已完成" : "失败了"}`,
     `会话：${sessionId}`,
@@ -470,7 +484,9 @@ export async function deliverPeerCompletion(input: PendingPeer & {
       display: true,
       details: { peerAgentId: targetAgentId, sessionId, turnId, state },
     }, { triggerTurn: false });
-  } catch {
+  } catch (error) {
+    const { log } = await import("./logging.ts");
+    void log.error("peer", "deliverPeerCompletion", "投递抛错", { details: { message: error instanceof Error ? error.message : String(error) } });
     return false;   // 投递失败：保留登记，下次回合再试
   }
 
@@ -600,4 +616,29 @@ export function snapshotText(peerName: string, snapshot: PeerSnapshot, hint?: st
   }
   lines.push("", `下一步：${snapshot.next}`);
   return lines.join("\n");
+}
+
+/**
+ * 直接从**落盘的会话文件**取最后一条助手正文（`deliverPeerCompletion` 的兜底）。
+ *
+ * 为什么不复用 `messagesOf`：它读的是进程内 projection，在目标回合刚结束的瞬间可能还没刷新；
+ * 而回流的**核心价值就是那句话**，读文件是确定的事实源（`readSessionEntries` 同一来源）。
+ */
+async function lastAssistantTextFromFile(targetAgentId: string, sessionId: string): Promise<string | undefined> {
+  const read = await readSessionEntries(targetAgentId, sessionId).catch(() => undefined);
+  if (read === undefined) return undefined;
+  for (let i = read.entries.length - 1; i >= 0; i -= 1) {
+    const entry = read.entries[i] as { type?: string; message?: { role?: string; content?: unknown } };
+    if (entry?.type !== "message" || entry.message?.role !== "assistant") continue;
+    const content = entry.message.content;
+    if (typeof content === "string" && content.trim() !== "") return content.trim();
+    if (Array.isArray(content)) {
+      const text = content
+        .flatMap((part) => (part as { type?: string; text?: string }).type === "text" ? [part.text ?? ""] : [])
+        .join("")
+        .trim();
+      if (text !== "") return text;
+    }
+  }
+  return undefined;
 }
