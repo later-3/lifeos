@@ -93,33 +93,36 @@ export function GroupBody({ children }: { children: ReactNode }) {
 
 /** 参与者叠放双头像（会话行第一行的锚点）：表达"这条是两个参与者在谈"。 */
 /**
- * 会话行的参与者锚点（Task 0015 · T17）。
+ * 会话行**第二行**开头的参与者头像（Task 0015 · T17 修订，用户 2026-11-02）。
  *
- * 两种形状，取决于"这是不是 Agent ↔ Agent 的对话"：
- * - `showMe = false`（用户 ↔ Agent）：**只显示对端 Agent 一个头像**。
- *   叠两个头像在这种场景下没有信息量——"我"在每一行都一样，等于每行画一次自己。
- * - `showMe = true`（Agent ↔ Agent）：**叠放**（我 → 对方），这才是"两个参与者"的表达。
+ * 为什么从"第一行大叠放头像"改成"第二行小头像"：
+ * - 左侧 Agent 列已经表达了"我在跟哪个 Agent 干活"，第一行再放 24px 头像等于**每行重画一次同一个 Agent**；
+ * - 会话行的第一行应该只回答"是哪件事"，"和谁"属于元信息（与 Task、状态、时间同一行）；
+ * - 放到第二行后，第一行标题不再被头像挤占（可用宽度回到满格）。
  *
- * 叠放几何：24px，第二个左移 15px（overlap 9），2px 描边随行底色（避免两层圆叠死）。
+ * 尺寸 16 = 与第二行的 `micro` 字号同高的行内档（`design-language.md` §5.3 图标 16 档），
+ * 不新增尺寸；只有 **Agent ↔ Agent** 的会话才叠第二个（用户 ↔ Agent 的对端就是当前 Agent，
+ * 左边那列已经写着了，不重复）。
  */
-export function ParticipantPair({ me, them, showMe, size = 24, gap = 15, ringClass }: {
+export function ParticipantToken({ me, them, showMe, size = 16, ringClass }: {
   me: { id: string; name: string; kind: "user" | "agent" };
   them: { id: string; name: string; avatar?: AgentAvatarSpec } | undefined;
   showMe: boolean;
   size?: number;
-  gap?: number;
   ringClass: string;
 }) {
   if (them === undefined) {
-    return <span className="relative shrink-0" style={{ width: size, height: size }} aria-hidden><MeAvatar spec={me} size={size} /></span>;
+    return <span className="shrink-0" aria-hidden><MeAvatar spec={me} size={size} /></span>;
   }
   if (!showMe) {
     return (
-      <span className="shrink-0" style={{ width: size, height: size }} aria-hidden>
+      <span className="shrink-0" aria-hidden>
         <ThemAvatar id={them.id} name={them.name} {...(them.avatar !== undefined ? { avatar: them.avatar } : {})} size={size} />
       </span>
     );
   }
+  // 叠放：第二个左移 60%，描边随行底色（避免两层圆叠死）
+  const gap = Math.round(size * 0.6);
   return (
     <span className="relative shrink-0" style={{ width: size + gap, height: size }} aria-hidden>
       <span className="absolute left-0 top-0"><MeAvatar spec={me} size={size} /></span>
@@ -140,11 +143,18 @@ function ThemAvatar({ id, name, avatar, size }: { id: string; name: string; avat
   return <AgentAvatar id={id} name={name} avatar={avatar} size={size} />;
 }
 
-/** 会话行（双行 56）：第一行参与者+标题，第二行 对端 · Task · 状态。 */
+/**
+ * 会话行（双行 56）。
+ *
+ * 第一行：**只有标题**（"是哪件事"）——头像已移到第二行，
+ * 因为它属于元信息，且左边 Agent 列已经表达了"和谁"。
+ * 第二行：`[参与者小头像] 对端 · Task · 状态`（"和谁、属于什么、现在怎样"）。
+ */
 export function SessionRow({ selected, title, titleFallback, participants, meta, status, onSelect, onRename, onHistory, onDelete, renameValue, renaming, onRenameChange, onRenameCommit, onRenameCancel, testId }: {
   selected: boolean;
   title: string;
   titleFallback: boolean;
+  /** 第二行开头的参与者头像（`ParticipantToken`）。 */
   participants: ReactNode;
   meta: ReactNode;
   status: ReactNode;
@@ -166,7 +176,6 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
       className={`group/session flex h-14 w-full cursor-pointer items-center gap-2 rounded-control px-1.5 transition-colors ${
         selected ? "bg-surface shadow-sm ring-1 ring-line" : "hover:bg-hover"
       }`}>
-      {participants}
       <span className="flex min-w-0 flex-1 flex-col">
         {renaming ? (
           <input autoFocus value={renameValue}
@@ -184,7 +193,10 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
             data-fallback={titleFallback ? "id" : undefined}
             title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
         )}
-        <span className="truncate text-micro text-ink-500">{meta}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-micro text-ink-500">
+          {participants}
+          <span className="min-w-0 truncate">{meta}</span>
+        </span>
       </span>
       <span className="relative flex w-16 shrink-0 items-center justify-end">
         <span className="transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{status}</span>

@@ -25,7 +25,7 @@ import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
 import { useColumnWidth } from "./useColumnWidth";
 import {
-  AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantPair, SessionRow,
+  AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken, SessionRow,
 } from "./groups-panel";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
@@ -1815,7 +1815,7 @@ export default function App() {
                               onRenameChange={(value) => setRenaming({ sid: item.sessionId, value })}
                               onRenameCommit={(value) => void commitRename(item, value)}
                               onRenameCancel={() => setRenaming(undefined)}
-                              participants={<ParticipantPair
+                              participants={<ParticipantToken
                                 me={meParticipant}
                                 them={peer === undefined ? undefined : { id: peer.id, name: peer.name, ...(peer.avatar !== undefined ? { avatar: peer.avatar } : {}) }}
                                 showMe={item.peer !== undefined}
