@@ -39,7 +39,7 @@ test("工具定义：名字钉死、英文描述、参数 schema 齐全；删除
   assert.ok(memoryDelete.description.includes("irreversible"), "描述写明不可恢复");
 });
 
-test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨架齐、同名幂等", async () => {
+test("lifeos_agent_create：id 由 name 生成（中文名要求英文名）、骨架齐、同名幂等", async () => {
   const home = await freshHome();
   const [create] = createAgentTools({ agentId: "lifeosagent", projectId: "workspace" });
 
@@ -72,9 +72,16 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
   assert.match(again.content[0].text, /already exists/, "结果要告诉模型：已存在、没有新建");
   assert.equal((await readdir(join(home, "agents"))).filter((n) => n.startsWith("code-reviewer")).length, 1, "磁盘上只有一个目录");
 
-  // 中文名 → 不透明随机后缀（agent-xxxx），不再是过通用的 "agent"（Kubernetes generateName 同款）
-  const zh = await run(create, { name: "评审助手" });
-  assert.match(zh.details.id, /^agent-[0-9a-f]{4}$/, `中文名应得到 agent-xxxx，实际 ${zh.details.id}`);
+  // 中文名 → **明确报错要求英文名**（Task 0015 · T10：不再静默生成 agent-xxxx 随机后缀）
+  await assert.rejects(
+    () => run(create, { name: "评审助手" }),
+    /非 ASCII|英文或拼音/,
+    "中文名必须报错并提示给英文/拼音名，而不是悄悄产出看不懂的 agent-3909",
+  );
+  assert.equal((await readdir(join(home, "agents"))).filter((n) => n.startsWith("agent-")).length, 0, "报错不能留下随机 id 目录");
+
+  // 后面的骨架断言仍需要一个具体 Agent：再建一个英文名的（中文名已按要求报错）
+  const zh = { details: { id } };
 
   // 骨架 = 出厂模板同构（模板是「当前 Agent 包含啥」的唯一事实源；只差预置会话文件，协议 §12.2）
   const templateAgent = join(process.cwd(), ".lifeos", "agents", "lifeosagent");
@@ -87,10 +94,10 @@ test("lifeos_agent_create：id 由 name 生成（中文名 agent-xxxx）、骨�
 
   // identity.md：只有骨架，且标题结构与模板同构（## 身份 / ## 人格）
   const skeleton = await readFile(join(home, "agents", zh.details.id, "identity.md"), "utf8");
-  assert.match(skeleton, /^# 评审助手/, "骨架标题用 name");
+  assert.match(skeleton, /^# Code Reviewer/, "骨架标题用 name");
   assert.match(skeleton, /## 身份/, "标题结构与模板同构：身份");
   assert.match(skeleton, /## 人格/, "标题结构与模板同构：人格");
-  assert.match(skeleton, /- 名称：评审助手/, "身份节含名称");
+  assert.match(skeleton, /- 名称：Code Reviewer/, "身份节含名称");
 
   // workspace/AGENTS.md：与模板同源的项目私有层指引（不是我发明的三行），且不写"出厂预置会话"这种不成立的话
   const workspaceGuide = await readFile(join(home, "agents", zh.details.id, "projects", "workspace", "AGENTS.md"), "utf8");
@@ -156,7 +163,9 @@ test("lifeos_task_create：编号连续、中文标题、按类别生成文档�
   assert.match(taskMd, /类别：A 改产品行为/);
   assert.match(taskMd, /状态：进行中/);
   assert.match(taskMd, /^ID: 0002$/m, "task.md 写 ID");
-  assert.match(taskMd, /负责人：lifeosagent/);
+  // Task 0015 · T12：`负责人/记录者` → `归属` + `参与者`
+  assert.match(taskMd, /^归属：lifeosagent\/workspace\/0002$/m, "归属 = owner（agentId/project/NNNN），可校验");
+  assert.match(taskMd, /^参与者：—$/m, "没有其他参与者时明确写 —，不留空");
   assert.match(taskMd, /目标：删除已注册根/, "goal 没给时先用 title");
   assert.match(taskMd, /## 本任务遵守/, "引用规范区块");
   assert.match(taskMd, /interaction-harness\/protocol\.md/);

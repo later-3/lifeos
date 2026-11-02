@@ -88,3 +88,22 @@ test("无会话 + 默认 Task：头部确实产出 task 段（端到端组合）
   });
   assert.equal(joinHeaderSegments(segments), "Frontend Developer · lifeos · command/z-ai/glm-5.3-flash · 0001 默认");
 });
+
+test("对端段（Agent↔Agent）：显示 `agent ↔ peer`，用户↔Agent 不显示", () => {
+  const base = {
+    agentName: "Life Agent", projectName: "lifeos", sessionTitle: "M1 设计评审",
+    headerModel: null, thinkingLevel: undefined, activeTaskId: undefined, taskTitle: undefined,
+  };
+  // Agent ↔ Agent：对端是新信息 → 要出现
+  const withPeer = buildHeaderSegments({ ...base, peerName: "Coder" });
+  assert.deepEqual(withPeer.map((s) => s.id), ["agent", "peer", "project"]);
+  assert.equal(withPeer.find((s) => s.id === "peer")?.text, "↔ Coder");
+
+  // 用户 ↔ Agent：不给 peerName（对端就是当前 Agent）→ 不出现
+  const noPeer = buildHeaderSegments(base);
+  assert.deepEqual(noPeer.map((s) => s.id), ["agent", "project"]);
+
+  // 兜底：万一传了与 agentName 相同的对端，也不重复
+  const same = buildHeaderSegments({ ...base, peerName: "Life Agent" });
+  assert.equal(same.some((s) => s.id === "peer"), false);
+});

@@ -8,7 +8,11 @@
  */
 import { useEffect, useState } from "react";
 
-export type UserProfile = { name: string; avatar: { file: string; revision: number } | null };
+/**
+ * 用户档案（Task 0015 · T9）：用户是**实体**，有 id。
+ * 前端用 `id` 做 key（重名时区分）与无障碍标签，用 `name` 显示。
+ */
+export type UserProfile = { id: string; name: string; avatar: { file: string; revision: number } | null };
 
 /** 用户头像的色块：固定用 accent（与 Agent 的 id 派生色区分开，一眼知道"这是我"）。 */
 const USER_TONE = "bg-accent";

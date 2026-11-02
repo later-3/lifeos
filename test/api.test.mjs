@@ -61,6 +61,11 @@ test("出厂默认会话随模板预置：列表首条即它，第一条消息�
     const sid = list.items[0].sessionId;
     assert.equal(list.items[0].isDefault, true, "出厂会话应带默认标记（agent.json defaultSessionId）");
     assert.equal(list.items[0].title, "welcome to lifeos", "显示名=预置的 session_info.name");
+    // 消息条数只数 `type:"message"`（Task 0015 · todo #30）：出厂会话有 1 条 assistant 打招呼。
+    // 以前是文件总行数，会把手 session 头 / session_info 都算进去（实测 389 vs 31）。
+    assert.equal(list.items[0].messages, 1, "列表的 messages 必须是真实消息条数，不是文件行数");
+    // 失败态（Task 0015 · 结论 5）：成功的会话**不带** failure 字段（不带 ≠ 空值，前端据此判断红点）
+    assert.equal("failure" in list.items[0], false, "正常结束的会话不应带 failure");
 
     // 加载即显示：第一条 = assistant 打招呼（不调模型，直接来自预置文件）
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
@@ -235,7 +240,7 @@ test("删除会话：从列表消失，重复删除 404", async () => {
   } finally { server.close(); }
 });
 
-test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Agent 私有层、移除保留数据、默认不可移除", async () => {
+test("项目：打开目录（同 path 幂等、pid 为 ASCII 可读名）、manifest 在 Agent 私有层、移除保留数据、默认不可移除", async () => {
   const { server, base, home } = await start();
   const { mkdtemp, readFile, access, readdir: rd, stat } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
@@ -249,7 +254,11 @@ test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Age
     });
     assert.equal(first.status, 201);
     const { project } = await first.json();
-    assert.equal(project.id, ext.slice(ext.lastIndexOf("/") + 1), "id = 可读目录名（项目名），不再是 uuid");
+    // id 必须是 **URL 安全 ASCII**（Task 0015 · T11）：pid 进 URL，前端不做 encodeURIComponent。
+    // 目录名是 `lifeos-proj-xxxxxx`（临时目录），所以 id 就是它本身（ASCII 可直接用）。
+    // 目录名可能含大写（mkdtemp 的随机后缀），id 会规范成小写——这是有意的（URL 安全且幂等）。
+    assert.equal(project.id, ext.slice(ext.lastIndexOf("/") + 1).toLowerCase(), "ASCII 目录名 → 小写后作 id（可读、URL 安全）");
+    assert.match(project.id, /^[a-z0-9][a-z0-9-]{0,63}$/, "pid 必须是 URL 安全 ASCII");
     assert.equal(project.path, ext);
     assert.equal(project.name, ext.slice(ext.lastIndexOf("/") + 1));
 
@@ -611,13 +620,19 @@ test("Agent 生命周期：创建（slug id/骨架/无预置会话）与归档�
     assert.equal(sameAgain.status, 200, "已存在时返回 200（与项目注册一致）");
     assert.equal((await sameAgain.json()).agent.id, first.id, "同名幂等：同一个 id");
 
-    // 中文名 → 合法 slug；缺 name → 400
+    // 中文名 → **明确 400 要求英文名**（Task 0015 · T10：不再静默生成 agent-xxxx）
     const zh = await fetch(`${base}/api/agents`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "评审助手" }),
     });
-    assert.equal(zh.status, 201);
-    const second = (await zh.json()).agent;
-    assert.match(second.id, /^[a-z0-9][a-z0-9-]{0,63}$/, `中文名 slug：${second.id}`);
+    assert.equal(zh.status, 400, "中文名必须明确拒绝，而不是产出看不懂的随机 id");
+    assert.equal((await zh.json()).error.code, "needs_ascii_name", "错误码要说清是名字不可转，不是服务器出错");
+    // 英文名照常
+    const en = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Review Helper" }),
+    });
+    assert.equal(en.status, 201);
+    const second = (await en.json()).agent;
+    assert.equal(second.id, "review-helper");
     assert.equal((await fetch(`${base}/api/agents`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 400);
 
     // 列表 = 三个（workspace 内置 + 两个新建），全部非归档
@@ -917,5 +932,39 @@ test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务�
     const body = await response.json();
     assert.equal(body.error.code, "peer_conversation_readonly");
     assert.match(body.error.message, /lifeosagent/, "错误里要点名是谁发起的");
+  } finally { server.close(); }
+});
+
+test("会话列表的失败态：最后一条 assistant 以 error 结束才带 failure（历史失败不算）", async () => {
+  const { server, base, home } = await start();
+  const { readdir, readFile, writeFile } = await import("node:fs/promises");
+  try {
+    const list = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    const sid = list.items[0].sessionId;
+    const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+    const file = (await readdir(dir)).find((name) => name.includes(sid));
+    assert.ok(file !== undefined);
+    const path = join(dir, file);
+    const original = await readFile(path, "utf8");
+
+    // 造现场：最后追加一条"以 error 结束"的 assistant 消息
+    const errored = JSON.stringify({
+      type: "message", id: "err-probe", parentId: null, timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "fetch failed: ECONNREFUSED" },
+    });
+    await writeFile(path, `${original.trimEnd()}\n${errored}\n`, "utf8");
+    const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    const item = after.items.find((entry) => entry.sessionId === sid);
+    assert.ok(item !== undefined);
+    assert.equal(item.failure, "network", "连不上 → classifyFailure 归为 network，界面上显示 '失败：连不上'");
+
+    // 历史失败不该盖住当前状态：再追加一条正常 assistant 消息 → failure 消失
+    const ok = JSON.stringify({
+      type: "message", id: "ok-probe", parentId: null, timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "恢复了" }], stopReason: "end_turn" },
+    });
+    await writeFile(path, `${original.trimEnd()}\n${errored}\n${ok}\n`, "utf8");
+    const recovered = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    assert.equal("failure" in recovered.items.find((entry) => entry.sessionId === sid), false, "之后又有正常回复 → 不再算失败");
   } finally { server.close(); }
 });

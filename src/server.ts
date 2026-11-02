@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
-  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -23,6 +23,7 @@ import {
 } from "./profile.ts";
 import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
+import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
 import { randomUUID } from "node:crypto";
@@ -163,16 +164,70 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
     let title = "";
     let displayName = "";
     let sessionId = "";
+    let activeTaskId: string | undefined;
+    let peerAgentId: string | undefined;
+    // 消息条数只数 `type === "message"` 的条目（Task 0015 · todo #30）：
+    // 以前用 `lines.length`，把 session 头 / session_info / custom 都算进去了（实测 389 vs 31）。
+    let messageCount = 0;
+    // 失败态（Task 0015 · 结论 5）：会话**最后一条** assistant 若以 error 结束，就带上分类。
+    // 复用 messagesOf 的同一套判定（stopReason + errorMessage → classifyFailure），不另写一份规则。
+    let lastAssistant: { stopReason?: string; errorMessage?: string; hasContent: boolean } | undefined;
     for (const line of lines) {
       try {
-        const entry = JSON.parse(line) as { type?: string; id?: string; name?: string; message?: { role?: string; content?: unknown } };
+        const entry = JSON.parse(line) as {
+          type?: string; id?: string; name?: string; customType?: string;
+          message?: { role?: string; content?: unknown }; data?: { taskId?: unknown; peerAgentId?: unknown };
+        };
         if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+        if (entry.type === "message") {
+          messageCount += 1;
+          const msg = (entry as { message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown } }).message;
+          if (msg?.role === "assistant") {
+            const content = msg.content;
+            const hasContent = typeof content === "string"
+              ? content.trim() !== ""
+              : Array.isArray(content) && content.length > 0;
+            lastAssistant = {
+              ...(typeof msg.stopReason === "string" ? { stopReason: msg.stopReason } : {}),
+              ...(typeof msg.errorMessage === "string" && msg.errorMessage.trim() !== "" ? { errorMessage: msg.errorMessage.trim() } : {}),
+              hasContent,
+            };
+          } else {
+            // 之后又有新消息：上一条失败不再代表"现在"的状态
+            lastAssistant = undefined;
+          }
+        }
         if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
         if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message);
+        // Task 0015：列表要能回答"这条对话属于哪件事 / 和谁谈"（T16/T17）
+        if (entry.type === "custom" && entry.customType === "lifeos_active_task" && typeof entry.data?.taskId === "string") {
+          activeTaskId = entry.data.taskId;
+        }
+        if (entry.type === "custom" && entry.customType === "lifeos_peer" && typeof entry.data?.peerAgentId === "string") {
+          peerAgentId = entry.data.peerAgentId;
+        }
       } catch { /* 跳过坏行 */ }
     }
     if (sessionId === "") continue;
-    items.push({ sessionId, title: displayName !== "" ? displayName : title, updatedAt: (await stat(path)).mtime.toISOString(), messages: lines.length, isDefault: sessionId === defaultSessionId });
+    items.push({
+      sessionId,
+      title: displayName !== "" ? displayName : title,
+      updatedAt: (await stat(path)).mtime.toISOString(),
+      messages: messageCount,
+      // 只有"最后一条 assistant 就是失败的"才算失败态（历史失败不该盖住当前状态）
+      ...(lastAssistant !== undefined && lastAssistant.stopReason === "error"
+        ? {
+            failure: classifyFailure({
+              stopReason: "error",
+              ...(lastAssistant.errorMessage !== undefined ? { errorMessage: lastAssistant.errorMessage } : {}),
+              hasContent: lastAssistant.hasContent,
+            }) ?? "unknown",
+          }
+        : {}),
+      isDefault: sessionId === defaultSessionId,
+      ...(activeTaskId !== undefined ? { activeTaskId } : {}),
+      ...(peerAgentId !== undefined ? { peer: peerAgentId } : {}),
+    });
   }
   // 合并未落盘的内存会话：Pi 延迟写文件，首条消息发出到落盘之间只存在于内存——
   // 不并入的话，模型不可用（首轮失败）的新会话会从列表消失、标题也丢（C127）。
@@ -296,7 +351,25 @@ app.use(async (c, next) => {
       const error = problem("project_not_found", "找不到这个 project（未注册或未绑定）", 404); return c.json(error.body, error.status);
     }
     const running = runningOf(agent.id);
-    const items = (await listSessions(agent.id, pid, agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
+    // 对端解析（Task 0015 · T17）：`lifeos_peer` 里存的是**对端 agentId**（会话建在目标 Agent 的项目里，
+    // 对端就是发起方）。列表要显示"和谁在谈"，所以这里把它展开成 id/name/avatar。
+    const peerIds = new Set<string>();
+    const listed = await listSessions(agent.id, pid, agent.defaultSessionId);
+    for (const item of listed) if (typeof item.peer === "string") peerIds.add(item.peer);
+    // `avatar` 存在 agent.json 里但不在 AgentDefinition 类型上（历史事实，见 POST /avatar 的同一处理）
+    type AvatarSpec = { kind?: string; file?: string; revision?: number };
+    const peers = new Map<string, { id: string; name: string; avatar?: AvatarSpec }>();
+    for (const peerId of peerIds) {
+      const def = await readAgent(peerId);
+      if (def === undefined) continue;
+      const avatar = (def as AgentDefinition & { avatar?: AvatarSpec }).avatar;
+      peers.set(peerId, { id: def.id, name: def.name, ...(avatar !== undefined ? { avatar } : {}) });
+    }
+    const items = listed.map((item) => ({
+      ...item,
+      ...(typeof item.peer === "string" ? { peer: peers.get(item.peer) ?? { id: item.peer, name: item.peer } } : {}),
+      running: running.some((run) => run.sessionId === item.sessionId),
+    }));
     return c.json({ items });
   });
 
@@ -377,7 +450,14 @@ app.use(async (c, next) => {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const project = await resolveProject(agent, c.req.param("pid"));
     if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
-    return c.json({ items: await listTasks({ agentId: agent.id, projectId: project.id }) });
+    // 每个 Task 带上"它下面有哪些会话"（Task 0015 · T14）——界面与 Agent 都能回答
+    // "这个 Task 聊了哪些对话"。全扫不建索引：项目内会话是几十级（与 listSessions 同口径）。
+    const items = await listTasks({ agentId: agent.id, projectId: project.id });
+    const withSessions = await Promise.all(items.map(async (task) => ({
+      ...task,
+      sessions: await sessionsOfTask(agent.id, project.id, task.id).catch(() => []),
+    })));
+    return c.json({ items: withSessions });
   });
 
   // 重命名会话（写 Pi session_info 展示名；列表标题优先用它）。
@@ -733,13 +813,13 @@ app.use(async (c, next) => {
     return c.json({ avatar });
   });
   // ===== 用户档案（2026-11-02）：你本人，不是 Agent =====
-  // 与 Agent 头像分开：Agent 存 agents/<id>/avatar/，用户存 config/profile.json + config/profile-avatar-*。
-  // 不引入“用户 Agent”实体，否则数据模型被污染（Agent N:M Project 那套语义不适用人）。
+  // 用户是**实体**（Task 0015 · T9）：`users/<id>/user.json` + `avatar.*`；不再写 config/profile.json。
+  // 不引入“用户 Agent”实体：用户不是 Agent，也不进 Agent N:M Project 那套语义。
   app.get("/api/profile", async (c) => {
     const profile = await readProfile(resolveHome());
-    // 档案里挂着已删除的头像文件时，如实告诉前端“没有头像”，不给出 404 图片地址
+    // 档案里挂着已删除的头像文件时，如实告诉前端“没有头像”，不给 404 图片地址
     const hasAvatar = await avatarExists(resolveHome(), profile);
-    return c.json({ name: profile.name, avatar: hasAvatar ? profile.avatar ?? null : null });
+    return c.json({ id: profile.id, name: profile.name, avatar: hasAvatar ? profile.avatar ?? null : null });
   });
 
   app.put("/api/profile", async (c) => {
@@ -752,8 +832,9 @@ app.use(async (c, next) => {
     if (name === undefined) {
       const error = problem("invalid_request", "名字不能为空", 400); return c.json(error.body, error.status);
     }
-    await writeProfile(resolveHome(), { ...current, name });
-    return c.json({ name, avatar: current.avatar ?? null });
+    // 改名不改 id（id 稳定是硬约定）：把当前 id 一起传回写层
+    const written = await writeProfile(resolveHome(), { ...current, name });
+    return c.json({ id: written.id, name: written.name, avatar: written.avatar ?? null });
   });
 
   app.post("/api/profile/avatar", async (c) => {
@@ -774,14 +855,15 @@ app.use(async (c, next) => {
       const error = problem("unsupported_image_type", "头像支持 png / jpeg / webp（按文件头判断）", 400); return c.json(error.body, error.status);
     }
     const current = await readProfile(resolveHome());
-    await writeProfile(resolveHome(), { ...current, avatar });
-    return c.json({ name: current.name, avatar });
+    const written = await writeProfile(resolveHome(), { ...current, avatar });
+    return c.json({ id: written.id, name: written.name, avatar });
   });
 
   app.delete("/api/profile/avatar", async (c) => {
     const current = await readProfile(resolveHome());
-    await writeProfile(resolveHome(), { name: current.name });
-    return c.json({ name: current.name, avatar: null });
+    const { avatar: _dropped, ...rest } = current;
+    const written = await writeProfile(resolveHome(), rest);
+    return c.json({ id: written.id, name: written.name, avatar: null });
   });
 
   app.get("/api/profile/avatar", async (c) => {

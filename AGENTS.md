@@ -12,6 +12,7 @@
 |---|---|
 | 前端改动 | `.lifeos/projects/lifeos/specs/frontend-development/process.md`（固定四步）→ `.lifeos/projects/lifeos/specs/frontend-development/frontend-spec.md` →（碰手机时）`.lifeos/projects/lifeos/specs/frontend-mobile/mobile.md` → `.lifeos/projects/lifeos/knowledge/design/<页面>.md` → `.lifeos/projects/lifeos/specs/code/frontend/code.md` |
 | 后端 / 会话改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/backend/code.md` |
+| 参考图 / 视觉参考 | `frontend/resources/AGENTS.md`（**先读索引**：每张图的内容/布局/风格/可借/不可借 + 四级读取阶梯）→ 需要细节再看联系表/单张缩略 → 最后才读原图 |
 | 接口 / 事件改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/api/api.md` |
 | 测试用例 | `.lifeos/projects/lifeos/specs/code/testing/testing.md`；检视时的证据规则见 `.lifeos/projects/lifeos/specs/review/review.md` |
 | 检视 / 评审 | `.lifeos/projects/lifeos/specs/review/review.md` → 按范畴核对 `.lifeos/projects/lifeos/specs/code/` 对应条文 |

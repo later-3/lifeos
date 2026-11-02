@@ -7,5 +7,5 @@ export const LIFEOS_TOOL_NAMES = [
   "lifeos_task_create", "lifeos_task_list", "lifeos_task_enter",
   "lifeos_project_add", "lifeos_project_remove", "lifeos_project_list",
   "lifeos_memory_search", "lifeos_memory_record", "lifeos_memory_delete",
-  "lifeos_ask", "lifeos_send",
+  "lifeos_ask", "lifeos_send", "lifeos_agent_list", "lifeos_ask_list",
 ] as const;

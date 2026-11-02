@@ -24,6 +24,9 @@ import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
 import { useColumnWidth } from "./useColumnWidth";
+import {
+  AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken, SessionRow,
+} from "./groups-panel";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
@@ -40,6 +43,7 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { shortTitleOf } from "../../src/session-title.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -56,7 +60,7 @@ function StatusMarks({ status, unit }: { status: { running: boolean; unread: num
   return (
     // 状态徽标是动态数据（随用户正常使用变化）：截图基线遮掉，只比骨架（testing 2.9）
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
-      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" title="生成中" />}
+      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" data-state-dot="running" title="生成中" />}
       {status.unread > 0 && (
         // 数字语义（任务 0009）：Project 层 = 待查看的会话个数；Agent 层 = 待查看的 Project 个数
         <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-success-soft px-1.5 text-micro font-medium tabular-nums text-success"
@@ -95,7 +99,21 @@ type SessionMeta = {
   /** 请求体画像（Task 0012 P1）：图片/文本字节 + 上限来源 */
   payload?: { images: number; text: number; estimated: number; effective?: number; limit: number | null; source: string | null; triggerBytes: number | null; targetBytes: number | null };
 };
-type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
+type SessionItem = {
+  sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean;
+  /** 会话当前的 Task（Task 0015 · T1/T16）：列表第二行显示"这条对话属于哪件事"。 */
+  activeTaskId?: string;
+  /**
+   * 对端 Agent（Task 0015 · T17）：只有"与其他 Agent 的对话"才有。
+   * 后端解析 `lifeos_peer` 标记后给出；普通会话没有这个字段。
+   */
+  peer?: { id: string; name: string; avatar?: AgentAvatarSpec };
+  /**
+   * 失败的**当前**状态（Task 0015 · 结论 5）：只有"最后一条 assistant 以 error 结束"才有。
+   * 历史失败不算（否则一条很久以前挂过的会话会永远显示红色）。
+   */
+  failure?: FailureKind;
+};
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
@@ -132,6 +150,22 @@ function timeAgo(iso: string): string {
 }
 
 /** 列头：40px，11px 小标签 + 收起钮（唯一收起入口）。列头只写"这一列是什么"，徽标留给行内数据。 */
+/**
+ * 折叠键迁移（Task 0015 · T15）：旧的两个键 `projects` / `sessions` → 一个 `groups`。
+ *
+ * 为什么"任一展开就展开"：合并后一列同时承担两个作用。宁可多开一列（用户点一下就能收），
+ * 也不要让老用户的展开状态在升级后变成"点了没反应"。
+ * 只在读不到 `groups` 键时参考旧键（`useFold` 的 initial 只在没有存量值时生效）。
+ */
+function legacyGroupsOpen(): boolean {
+  try {
+    if (localStorage.getItem("lifeos.fold.groups") !== null) return true;   // 有存量就不看旧键
+    const projects = localStorage.getItem("lifeos.fold.projects");
+    const sessions = localStorage.getItem("lifeos.fold.sessions");
+    return projects !== "0" || sessions !== "0";
+  } catch { return true; }
+}
+
 function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
@@ -273,9 +307,20 @@ export default function App() {
   const toast = useToast();
   const [loaded, setLoaded] = useState(false);
   const [showNav, setShowNav] = useFold("agents");
-  const [showProjects, setShowProjects] = useFold("projects");
-  const [showSessions, setShowSessions] = useFold("sessions");
+  /*
+   * 面板合并（Task 0015 · T15）：项目列 + 会话列 → 一列「项目分组 → 会话」。
+   * 折叠键合并为一个 `groups`（P-02 D12）。旧的两个键（projects / sessions）
+   * 在启动时迁移一次：任一曾展开过 → groups 展开（宁可多开，不让用户点到死点击）。
+   */
+  const [showGroups, setShowGroups] = useFold("groups", legacyGroupsOpen());
+  const restoreFolds = useRef<{ nav: boolean; groups: boolean } | undefined>(undefined);
   const [showTree, setShowTree] = useFold("tree");
+  /**
+   * 分组折叠（Task 0015 · T15）：`{ [projectId]: true }` = 该组收起。
+   * P-02 D12 说"折叠状态存单键数组"；这里用"只存收起的组"（默认全展开），
+   * 因为项目通常 3–5 个，全展开是常态，只记住用户明确收起的那几个更省存储也更直观。
+   */
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();
@@ -288,10 +333,9 @@ export default function App() {
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
   // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
   const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
-  const restoreFolds = useRef<{ nav: boolean; projects: boolean; sessions: boolean } | undefined>(undefined);
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
   const { box, beginDrag, viewport, widths } = useColumnWidth({
-    folded: { nav: !showNav, projects: !showProjects, sessions: !showSessions },
+    folded: { nav: !showNav, groups: !showGroups },
     panelOpen,
     historyOpen: history !== undefined,
   });
@@ -331,10 +375,12 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     void fetch("/api/profile").then((r) => r.ok ? r.json() : undefined)
-      .then((data: { name?: unknown; avatar?: unknown } | undefined) => {
+      .then((data: { id?: unknown; name?: unknown; avatar?: unknown } | undefined) => {
         if (!alive || data === undefined || typeof data.name !== "string") return;
         const avatar = data.avatar as { revision?: unknown } | null | undefined;
         setProfile({
+          // 用户是实体（T9）：id 缺失时用名字兜底（老后端），不影响渲染
+          id: typeof data.id === "string" ? data.id : data.name,
           name: data.name,
           avatar: avatar === null || avatar === undefined ? null : { file: "", revision: typeof avatar.revision === "number" ? avatar.revision : 0 },
         });
@@ -492,11 +538,11 @@ export default function App() {
   function openHistory(sid: string, name: string) {
     setPanelOpen(false);
     // Folded 语义：true = 收起。这里试算"三列全开"时的并排空间
-    const trial = layout({ viewport, widths, requested: { nav: false, projects: false, sessions: false }, panelOpen: false, historyOpen: true });
+    const trial = layout({ viewport, widths, requested: { nav: false, groups: false }, panelOpen: false, historyOpen: true });
     // 并排要"对话够宽"才有意义：对话挤到 560 以下就先把左三列收进导航轨（关闭时恢复）
     if (trial.history === 0 || trial.chat < 560) {
-      restoreFolds.current = { nav: showNav, projects: showProjects, sessions: showSessions };
-      setShowNav(false); setShowProjects(false); setShowSessions(false);
+      restoreFolds.current = { nav: showNav, groups: showGroups };
+      setShowNav(false); setShowGroups(false);
     }
     setHistory({ sessionId: sid, title: name });
   }
@@ -506,7 +552,7 @@ export default function App() {
       const previous = restoreFolds.current;
       if (previous !== undefined) {
         restoreFolds.current = undefined;
-        setShowNav(previous.nav); setShowProjects(previous.projects); setShowSessions(previous.sessions);
+        setShowNav(previous.nav); setShowGroups(previous.groups);
       }
     });
   }
@@ -514,11 +560,11 @@ export default function App() {
   // 窗口变窄导致历史列放不下：自动收左三列（保持并排），收起面板
   useEffect(() => {
     if (history === undefined) return;
-    if (box.history === 0 && (showNav || showProjects || showSessions)) {
-      restoreFolds.current ??= { nav: showNav, projects: showProjects, sessions: showSessions };
-      setShowNav(false); setShowProjects(false); setShowSessions(false);
+    if (box.history === 0 && (showNav || showGroups)) {
+      restoreFolds.current ??= { nav: showNav, groups: showGroups };
+      setShowNav(false); setShowGroups(false);
     }
-  }, [history, box.history, showNav, showProjects, showSessions, setShowNav, setShowProjects, setShowSessions]);
+  }, [history, box.history, showNav, showGroups, setShowNav, setShowGroups]);
 
   // 面板放不下就收起（视口挤压保护）
   useEffect(() => { if (!isMobile && panelOpen && !box.panelFits) setPanelOpen(false); }, [isMobile, panelOpen, box.panelFits, setPanelOpen]);
@@ -707,8 +753,7 @@ export default function App() {
     setMessages([]);
     setMeta(undefined);
     setAgentDefaultModel(undefined);
-    setShowProjects(true);
-    setShowSessions(true);
+    setShowGroups(true);
     void refreshAgentDefaultModel(a.id);
     const next = await fetchGroups(a.id);
     rememberGroups(a.id, next);
@@ -725,7 +770,7 @@ export default function App() {
     if (agent === undefined) return;
     setHistory(undefined);
     setSelectedProjectId(project.id);
-    setShowSessions(true);
+    setShowGroups(true);
     setSessionId(undefined);
     setMessages([]);
     setMeta(undefined);
@@ -1106,7 +1151,7 @@ export default function App() {
     resetChatState();
     setSessionId(undefined);      // draftKey 随之落到 agent/project；URL 去 session
     current.current = undefined;
-    setShowSessions(true);
+    setShowGroups(true);
     // 桌面把光标放进输入框；手机不抢焦点，否则会弹键盘（参考 Pi Web AppShell.tsx:945-953）。
     if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
   }
@@ -1601,23 +1646,68 @@ export default function App() {
     return () => { cancelled = true; };
   }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 
-  const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
+  /**
+   * 会话行的显示标题（Task 0015 · T18）。
+   *
+   * 修复前后：`item?.title ?? ""` —— 没有标题时渲染**空**，比显示 id 更糟
+   * （一行空白，用户不知道那是什么）。现在回落到 `会话 <id 前 8 位>`：
+   * id 前 8 位是 Pi session id 的时间有序前缀，同一列表内足以区分。
+   *
+   * 显示规则（07-id-normalization.md §5）：界面永远优先显示可读名；
+   * 只有在没有名字时才显示 id，并且**加视觉区分**（等宽 + 弱色），让人知道"这是 id 不是名字"。
+   */
+  const titleOf = (item?: SessionItem) => {
+    const title = (item?.title ?? "").trim();
+    // 显示用短标题（Task 0015 · 10.1）：去掉"请用/我们现在/我想要"这类没有区分度的引导语。
+    // **不改落盘数据**——存进会话文件的仍是原话（titleFromFirstMessage 不变）。
+    return title !== "" ? shortTitleOf(title).slice(0, 50) : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
+  };
+  /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
+  const isIdFallback = (item?: SessionItem) => (item?.title ?? "").trim() === "";
+  /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
+  const currentSessionItem = sessionId === undefined
+    ? undefined
+    : groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sessionId);
+
+  /**
+   * 会话列表里的"我"这一方（Task 0015 · T17）：用户本人。
+   * 不引入"用户 Agent"实体——用户就是用户，头像走 /api/profile（Task 0014 已定）。
+   */
+  const meParticipant = {
+    id: profile?.id ?? "user",
+    name: profile?.name ?? "我",
+    kind: "user" as const,
+  };
+
+  /**
+   * 会话的对端是谁（Task 0015 · T17）。
+   *
+   * 两种会话都要能显示"和谁在谈"：
+   * - **Agent ↔ Agent**：后端已把 `lifeos_peer` 解析成对端 id/name/avatar；
+   * - **用户 ↔ Agent**：对端就是**这个会话所属的 Agent**（会话存在 `agents/<agentId>/` 下）——
+   *   这不是猜，是存储事实（目录即归属）。
+   */
+  const peerOfSession = (sid: string) => {
+    const explicit = groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sid)?.peer;
+    if (explicit !== undefined) return explicit;
+    return agent === undefined ? undefined : { id: agent.id, name: agent.name, ...(agent.avatar !== undefined ? { avatar: agent.avatar } : {}) };
+  };
 
   const folded = box.folded;
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
   // 展开前若右侧（完整历史/文件面板）开着，先关掉它——宽度预算同一套，避免挤爆聊天区。
-  function toggleRail(key: "nav" | "projects" | "sessions") {
-    const open = key === "nav" ? showNav : key === "projects" ? showProjects : showSessions;
-    const set = key === "nav" ? setShowNav : key === "projects" ? setShowProjects : setShowSessions;
+  function toggleRail(key: "nav" | "groups") {
+    const open = key === "nav" ? showNav : showGroups;
+    const set = key === "nav" ? setShowNav : setShowGroups;
     if (open) { set(false); return; }
     if (history !== undefined) closeHistory();
     else if (panelOpen) setPanelOpen(false);
     set(true);
   }
+  // 合并后只有两个图标（P-02 §5.2）：助手 / 对话
   const railItems = [
     { key: "nav", label: "助手", active: showNav, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onToggle: () => toggleRail("nav") },
-    { key: "projects", label: "项目", active: showProjects, icon: <IconFolder size={18} />, onToggle: () => toggleRail("projects") },
-    { key: "sessions", label: "会话", active: showSessions, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("sessions") },
+    { key: "groups", label: "对话", active: showGroups, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("groups") },
   ];
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
@@ -1669,138 +1759,121 @@ export default function App() {
         </>
       )}
 
-      {/* 第2列 · 项目 */}
-      {!folded.projects && (
+      {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
+      {!folded.groups && (
         <>
-          <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken">
-            <ColumnHeader label="项目" count={groups.length} onHide={() => setShowProjects(false)} />
+          <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken" data-testid="groups-panel">
+            <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="project-rows">
-              {!loaded && <Skeleton rows={2} />}
-              {loaded && groups.length === 0 && <EmptyState title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />}
-              {groups.map((group) => (
-                <Row key={group.project.id} selected={group.project.id === selectedProjectId}
-                  onClick={() => void selectProject(group.project)}>
-                  {/* 行里只写名称：默认项目不标注（圆点会被误读成"运行中"，与状态点语义冲突） */}
-                  <span className="min-w-0 flex-1 truncate">{group.project.name}</span>
-                  <StatusMarks status={derived.projects[projectKey(agent?.id ?? "", group.project.id)]} unit="会话" />
-                  {/* 行右侧只表达"待查看"（绿点 / 数字）：会话总数在列头统计里，不在这里重复（同一位置两种含义会混淆）。操作图标原地显隐 → hover 不位移 */}
-                  <span className="relative flex w-11 shrink-0 items-center justify-end">
-                    {group.project.path !== undefined && (
-                      <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                        <IconButton label="从该助手移除项目" size="sm"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setConfirm({
-                              title: `移除「${group.project.name}」`,
-                              message: "只从该助手移除；项目注册、该项目下的会话与记录都会保留。",
-                              confirmLabel: "移除",
-                              run: () => void unbindProject(group.project),
-                            });
-                          }}>
-                          <IconX size={14} />
-                        </IconButton>
-                      </span>
+            <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
+              {!loaded && <Skeleton rows={3} />}
+              {loaded && groups.length === 0 && (
+                <PanelEmpty title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />
+              )}
+              {groups.map((group) => {
+                const open = collapsedGroups[group.project.id] !== true;
+                const status = derived.projects[projectKey(agent?.id ?? "", group.project.id)];
+                return (
+                  <div key={group.project.id} data-project-id={group.project.id}>
+                    <GroupHeader name={group.project.name} count={group.sessions.length} open={open}
+                      selected={group.project.id === selectedProjectId}
+                      onToggle={() => setCollapsedGroups((previous) => ({ ...previous, [group.project.id]: open }))}
+                      onSelect={() => { setSelectedProjectId(group.project.id); setCollapsedGroups((previous) => ({ ...previous, [group.project.id]: false })); }}
+                      {...(group.project.path !== undefined ? {
+                        onRemove: () => setConfirm({
+                          title: `移除「${group.project.name}」`,
+                          message: "只从该助手移除；项目注册、该项目下的会话与记录都会保留。",
+                          confirmLabel: "移除",
+                          run: () => void unbindProject(group.project),
+                        }),
+                      } : {})}
+                      actions={<StatusMarks status={status} unit="会话" />} />
+                    {open && (
+                      <GroupBody>
+                        {group.sessions.length === 0 && (
+                          <p className="px-1 py-2 text-micro text-ink-500">该项目还没有会话 · 在右下输入框发消息即可新建</p>
+                        )}
+                        {group.sessions.map((item) => {
+                          const own = derived.sessions[item.sessionId];
+                          const runNow = item.running || own?.running === true || isRunning(runFacts, item.sessionId);
+                          const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
+                          const peer = peerOfSession(item.sessionId);
+                          return (
+                            <SessionRow key={item.sessionId} testId={item.sessionId}
+                              selected={item.sessionId === sessionId}
+                              title={titleOf(item)} titleFallback={isIdFallback(item)}
+                              onSelect={() => agent !== undefined && void openSession(agent, item.sessionId)}
+                              onHistory={() => openHistory(item.sessionId, titleOf(item))}
+                              onRename={() => setRenaming({ sid: item.sessionId, value: item.title })}
+                              onDelete={() => setConfirm({
+                                title: "删除会话",
+                                message: `删除「${item.title || "未命名"}」？此操作不可恢复。`,
+                                confirmLabel: "删除",
+                                run: () => void removeSession(item),
+                              })}
+                              renaming={renaming?.sid === item.sessionId}
+                              renameValue={renaming?.sid === item.sessionId ? renaming.value : ""}
+                              onRenameChange={(value) => setRenaming({ sid: item.sessionId, value })}
+                              onRenameCommit={(value) => void commitRename(item, value)}
+                              onRenameCancel={() => setRenaming(undefined)}
+                              participants={<ParticipantToken
+                                me={meParticipant}
+                                them={peer === undefined ? undefined : { id: peer.id, name: peer.name, ...(peer.avatar !== undefined ? { avatar: peer.avatar } : {}) }}
+                                showMe={item.peer !== undefined}
+                                ringClass={item.sessionId === sessionId ? "ring-2 ring-surface" : "ring-2 ring-sunken"} />}
+                              meta={
+                                <>
+                                  {/* 对端名字**只在对端不是当前 Agent 时**出现：
+                                      右栏里的会话全部属于当前 Agent，把它的名字每行写一遍没有信息增量；
+                                      只有 Agent ↔ Agent 的会话，"对方是谁"才是新信息（T17）。 */}
+                                  {item.peer !== undefined && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
+                                  {item.activeTaskId !== undefined && <span>{item.activeTaskId}</span>}
+                                  {/* 失败态（结论 5）：红点 + 类别。"它挂了"和"它挂在哪"是两件事，
+                                      只给红点用户不敢重试（不知道是网络抖还是需求本身有问题）。 */}
+                                  {item.failure !== undefined && !runNow && (
+                                    <><span> · </span><span className="text-danger">失败：{failureLabel(item.failure)}</span></>
+                                  )}
+                                  {/* 运行中**不写阶段文案**（Task 0015 · 10.2 ②）：
+                                      `phase` 只有"当前打开会话"一份，列表里每条运行中的会话都用它会显示
+                                      同一条文案（真 bug）。列表拿不到"各会话各自的阶段"，就不给——
+                                      要看过程点进去，那时状态条给的是真实值。
+                                      完成未读也不写字：右侧绿点就是它（design-language §5.2 / D23）。 */}
+                                </>
+                              }
+                              status={runNow
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
+                                : item.failure !== undefined
+                                  // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
+                                  ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(item.failure)}`} />
+                                  : unread
+                                    ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
+                                    : <span className="text-micro text-ink-500">{timeAgo(item.updatedAt)}</span>} />
+                          );
+                        })}
+                      </GroupBody>
                     )}
-                  </span>
-                </Row>
-              ))}
+                  </div>
+                );
+              })}
             </div>
-            <div className="px-1.5 py-2">
-              <Button size="sm" className="w-full" onClick={() => setAddingProject(true)}>
-                <IconFolderPlus size={14} /> 添加项目
-              </Button>
-            </div>
+            <PanelFooter>
+              <div className="space-y-1.5">
+                <span className="block" title={sessionId === undefined ? "已经在新建会话里：直接输入并发送即可" : undefined}>
+                  <Button size="sm" className="w-full disabled:bg-sunken disabled:ring-0" disabled={sessionId === undefined} onClick={() => void newSession()}>
+                    <IconPlus size={14} /> 新建会话
+                  </Button>
+                </span>
+                <AddProjectButton onClick={() => setAddingProject(true)} />
+              </div>
+            </PanelFooter>
           </aside>
           <DragHandle onStart={(event) => beginDrag("c2", event)} />
         </>
       )}
-
-      {/* 第3列 · 会话 */}
-      {!folded.sessions && (
-        <>
-          <aside style={{ width: box.c3 }} className="flex shrink-0 flex-col bg-sunken">
-            {/* 第3列列头：项目列可见时写"会话"（避免与相邻行重复）；项目列收起时才写项目名（补回上下文） */}
-            <ColumnHeader label={folded.projects ? currentGroup?.project.name ?? "会话" : "会话"}
-              hint={folded.projects ? "会话" : undefined}
-              count={currentGroup?.sessions.length}
-              onHide={() => setShowSessions(false)} />
-            <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2" data-shot-mask="session-rows">
-              {currentGroup === undefined && <EmptyState title="先选择项目" />}
-              {currentGroup !== undefined && currentGroup.sessions.length === 0 && (
-                <EmptyState title="该项目暂无会话" hint="直接在右下输入框发消息，会自动新建会话。" />
-              )}
-              {currentGroup?.sessions.map((item) => (
-                <Row key={item.sessionId} testId={item.sessionId} selected={item.sessionId === sessionId}
-                  onClick={() => agent !== undefined && void openSession(agent, item.sessionId)}
-                  className="group/session">
-                  {renaming?.sid === item.sessionId ? (
-                    <input autoFocus value={renaming.value}
-                      onFocus={(event) => event.currentTarget.select()}
-                      onChange={(event) => setRenaming({ sid: item.sessionId, value: event.target.value })}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") { event.preventDefault(); void commitRename(item, event.currentTarget.value); }
-                        if (event.key === "Escape") { event.preventDefault(); setRenaming(undefined); }
-                      }}
-                      onBlur={() => setRenaming(undefined)}
-                      onClick={(event) => event.stopPropagation()}
-                      className="min-w-0 flex-1 rounded bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
-                  ) : (
-                    <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
-                  )}
-                  <span className="relative flex w-24 shrink-0 items-center justify-end">
-                    {(() => { const own = derived.sessions[item.sessionId]; const runNow = item.running || own?.running === true || isRunning(runFacts, item.sessionId); const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
-                      if (runNow) return <span className={`h-1.5 w-1.5 rounded-full bg-success animate-pulse`} title="生成中" />;
-                      if (unread) return <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />;
-                      return <span className="text-micro text-ink-500 transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{timeAgo(item.updatedAt)}</span>;
-                    })()}
-                    <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
-                      <IconButton label="会话历史" size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openHistory(item.sessionId, titleOf(item));
-                        }}>
-                        <IconHistory size={14} />
-                      </IconButton>
-                      <IconButton label="重命名会话" size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setRenaming({ sid: item.sessionId, value: item.title });
-                        }}>
-                        <IconPencil size={14} />
-                      </IconButton>
-                      <IconButton label="删除会话" size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setConfirm({
-                            title: "删除会话",
-                            message: `删除「${item.title || "未命名"}」？此操作不可恢复。`,
-                            confirmLabel: "删除",
-                            run: () => void removeSession(item),
-                          });
-                        }}>
-                        <IconTrash size={14} />
-                      </IconButton>
-                    </span>
-                  </span>
-                </Row>
-              ))}
-            </div>
-            <div className="px-1.5 py-2">
-              <span className="block" title={sessionId === undefined ? "已经在新建会话里：直接输入并发送即可" : undefined}>
-                <Button size="sm" className="w-full disabled:bg-sunken disabled:ring-0" disabled={sessionId === undefined} onClick={() => void newSession()}>
-                  <IconPlus size={14} /> 新建会话
-                </Button>
-              </span>
-            </div>
-          </aside>
-          <DragHandle onStart={(event) => beginDrag("c3", event)} />
-        </>
-      )}
     </>
   );
-  const anyLeftOpen = showNav || showProjects || showSessions;
-  const closeAllLeft = () => { setShowNav(false); setShowProjects(false); setShowSessions(false); };
+  const anyLeftOpen = showNav || showGroups;
+  const closeAllLeft = () => { setShowNav(false); setShowGroups(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
   // 显示规则（用户 2026-10-22）：用过 /model → 显示会话覆盖模型；
@@ -1831,6 +1904,8 @@ export default function App() {
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
+                // 只有 Agent↔Agent 的会话才有对端（用户↔Agent 的对端就是当前 Agent，写了是重复）
+                ...(currentSessionItem?.peer !== undefined ? { peerName: currentSessionItem.peer.name } : {}),
                 projectName: currentGroup?.project.name ?? "",
                 sessionTitle,
                 headerModel: headerModel ?? null,

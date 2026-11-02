@@ -1,15 +1,28 @@
 // 全局项目注册表（协议 §4.2、§5.3）：`~/.lifeos/projects/<id>/project.json` 是项目身份的唯一来源；骨架由 project-skeleton 补齐。
 // 项目是全局实体：同一个目录无论被多少个 Agent 打开，都只有一个全局 id。
 // 记忆的「项目共享记忆」、项目 specs 与跨项目读取都用这个 id；workspace 是特殊全局项目（无 path）。
+import { createHash } from "node:crypto";
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
-import { sanitizeSegment } from "./segments.ts";
+import { entityId, sanitizeSegment, uniqueId } from "./segments.ts";
 import { ensureSharedLayer } from "./project-skeleton.ts";
 
 export type GlobalProject = { schemaVersion: 1; id: string; name: string; path?: string };
 
 const registryRoot = () => join(resolveHome(), "projects");
+
+/**
+ * 路径 → 稳定但不透明的 id（`project-a1b2c3`）。
+ *
+ * 为什么不用随机：同一个目录必须永远得到同一个 id（幂等注册是硬要求）。
+ * 为什么不用 sanitizeSegment：中文 id 会进 URL，必坏。
+ * hash 取路径的 sha1 前 6 位——极低碰撞，且同路径确定。
+ */
+function opaqueProjectId(canonicalPath: string): string {
+  const digest = createHash("sha1").update(canonicalPath).digest("hex").slice(0, 6);
+  return `project-${digest}`;
+}
 const manifestPath = (id: string) => join(registryRoot(), id, "project.json");
 
 const parse = (raw: string): GlobalProject | undefined => {
@@ -73,11 +86,17 @@ export async function registerGlobalProject(path: string, preferredName?: string
   for (const project of projects) {
     if (project.path !== undefined && await canonical(project.path) === canonicalTarget) return project;
   }
-  const base = sanitizeSegment(preferredName !== undefined && preferredName !== "" ? preferredName : basename(target));
+  // id 必须 ASCII：pid 会进 URL（`/api/agents/:id/projects/:pid/...`），而前端不做 encodeURIComponent。
+  // 以前用 sanitizeSegment（允许中文），只要有人注册中文目录就会产出中文 pid → 请求直接坏掉。
+  // 现在：名字可读的走 ASCII slug；转不出就用不透明但**稳定**的 `project-<hash>`（不是随机，
+  // 同一路径永远同一个 id），并在 name 里保留可读名——界面显示 name，id 只内部用（07-id-normalization.md）。
+  const displayName = basename(target) || (preferredName ?? "");
+  const wanted = preferredName !== undefined && preferredName !== "" ? preferredName : displayName;
+  const generated = entityId(wanted, "url");
+  const base = generated.ok ? generated.id : opaqueProjectId(canonicalTarget);
   const taken = new Set((await readdir(registryRoot()).catch(() => [] as string[])).filter((name) => !name.startsWith(".")));
-  let id = base;
-  for (let n = 2; taken.has(id); n += 1) id = `${base.slice(0, 55)}-${n}`;
-  const project: GlobalProject = { schemaVersion: 1, id, name: basename(target) || id, path: target };
+  const id = uniqueId(base, taken);
+  const project: GlobalProject = { schemaVersion: 1, id, name: displayName || id, path: target };
   await ensureSharedLayer(join(registryRoot(), id), project);
   return project;
 }

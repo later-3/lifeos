@@ -50,8 +50,8 @@ test("档案不存在 = 只有默认名", async () => {
 test("头像文件名不许带路径（防 ../ 逃逸出档案目录）", () => {
   const evil = parseProfile({ name: "我", avatar: { kind: "image", file: "../../etc/passwd", revision: 1 } }, "我");
   assert.equal(evil.avatar, undefined, "带路径的头像文件名必须被丢弃");
-  const ok = parseProfile({ name: "我", avatar: { kind: "image", file: "profile-avatar-1.png", revision: 1 } }, "我");
-  assert.deepEqual(ok.avatar, { kind: "image", file: "profile-avatar-1.png", revision: 1 });
+  const ok = parseProfile({ name: "我", avatar: { kind: "image", file: "avatar-1.png", revision: 1 } }, "我");
+  assert.deepEqual(ok.avatar, { kind: "image", file: "avatar-1.png", revision: 1 });
 });
 
 test("头像按文件头判真实类型，不信声明", () => {
@@ -66,7 +66,7 @@ test("存头像 → 写档案 → 读回，字节一致", async () => {
   const home = await tempHome();
   const avatar = await storeProfileAvatar(home, PNG_1PX);
   assert.ok(avatar !== undefined);
-  assert.match(avatar.file, /^profile-avatar-\d+\.png$/);
+  assert.match(avatar.file, /^avatar-\d+\.png$/, "头像落在用户实体目录，文件名前缀是 avatar-");
   await writeProfile(home, { name: "Xu Later", avatar });
   const profile = await readProfile(home);
   assert.equal(profile.name, "Xu Later");
@@ -85,18 +85,21 @@ test("不支持的头像格式 → undefined（不静默存垃圾）", async () 
 test("换头像会清掉旧的（只删自己命名的文件）", async () => {
   const home = await tempHome();
   const first = await storeProfileAvatar(home, PNG_1PX);
+  assert.ok(first !== undefined);
+  const profile = await readProfile(home);
   // 同目录放一个不相干文件，必须留着
-  await writeFile(join(home, "config", "models.json"), "{}");
+  const dir = join(home, "users", profile.id);
+  await writeFile(join(dir, "notes.txt"), "keep me");
   const second = await storeProfileAvatar(home, JPG_1PX);
-  assert.notEqual(first?.file, second?.file);
-  assert.equal(await readProfileAvatar(home, { name: "我", avatar: first }), undefined, "旧头像应被清理");
-  assert.ok((await readFile(join(home, "config", "models.json"), "utf8")) === "{}", "不相干文件不许删");
+  assert.notEqual(first.file, second?.file);
+  assert.equal(await readProfileAvatar(home, { ...profile, avatar: first }), undefined, "旧头像应被清理");
+  assert.equal(await readFile(join(dir, "notes.txt"), "utf8"), "keep me", "不相干文件不许删");
 });
 
 test("档案写盘 0600（含人名，不该给其他用户读）", async () => {
   const home = await tempHome();
-  await writeProfile(home, { name: "Xu Later" });
+  const written = await writeProfile(home, { name: "Xu Later" });
   const { stat } = await import("node:fs/promises");
-  const info = await stat(join(home, "config", "profile.json"));
-  assert.equal(info.mode & 0o777, 0o600);
+  const info = await stat(join(home, "users", written.id, "user.json"));
+  assert.equal(info.mode & 0o777, 0o600, "user.json 只有自己能读");
 });

@@ -244,19 +244,21 @@ const folded = await measure(page);
 check("三列收起后轨道宽度不变（仍是同一条 44px）", folded.rail === 44, `实际 ${folded.rail}px`);
 check("收起后聊天列仍 ≥ MIN_CHAT", folded.chatWidth >= MIN_CHAT, `实际 ${folded.chatWidth}px`);
 await settle(page);
-for (const label of ["助手", "项目", "会话"]) {
+for (const label of ["助手", "对话"]) {
   const railButton = page.locator(`[aria-label="展开${label}"]`);
   if (await railButton.count() > 0) { await railButton.first().click(); await page.waitForTimeout(120); }
 }
 
 // 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
 const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
-check("图标常驻：三列全展开时轨道上仍有 3 个图标", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
-check("图标顺序固定：助手 → 项目 → 会话", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,项目,会话");
+// Task 0015 · T15 面板合并：项目列 + 会话列 → 一列「对话」，图标栏 3 → 2（P-02 §5.2）
+check("图标常驻：两列全展开时轨道上有 2 个图标", await railButtons.count() === 2, `实际 ${await railButtons.count()} 个`);
+check("图标顺序固定：助手 → 对话", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话");
 check("高亮 = 该列展开（aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
   .every((b) => b.getAttribute("aria-pressed") === "true")));
-const projectColumn = async () => await page.evaluate(() => [...document.querySelectorAll("aside")].some((el) => (el.innerText ?? "").startsWith("项目")));
+// 合并后不再有独立的"项目"列：改成"对话"列里有没有分组头（`data-testid="group-header"`）
+const projectColumn = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
 const clickProject = async () => { await page.locator('nav[aria-label="左侧图标轨"] button').nth(1).click(); await page.waitForTimeout(300); };
 const seq = [await projectColumn()];
 await clickProject(); seq.push(await projectColumn());
@@ -438,7 +440,9 @@ await chatComposer.fill("");
 
 // hover 不位移（会话行：时间 ↔ 图标切换后行内元素不得移动）
 const rowBox = async () => await page.evaluate(() => {
-  const row = [...document.querySelectorAll('[role="button"]')].find((el) => el.className.includes("h-8") && el.textContent.includes("welcome"));
+  // 合并后会话行是**双行 h-14**（Task 0015 · T16）；旧的单行 h-8 已不存在
+  const row = [...document.querySelectorAll('[data-testid]')]
+    .find((el) => el.className.includes("h-14") && el.textContent.includes("welcome"));
   if (row === undefined) return null;
   const box = row.getBoundingClientRect();
   return { x: Math.round(box.x), w: Math.round(box.width), h: Math.round(box.height), children: [...row.children].map((child) => Math.round(child.getBoundingClientRect().x)) };
@@ -968,10 +972,14 @@ const urlThreeKeys = await page.evaluate(async () => {
   const list = await (await fetch("/api/agents/lifeosagent/projects")).json();
   if (list.items.length < 2) return { skipped: true };
   const target = list.items[1];
-  const projectCol = [...document.querySelectorAll("aside")][1];
-  if (projectCol === undefined) return { ok: false, detail: "找不到项目列" };
-  const row = [...projectCol.querySelectorAll("div")].find((el) => (el.textContent ?? "").trim().startsWith(target.name));
-  if (row === undefined) return { ok: false, detail: "找不到项目行 " + target.name };
+  // Task 0015 · T15：项目现在是**分组头**（`data-testid="group-header"`），点它会折叠；
+  // 要"切到这个项目"就点分组头里的名字按钮（第二个 button）。
+  const header = [...document.querySelectorAll('[data-testid="group-header"]')]
+    .find((el) => (el.getAttribute("data-group-name") ?? "") === target.name);
+  if (header === undefined) return { ok: false, detail: "找不到分组头 " + target.name };
+  const row = header.querySelectorAll("button")[0];
+  if (row === undefined) return { ok: false, detail: "分组头里没有可点区域 " + target.name };
+  // 分组头点击 = 折叠/展开；切项目改由键盘/会话点击触发，这里改为直接调用它的选择逻辑：
   row.click();
   await new Promise((resolve) => setTimeout(resolve, 900));
   const params = new URLSearchParams(location.search);
