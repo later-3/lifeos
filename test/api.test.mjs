@@ -61,6 +61,9 @@ test("出厂默认会话随模板预置：列表首条即它，第一条消息�
     const sid = list.items[0].sessionId;
     assert.equal(list.items[0].isDefault, true, "出厂会话应带默认标记（agent.json defaultSessionId）");
     assert.equal(list.items[0].title, "welcome to lifeos", "显示名=预置的 session_info.name");
+    // 消息条数只数 `type:"message"`（Task 0015 · todo #30）：出厂会话有 1 条 assistant 打招呼。
+    // 以前是文件总行数，会把手 session 头 / session_info 都算进去（实测 389 vs 31）。
+    assert.equal(list.items[0].messages, 1, "列表的 messages 必须是真实消息条数，不是文件行数");
 
     // 加载即显示：第一条 = assistant 打招呼（不调模型，直接来自预置文件）
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();

@@ -165,6 +165,9 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
     let sessionId = "";
     let activeTaskId: string | undefined;
     let peerAgentId: string | undefined;
+    // 消息条数只数 `type === "message"` 的条目（Task 0015 · todo #30）：
+    // 以前用 `lines.length`，把 session 头 / session_info / custom 都算进去了（实测 389 vs 31）。
+    let messageCount = 0;
     for (const line of lines) {
       try {
         const entry = JSON.parse(line) as {
@@ -172,6 +175,7 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
           message?: { role?: string; content?: unknown }; data?: { taskId?: unknown; peerAgentId?: unknown };
         };
         if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+        if (entry.type === "message") messageCount += 1;
         if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
         if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message);
         // Task 0015：列表要能回答"这条对话属于哪件事 / 和谁谈"（T16/T17）
@@ -188,7 +192,7 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
       sessionId,
       title: displayName !== "" ? displayName : title,
       updatedAt: (await stat(path)).mtime.toISOString(),
-      messages: lines.length,
+      messages: messageCount,
       isDefault: sessionId === defaultSessionId,
       ...(activeTaskId !== undefined ? { activeTaskId } : {}),
       ...(peerAgentId !== undefined ? { peer: peerAgentId } : {}),
