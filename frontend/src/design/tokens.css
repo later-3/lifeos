@@ -79,7 +79,14 @@
    * 容器仍用同一个 utility，不写第二个 max-width。 */
   --container-reading: var(--container-reading-width, 860px);
   --container-reading-width: 860px;
-  --container-bubble: 720px;
+  /* 用户气泡的最大宽度：**相对量，不是像素**（用户 2026-11-02 拍板）。
+   * - 90%：跟对话列宽走（列宽又由宽度滑块/视口决定），窄列时气泡不撑破列；
+   * - 56ch：跟在原行宽走；字变大它同步变大，宽屏时不会出现一行 100+ 汉字。
+   * 两者取小 = 两个边界都成立。助手侧（正文/过程条/思考卡/工具卡）**不用**它，
+   * 它们跟随对话列宽，左右边缘与正文对齐。
+   * 依据：Open WebUI `UserMessage.svelte:431` max-w-[90%]（main@33c1978d，2026-10-25）；
+   *       Vercel ai-chatbot `components/chat/message.tsx:180` max-w-[min(80%,56ch)]（main@c2f8235e，2026-07-08）。 */
+  --container-bubble: min(90%, 56ch);
 
   /*
    * 动效只有一处："正在工作"的旋转弧（会话区工作指示 / 工具执行中）。
