@@ -6,7 +6,7 @@
 // - 默认 Task：每个 Agent × 项目一个，目录 `NNNN-default`，类型 daily；按天分片写进 `daily/<日期>.md`。
 // - 模板选择（协议 §3.7）：Agent × 项目 → 共享项目 → 协议默认；找到第一份就用，不合并。
 // - 业务动作只在这里；Pi 工具（src/agent-tools.ts）与 HTTP 都调它。
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest, sanitizeSegment } from "./projects.ts";
@@ -33,6 +33,11 @@ export type TaskSummary = {
   date?: string;
   /** 默认 Task（类型 daily）。 */
   isDefault?: boolean;
+  /**
+   * Task 参与者（T12）：owner 之外的人/Agent。owner 本身不在这里——它就是目录的 agentId。
+   * 空数组 = 没有其他参与者（含"只有 Agent 自己"的场景，用户可以不参与）。
+   */
+  participants?: string[];
   /** 本任务生成/必需的文档（工具回执用） */
   docs?: string[];
 };
@@ -195,6 +200,8 @@ async function referenceBlock(ctx: TaskContext, typeRulesDir: string, type: Task
 async function materialize(ctx: TaskContext, input: {
   number: number; title: string; type: TaskType; categoryLabel: string; goal: string;
   dirName: string; date?: string; requiredDocs: string[]; extraDirs: string[];
+  /** Task 参与者（T12）：其他 Agent 的 id 与/或用户 id；空 = `参与者：—`。 */
+  participants?: string[];
   docs: TaskDocTemplate[]; typeRulesDir: string; pointer: string;
 }): Promise<TaskSummary> {
   const id = String(input.number).padStart(4, "0");
@@ -214,7 +221,11 @@ async function materialize(ctx: TaskContext, input: {
     `类型：${input.type}`,
     `类别：${input.categoryLabel}`,
     "状态：进行中",
-    `负责人：${ctx.agentId} ｜ 记录者：${ctx.agentId}`,
+    // Task 0015 · T12：`负责人/记录者` 替掉。两者原来是**同一个变量的两份拷贝**（永远相等），
+    // 且代码从不读它们（只有一条正则断言），而人已经手改过 8 个 task.md 表达"谁参与"。
+    // 现在：归属 = owner（可校验，必须等于目录的 agentId）+ 参与者（≥0，含其他 Agent 与用户，**可不含用户**）。
+    `归属：${ctx.agentId}/${ctx.projectId}/${id}`,
+    `参与者：${(input.participants ?? []).length > 0 ? input.participants!.join(", ") : "—"}`,
     ...(input.date !== undefined ? [`日期：${input.date}`] : []),
     `目标：${input.goal}`,
     `必需文档：${input.requiredDocs.join(" · ")}`,
@@ -232,6 +243,7 @@ async function materialize(ctx: TaskContext, input: {
     type: input.type, category: input.categoryLabel, status: "进行中", goal: input.goal, path: dir,
     ...(input.date !== undefined ? { date: input.date } : {}),
     isDefault: input.type === "daily",
+    participants: input.participants ?? [],
     docs: input.requiredDocs,
   };
 }
@@ -328,6 +340,44 @@ export async function ensureDailyShard(ctx: TaskContext, date = localDate()): Pr
   return { task, file };
 }
 
+
+/**
+ * 解析 Task 的参与者（T12）。
+ *
+ * 三种来源，优先级从高到低：
+ * 1. 新字段 `参与者：a, b`（显式写的）；
+ * 2. 旧字段 `负责人：X ｜ 记录者：Y`——**Y 与 X 不同**时，Y 是人工标注的参与者
+ *    （实测有 8 个 task.md 这么写过，例如 coder 的 0003 记录者写的是 lifeosagent）；
+ * 3. 都没有 → 空数组。
+ *
+ * 排除 owner：owner 永远等于 `归属：<agentId>/<project>/<NNNN>` 里的 agentId；
+ * 没有归属字段的老文件，用 `负责人` 的值当 owner 参照（那就是它自己）。
+ */
+function parseParticipants(text: string, participantsField: string, ownerField: string, recorderField: string, belongField: string): string[] {
+  const split = (value: string): string[] =>
+    value.split(/[,，、]/).map((item) => item.trim()).filter((item) => item !== "" && item !== "—");
+
+  // 旧格式：`field("负责人")` 返回 `X ｜ 记录者：Y`（后面的 `记录者` 里还带着标签文字）。
+  const legacyOwnerFromLine = (ownerField.split("｜")[0] ?? "").trim().replace(/^负责人：/, "");
+  const owner = belongField !== ""
+    ? belongField.split("/")[0]?.trim()
+    : (legacyOwnerFromLine !== "" ? legacyOwnerFromLine : undefined);
+
+  const explicit = participantsField !== "" ? split(participantsField) : [];
+  const legacy: string[] = [];
+  // 旧格式的真实形状是 `负责人：X ｜ 记录者：Y`（**两个字段粘在同一行**），所以 `field()` 读出来的
+  // ownerField 会是整行。这里按 `｜` 拆开：左边是 owner，右边是记录者。
+  const [ownerRaw, recorderRaw] = ownerField.split("｜");
+  const legacyOwner = (ownerRaw ?? "").trim().replace(/^负责人：/, "");
+  const legacyRecorder = (recorderRaw ?? recorderField).trim().replace(/^记录者：/, "");
+  if (legacyRecorder !== "" && legacyRecorder !== legacyOwner) {
+    legacy.push(legacyRecorder);
+  }
+
+  const merged = [...explicit, ...legacy].filter((item, index, all) => all.indexOf(item) === index);
+  return owner !== undefined && owner !== "" ? merged.filter((item) => item !== owner) : merged;
+}
+
 /** 列出某项目下的任务（读 task.md 的关键字段；不投影、不猜）。 */
 export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
   const entries = await readdir(tasksRoot(ctx), { withFileTypes: true }).catch(() => []);
@@ -346,6 +396,9 @@ export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
     };
     const date = field("日期");
     const type = field("类型");
+    // 参与者：新字段优先；旧 task.md 只有 `负责人：X ｜ 记录者：Y`（Y 常与 X 相同），
+    // 解析成"除 owner 之外的人"——旧格式里记录者若与 owner 不同，那就是一个人工标注的参与者。
+    const participants = parseParticipants(text, field("参与者"), field("负责人"), field("记录者"), field("归属"));
     out.push({
       id: match[1] ?? "",
       dirName: entry.name,
@@ -358,7 +411,50 @@ export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
       path: dir,
       ...(date !== "" ? { date } : {}),
       isDefault: type === "daily",
+      participants,
     });
   }
   return out.sort((a, b) => a.number - b.number);
+}
+
+/**
+ * 把一个人/Agent 追加进 Task 的参与者（Task 0015 · T13）。
+ *
+ * 幂等：已经在里面就什么都不改（不重写文件、不产生 diff）。
+ * 只动 `参与者：` 那一行；找不到该行就**不写**（老 task.md 可能没有这个字段——由人决定要不要补）。
+ *
+ * @returns `added: true` 表示真的追加了；`already: true` 表示本来就有
+ */
+export async function addTaskParticipant(
+  ctx: TaskContext,
+  taskId: string,
+  participant: string,
+): Promise<{ ok: true; added: boolean; participants: string[] } | { ok: false; message: string }> {
+  const name = participant.trim();
+  if (name === "" || name === "—") return { ok: false, message: "参与者名字不能为空" };
+  const task = (await listTasks(ctx)).find((item) => item.id === taskId);
+  if (task === undefined) return { ok: false, message: `找不到 Task ${taskId}` };
+  if ((task.participants ?? []).includes(name)) {
+    return { ok: true, added: false, participants: task.participants ?? [] };
+  }
+
+  const file = join(task.path, "task.md");
+  const text = await readFile(file, "utf8").catch(() => undefined);
+  if (text === undefined) return { ok: false, message: `读不到 ${file}` };
+
+  const next = task.participants !== undefined && task.participants.length > 0
+    ? [...task.participants, name]
+    : [name];
+  const line = `参与者：${next.join(", ")}`;
+  const lines = text.split("\n");
+  const index = lines.findIndex((candidate) => /^参与者[：:]/.test(candidate));
+  if (index === -1) {
+    return { ok: false, message: "这个 task.md 没有 `参与者：` 行（老格式）：不自动改，等人工决定要不要补" };
+  }
+  lines[index] = line;
+  // 原子写：tmp + rename（与其它持久层同规则）
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, lines.join("\n"), { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, file);
+  return { ok: true, added: true, participants: next };
 }

@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
-  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -377,7 +377,14 @@ app.use(async (c, next) => {
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const project = await resolveProject(agent, c.req.param("pid"));
     if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
-    return c.json({ items: await listTasks({ agentId: agent.id, projectId: project.id }) });
+    // 每个 Task 带上"它下面有哪些会话"（Task 0015 · T14）——界面与 Agent 都能回答
+    // "这个 Task 聊了哪些对话"。全扫不建索引：项目内会话是几十级（与 listSessions 同口径）。
+    const items = await listTasks({ agentId: agent.id, projectId: project.id });
+    const withSessions = await Promise.all(items.map(async (task) => ({
+      ...task,
+      sessions: await sessionsOfTask(agent.id, project.id, task.id).catch(() => []),
+    })));
+    return c.json({ items: withSessions });
   });
 
   // 重命名会话（写 Pi session_info 展示名；列表标题优先用它）。
@@ -733,13 +740,13 @@ app.use(async (c, next) => {
     return c.json({ avatar });
   });
   // ===== 用户档案（2026-11-02）：你本人，不是 Agent =====
-  // 与 Agent 头像分开：Agent 存 agents/<id>/avatar/，用户存 config/profile.json + config/profile-avatar-*。
-  // 不引入“用户 Agent”实体，否则数据模型被污染（Agent N:M Project 那套语义不适用人）。
+  // 用户是**实体**（Task 0015 · T9）：`users/<id>/user.json` + `avatar.*`；不再写 config/profile.json。
+  // 不引入“用户 Agent”实体：用户不是 Agent，也不进 Agent N:M Project 那套语义。
   app.get("/api/profile", async (c) => {
     const profile = await readProfile(resolveHome());
-    // 档案里挂着已删除的头像文件时，如实告诉前端“没有头像”，不给出 404 图片地址
+    // 档案里挂着已删除的头像文件时，如实告诉前端“没有头像”，不给 404 图片地址
     const hasAvatar = await avatarExists(resolveHome(), profile);
-    return c.json({ name: profile.name, avatar: hasAvatar ? profile.avatar ?? null : null });
+    return c.json({ id: profile.id, name: profile.name, avatar: hasAvatar ? profile.avatar ?? null : null });
   });
 
   app.put("/api/profile", async (c) => {
@@ -752,8 +759,9 @@ app.use(async (c, next) => {
     if (name === undefined) {
       const error = problem("invalid_request", "名字不能为空", 400); return c.json(error.body, error.status);
     }
-    await writeProfile(resolveHome(), { ...current, name });
-    return c.json({ name, avatar: current.avatar ?? null });
+    // 改名不改 id（id 稳定是硬约定）：把当前 id 一起传回写层
+    const written = await writeProfile(resolveHome(), { ...current, name });
+    return c.json({ id: written.id, name: written.name, avatar: written.avatar ?? null });
   });
 
   app.post("/api/profile/avatar", async (c) => {
@@ -774,14 +782,15 @@ app.use(async (c, next) => {
       const error = problem("unsupported_image_type", "头像支持 png / jpeg / webp（按文件头判断）", 400); return c.json(error.body, error.status);
     }
     const current = await readProfile(resolveHome());
-    await writeProfile(resolveHome(), { ...current, avatar });
-    return c.json({ name: current.name, avatar });
+    const written = await writeProfile(resolveHome(), { ...current, avatar });
+    return c.json({ id: written.id, name: written.name, avatar });
   });
 
   app.delete("/api/profile/avatar", async (c) => {
     const current = await readProfile(resolveHome());
-    await writeProfile(resolveHome(), { name: current.name });
-    return c.json({ name: current.name, avatar: null });
+    const { avatar: _dropped, ...rest } = current;
+    const written = await writeProfile(resolveHome(), rest);
+    return c.json({ id: written.id, name: written.name, avatar: null });
   });
 
   app.get("/api/profile/avatar", async (c) => {

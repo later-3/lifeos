@@ -11,7 +11,7 @@ import { ensureDailyShard, ensureDefaultTask, listTasks } from "./tasks.ts";
 import { readProjectManifests } from "./projects.ts";
 import { ensureAgentProjectLayer } from "./project-skeleton.ts";
 import { log } from "./logging.ts";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { createAgentTools } from "./agent-tools.ts";
@@ -24,6 +24,7 @@ import type { ModelRef } from "./model-follow-types.ts";
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
 import { sessionViewsOf, sessionViewsReady } from "./session-views.ts";
+import { notifyPeerTurnFinished } from "./peer-completion.ts";
 import { titleFromFirstMessage } from "./session-title.ts";
 import { clearRunning, isRunning, markRunning, runningAll, runningOf, type RunSnapshot } from "./session-runtime.ts";
 import { randomBytes } from "node:crypto";
@@ -171,6 +172,14 @@ async function createHostedSession(
     customTools: createAgentTools({
       agentId,
       projectId,
+      // 会话 id：稳定，创建后不变（send 的完成回流要知道"回流到哪"）
+      sessionId: sessionManager.getSessionId(),
+      // 当前 Task 必须**实时读**：会话可以中途切 Task（/task、lifeos_task_enter），
+      // 在创建时取一次会永久滞后。用 getter 每次调用现读（Task 0015 · T1 的 lane 维度）。
+      get taskId(): string | undefined {
+        return stateOf(agentId).sessions.get(sessionManager.getSessionId())?.taskId
+          ?? activeTaskOf(sessionManager);
+      },
       // 建 Task 即进入它：会话指针指向新 Task（下一轮装配读取），与用户在界面里 /task 切换是同一件事
       // 进入即切换（协议 §7）：写会话指针，下一轮装配生效；校验与写指针共用 setSessionTask
       onEnterTask: async (taskId) => {
@@ -194,6 +203,53 @@ function projectOfSessionDir(dir: string): string {
 }
 
 /** 会话物理落在所属 project 的 sessions/ 下（协议 §12.1 结构即事实；默认 workspace）。 */
+/**
+ * 按 Task 列出会话（Task 0015 · T14）：回答"这个 Task 下有哪些对话"。
+ *
+ * 实现是**全扫**（不建索引）：与 `listSessions` 同口径——单 Agent×项目的会话是几十级，
+ * 一次扫描 <10ms；建索引反而要维护第二份事实（协议：结构即事实）。
+ *
+ * 判定：读会话文件里最后一条 `lifeos_active_task` 的 taskId；相等即属于该 Task。
+ * 没有 Task 指针的老会话 → 不算（它们没有可回查的事实，不猜）。
+ */
+export async function sessionsOfTask(
+  agentId: string,
+  projectId: string,
+  taskId: string,
+): Promise<Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }>> {
+  const dir = sessionDir(agentId, projectId);
+  const files = await readdir(dir).catch(() => [] as string[]);
+  const out: Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }> = [];
+  for (const file of files) {
+    if (!file.endsWith(".jsonl")) continue;
+    const path = join(dir, file);
+    const text = await readFile(path, "utf8").catch(() => "");
+    let sessionId: string | undefined;
+    let title: string | undefined;
+    let activeTask: string | undefined;
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      try {
+        const entry = JSON.parse(line) as { type?: string; id?: string; name?: unknown; customType?: string; data?: { taskId?: unknown } };
+        if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+        if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") title = entry.name;
+        if (entry.type === "custom" && entry.customType === ACTIVE_TASK_ENTRY && typeof entry.data?.taskId === "string") {
+          activeTask = entry.data.taskId;
+        }
+      } catch { /* 坏行跳过 */ }
+    }
+    if (sessionId === undefined || activeTask !== taskId) continue;
+    const info = await stat(path).catch(() => undefined);
+    out.push({
+      sessionId,
+      ...(title !== undefined ? { title } : {}),
+      updatedAt: (info?.mtime ?? new Date(0)).toISOString(),
+      running: isRunning(agentId, sessionId),
+    });
+  }
+  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
 export function sessionDir(agentId: string, projectId = "workspace"): string {
   return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
 }
@@ -279,7 +335,7 @@ export async function projectIdOfSession(agentId: string, sessionId: string): Pr
 }
 
 /** 会话里最后一次选中的 Task（自定义条目；旧会话没有 → undefined）。 */
-function activeTaskOf(manager: ReturnType<typeof SessionManager.open>): string | undefined {
+export function activeTaskOf(manager: ReturnType<typeof SessionManager.open>): string | undefined {
   const branch = manager.getBranch();
   for (let i = branch.length - 1; i >= 0; i -= 1) {
     const entry = branch[i];
@@ -488,6 +544,8 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
     finishTurn(agentId, sessionId, turnId, "done");
     recordCompletion(agentId, sessionId, aborted, projectIdForLog);
+    // 与其他 Agent 的对话：对方跑完了 → 回流给发起方（T7）。永不抛、不影响下面的收尾。
+    await notifyPeerTurnFinished(agentId, sessionId, turnId, "done");
     void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "done" });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
@@ -498,6 +556,8 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     if (PAYLOAD_TOO_LARGE.test(message)) await recordPayloadObservation(target, "too_large");
     finishTurn(agentId, sessionId, turnId, "error");
     recordCompletion(agentId, sessionId, false, projectIdForLog);
+    // 失败也要回流（发起方要知道它失败了、为什么）——同一套去重与投递确认。
+    await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown", turnId });

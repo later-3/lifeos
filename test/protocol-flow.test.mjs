@@ -106,7 +106,8 @@ test("协议全流程模拟：日常 → 开发 Task → 切回日常 → 跨天
 
 test("新 Agent 与外部项目：都带默认 Task，结构符合协议", async () => {
   const home = await freshHome();
-  const created = await createAgent({ name: "研究员", description: "做资料整理" });
+  // 英文名（Task 0015 · T10：中文名会明确要求英文名，不再静默生成 agent-xxxx）
+  const created = await createAgent({ name: "Researcher", description: "做资料整理" });
   assert.ok(!("code" in created), "创建 Agent");
   await expectValid(home, "新建 Agent 后");
   const defaults = await ensureDefaultTask({ agentId: created.id, projectId: "workspace" });

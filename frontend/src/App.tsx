@@ -331,10 +331,12 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     void fetch("/api/profile").then((r) => r.ok ? r.json() : undefined)
-      .then((data: { name?: unknown; avatar?: unknown } | undefined) => {
+      .then((data: { id?: unknown; name?: unknown; avatar?: unknown } | undefined) => {
         if (!alive || data === undefined || typeof data.name !== "string") return;
         const avatar = data.avatar as { revision?: unknown } | null | undefined;
         setProfile({
+          // 用户是实体（T9）：id 缺失时用名字兜底（老后端），不影响渲染
+          id: typeof data.id === "string" ? data.id : data.name,
           name: data.name,
           avatar: avatar === null || avatar === undefined ? null : { file: "", revision: typeof avatar.revision === "number" ? avatar.revision : 0 },
         });
@@ -1601,7 +1603,22 @@ export default function App() {
     return () => { cancelled = true; };
   }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 
-  const titleOf = (item?: SessionItem) => (item?.title ?? "").slice(0, 50);
+  /**
+   * 会话行的显示标题（Task 0015 · T18）。
+   *
+   * 修复前后：`item?.title ?? ""` —— 没有标题时渲染**空**，比显示 id 更糟
+   * （一行空白，用户不知道那是什么）。现在回落到 `会话 <id 前 8 位>`：
+   * id 前 8 位是 Pi session id 的时间有序前缀，同一列表内足以区分。
+   *
+   * 显示规则（07-id-normalization.md §5）：界面永远优先显示可读名；
+   * 只有在没有名字时才显示 id，并且**加视觉区分**（等宽 + 弱色），让人知道"这是 id 不是名字"。
+   */
+  const titleOf = (item?: SessionItem) => {
+    const title = (item?.title ?? "").trim();
+    return title !== "" ? title.slice(0, 50) : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
+  };
+  /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
+  const isIdFallback = (item?: SessionItem) => (item?.title ?? "").trim() === "";
 
   const folded = box.folded;
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
@@ -1746,7 +1763,11 @@ export default function App() {
                       onClick={(event) => event.stopPropagation()}
                       className="min-w-0 flex-1 rounded bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
                   ) : (
-                    <span className="min-w-0 flex-1 truncate">{titleOf(item)}</span>
+                    <span className={`min-w-0 flex-1 truncate ${isIdFallback(item) ? "font-mono text-ink-500" : ""}`}
+                      data-fallback={isIdFallback(item) ? "id" : undefined}
+                      title={isIdFallback(item) ? "这条会话还没有标题（显示的是会话 id）" : undefined}>
+                      {titleOf(item)}
+                    </span>
                   )}
                   <span className="relative flex w-24 shrink-0 items-center justify-end">
                     {(() => { const own = derived.sessions[item.sessionId]; const runNow = item.running || own?.running === true || isRunning(runFacts, item.sessionId); const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);

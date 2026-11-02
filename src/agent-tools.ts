@@ -13,9 +13,11 @@ import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./
 import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
 import { resolveMemoryRole, type MemoryScope } from "./memory/resolve.ts";
 import {
-  ASK_DEFAULT_TIMEOUT_MS, lastReply, namePeerSession, peerConversation, resolvePeer,
+  ASK_DEFAULT_TIMEOUT_MS, listPeerAgents, listPeerSessions, namePeerSession, peerConversation,
+  peerSessionTitle, peerSnapshot, resolvePeer, snapshotText,
 } from "./peer.ts";
-import { getSession, runTurn } from "./agent-host.ts";
+import { registerPendingPeer } from "./peer-completion.ts";
+import { getSession, queueSessionInput, runTurn } from "./agent-host.ts";
 import { resolveHome } from "./home.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 
@@ -26,6 +28,16 @@ export { LIFEOS_TOOL_NAMES };
 export type ToolContext = {
   agentId: string;
   projectId: string;
+  /**
+   * 当前会话 id（Task 0015 · T7）：`lifeos_send` 要登记"完成后回流到哪"。
+   * 缺失时不登记——退化为"只交办、不回流"，而不是报错。
+   */
+  sessionId?: string | undefined;
+  /**
+   * 当前会话的 Task（Task 0015 · T1）：lane 的 Task 维度。
+   * 缺失时按"不区分 Task"处理（老调用/测试场景）。
+   */
+  taskId?: string | undefined;
   /** 进入一个 Task：由宿主把会话指针指向它，下一轮装配生效（建 Task 即进入、接手已有 Task 也走这里）。 */
   onEnterTask?: (taskId: string) => void | Promise<void>;
 };
@@ -386,14 +398,24 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  // ── 与其他 Agent 对话（Task 0013 · M1）────────────────────────────────────
+  // ── 与其他 Agent 对话（Task 0013 · M1 → Task 0015 · lane 升级）─────────────
   // 目标 Agent 的会话就是一条普通会话：建在它自己的项目里，出现在列表、有 Task、有未读。
-  const peerErrorText = (code: string, target: string): string =>
-    code === "self"
-      ? "You cannot message yourself. Pick another Life OS agent."
-      : code === "archived"
-        ? `Agent "${target}" is archived; unarchive it first or pick another agent.`
-        : `No Life OS agent with id "${target}". Use the agent list to pick an existing one.`;
+  // lane = (发起方, 目标, 项目, 发起方 taskId)：同一 Task 内复用一个会话，不同 Task 各自一条。
+  const peerErrorText = (code: string, target: string, available?: string[], sessionId?: string): string => {
+    if (code === "self") return "You cannot message yourself. Pick another Life OS agent.";
+    if (code === "archived") return `Agent "${target}" is archived; unarchive it first or pick another agent.`;
+    if (code === "session_not_found") {
+      return `No peer conversation with session id "${sessionId ?? "(unknown)"}"`
+        + `${available !== undefined && available.length > 0 ? `. Known sessions with this agent: ${available.join(", ")}` : " (none with this agent yet)"}.`;
+    }
+    if (code === "session_not_in_lane") {
+      return `That session exists but belongs to a different task lane. Sessions in the current lane: ${available?.join(", ") ?? "(none)"}.`;
+    }
+    return `No Life OS agent with id "${target}". Use lifeos_agent_list to see the available agents.`;
+  };
+
+  /** 当前会话的 Task（lane 的 Task 维度）；读不到就 undefined（= 不按 Task 分）。 */
+  const currentTaskId = (): string | undefined => ctx.taskId;
 
   const ask = defineTool({
     name: "lifeos_ask",
@@ -401,49 +423,66 @@ export function createAgentTools(ctx: ToolContext) {
     description:
       "Ask another Life OS agent and WAIT for its answer. The target agent answers in its own full session "
       + "(its own identity, harness rules, task and tools), so treat it as a colleague, not a function. "
-      + "Use it when you need the answer before you can reply to the user. "
-      + "Conversations are reused: asking the same agent again continues the same conversation with its prior context. "
-      + "Do NOT use it for long jobs — use lifeos_send instead, or this turn stays blocked until it finishes.",
-    promptSnippet: "Ask another agent a question and wait for its answer (multi-turn, same conversation reused)",
+      + "Conversations are reused per (task, agent): asking again inside the same task continues the same conversation, "
+      + "while a different task gets its own conversation. "
+      + "Pass newSession:true to start a fresh conversation with the same agent; pass sessionId to continue a specific one. "
+      + "The result is a STATE SNAPSHOT: state/phase/lastReply/next tell you whether it finished, is still running, or failed, "
+      + "and what to do next. A timeout is NOT a failure — it returns the same snapshot with state still running.",
+    promptSnippet: "Ask another agent and wait; returns a state snapshot (lane = task + agent)",
     promptGuidelines: [
       "Prefer lifeos_ask for questions you need answered before replying; prefer lifeos_send for work that takes a long time.",
       "Write the message as you would to a colleague: state the goal, the constraints, and what you need back.",
+      "Check `state` before using `lastReply`: only `idle` means it answered; `running` means it is still working.",
       "If the target replies that it needs clarification, decide yourself: answer it or ask the user — do not loop blindly.",
     ],
     parameters: Type.Object({
       agent: Type.String({ description: "Target Life OS agent id (e.g. 'coder')." }),
       message: Type.String({ description: "What to ask. Include the context the other agent cannot guess." }),
-      timeoutMs: Type.Optional(Type.Number({ description: "Max wait in ms (default 10 minutes)." })),
+      timeoutMs: Type.Optional(Type.Number({ description: "How long to wait before handing control back (default 10 minutes). Timing out does not cancel the target's turn." })),
+      sessionId: Type.Optional(Type.String({ description: "Continue this specific conversation. Omit to continue the most recent one for the current task." })),
+      newSession: Type.Optional(Type.Boolean({ description: "Start a NEW conversation with this agent instead of continuing the current task's one." })),
     }),
     async execute(_toolCallId, params) {
-      const projectId = ctx.projectId;
+      const taskId = currentTaskId();
       const resolved = await resolvePeer(ctx.agentId, params.agent);
       if (!resolved.ok) throw new Error(peerErrorText(resolved.code, params.agent));
-      const peer = await peerConversation(ctx.agentId, params.agent, projectId, resolveHome());
-      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent));
+      const peer = await peerConversation(ctx.agentId, params.agent, ctx.projectId, resolveHome(), {
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+        ...(params.newSession === true ? { newSession: true } : {}),
+      });
+      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent, peer.available, params.sessionId));
       const { sessionId } = peer.conversation;
       namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
+
+      // 重入守卫（T8）：目标正在跑 → 不投递，直接返回状态快照（不忙等、不谎报失败）。
+      const before = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
+      if (before.state === "running") {
+        return {
+          content: [{ type: "text" as const, text: snapshotText(params.agent, before, "它正在跑，这条消息**没有**发出去——先看它的状态。") }],
+          details: { agent: params.agent, conversationCreated: false, timedOut: false, skipped: "target_running", ...before },
+        };
+      }
 
       const timeoutMs = params.timeoutMs ?? ASK_DEFAULT_TIMEOUT_MS;
       const turn = runTurn(peer.conversation.agentId, sessionId, params.message);
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
+      let timedOut = false;
       try {
         const outcome = await Promise.race([turn.then(() => "done" as const), timeout]);
-        if (outcome === "timeout") {
-          throw new Error(`No answer from agent "${params.agent}" within ${Math.round(timeoutMs / 1000)}s. `
-            + `The conversation (${sessionId}) keeps running; check it before retrying.`);
-        }
+        timedOut = outcome === "timeout";
       } finally {
         if (timer !== undefined) clearTimeout(timer);
       }
-      const state = await getSession(peer.conversation.agentId, sessionId, resolveHome());
-      const reply = lastReply(state) ?? "(the other agent finished without a text answer)";
+      // 不管超时还是跑完，都返回**状态快照**（超时不是失败：02-design §L2）。
+      const snapshot = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
+      const hint = timedOut
+        ? `等了 ${Math.round(timeoutMs / 1000)}s 它还没结束（对方回合仍在跑，**没有**取消）`
+        : undefined;
       return {
-        content: [{ type: "text" as const, text: `Answer from ${params.agent}:
-
-${reply}` }],
-        details: { agent: params.agent, sessionId, conversationCreated: peer.conversation.created },
+        content: [{ type: "text" as const, text: snapshotText(params.agent, snapshot, hint) }],
+        details: { agent: params.agent, conversationCreated: peer.conversation.created, timedOut, ...snapshot },
       };
     },
   });
@@ -453,35 +492,140 @@ ${reply}` }],
     label: "Hand work to another Life OS agent (does not wait)",
     description:
       "Hand a task to another Life OS agent and return immediately; this turn ends and the other agent keeps working "
-      + "in its own session (visible in the session list). You will see its work in that session; do not poll or sleep. "
-      + "Use it when the user wants to hand off work that may take a while. "
-      + "Conversations are reused per target agent, exactly like lifeos_ask.",
-    promptSnippet: "Hand work to another agent without waiting (returns a receipt; the other session keeps running)",
+      + "in its own session (visible in the session list). "
+      + "When it finishes, a completion message is delivered INTO THIS conversation automatically — do not poll or sleep. "
+      + "Conversations are reused per (task, agent), exactly like lifeos_ask; pass newSession:true for a fresh one.",
+    promptSnippet: "Hand work to another agent without waiting; its completion comes back into this conversation",
     promptGuidelines: [
       "After lifeos_send, tell the user what you handed off and to whom — do not claim the work is done.",
-      "Never sleep or poll for the result in the same turn; the user can open the other session.",
+      "Never sleep or poll for the result in the same turn; the completion arrives as a message in this conversation.",
     ],
     parameters: Type.Object({
       agent: Type.String({ description: "Target Life OS agent id (e.g. 'coder')." }),
       message: Type.String({ description: "The task, with everything the other agent needs to start." }),
+      sessionId: Type.Optional(Type.String({ description: "Continue this specific conversation. Omit to continue the most recent one for the current task." })),
+      newSession: Type.Optional(Type.Boolean({ description: "Start a NEW conversation with this agent instead of continuing the current task's one." })),
     }),
     async execute(_toolCallId, params) {
+      const taskId = currentTaskId();
       const resolved = await resolvePeer(ctx.agentId, params.agent);
       if (!resolved.ok) throw new Error(peerErrorText(resolved.code, params.agent));
-      const peer = await peerConversation(ctx.agentId, params.agent, ctx.projectId, resolveHome());
-      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent));
+      const peer = await peerConversation(ctx.agentId, params.agent, ctx.projectId, resolveHome(), {
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+        ...(params.newSession === true ? { newSession: true } : {}),
+      });
+      if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent, peer.available, params.sessionId));
       const { sessionId } = peer.conversation;
       namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
-      void runTurn(peer.conversation.agentId, sessionId, params.message);
+
+      // 登记回流（T7）：这轮结束后把完成消息送进**本会话**。先登记再投递——投递可能在同一个 tick 里结束。
+      const initiatorSessionId = ctx.sessionId;
+      if (initiatorSessionId !== undefined) {
+        registerPendingPeer(peer.conversation.agentId, sessionId, {
+          initiatorAgentId: ctx.agentId,
+          initiatorSessionId,
+          peerName: resolved.name,
+          ...(taskId !== undefined ? { initiatorTaskId: taskId } : {}),
+          projectId: ctx.projectId,
+        });
+      }
+
+      // 重入守卫（T8）：目标正在跑 → 用 Pi 原生的 followUp 排队（不自造队列、不并发 prompt）。
+      const before = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
+      const queued = before.state === "running";
+      if (queued) {
+        // Pi 原生排队：会话在跑时 prompt() 会抛错（agent-session.ts:2103），必须走 followUp。
+        const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp");
+        if ("code" in verdict && verdict.code !== "session_idle") {
+          throw new Error(`Could not queue the message for ${params.agent}: ${verdict.code === "error" ? verdict.message : verdict.code}`);
+        }
+      }
+      else void runTurn(peer.conversation.agentId, sessionId, params.message);
+
       return {
         content: [{
           type: "text" as const,
-          text: `Handed off to ${params.agent} (session ${sessionId}); it keeps working in its own session.`,
+          text: `Handed off to ${params.agent} (session ${sessionId})${queued ? " — it was already running, so the message is queued after its current turn" : ""}. `
+            + "Its completion will be delivered into this conversation; do not poll.",
         }],
-        details: { agent: params.agent, sessionId, conversationCreated: peer.conversation.created },
+        details: {
+          agent: params.agent, sessionId, conversationCreated: peer.conversation.created, queued,
+          completionWillArriveIn: initiatorSessionId ?? null,
+          ...(taskId !== undefined ? { taskId } : {}),
+        },
       };
     },
   });
 
-  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send];
+  const agentList = defineTool({
+    name: "lifeos_agent_list",
+    label: "List Life OS agents",
+    description:
+      "List the Life OS agents you can talk to (id, name, description, archived). "
+      + "Use it before lifeos_ask / lifeos_send when you are not sure the target id exists.",
+    promptSnippet: "List the Life OS agents (id + name) you can message",
+    promptGuidelines: ["Use the `id` field as the `agent` argument of lifeos_ask / lifeos_send, not the display name."],
+    parameters: Type.Object({}),
+    async execute() {
+      const items = await listPeerAgents(ctx.agentId);
+      const lines = items.map((item) =>
+        `- ${item.id} — ${item.name}${item.archived ? " (archived)" : ""}${item.description !== undefined ? `：${item.description}` : ""}`);
+      return {
+        content: [{ type: "text" as const, text: lines.length > 0 ? `Agents you can message (use the id):\n${lines.join("\n")}` : "No other agents exist yet." }],
+        details: { items },
+      };
+    },
+  });
+
+  const askList = defineTool({
+    name: "lifeos_ask_list",
+    label: "List your peer conversations",
+    description:
+      "List the conversations you already have with other agents. "
+      + "Shows sessionId, peer id/name, the task that owns the lane, message count, last activity and whether it is running. "
+      + "Use it to find the sessionId to continue a specific conversation, or to see what you already discussed.",
+    promptSnippet: "List your existing agent-to-agent conversations (with sessionIds)",
+    promptGuidelines: ["Pass `agent` to narrow to one target; pass `includeAllTasks` to see conversations started from other tasks too."],
+    parameters: Type.Object({
+      agent: Type.Optional(Type.String({ description: "Only list conversations with this agent id." })),
+      includeAllTasks: Type.Optional(Type.Boolean({ description: "Include conversations started from other tasks (default: only the current task's lane)." })),
+    }),
+    async execute(_toolCallId, params) {
+      const taskId = currentTaskId();
+      const targets = params.agent !== undefined
+        ? [{ id: params.agent, name: params.agent }]
+        : (await listPeerAgents(ctx.agentId)).map((item) => ({ id: item.id, name: item.name }));
+      const rows: Array<Record<string, unknown>> = [];
+      const lines: string[] = [];
+      for (const target of targets) {
+        const sessions = await listPeerSessions(ctx.agentId, target.id, ctx.projectId);
+        for (const entry of sessions) {
+          const laneTask = entry.marker.initiatorTaskId;
+          const sameLane = laneTask === undefined || taskId === undefined || laneTask === taskId;
+          if (params.includeAllTasks !== true && !sameLane) continue;
+          const title = await peerSessionTitle(target.id, entry.sessionId);
+          rows.push({
+            sessionId: entry.sessionId, peerAgentId: target.id, peerName: target.name,
+            initiatorTaskId: laneTask ?? null, title: title ?? null, messages: entry.messages,
+            updatedAt: new Date(entry.updatedAtMs).toISOString(), running: entry.running, sameLane,
+          });
+          lines.push(
+            `- ${entry.sessionId} · ${target.name}${laneTask !== undefined ? ` · task ${laneTask}` : ""}`
+            + `${title !== undefined ? ` · ${title}` : ""} · ${entry.messages} msgs${entry.running ? " · running" : ""}`);
+        }
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: lines.length > 0
+            ? `Your peer conversations${params.includeAllTasks === true ? " (all tasks)" : ` (task ${taskId ?? "(none)"})`}:\n${lines.join("\n")}`
+            : "No peer conversations for this selection yet.",
+        }],
+        details: { items: rows },
+      };
+    },
+  });
+
+  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send, agentList, askList];
 }

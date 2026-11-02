@@ -235,7 +235,7 @@ test("删除会话：从列表消失，重复删除 404", async () => {
   } finally { server.close(); }
 });
 
-test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Agent 私有层、移除保留数据、默认不可移除", async () => {
+test("项目：打开目录（同 path 幂等、pid 为 ASCII 可读名）、manifest 在 Agent 私有层、移除保留数据、默认不可移除", async () => {
   const { server, base, home } = await start();
   const { mkdtemp, readFile, access, readdir: rd, stat } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
@@ -249,7 +249,11 @@ test("项目：打开目录（同 path 幂等、pid=uuidv7）、manifest 在 Age
     });
     assert.equal(first.status, 201);
     const { project } = await first.json();
-    assert.equal(project.id, ext.slice(ext.lastIndexOf("/") + 1), "id = 可读目录名（项目名），不再是 uuid");
+    // id 必须是 **URL 安全 ASCII**（Task 0015 · T11）：pid 进 URL，前端不做 encodeURIComponent。
+    // 目录名是 `lifeos-proj-xxxxxx`（临时目录），所以 id 就是它本身（ASCII 可直接用）。
+    // 目录名可能含大写（mkdtemp 的随机后缀），id 会规范成小写——这是有意的（URL 安全且幂等）。
+    assert.equal(project.id, ext.slice(ext.lastIndexOf("/") + 1).toLowerCase(), "ASCII 目录名 → 小写后作 id（可读、URL 安全）");
+    assert.match(project.id, /^[a-z0-9][a-z0-9-]{0,63}$/, "pid 必须是 URL 安全 ASCII");
     assert.equal(project.path, ext);
     assert.equal(project.name, ext.slice(ext.lastIndexOf("/") + 1));
 
@@ -611,13 +615,19 @@ test("Agent 生命周期：创建（slug id/骨架/无预置会话）与归档�
     assert.equal(sameAgain.status, 200, "已存在时返回 200（与项目注册一致）");
     assert.equal((await sameAgain.json()).agent.id, first.id, "同名幂等：同一个 id");
 
-    // 中文名 → 合法 slug；缺 name → 400
+    // 中文名 → **明确 400 要求英文名**（Task 0015 · T10：不再静默生成 agent-xxxx）
     const zh = await fetch(`${base}/api/agents`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "评审助手" }),
     });
-    assert.equal(zh.status, 201);
-    const second = (await zh.json()).agent;
-    assert.match(second.id, /^[a-z0-9][a-z0-9-]{0,63}$/, `中文名 slug：${second.id}`);
+    assert.equal(zh.status, 400, "中文名必须明确拒绝，而不是产出看不懂的随机 id");
+    assert.equal((await zh.json()).error.code, "needs_ascii_name", "错误码要说清是名字不可转，不是服务器出错");
+    // 英文名照常
+    const en = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Review Helper" }),
+    });
+    assert.equal(en.status, 201);
+    const second = (await en.json()).agent;
+    assert.equal(second.id, "review-helper");
     assert.equal((await fetch(`${base}/api/agents`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 400);
 
     // 列表 = 三个（workspace 内置 + 两个新建），全部非归档

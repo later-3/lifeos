@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
+import { entityId, uniqueId } from "./segments.ts";
 import { broadcast } from "./events.ts";
 import { runningOf } from "./session-runtime.ts";
 import { ensureAgentLayer, ensureAgentProjectLayer } from "./project-skeleton.ts";
@@ -47,14 +48,28 @@ async function writeJson(path: string, data: unknown): Promise<void> {
 
 /**
  * name → slug（目录名 / URL id）。
- * 中文等非 ASCII 名字转不出合法 slug 时，用**不透明的随机后缀**（`agent-3f9a`）：
- * 参照 Kubernetes `metadata.generateName`（名字 + 随机后缀，id 不承载语义）——
- * 不要生成 `agent` 这种过通用的 id（发生过：模型嫌它通用，自行归档重建，留下重复实体）。
+ *
+ * **2026-11-02 改（Task 0015 · T10）**：不再静默生成随机后缀。
+ *
+ * 旧行为：中文名转不出 slug → `agent-3f9a`。用户明确说"看不懂"。随机后缀等于把
+ * "这个 Agent 是谁"永久藏起来，而且**改不了**（id 稳定）。现在：
+ * - ASCII 名字 → 正常 slug；
+ * - 非 ASCII（中文等）→ 抛错，由调用方要求用户给英文/拼音名（或让创建界面把 id 作为可见字段）。
+ *
+ * 保留 `slugify` 这个导出名（既有调用方与测试用它）；语义变为"合法就返回，不合法就抛"。
  */
 export function slugify(name: string): string {
-  const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-  const id = base === "" ? `agent-${randomBytes(2).toString("hex")}` : base;
-  return isSlug(id) ? id : `agent-${id}`.slice(0, 64);
+  const result = entityId(name, "url");
+  if (!result.ok) throw new AgentSlugError(result.message);
+  return result.id;
+}
+
+/** 无法从名字得出合法 id（非 ASCII / 空 / 全是符号）。调用方应提示用户给英文名，而不是静默造随机 id。 */
+export class AgentSlugError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentSlugError";
+  }
 }
 
 /** 扫描全部 Agent（含已归档：查重与"最后一个"判断都要看全量）。 */
@@ -101,10 +116,10 @@ export async function createAgent(input: CreateAgentInput): Promise<
   if (live !== undefined) {
     return { id: live.id, name: live.record.name, dir: agentDir(live.id), created: false };
   }
-  const base = slugify(name);
+  const generated = entityId(name, "url");
+  if (!generated.ok) return { code: "needs_ascii_name", message: generated.message, status: 400 };
   const existing = new Set((await allAgents()).map((entry) => entry.id));
-  let id = base;
-  for (let n = 2; existing.has(id); n += 1) id = `${base.slice(0, 58)}-${n}`;
+  const id = uniqueId(generated.id, existing);
   if (!isSlug(id)) return { code: "invalid_id", message: "无法从 name 生成合法 id", status: 400 };
 
   const dir = agentDir(id);
