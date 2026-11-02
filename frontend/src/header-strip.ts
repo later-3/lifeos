@@ -38,6 +38,14 @@ export function headerTaskOf(input: {
 
 export type HeaderStripInput = {
   agentName: string;
+  /**
+   * 对端 Agent（Task 0015 · T17）。
+   *
+   * 只在 **Agent ↔ Agent** 的会话里给：那时 `agentName` 是"这条会话归谁"，
+   * `peerName` 才是"正在和谁谈"——两者不同，必须都写出来。
+   * 用户 ↔ Agent 的会话不给（对端就是 agentName 本身，写了是重复）。
+   */
+  peerName?: string;
   projectName: string;
   sessionTitle: string;
   headerModel: { provider: string; id: string } | null;
@@ -55,6 +63,10 @@ export function buildHeaderSegments(input: HeaderStripInput): HeaderSegment[] {
     segments.push({ id: "empty", text: "选择或新建一个会话" });
   } else {
     if (agent !== undefined) segments.push({ id: "agent", text: agent });
+    // Agent ↔ Agent：`agent → peer` 才读得出"谁和谁在谈"
+    if (input.peerName !== undefined && input.peerName !== "" && input.peerName !== agent) {
+      segments.push({ id: "peer", text: `↔ ${input.peerName}` });
+    }
     if (project !== undefined) segments.push({ id: "project", text: project });
   }
   if (input.headerModel != null) segments.push({ id: "model", text: `${input.headerModel.provider}/${input.headerModel.id}` });

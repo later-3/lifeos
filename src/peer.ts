@@ -262,6 +262,12 @@ export async function peerConversation(
   return await createPeerConversation(sourceAgentId, targetAgentId, projectId, cwd, taskId, verdict.name, key);
 }
 
+/** 该 lane 现在有几条会话（用于给新会话起带序号的标题）。 */
+export async function laneCount(sourceAgentId: string, targetAgentId: string, projectId: string, taskId: string | undefined): Promise<number> {
+  const all = await listPeerSessions(sourceAgentId, targetAgentId, projectId);
+  return all.filter((entry) => inLane(entry, sourceAgentId, taskId)).length;
+}
+
 /** 新建一条对话会话（完整装配 + 写 lane 标记）。 */
 async function createPeerConversation(
   sourceAgentId: string,
@@ -343,6 +349,8 @@ export const ASK_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
  * - `lastReply` 是**原文**（不生成摘要——摘要要额外调模型、还会与完整记录矛盾）。
  */
 export type PeerState = "running" | "idle" | "error" | "aborted" | "missing";
+/** 与会话区同一套阶段词表（`frontend/src/stream-blocks.ts:25`），不新造词。 */
+export type PeerPhase = "waiting" | "thinking" | "tool" | "text";
 export type PeerSnapshot = {
   agentId: string;
   sessionId: string;
@@ -352,6 +360,15 @@ export type PeerSnapshot = {
   startedAt?: string;
   runningForMs?: number;
   finishedAt?: string;
+  /** 只在 state=running 时有值：它现在在干什么（来自会话最后的块，不猜）。 */
+  phase?: PeerPhase;
+  /** phase=tool 时的工具名。 */
+  activeTool?: string;
+  /**
+   * 我发出去的那条消息进没进去（比对消息数）。
+   * 为什么需要：调用方最怕"消息没送达却以为在等"——那会导致重复发送。
+   */
+  myMessageAccepted?: boolean;
   lastReply?: string;
   failure?: { kind: string; message: string };
   messages: number;
@@ -361,11 +378,45 @@ export type PeerSnapshot = {
   next: string;
 };
 
+/**
+ * 从会话最后的块推导"现在在干什么"（T6）。
+ *
+ * 与会话区同一口径：看最后一条 assistant 消息的最后一个块——
+ * thinking → 思考中；toolCall 且没有 result → 在调这个工具；toolCall 有 result → 读结果；
+ * text → 在写回复；什么都没有 → 等模型。
+ * **不读流事件**（跨进程读不到）：这是从落盘事实反推，允许滞后一点，但绝不编造。
+ */
+function lastBlocksOf(state: Awaited<ReturnType<typeof getSession>>): Array<{ type: string; name?: string; result?: unknown }> {
+  if (state === undefined) return [];
+  const messages = messagesOf(state);
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "assistant") continue;
+    return (message.blocks ?? []) as Array<{ type: string; name?: string; result?: unknown }>;
+  }
+  return [];
+}
+
+function derivePhase(lastBlocks: ReadonlyArray<{ type: string; name?: string; result?: unknown }>): { phase: PeerPhase; activeTool?: string } {
+  const last = lastBlocks.at(-1);
+  if (last === undefined) return { phase: "waiting" };
+  if (last.type === "thinking") return { phase: "thinking" };
+  if (last.type === "toolCall") {
+    // 有 result = 这个工具已经回完了，模型正在处理它的输出
+    if (last.result !== undefined) return { phase: "thinking" };
+    return last.name !== undefined ? { phase: "tool", activeTool: last.name } : { phase: "tool" };
+  }
+  if (last.type === "text") return { phase: "text" };
+  return { phase: "waiting" };
+}
+
 /** 构建目标会话的状态快照（纯读，不改任何状态）。 */
 export async function peerSnapshot(
   targetAgentId: string,
   sessionId: string,
   initiatorTaskId?: string,
+  /** 发送前的消息数：给了就顺带回答"我发的那条进没进去"（T6 的 myMessageAccepted）。 */
+  messagesBeforeSend?: number,
 ): Promise<PeerSnapshot> {
   const base = { agentId: targetAgentId, sessionId, ...(initiatorTaskId !== undefined ? { initiatorTaskId } : {}) };
   const running = isRunning(targetAgentId, sessionId);
@@ -375,14 +426,19 @@ export async function peerSnapshot(
   }
 
   const messages = state !== undefined ? messagesOf(state).length : 0;
+  const accepted = messagesBeforeSend === undefined ? undefined : messages > messagesBeforeSend;
   const { turn } = await turnLastOf(targetAgentId, sessionId).catch(() => ({ turn: null as null }));
   const reply = state !== undefined ? lastReply(state) : undefined;
 
   if (running) {
     const startedMs = turn?.state === "running" ? Date.parse(turn.at) : Number.NaN;
+    const derived = derivePhase(lastBlocksOf(state));
     return {
       ...base,
       state: "running",
+      phase: derived.phase,
+      ...(derived.activeTool !== undefined ? { activeTool: derived.activeTool } : {}),
+      ...(accepted !== undefined ? { myMessageAccepted: accepted } : {}),
       ...(turn !== null ? { turnId: turn.turnId } : {}),
       ...(Number.isNaN(startedMs) ? {} : { startedAt: new Date(startedMs).toISOString(), runningForMs: Date.now() - startedMs }),
       messages,
@@ -395,6 +451,7 @@ export async function peerSnapshot(
     return {
       ...base,
       state: "error",
+      ...(accepted !== undefined ? { myMessageAccepted: accepted } : {}),
       ...(turn.turnId !== undefined ? { turnId: turn.turnId } : {}),
       finishedAt: turn.at,
       ...(reply !== undefined ? { lastReply: reply } : {}),
@@ -409,6 +466,7 @@ export async function peerSnapshot(
     return {
       ...base,
       state: "idle",
+      ...(accepted !== undefined ? { myMessageAccepted: accepted } : {}),
       ...(turn.turnId !== undefined ? { turnId: turn.turnId } : {}),
       finishedAt: turn.at,
       ...(reply !== undefined ? { lastReply: reply } : {}),
@@ -422,6 +480,7 @@ export async function peerSnapshot(
   return {
     ...base,
     state: "idle",
+    ...(accepted !== undefined ? { myMessageAccepted: accepted } : {}),
     messages,
     canWaitMore: true,
     next: "这条会话还没有跑过回合。直接发消息即可。",
@@ -547,11 +606,22 @@ export function peerMarkerOf(manager: { getBranch(): ReadonlyArray<{ type?: stri
   return undefined;
 }
 
-/** 给对话会话起标题（只设一次）：`与 <对端Agent> 的对话`，用户一眼能看出这是谁跟谁在说。 */
-export function namePeerSession(state: Awaited<ReturnType<typeof getSession>>, peerName: string): void {
+/**
+ * 给对话会话起标题（只设一次）：`与 <对端Agent> 的对话`，用户一眼能看出这是谁跟谁在说。
+ *
+ * 同一对端可以有多条会话（`newSession: true`，02-design T3）。第二条起加序号
+ * ——否则列表里出现两条一模一样的标题，用户无法区分"哪条是哪件事"（07-id-normalization §5 的同一原则）。
+ *
+ * @param ordinal 该 lane 里这条是第几条（1 = 不加序号）
+ */
+export function namePeerSession(
+  state: Awaited<ReturnType<typeof getSession>>,
+  peerName: string,
+  ordinal = 1,
+): void {
   const manager = state?.session.sessionManager;
   if (manager === undefined || manager.getSessionName()) return;
-  manager.appendSessionInfo(`与 ${peerName} 的对话`);
+  manager.appendSessionInfo(ordinal > 1 ? `与 ${peerName} 的对话 #${ordinal}` : `与 ${peerName} 的对话`);
 }
 
 /** `lifeos_agent_list` 的返回行（T5）：谁能聊、叫什么、是不是归档了。 */
@@ -606,6 +676,12 @@ export function snapshotText(peerName: string, snapshot: PeerSnapshot, hint?: st
   lines.push(`session: ${snapshot.sessionId}`);
   if (snapshot.initiatorTaskId !== undefined) lines.push(`task: ${snapshot.initiatorTaskId}`);
   if (snapshot.turnId !== undefined) lines.push(`turn: ${snapshot.turnId}`);
+  if (snapshot.phase !== undefined) {
+    lines.push(`在做什么: ${snapshot.phase}${snapshot.activeTool !== undefined ? `（${snapshot.activeTool}）` : ""}`);
+  }
+  if (snapshot.myMessageAccepted !== undefined) {
+    lines.push(`我这条消息: ${snapshot.myMessageAccepted ? "已进入对方会话" : "**没有进入**对方会话"}`);
+  }
   if (snapshot.runningForMs !== undefined) lines.push(`已在跑: ${Math.round(snapshot.runningForMs / 1000)}s`);
   if (snapshot.finishedAt !== undefined) lines.push(`结束于: ${snapshot.finishedAt}`);
   lines.push(`消息数: ${snapshot.messages}`);

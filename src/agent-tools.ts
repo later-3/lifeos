@@ -13,7 +13,7 @@ import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./
 import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
 import { resolveMemoryRole, type MemoryScope } from "./memory/resolve.ts";
 import {
-  ASK_DEFAULT_TIMEOUT_MS, listPeerAgents, listPeerSessions, namePeerSession, peerConversation,
+  ASK_DEFAULT_TIMEOUT_MS, laneCount, listPeerAgents, listPeerSessions, namePeerSession, peerConversation,
   peerSessionTitle, peerSnapshot, resolvePeer, snapshotText,
 } from "./peer.ts";
 import { registerPendingPeer } from "./peer-completion.ts";
@@ -453,7 +453,14 @@ export function createAgentTools(ctx: ToolContext) {
       });
       if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent, peer.available, params.sessionId));
       const { sessionId } = peer.conversation;
-      namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
+      // 同一 lane 里第几条 → 标题带序号（T3：同对端多条会话时列表能区分）
+      const ordinal = await laneCount(ctx.agentId, peer.conversation.agentId, ctx.projectId, taskId)
+        .catch(() => 1);
+      namePeerSession(
+        await getSession(peer.conversation.agentId, sessionId, resolveHome()),
+        resolved.name,
+        peer.conversation.created ? ordinal : Math.max(1, ordinal),
+      );
 
       // 重入守卫（T8）：目标正在跑 → 不投递，直接返回状态快照（不忙等、不谎报失败）。
       const before = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
@@ -465,6 +472,7 @@ export function createAgentTools(ctx: ToolContext) {
       }
 
       const timeoutMs = params.timeoutMs ?? ASK_DEFAULT_TIMEOUT_MS;
+      const messagesBeforeSend = before.messages;
       const turn = runTurn(peer.conversation.agentId, sessionId, params.message);
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
@@ -476,10 +484,14 @@ export function createAgentTools(ctx: ToolContext) {
         if (timer !== undefined) clearTimeout(timer);
       }
       // 不管超时还是跑完，都返回**状态快照**（超时不是失败：02-design §L2）。
-      const snapshot = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
-      const hint = timedOut
-        ? `等了 ${Math.round(timeoutMs / 1000)}s 它还没结束（对方回合仍在跑，**没有**取消）`
+      const snapshot = await peerSnapshot(peer.conversation.agentId, sessionId, taskId, messagesBeforeSend);
+      // "我这条到底进没进去"：没进去要说清（否则调用方会以为在等，重复发送）
+      const notAccepted = snapshot.myMessageAccepted === false
+        ? "⚠️ 我这条消息**没有**进入对方会话（消息数没变）——不要重复发送，先查它的状态。"
         : undefined;
+      const hint = notAccepted ?? (timedOut
+        ? `等了 ${Math.round(timeoutMs / 1000)}s 它还没结束（对方回合仍在跑，**没有**取消）`
+        : undefined);
       return {
         content: [{ type: "text" as const, text: snapshotText(params.agent, snapshot, hint) }],
         details: { agent: params.agent, conversationCreated: peer.conversation.created, timedOut, ...snapshot },
@@ -517,7 +529,14 @@ export function createAgentTools(ctx: ToolContext) {
       });
       if (!peer.ok) throw new Error(peerErrorText(peer.code, params.agent, peer.available, params.sessionId));
       const { sessionId } = peer.conversation;
-      namePeerSession(await getSession(peer.conversation.agentId, sessionId, resolveHome()), resolved.name);
+      // 同一 lane 里第几条 → 标题带序号（T3：同对端多条会话时列表能区分）
+      const ordinal = await laneCount(ctx.agentId, peer.conversation.agentId, ctx.projectId, taskId)
+        .catch(() => 1);
+      namePeerSession(
+        await getSession(peer.conversation.agentId, sessionId, resolveHome()),
+        resolved.name,
+        peer.conversation.created ? ordinal : Math.max(1, ordinal),
+      );
 
       // 登记回流（T7）：这轮结束后把完成消息送进**本会话**。先登记再投递——投递可能在同一个 tick 里结束。
       const initiatorSessionId = ctx.sessionId;

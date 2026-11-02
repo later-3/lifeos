@@ -1656,6 +1656,10 @@ export default function App() {
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
   const isIdFallback = (item?: SessionItem) => (item?.title ?? "").trim() === "";
+  /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
+  const currentSessionItem = sessionId === undefined
+    ? undefined
+    : groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sessionId);
 
   /**
    * 会话列表里的"我"这一方（Task 0015 · T17）：用户本人。
@@ -1827,8 +1831,11 @@ export default function App() {
                                       只有 Agent ↔ Agent 的会话，"对方是谁"才是新信息（T17）。 */}
                                   {item.peer !== undefined && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
                                   {item.activeTaskId !== undefined && <span>{item.activeTaskId}</span>}
+                                  {/* 运行中：第二行显示阶段文案（"思考中/调用工具"是新增的信息，右侧仍保留脉冲点）。
+                                      完成未读：**不在这里写字**——右侧的绿点就是它（design-language §5.2
+                                      "状态点：运行 = 脉冲、完成未读 = 绿点，与徽标同槽互斥"）。
+                                      我一开始在这里写了个"新"字，属于同一状态两种表达，已删除。 */}
                                   {runNow && <><span> · </span><span className="text-success">{activePhaseLabel ?? "生成中…"}</span></>}
-                                  {!runNow && unread && <><span> · </span><span className="text-success">新</span></>}
                                 </>
                               }
                               status={runNow
@@ -1892,6 +1899,8 @@ export default function App() {
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
+                // 只有 Agent↔Agent 的会话才有对端（用户↔Agent 的对端就是当前 Agent，写了是重复）
+                ...(currentSessionItem?.peer !== undefined ? { peerName: currentSessionItem.peer.name } : {}),
                 projectName: currentGroup?.project.name ?? "",
                 sessionTitle,
                 headerModel: headerModel ?? null,
