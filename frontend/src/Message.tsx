@@ -186,7 +186,10 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
         data-testid="message" data-role="user" {...hover}>
         {header}
         {text !== "" && (
-          <div className="max-w-bubble rounded-bubble rounded-br-md bg-message-user px-4 py-2.5 text-white" data-testid="message-text" data-message-kind="user">
+          /* text-content：让气泡自己的字号与正文同行（`.md-body` 也是 --text-content）。
+             `--container-bubble` 的 56ch 按**本元素字号**算；不加这条就按继承的 16px 算，
+             字号滑块放大时气泡上限不跟着涨（2026-11-02 实测：200% 时正文 30px、上限仍 564px）。 */
+          <div className="max-w-bubble text-content rounded-bubble rounded-br-md bg-message-user px-4 py-2.5 text-white" data-testid="message-text" data-message-kind="user">
             <Markdown text={text} inverse />
           </div>
         )}
@@ -260,7 +263,7 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
   // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
   const [open, toggle] = useAutoOpen(live, !forceOpen, forceOpen);
   return (
-    <div className="max-w-bubble overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
+    <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <button type="button" onClick={toggle}
         className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
         {live ? <Spinner size={12} className="text-accent" /> : null}
@@ -295,7 +298,7 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
   const seconds = running ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
   const surface = state === "error" ? "bg-message-tool-error" : state === "done" ? "bg-message-tool-done" : "bg-message-tool";
   return (
-    <div className={`max-w-bubble overflow-hidden rounded-panel ring-1 ring-line ${surface}`} data-message-kind={`tool-${state}`}>
+    <div className={`overflow-hidden rounded-panel ring-1 ring-line ${surface}`} data-message-kind={`tool-${state}`}>
       <button type="button" onClick={toggle}
         className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-700 transition-colors hover:bg-hover max-sm:min-h-11">
         {running ? <Spinner size={12} className="text-accent" /> : <IconTool size={14} className="shrink-0 text-ink-300" />}

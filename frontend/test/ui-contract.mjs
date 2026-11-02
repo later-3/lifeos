@@ -1307,7 +1307,9 @@ try {
       JSON.stringify(shape(sides.userKids)) === JSON.stringify(shape(sides.assistantKids)) && shape(sides.userKids)?.clock === true,
       JSON.stringify({ user: sides.userKids, assistant: sides.assistantKids }));
 
-    // 3) 过程条：轻量（无边框/无背景块）、不拉满、文案只有统计没有摘要措辞
+    // 3) 过程条：轻量（无边框/无背景块）、**与正文左右边缘对齐**、文案只有统计没有摘要措辞
+    //    2026-11-02 用户拍板改口：原先"不拉满、跟正文同档 max-w-bubble(720)"，
+    //    在列宽 860 时右侧空出 140px 阶梯；现在助手侧统一跟随对话列宽。
     const bar = await page2.evaluate(() => {
       const el = document.querySelector('[data-testid="process-bar"]');
       if (el === null) return null;
@@ -1315,21 +1317,26 @@ try {
       const cs = getComputedStyle(el);
       const btnCs = btn === null ? null : getComputedStyle(btn);
       const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
-      const bubble = document.querySelector('[data-testid="message"] [data-testid="message-text"]');
-      const bodyWidth = bubble === null ? null : bubble.getBoundingClientRect().width;
+      const box = (node) => { const b = node.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; };
+      // 对齐基准取**助手正文**（助手侧不改的那条，它一直跟随列宽）
+      const text = document.querySelector('[data-testid="message"][data-role="assistant"] [data-testid="message-text"]');
+      const column = document.querySelector('[data-shot-mask="chat-body"]');
       return {
         summary,
         borderWidth: cs.borderTopWidth,
         background: cs.backgroundColor,
         buttonBackground: btnCs === null ? null : btnCs.backgroundColor,
-        barWidth: Math.round(el.getBoundingClientRect().width),
-        bodyWidth: bodyWidth === null ? null : Math.round(bodyWidth),
+        bar: box(el),
+        text: text === null ? null : box(text),
+        column: column === null ? null : box(column),
         hasExpand: (btn?.getAttribute("aria-expanded") ?? null) !== null,
       };
     });
     const lightweight = bar === null || (bar.borderWidth === "0px" && (bar.buttonBackground === "rgba(0, 0, 0, 0)" || bar.buttonBackground === "transparent"));
-    const notFullWidth = bar === null || bar.bodyWidth === null || bar.barWidth <= Math.max(bar.bodyWidth + 40, 400);
-    check("过程条：极轻量（无边框/无底色）且不拉满", lightweight && notFullWidth && (bar === null || bar.hasExpand),
+    // 对齐：左/右边缘与助手正文一致（容 1px 四舍五入）
+    const aligned = bar === null || bar.text === null
+      || (Math.abs(bar.bar.left - bar.text.left) <= 1 && Math.abs(bar.bar.right - bar.text.right) <= 1);
+    check("过程条：极轻量（无边框/无底色）且与正文左右对齐", lightweight && aligned && (bar === null || bar.hasExpand),
       JSON.stringify(bar));
     check("过程条：只数事实，不写摘要措辞",
       bar === null || !/总结|摘要|概要|大意/.test(bar.summary),
@@ -1340,6 +1347,38 @@ try {
       return el === null ? "none" : String(el.getAttribute("data-message-kind"));
     });
     check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);
+
+    // 3b) 用户气泡：内容宽自适应 + **相对量上限** min(90%, 56ch)（用户 2026-11-02 拍板）
+    //    - 不许回到写死像素（720 那种第二宽度来源）；
+    //    - 长文本不得撑满对话列（≤ 列宽 × 92%，留出右缘可辨的缩进）；
+    //    - 短文本不拉满（内容宽 = w-fit 行为）。
+    const bubbleProbe = await page2.evaluate(() => {
+      const bubble = document.querySelector('[data-testid="message"][data-role="user"] [data-testid="message-text"]');
+      const column = document.querySelector('[data-shot-mask="chat-body"]');
+      if (bubble === null || column === null) return null;
+      const md = bubble.querySelector(".md-body") ?? bubble.firstElementChild ?? bubble;
+      const original = md.innerHTML;
+      // 必须用**同一个气泡实例**量短/长两态：夹具里那条用户消息本身可能就很长（它不是"短"的样本）
+      md.textContent = "短";
+      const short = Math.round(bubble.getBoundingClientRect().width);
+      md.textContent = "长消息宽度探针".repeat(20);
+      const long = Math.round(bubble.getBoundingClientRect().width);
+      md.innerHTML = original;
+      return {
+        short,
+        long,
+        column: Math.round(column.getBoundingClientRect().width),
+        maxWidth: getComputedStyle(bubble).maxWidth,
+        /** 短消息必须按内容宽（严格窄于上限）；否则就是“不跟随文字长度” */
+        shortFits: short < long,
+      };
+    });
+    const relative = bubbleProbe === null || !/^\d+(\.\d+)?px$/.test(bubbleProbe.maxWidth);
+    const capped = bubbleProbe === null || bubbleProbe.long <= bubbleProbe.column * 0.92;
+    check("用户气泡：最大宽度是相对量（比例 + ch），不是写死像素", relative,
+      JSON.stringify(bubbleProbe));
+    check("用户气泡：长文本不撑满对话列、短文本按内容宽", capped && (bubbleProbe === null || bubbleProbe.shortFits),
+      JSON.stringify(bubbleProbe));
 
     // 4) 两个滑块：存在、默认值正确、拖到底会改变 --text-scale 与阅读宽度
     // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）

@@ -4,7 +4,9 @@
  * 用户 2026-11-02 拍板的三条硬约束（照做，不要加戏）：
  * 1. **不做摘要**：只数"干了多少活"，不概括"干了什么"。摘要要额外调模型，既费 token 又把事情搞复杂；
  * 2. **极轻量**：跟 TurnStatusBar 一样，没有边框、没有底色块，就是一行浅色文字；
- * 3. **不拉满宽度**：与正常正文同宽上限（`max-w-bubble`），一眼能看出它属于这条回复。
+ * 3. **跟随对话列宽**：与正文左右边缘对齐（用户 2026-11-02 拍板）。原先与卡片共用
+ *    `max-w-bubble`（720px 写死），于是正文 860、过程条 720，右侧多出一截空白阶梯；
+ *    现在卡片不再有独立上限，宽度只有一个来源（对话列 + 宽度滑块）。
  *
  * 与 TurnStatusBar 的分工：那个是**进行中**的回合状态（滚动区外固定），这个是**已完成**回合的
  * 过程入口（在回复顶部，点开看完整过程）。
@@ -32,7 +34,7 @@ export function ProcessBar({ stats, live = false, children }: {
   const summary = processSummary(stats);
 
   return (
-    <div data-testid="process-bar" className="max-w-bubble">
+    <div data-testid="process-bar">
       {/* 命中区 ≥ 28（闸 3）：仅靠自己的行高不够，用 py-2 把高度顶到 ≥28；≥44 的触屏保底交给 max-sm:min-h-11 */}
       <button type="button"
         aria-expanded={effectiveOpen}
