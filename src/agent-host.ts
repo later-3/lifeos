@@ -926,7 +926,11 @@ export function sessionImageBytesOf(state: SessionState): number {
  * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
-  const out: Array<{ role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind }> = [];
+  // durationMs / tokens（2026-11-02）：过程条要数“花了多久 / 多少 token”，两者都在 assistant 消息上，不在块里
+  const out: Array<{
+    role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind;
+    durationMs?: number; tokens?: number;
+  }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
   const projection = state.session.sessionManager.buildSessionProjection();
@@ -959,15 +963,25 @@ export function messagesOf(state: SessionState) {
         else if (part.type === "toolCall") blocks.push({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments });
       }
       const text = blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("");
-      const raw = message as { stopReason?: string; errorMessage?: string };
+      const raw = message as {
+        stopReason?: string; errorMessage?: string;
+        durationMs?: unknown;
+        usage?: { input?: unknown; output?: unknown };
+      };
       const errorText = typeof raw.errorMessage === "string" && raw.errorMessage.trim() !== "" ? raw.errorMessage.trim() : undefined;
       // 失败分类：区分超时 / 连不上 / 鉴权 / 限流 / 服务端错误 / 空回复 / 中断 / 截断
       const kind = classifyFailure({ ...(raw.stopReason !== undefined ? { stopReason: raw.stopReason } : {}), ...(errorText !== undefined ? { errorMessage: errorText } : {}), hasContent: blocks.length > 0 || text.trim() !== "" });
+      const durationMs = typeof raw.durationMs === "number" && Number.isFinite(raw.durationMs) && raw.durationMs > 0 ? Math.round(raw.durationMs) : undefined;
+      const input = typeof raw.usage?.input === "number" ? raw.usage.input : 0;
+      const output = typeof raw.usage?.output === "number" ? raw.usage.output : 0;
+      const tokens = input + output > 0 ? input + output : undefined;
       out.push({
         role: "assistant", text, blocks,
         ...(at !== undefined ? { at } : {}),
         ...(kind !== undefined ? { failure: kind } : {}),
         ...(errorText !== undefined ? { error: errorText } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
       });
     } else if (message.role === "toolResult") {
       const result = textOf(message);

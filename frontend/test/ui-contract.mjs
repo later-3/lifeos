@@ -1239,12 +1239,152 @@ try {
   await viewerPage.close();
 }
 
+
+// ===== 对话区升级（2026-11-02，Task 0014）=====
+// 视觉变更必须有可断言项（process.md 四步：每条视觉改动配检查）。
+// 这里用"计算样式 + 几何"断言，不靠截图基线（基线会把行内排版遮掉，案例 C152）。
+{
+  const page2 = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  try {
+    await page2.goto(ENTRY_URL, { waitUntil: "domcontentloaded" });
+    await page2.waitForTimeout(2000);
+
+    // 1) 头像 + 名字 + 时间：两条侧都要有头部，且都带名字与时间
+    const headerInfo = await page2.evaluate(() => {
+      const users = [...document.querySelectorAll('[data-testid="message"][data-role="user"] [data-testid="message-header"]')];
+      const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"] [data-testid="message-header"]')];
+      const clock = /\d{2}:\d{2}/;
+      return {
+        userCount: users.length,
+        assistantCount: asst.length,
+        userHasClock: users.every((el) => clock.test(el.textContent ?? "")),
+        assistantHasClock: asst.every((el) => clock.test(el.textContent ?? "")),
+        userHasAvatar: users.every((el) => el.querySelector("img,span") !== null),
+        assistantHasAvatar: asst.every((el) => el.querySelector("img,span") !== null),
+      };
+    });
+    check("对话区：两侧消息都有头像/名字/时间",
+      headerInfo.userCount > 0 && headerInfo.assistantCount > 0 && headerInfo.userHasClock && headerInfo.assistantHasClock
+      && headerInfo.userHasAvatar && headerInfo.assistantHasAvatar,
+      JSON.stringify(headerInfo));
+
+    // 2) 左右分侧：用户靠右（容器 flex-end + 头部反向），助手靠左
+    const sides = await page2.evaluate(() => {
+      const user = document.querySelector('[data-testid="message"][data-role="user"]');
+      const asst = document.querySelector('[data-testid="message"][data-role="assistant"]');
+      const header = (el) => el?.querySelector('[data-testid="message-header"]');
+      return {
+        userAlign: user === null ? null : getComputedStyle(user).alignItems,
+        userHeaderDir: header(user) === null || header(user) === undefined ? null : getComputedStyle(header(user)).flexDirection,
+        assistantHeaderDir: header(asst) === null || header(asst) === undefined ? null : getComputedStyle(header(asst)).flexDirection,
+      };
+    });
+    check("对话区：用户靠右、助手靠左（头像同侧）",
+      sides.userAlign === "flex-end" && sides.userHeaderDir === "row-reverse" && sides.assistantHeaderDir === "row",
+      JSON.stringify(sides));
+
+    // 3) 过程条：轻量（无边框/无背景块）、不拉满、文案只有统计没有摘要措辞
+    const bar = await page2.evaluate(() => {
+      const el = document.querySelector('[data-testid="process-bar"]');
+      if (el === null) return null;
+      const btn = el.querySelector("button");
+      const cs = getComputedStyle(el);
+      const btnCs = btn === null ? null : getComputedStyle(btn);
+      const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
+      const bubble = document.querySelector('[data-testid="message"] [data-testid="message-text"]');
+      const bodyWidth = bubble === null ? null : bubble.getBoundingClientRect().width;
+      return {
+        summary,
+        borderWidth: cs.borderTopWidth,
+        background: cs.backgroundColor,
+        buttonBackground: btnCs === null ? null : btnCs.backgroundColor,
+        barWidth: Math.round(el.getBoundingClientRect().width),
+        bodyWidth: bodyWidth === null ? null : Math.round(bodyWidth),
+        hasExpand: (btn?.getAttribute("aria-expanded") ?? null) !== null,
+      };
+    });
+    const lightweight = bar === null || (bar.borderWidth === "0px" && (bar.buttonBackground === "rgba(0, 0, 0, 0)" || bar.buttonBackground === "transparent"));
+    const notFullWidth = bar === null || bar.bodyWidth === null || bar.barWidth <= Math.max(bar.bodyWidth + 40, 400);
+    check("过程条：极轻量（无边框/无底色）且不拉满", lightweight && notFullWidth && (bar === null || bar.hasExpand),
+      JSON.stringify(bar));
+    check("过程条：只数事实，不写摘要措辞",
+      bar === null || !/总结|摘要|概要|大意/.test(bar.summary),
+      bar?.summary ?? "(本次会话无过程条)");
+    // 过程条是统计行，不是消息块：不得占用 data-message-kind（那个属性的语义是"块背景可区分"）
+    const kindOfBar = await page2.evaluate(() => {
+      const el = document.querySelector('[data-testid="process-bar"]');
+      return el === null ? "none" : String(el.getAttribute("data-message-kind"));
+    });
+    check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);
+
+    // 4) 两个滑块：存在、默认值正确、拖到底会改变 --text-scale 与阅读宽度
+    // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）
+    await page2.evaluate(() => {
+      document.querySelector('button[aria-label="显示设置"]')?.click();
+    });
+    await page2.waitForTimeout(250);
+    const sliders = await page2.evaluate(() => {
+      const panel = document.querySelector('[data-testid="display-prefs"]');
+      if (panel === null) return null;
+      const ranges = [...panel.querySelectorAll("input[type=range]")].map((input) => ({ id: input.id, value: input.value }));
+      return { ranges };
+    });
+    check("显示设置：两个滑块存在（宽度 + 字号）",
+      sliders !== null && sliders.ranges.length === 2 && sliders.ranges.some((r) => r.id === "width") && sliders.ranges.some((r) => r.id === "font"),
+      JSON.stringify(sliders));
+
+    const applied = await page2.evaluate(() => {
+      const panel = document.querySelector('[data-testid="display-prefs"]');
+      if (panel === null) return "no-panel";
+      const setVal = (el, v) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        setter.call(el, String(v));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      setVal(panel.querySelector("#width"), 0);
+      setVal(panel.querySelector("#font"), 100);
+      return "set";
+    });
+    await page2.waitForTimeout(400);
+    const effect = await page2.evaluate(() => {
+      const cs = getComputedStyle(document.documentElement);
+      const body = document.querySelector('[data-testid="message-text"]');
+      return {
+        readingWidth: cs.getPropertyValue("--container-reading-width").trim(),
+        textScale: cs.getPropertyValue("--text-scale").trim(),
+        bodyFont: body === null ? null : parseFloat(getComputedStyle(body).fontSize),
+      };
+    });
+    const focusWidth = Number.parseInt(effect.readingWidth, 10);
+    check("显示设置：滑块真生效（专注变窄 + 字号放大）",
+      applied === "set" && Number.isFinite(focusWidth) && focusWidth < 860 && Number.parseFloat(effect.textScale) > 1.2,
+      `${applied} ${JSON.stringify(effect)}`);
+
+    // 5) 恢复默认（不把测试改过的偏好留在本地）
+    await page2.evaluate(() => {
+      const panel = document.querySelector('[data-testid="display-prefs"]');
+      const reset = panel === null ? null : [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("恢复默认"));
+      if (reset !== null && reset !== undefined) reset.click();
+    });
+    await page2.waitForTimeout(200);
+    const restored = await page2.evaluate(() => ({
+      readingWidth: getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim(),
+      textScale: getComputedStyle(document.documentElement).getPropertyValue("--text-scale").trim(),
+    }));
+    check("显示设置：恢复默认回到 860px / 100%",
+      restored.readingWidth === "860px" && parseFloat(restored.textScale) === 1,
+      JSON.stringify(restored));
+  } finally {
+    await page2.close();
+  }
+}
+
 await browser.close();
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
-check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 24,
+check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
 
 const failed = results.filter((item) => !item.ok);

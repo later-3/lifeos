@@ -12,6 +12,13 @@ import { useFold } from "./design/fold";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
+import { UserAvatar, type UserProfile } from "./user-avatar";
+import { DisplayPrefsPanel, loadPrefs, savePrefs } from "./display-prefs-panel";
+import {
+  avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
+} from "./display-prefs";
+import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
+import { groupIntoSpans } from "./turn-group";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
@@ -90,7 +97,11 @@ type SessionMeta = {
 };
 type SessionItem = { sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
-type Message = { role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind };
+type Message = {
+  role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
+  /** 这一段的生成耗时（ms）与 token（input+output）：过程条统计用（2026-11-02） */
+  durationMs?: number; tokens?: number;
+};
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
 type PaletteItem = { key: string; label: string; hint?: string; run: () => void; /** 当前状态下不可用（草稿态）：置灰、说明原因，点了不执行 */ disabled?: boolean };
@@ -202,6 +213,11 @@ function userBlocks(text: string, images: readonly PendingImage[]): Block[] {
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agent, setAgent] = useState<Agent>();
+  // 用户档案（= 你本人，不是 Agent）：名字与头像从 /api/profile 来，缺失时前端不显示头像
+  const [profile, setProfile] = useState<UserProfile | undefined>();
+  // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
+  const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -311,6 +327,34 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
+  // —— 用户档案（你本人）：取一次；失败不阻断界面（只是没头像/用默认名） ——
+  useEffect(() => {
+    let alive = true;
+    void fetch("/api/profile").then((r) => r.ok ? r.json() : undefined)
+      .then((data: { name?: unknown; avatar?: unknown } | undefined) => {
+        if (!alive || data === undefined || typeof data.name !== "string") return;
+        const avatar = data.avatar as { revision?: unknown } | null | undefined;
+        setProfile({
+          name: data.name,
+          avatar: avatar === null || avatar === undefined ? null : { file: "", revision: typeof avatar.revision === "number" ? avatar.revision : 0 },
+        });
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+  // —— 显示偏好：落盘 + 把字号与阅读宽度写到根节点（组件只用 token，不感知缩放） ——
+  useEffect(() => { savePrefs(prefs); }, [prefs]);
+  useEffect(() => {
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);
+    root.style.setProperty("--container-reading-width", widthVar(prefs.width));
+  }, [prefs]);
+  // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
+  useEffect(() => {
+    const onResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
   // 焦点上报（任务 0007）：切会话/切 Agent/页面可见性变化 → 服务端据此路由细节流，并在可见时记已读
   useEffect(() => { sendFocus(); }, [agent?.id, sessionId]);
@@ -1809,6 +1853,8 @@ export default function App() {
             }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
+          {/* 显示设置（用户 2026-11-02：就放在这两个图标旁边）：两个滑块 = 内容宽度 + 字号 */}
+          <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs} />
         </header>
 
         <div className="relative min-h-0 flex-1">
@@ -1825,24 +1871,91 @@ export default function App() {
                 ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
                 : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
               {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
-              {messages.map((message, index) => {
-                // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
-                const plan = resend?.index === index ? resend : undefined;
-                return (
-                  <MessageView key={index} role={message.role} blocks={message.blocks} busy={message.streaming === true}
-                    onOpenPeer={(target) => {
-                      // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
-                      panelWasOpenBeforePeer.current = panelOpen;
-                      setPeerTarget(target);
-                      setPanelOpen(true);
-                    }}
-                    {...(message.at !== undefined ? { at: message.at } : {})}
-                    {...(message.error !== undefined ? { error: message.error } : {})}
-                    {...(message.failure !== undefined ? { failure: message.failure } : {})}
-                    {...(message.failure !== undefined && index !== messages.length - 1 ? { historical: true } : {})}
-                    {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
-                );
-              })}
+              {(() => {
+                // 折叠粒度 = **一轮**（用户发一句话 → 下一条用户消息之前）
+                // 实测本会话每轮 assistant 消息数中位 6、最多 198：按消息折会碎成上百块，必须按轮分。
+                const spans = groupIntoSpans(messages);
+                // 反查：任意一条消息（包括没有 user 的孤儿段）→ 它属于哪一轮
+                const spanByIndex = new Map<number, (typeof spans)[number]>();
+                for (const span of spans) {
+                  if (span.userIndex >= 0) spanByIndex.set(span.userIndex, span);
+                  for (const reply of span.replyIndexes) spanByIndex.set(reply, span);
+                }
+                const folded = new Set<number>();   // 已被上面某一轮的过程条收进去的回复下标
+                return messages.map((message, index) => {
+                  if (folded.has(index)) return null;
+                  // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
+                  const plan = resend?.index === index ? resend : undefined;
+                  const isUser = message.role === "user";
+                  // 该轮的全部回复（用户消息之后、下一条用户消息之前）
+                  const replies = spanByIndex.get(index)?.replyIndexes ?? [];
+                  const replyMessages = replies.map((i) => messages[i]).filter((m): m is Message => m !== undefined);
+
+                  // 过程折叠只处理助手侧，且只在"有过程"时生效（0 工具 0 思考 = 纯聊天，不折）
+                  // 折叠后的容器是这一轮的**第一条**回复（通常是 assistant）；其余回复被收进它的过程条
+                  let process: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] } | undefined;
+                  let mergedBlocks: Block[] | undefined;
+                  const isFirstReply = replies.length > 0 && replies[0] === index;
+                  if (!isUser && isFirstReply) {
+                    const allBlocks = replyMessages.flatMap((m) => m.blocks);
+                    const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
+                    const tokens = replyMessages.reduce((sum, m) => sum + (m.tokens ?? 0), 0);
+                    const stats = statsOf(allBlocks, {
+                      ...(durationMs > 0 ? { durationMs } : {}),
+                      ...(tokens > 0 ? { tokens } : {}),
+                    });
+                    const live = replyMessages.some((m) => m.streaming === true);
+                    // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
+                    const failed = replyMessages.some((m) => m.failure !== undefined || m.error !== undefined);
+                    if (hasProcess(stats) && !failed) {
+                      // "最终正文"= 本轮**最后一段** text（chat.md §3.3：最终回答取最后一段 text），
+                      // 其余所有块进过程区。中间过渡语是过程独白，不是回复。
+                      const textIndexes: number[] = [];
+                      let cursor = 0;
+                      let lastText = -1;
+                      for (const m of replyMessages) {
+                        m.blocks.forEach((block, bi) => {
+                          if (block.type === "text" && block.text.trim() !== "") lastText = cursor + bi;
+                        });
+                        cursor += m.blocks.length;
+                      }
+                      if (lastText >= 0) textIndexes.push(lastText);
+                      process = { stats, live, textIndexes };
+                      // 这一轮的块已合并：渲染时用**全部回复的块**，否则最终正文在后面的回复里就丢了
+                      mergedBlocks = allBlocks;
+                      // 标记：其余回复消息已被过程条收进去，不再单独渲染
+                      for (const i of replies) if (i !== index) folded.add(i);
+                    }
+                  }
+                  // 头像与名字：用户 = 你本人（/api/profile），助手 = 当前 Agent
+                  // 头像尺寸随字号缩放（用户 2026-11-02：字号变大而头像不变会畸形）
+                  const avatarSize = avatarSizeOf(22, prefs.font.scale);
+                  const avatarNode = isUser
+                    ? (profile === undefined ? undefined : <UserAvatar profile={profile} size={avatarSize} />)
+                    : (agent === undefined ? undefined : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={avatarSize} />);
+                  const authorName = isUser ? profile?.name : agent?.name;
+
+                  // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
+                  const renderBlocks = mergedBlocks ?? message.blocks;
+                  return (
+                    <MessageView key={index} role={message.role} blocks={renderBlocks} busy={message.streaming === true}
+                      onOpenPeer={(target) => {
+                        // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
+                        panelWasOpenBeforePeer.current = panelOpen;
+                        setPeerTarget(target);
+                        setPanelOpen(true);
+                      }}
+                      {...(avatarNode !== undefined ? { avatar: avatarNode } : {})}
+                      {...(authorName !== undefined ? { authorName } : {})}
+                      {...(process !== undefined ? { process } : {})}
+                      {...(message.at !== undefined ? { at: message.at } : {})}
+                      {...(message.error !== undefined ? { error: message.error } : {})}
+                      {...(message.failure !== undefined ? { failure: message.failure } : {})}
+                      {...(message.failure !== undefined && index !== messages.length - 1 ? { historical: true } : {})}
+                      {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
+                  );
+                });
+              })()}
             </div>
           </main>
           {!atBottom && (
