@@ -96,6 +96,37 @@
 |---|---|---|---|
 | 公网访问本机服务（不开入站端口） | 我们的 Chat `pi-011` 任务：`~/.chat/long-agents/pi-agent/projects/chat/tasks/pi-011-remote-access-foundation/`（`02-design.md` §2/§6、`04-execution-log.md` 18:17、`05-access-runbook.md` §4/§6）；Cloudflare 官方 Tunnel + Access（self-hosted app + One-time PIN） | 出站隧道（cloudflared 主动连 CF 边缘，无公网 IP/DDNS/路由器改动）；一条隧道多 ingress；LaunchAgent/systemd 常驻；Access 在边缘做身份门；`502 = 隧道通、源端未起` 的判读 | 不借 Chat 的无登录公网入口（Life OS 有 bash/文件工具）；不借入站端口/路由器放行；不复用 Chat 的隧道与配置（独立生命周期） |
 
+## 多 Agent 交互（2026-10-27 补，Task 0013 调研）
+
+| 场景 | 参照点 | 借什么 | 不借什么 |
+|---|---|---|---|
+| 父子委派（subagent） | **Pi 官方示例** `pi/packages/coding-agent/examples/extensions/subagent/index.ts`（spawn 独立 `pi` 进程、隔离上下文、single/parallel/chain、8 任务/4 并发）；**pi-subagents 0.78.0**（进程内子会话、后台、workflows、missions/schedules、intercom、外部 CLI 子代理）；**Claude Code** Subagents（<https://code.claude.com/docs/en/agents>）；**Codex** Subagents（并发默认 6） | 「子上下文隔离 + 只回摘要」这个契约；两种实现路线（独立进程 vs 进程内子会话）都保留；本地上限与并发上限要显式配置 | 不把 subagent 当"并行干活的万能方案"；不为 subagent 造"互相发消息"（那会变成团队场景） |
+| 多 Agent 团队（lead + 共享任务列表 + 互发消息） | **Claude Code** Agent teams（实验特性、默认关闭、不做 worktree 隔离 → 要求分区文件）；**LobeHub** Agent Team（内置 host + 成员私信） | "共享任务列表 + 点对点消息 + lead 复核"三件；按文件分区避免冲突 | 不先做房间 UI；不在实验特性上做产品承诺 |
+| 群聊 / 房间 | **Open WebUI** Channels（人与**多个模型**同一持久时间线、成员制、`write_access`）；**AutoGen** GroupChat / SelectorGroupChat（共享线程、轮流发言、模型选下一个发言者） | 房间的必备定义：成员、发言权、共享游标、轮次上限、终止条件、失败隔离 | **不借房间数据模型**：我们是单人个人系统，没有"多人同场"场景；规范 §5 的"没有定义不实现"继续有效 |
+| 会话分叉（fork / clone / tree） | **Pi** `session-manager.ts:1529 getTree()`、`:1632 createBranchedSession()`、`:1815 forkFrom()`；**Claude Code** forked subagent（`/subtask` 继承完整上下文）vs `/fork`（复制会话到后台） | 谱系要能展示父会话与分支；"继承上下文的子任务"与"复制会话"是两个动作 | 不把 fork 当"自动并行"；不默认合并所有分支 |
+| 长时间运行（durability） | **Temporal**（崩溃后重建状态继续，工作流可跑数年；含 OpenAI Agents SDK 集成）；**LangGraph** checkpointer（每 super-step 快照、可恢复、可 time travel）；**Cursor Cloud Agents**（隔离 VM 长跑、完成自动开 PR）；**Claude Code Projects**（云端长跑，按项目分线程）；**Pi** `packages/durable`（实验）+ **pi-subagents** background runs / missions | 用"持久状态 + 恢复点"表达长跑，而不是"进程别退出"；失败要能从检查点续；长跑必须有可见状态（运行事实/收据） | 不自建 durable 引擎；不把"后台跑"当成"长跑"（后者要跨崩溃） |
+| 定时触发（trigger） | **pi-subagents schedules**（`.pi/subagents/schedules/`、`at/every/day/week` + IANA 时区、`catchUp latest\|none`、`overlap` 固定 `skip`、`quiet`、history；会话存活时进程内 `arm/fire`，不在时 `schedule.run-due` 由外部 launcher 调）；**Claude Code scheduled tasks**（云端按计划/API/GitHub 事件；本地 `/loop`+cron 仅 app 打开且机器醒着）；Temporal cron；launchd / systemd timer / GitHub Actions schedule | "durable 记录 + 可拉取的到期任务"表达调度；错过补偿、不重入、时区、历史四件必须齐全；触发方单独决定（常驻循环 vs 系统 cron/launchd） | 不写自己的调度器；不把定时与长跑混为一件事 |
+| 跨会话 / 跨厂商消息（A2A） | **A2A 1.0.0**（<https://a2a-protocol.org/latest/specification/>）：`Task / Message / AgentCard / Part / Artifact`，操作 Send/Get/List/Cancel + Get Agent Card，绑定 JSON-RPC/gRPC/REST；**Claude Code** cross-session messaging（列/发消息到本机、另一台机、云端会话） | 会话寻址 + 任务式交互（Task 生命周期：提交/查询/取消）；"agent card 描述能力" | 单机个人系统**不实现** A2A 协议；不引入跨组织鉴权 |
+| Agent 作为工具（MCP） | **Pi** `packages/mcp` + `registerMcpServer`，配置 `agentDir/mcp.json` 与项目 `.pi/mcp.json`；**Claude Code**「另一个工具就以 MCP server 暴露」 | 外部能力（含外部 Agent）统一走 MCP；白名单不拦 MCP 工具（Pi 现状） | 不自建 web 搜索/抓取工具去重造 MCP 已有能力 |
+
+> 一句话判据（Task 0013 §7）：先答五问——谁协调 / worker 要不要互相通信 / 上下文隔离还是继承 / 一次性还是持久 / 是否改同一批文件。| 移动端 IM 导航（Agent=同事） | **Zulip** `web/src/overlays.ts`/`overlay_util.ts`（单层 overlay+滚动锁，commit 3e9bc1e，2026-10-27 本机检出）；**飞书/Telegram/钉钉** 列表→对话→详情三点定位与返回栈（C 级观察） | 手机四屏=消息流(同事行)/聊天(根级、默认上次会话)/同事详情(切对话·切项目·话题选择)/项目 Tab(工作台)；系统返回=退一层、单层 overlay 语义；URL `?agent&project&session` 承担 deep-link | **不借**三家开源的视觉与任何前端样式；不借 Zulip 的多栏窄屏切换表单 |
+| 未读与"在忙"模型 | **Zulip** `web/src/unread.ts`（stream:topic 二级键，mention 独立 Set）；**Rocket.Chat** `client/sidebar/RoomList/MoreUnreadsBubble.tsx`（>50 未读折叠为一条气泡，commit 034260f）；**Mattermost** `channels/src/components/sidebar/sidebar_category/`（分类聚合） | 未读语义=kiss 既有 status-map 纯函数（会话计/项目聚合/Agent 待看），只随 IM 界面换呈现位置（同事行/项目卡/详情对话行）；一行内未看较多时用折叠气泡不逐行标数；"正在生成…"复用 IM typing 的呈现位（头像绿点+行内动画） | **不做已读回执**（三家开源均无此语义）；不借 Zulip 的 mute/pointer（P1 评估后再议） |
+| 项目空间与任务卡 | **飞书** 群空间/任务卡/工作台（C 级观察，乌OS 无群聊直聊实体）；任务 0003 `02-design.md` 全映射；开源 IM 均无"群=项目"（结构上无参考，借飞书形态） | 项目详情页=进行中任务卡（名称+类型徽标+负责同事+进度）+近期对话+参与同事+空态引导；任务条在聊天 header 常显；新建项目后落详情页带两步引导 | 不学开源 IM 的项目概念（无强概念可借）；不造"项目群聊天"假实体（Session∈Agent×Project 数据模型不变） |
+| **shadcn/ui Sidebar**（审美基线；`https://ui.shadcn.com/r/styles/new-york-v4/sidebar.json` 取到源码，2026-10-31） | **一级/二级导航（层次面板）的观感基线**：分组怎么表达、状态怎么给、密度怎么分级 | 导航自有 token 家族（`--sidebar-background/foreground/accent/border/ring`，light 值见 §5.4.2 对照）；分组标签 `h-8 text-xs font-medium text-sidebar-foreground/70`（`:408`，alpha 前景，**静息无 ring**）；行 `rounded-md p-2 gap-2` + `shadow-[0_0_0_1px var(--sidebar-border)]` → **hover 只换描边色**（`:483`）；子列表 `mx-3.5 border-l border-sidebar-border px-2.5 py-0.5` + `translate-x-px`/子项 `-translate-x-px`（`:646/:689`，1px 光学补偿）；密度分级 h-8 / p-2 / h-7 | 无（组件库） | 读源码取"角色层 token + 状态词汇 + 密度分级"，落到我们的 `--color-nav-*` 与 `Row/GroupHeader` primitive | 它的 React/Radix 组件结构与 Tailwind 类名；不复制其皮肤值 |
+| **Radix Themes**（审美基线；`@radix-ui/themes@3.3.0` 已取到发布包） | 颜色阶与 alpha 机制的"权威做法" | 12 步中性（`gray-1..12` + `gray-a1..a12`）+ 9 步主色（`indigo-1..9`）+ 语义层（`--color-panel-solid/translucent`、`--color-surface: rgba(255,255,255,.85)`）；组件里悬停用 `--gray-a3`（57 处）、卡片描边 `--gray-a3/a6`（`components.css:1932-1967`） | 无 | 借"阶 + 角色层 + alpha"机制，替掉我们手挑的 4 个中性 hex | 它的整体观感（中性克制，不是我们的 IM 气质）；不引入它的组件实现 |
+| **LobeChat `@lobehub/ui@6.10.2`**（审美基线，IM 气质） | 对话类产品的观感 + 主题派生 | 用 `chroma-js` 从品牌色推导整套色；含 `Tree`/`ChatHeader` 等 IM 组件 | 无 | "主题模式"的实现路数：一套 token，多套色阶 | 它的业务组件与图标集 |
+
+### 0.1 参考分两栏（2026-10-31 用户裁决，案例 C155）
+
+**"参考某个项目"必须先说明借哪一栏。** 两栏不能混：混了就会把丑产品的装饰件抄进来（已发生：P-02 照抄 Zulip 括线）。
+
+| 栏 | 允许借 | 本项目名单 |
+|---|---|---|
+| **机制参考**（观感反例，只借机制/算法/结构） | 缩进 = disclosure 列宽、描边用 alpha、弱填充 + 描边做状态、折叠状态存数组、深色用公式派生 | **Zulip** @`3e9bc1e`、**Mattermost** @`8b2fb370`、**Rocket.Chat** @`034260e` |
+| **审美基线**（必须好看且可核） | 表面分层、中性色相与阶、状态词汇、密度分级、光学补偿、主题派生 | **shadcn/ui Sidebar**、**Radix Themes**、**LobeChat `@lobehub/ui`** |
+
+取不到源码的（Linear/Arc/Notion/Vercel Geist）**只能当 C 级气质参考**：存图、比气质，不写条文、不当基线。
+
 ## 对话区升级：社媒式身份 + 过程折叠（2026-11-02 补，Task 0014）
 
 > 用户提供的素材：`frontend/resources/` 12 张 webp（SaaS 仪表盘 / IM / 落地页混合）+ 2 张 GitHub Copilot 会话截图（`Snipaste_2026-11-01_22-01-36.png` / `22-05-25.png`）。
