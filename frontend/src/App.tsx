@@ -108,6 +108,11 @@ type SessionItem = {
    * 后端解析 `lifeos_peer` 标记后给出；普通会话没有这个字段。
    */
   peer?: { id: string; name: string; avatar?: AgentAvatarSpec };
+  /**
+   * 失败的**当前**状态（Task 0015 · 结论 5）：只有"最后一条 assistant 以 error 结束"才有。
+   * 历史失败不算（否则一条很久以前挂过的会话会永远显示红色）。
+   */
+  failure?: FailureKind;
 };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
@@ -1823,6 +1828,11 @@ export default function App() {
                                       只有 Agent ↔ Agent 的会话，"对方是谁"才是新信息（T17）。 */}
                                   {item.peer !== undefined && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
                                   {item.activeTaskId !== undefined && <span>{item.activeTaskId}</span>}
+                                  {/* 失败态（结论 5）：红点 + 类别。"它挂了"和"它挂在哪"是两件事，
+                                      只给红点用户不敢重试（不知道是网络抖还是需求本身有问题）。 */}
+                                  {item.failure !== undefined && !runNow && (
+                                    <><span> · </span><span className="text-danger">失败：{failureLabel(item.failure)}</span></>
+                                  )}
                                   {/* 运行中**不写阶段文案**（Task 0015 · 10.2 ②）：
                                       `phase` 只有"当前打开会话"一份，列表里每条运行中的会话都用它会显示
                                       同一条文案（真 bug）。列表拿不到"各会话各自的阶段"，就不给——
@@ -1832,9 +1842,12 @@ export default function App() {
                               }
                               status={runNow
                                 ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
-                                : unread
-                                  ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
-                                  : <span className="text-micro text-ink-500">{timeAgo(item.updatedAt)}</span>} />
+                                : item.failure !== undefined
+                                  // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
+                                  ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(item.failure)}`} />
+                                  : unread
+                                    ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
+                                    : <span className="text-micro text-ink-500">{timeAgo(item.updatedAt)}</span>} />
                           );
                         })}
                       </GroupBody>

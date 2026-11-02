@@ -23,6 +23,7 @@ import {
 } from "./profile.ts";
 import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
+import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
 import { randomUUID } from "node:crypto";
@@ -168,6 +169,9 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
     // 消息条数只数 `type === "message"` 的条目（Task 0015 · todo #30）：
     // 以前用 `lines.length`，把 session 头 / session_info / custom 都算进去了（实测 389 vs 31）。
     let messageCount = 0;
+    // 失败态（Task 0015 · 结论 5）：会话**最后一条** assistant 若以 error 结束，就带上分类。
+    // 复用 messagesOf 的同一套判定（stopReason + errorMessage → classifyFailure），不另写一份规则。
+    let lastAssistant: { stopReason?: string; errorMessage?: string; hasContent: boolean } | undefined;
     for (const line of lines) {
       try {
         const entry = JSON.parse(line) as {
@@ -175,7 +179,24 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
           message?: { role?: string; content?: unknown }; data?: { taskId?: unknown; peerAgentId?: unknown };
         };
         if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
-        if (entry.type === "message") messageCount += 1;
+        if (entry.type === "message") {
+          messageCount += 1;
+          const msg = (entry as { message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown } }).message;
+          if (msg?.role === "assistant") {
+            const content = msg.content;
+            const hasContent = typeof content === "string"
+              ? content.trim() !== ""
+              : Array.isArray(content) && content.length > 0;
+            lastAssistant = {
+              ...(typeof msg.stopReason === "string" ? { stopReason: msg.stopReason } : {}),
+              ...(typeof msg.errorMessage === "string" && msg.errorMessage.trim() !== "" ? { errorMessage: msg.errorMessage.trim() } : {}),
+              hasContent,
+            };
+          } else {
+            // 之后又有新消息：上一条失败不再代表"现在"的状态
+            lastAssistant = undefined;
+          }
+        }
         if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
         if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message);
         // Task 0015：列表要能回答"这条对话属于哪件事 / 和谁谈"（T16/T17）
@@ -193,6 +214,16 @@ async function listSessions(agentId: string, projectId: string, defaultSessionId
       title: displayName !== "" ? displayName : title,
       updatedAt: (await stat(path)).mtime.toISOString(),
       messages: messageCount,
+      // 只有"最后一条 assistant 就是失败的"才算失败态（历史失败不该盖住当前状态）
+      ...(lastAssistant !== undefined && lastAssistant.stopReason === "error"
+        ? {
+            failure: classifyFailure({
+              stopReason: "error",
+              ...(lastAssistant.errorMessage !== undefined ? { errorMessage: lastAssistant.errorMessage } : {}),
+              hasContent: lastAssistant.hasContent,
+            }) ?? "unknown",
+          }
+        : {}),
       isDefault: sessionId === defaultSessionId,
       ...(activeTaskId !== undefined ? { activeTaskId } : {}),
       ...(peerAgentId !== undefined ? { peer: peerAgentId } : {}),

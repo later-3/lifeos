@@ -64,6 +64,8 @@ test("出厂默认会话随模板预置：列表首条即它，第一条消息�
     // 消息条数只数 `type:"message"`（Task 0015 · todo #30）：出厂会话有 1 条 assistant 打招呼。
     // 以前是文件总行数，会把手 session 头 / session_info 都算进去（实测 389 vs 31）。
     assert.equal(list.items[0].messages, 1, "列表的 messages 必须是真实消息条数，不是文件行数");
+    // 失败态（Task 0015 · 结论 5）：成功的会话**不带** failure 字段（不带 ≠ 空值，前端据此判断红点）
+    assert.equal("failure" in list.items[0], false, "正常结束的会话不应带 failure");
 
     // 加载即显示：第一条 = assistant 打招呼（不调模型，直接来自预置文件）
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
@@ -930,5 +932,39 @@ test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务�
     const body = await response.json();
     assert.equal(body.error.code, "peer_conversation_readonly");
     assert.match(body.error.message, /lifeosagent/, "错误里要点名是谁发起的");
+  } finally { server.close(); }
+});
+
+test("会话列表的失败态：最后一条 assistant 以 error 结束才带 failure（历史失败不算）", async () => {
+  const { server, base, home } = await start();
+  const { readdir, readFile, writeFile } = await import("node:fs/promises");
+  try {
+    const list = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    const sid = list.items[0].sessionId;
+    const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+    const file = (await readdir(dir)).find((name) => name.includes(sid));
+    assert.ok(file !== undefined);
+    const path = join(dir, file);
+    const original = await readFile(path, "utf8");
+
+    // 造现场：最后追加一条"以 error 结束"的 assistant 消息
+    const errored = JSON.stringify({
+      type: "message", id: "err-probe", parentId: null, timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "fetch failed: ECONNREFUSED" },
+    });
+    await writeFile(path, `${original.trimEnd()}\n${errored}\n`, "utf8");
+    const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    const item = after.items.find((entry) => entry.sessionId === sid);
+    assert.ok(item !== undefined);
+    assert.equal(item.failure, "network", "连不上 → classifyFailure 归为 network，界面上显示 '失败：连不上'");
+
+    // 历史失败不该盖住当前状态：再追加一条正常 assistant 消息 → failure 消失
+    const ok = JSON.stringify({
+      type: "message", id: "ok-probe", parentId: null, timestamp: new Date().toISOString(),
+      message: { role: "assistant", content: [{ type: "text", text: "恢复了" }], stopReason: "end_turn" },
+    });
+    await writeFile(path, `${original.trimEnd()}\n${errored}\n${ok}\n`, "utf8");
+    const recovered = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
+    assert.equal("failure" in recovered.items.find((entry) => entry.sessionId === sid), false, "之后又有正常回复 → 不再算失败");
   } finally { server.close(); }
 });
