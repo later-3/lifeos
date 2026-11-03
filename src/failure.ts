@@ -8,11 +8,21 @@
 // 限流、服务端 5xx、模型返回空、被中断、被截断。笼统一句"模型调用失败"等于没解释。
 
 export const FAILURE_KINDS = [
-  "aborted", "truncated", "empty", "timeout", "network", "auth", "rate_limit", "quota", "server", "payload_too_large", "unknown",
+  "aborted", "truncated", "empty", "timeout", "network", "auth", "rate_limit", "quota", "server", "payload_too_large", "model_not_configured", "unknown",
 ] as const;
 export type FailureKind = (typeof FAILURE_KINDS)[number];
 
 const AUTH = /(401|403|unauthorized|forbidden|invalid api key|no api key|authentication|permission denied)/i;
+// 凭据根本没配（Task 0017）：Pi 在 models.json 用 `${VAR}` 引用环境变量，变量缺失/为空时
+// 抛的不是 HTTP 401，而是本地解析失败。必须与 AUTH 分开：AUTH 是"key 错了"，
+// 这个是"key 压根没给"，两组文案与下一步动作不同。
+// 来源（实测原文）：resolveConfigValueOrThrow →
+//   `Failed to resolve API key for provider "amr-link" from environment variable: AMR_LINK_API_KEY`
+//   `No API key found for amr-link.`
+//   `No API key for provider: amr-link`
+const NOT_CONFIGURED = /(failed to resolve (api key|config value)|no api key (found )?for|no api key for provider|provider is not configured|missing required environment variable)/i;
+// 从上面几句里把"缺的是哪个变量"取出来：`from environment variable: X` / `environment variable X`。
+const ENV_VAR_IN_MESSAGE = /(?:from )?environment variable[^A-Za-z0-9_]*(?:named )?([A-Za-z_][A-Za-z0-9_]*)/i;
 // 额度/计费耗尽：**确定性失败**，Pi 明确不重试（pi/packages/ai/src/utils/retry.ts:7-28
 // NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN：insufficient_quota / out of budget / quota exceeded /
 // billing / GoUsageLimitError / FreeUsageLimitError / Monthly usage limit reached …）。
@@ -41,6 +51,9 @@ export function classifyFailure(input: { stopReason?: string; errorMessage?: str
   if (input.stopReason === "length") return "truncated";
   const message = (input.errorMessage ?? "").trim();
   if (message !== "") {
+    // 必须排在 AUTH 之前："No API key found for amr-link" 里没有 401/403，
+    // 但含 "No API key"（AUTH 也会命中），两种病要分开报。
+    if (NOT_CONFIGURED.test(message)) return "model_not_configured";
     if (AUTH.test(message)) return "auth";
     if (QUOTA.test(message)) return "quota";
     if (RATE_LIMIT.test(message)) return "rate_limit";
@@ -54,4 +67,19 @@ export function classifyFailure(input: { stopReason?: string; errorMessage?: str
   // 跑完了但什么都没产出（重试留下的空 assistant / 模型空回复）
   if (!input.hasContent) return "empty";
   return undefined;
+}
+
+/**
+ * 从错误原文里取出"缺的是哪个环境变量"（Task 0017）。
+ *
+ * 为什么要它：用户看到的第一个问题永远是"到底要配什么"。Pi 的错误原文里带变量名
+ * （`from environment variable: AMR_LINK_API_KEY`），但那条原文混在整段堆栈式的
+ * 多层 error 里，直接展示等于没给。这里只抽名字，展示层再决定怎么说。
+ * 取不到返回 undefined（不猜）。
+ */
+export function missingEnvVarOf(errorMessage: string | undefined): string | undefined {
+  const message = (errorMessage ?? "").trim();
+  if (message === "") return undefined;
+  const match = ENV_VAR_IN_MESSAGE.exec(message);
+  return match?.[1];
 }

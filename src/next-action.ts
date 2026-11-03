@@ -41,7 +41,7 @@ export type NextActionReason =
   /** 正常结束。 */
   | "completed";
 
-export type FixKind = "fix-auth" | "fix-payload" | "fix-quota";
+export type FixKind = "fix-auth" | "fix-payload" | "fix-quota" | "fix-model-config";
 
 /**
  * Pi **明确不重试**的错误（`ai/src/utils/retry.ts:7-28` NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN
@@ -52,6 +52,8 @@ const NOT_RETRYABLE: Partial<Record<FailureKind, FixKind>> = {
   auth: "fix-auth",
   quota: "fix-quota",
   payload_too_large: "fix-payload",
+  // Task 0017：凭据没配重发 100 次都一样（Pi 连请求都发不出去），必须给“去配变量”的出口。
+  model_not_configured: "fix-model-config",
 };
 
 /**

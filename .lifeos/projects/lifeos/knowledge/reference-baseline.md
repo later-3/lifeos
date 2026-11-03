@@ -48,6 +48,8 @@
 | Agent 会话装配 | Pi `createAgentSession({ appendSystemPromptOverride, settingsManager, sessionManager, resourceLoader, customTools, model, thinkingLevel, providerRequestGate })` | 只用公开入口，不自建运行时 | 不 fork/改造 Pi |
 | 运行时资产随包发布 | 本仓库实测教训（2026-10-15）：资产必须进构建（`nitro.config.ts` `serverAssets`），dev 读源码、构建态读 `assets:<baseName>` | 同一读法通吃两种形态 | 不假设"源码一定在" |
 
+| 凭据与环境变量的解析/生效（2026-11-03 补，Task 0017） | **12-factor App** §III（config 存 env，不存代码）；**Node dotenv**（`dotenv.config()` 一次性注入 `process.env`）；**dotenvx** / **Vault Agent 模板** / **k8s reloader**（文件变化 → 重新注入，进程不重启）；**Kubernetes Secret → env**（`envFrom`，启动时注入，起完改不了）；**AWS Secrets Manager / Vault**（运行时按 TTL 拉取，凭据可轮换）；Pi `packages/coding-agent/src/core/resolve-config-value.ts`（`${VAR}` 模板解析：`$$`/`$!` 转义、`!cmd` 命令式）与 `packages/ai/src/auth/context.ts:24-30`（`process.env[name]`，`value.trim().length > 0` 才算有） | 借：**引用式配置**（`models.json` 只存 `${VAR}`，值永远来自 env）；**启动即校验、失败要可见**（fail fast 的意图，但我们的实现是 warn + 请求时拦，理由见"不借"）；**按需现取**（`checkAuth()` 每次实时读 `process.env`，而不是缓存快照）；**文件热重载只读不执行**（学 dotenvx/reloader 的"重新注入"，但用静态解析代替跑 shell） | **不借** dotenv 的"一次性注入"（进程起来后改文件无效，正是本次故障）；**不借** `zsh -ic` 重跑用户 shell 配置（实测 **7.5 秒/次**，且会执行 `.zshrc` 全部副作用：conda init、nvm、后台守护）；**不借** Vault / AWS SM 那类凭据服务（单机项目，无多副本与集中轮换需求）；**不借** `exit` 式 fail fast（`models.json` 有 12 个 provider，一个本地模型没配就崩服务会把"3 个能用"变成"全不能用"，改为逐条 warn + 用到时拦） |
+
 ## 2. 次参照（只在写明场景时使用）
 
 | 场景 | 参照点 | 借什么 | 不借什么 |

@@ -35,3 +35,25 @@ test("思考级别：显式 /thinking 覆盖过 → 保留；相同 → 不动",
   assert.equal(decideRestoreThinking({ stored: "max", agentDefault: "max", overridden: false }), "keep");
   assert.equal(decideRestoreThinking({ stored: undefined, agentDefault: "max", overridden: false }), "keep");
 });
+
+// Task 0017 · 回归：静默换模型的根因不在 decideRestoreModel 本身，而在于
+// "判了 keep 就什么都不做" 会漏掉「Pi 已经把 session.model 换成别的模型」这件事。
+// 这两条测试锁定 keep 的两种合法含义，防止以后有人把"实际模型校验"塞进纯判定里，
+// 或误以为 keep == "实际模型一定对"。
+test("Task 0017：stored == agentDefault → keep（值相同不必跟随）", () => {
+  assert.equal(decideRestoreModel({
+    stored: m("amr-link", "deepseek-v4.1-flash"),
+    agentDefault: m("amr-link", "deepseek-v4.1-flash"),
+    overridden: false,
+  }), "keep");
+});
+
+test("Task 0017：keep 不等于『实际模型正确』—— 调用方必须另外校验 session.model", () => {
+  // 本次事故的形状：文件与默认都是 amr-link（判 keep），但 amr-link 缺凭据，
+  // Pi 的 findInitialModel 把实际模型换成了 deepseek-v4-pro（sdk.ts:224-249）。
+  // decideRestoreModel 看不到 session.model，所以它必须返回 keep —— 校验是调用方的责任。
+  const stored = m("amr-link", "deepseek-v4.1-flash");
+  const actual = m("deepseek", "deepseek-v4-pro");
+  assert.equal(decideRestoreModel({ stored, agentDefault: stored, overridden: false }), "keep");
+  assert.notDeepEqual(actual, stored, "实际模型已经不等于期望模型，只有调用方能发现");
+});

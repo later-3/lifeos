@@ -1974,11 +1974,21 @@ export default function App() {
    * 就不会让一句"可以点重新发送"和"没有按钮"同时出现在屏幕上。
    */
   const renderStatus = outcomeNotice ?? turnStatus;
-  // 显示规则（用户 2026-10-22）：用过 /model → 显示会话覆盖模型；
-  // 没用过 → 显示 Agent 的**有效默认**（配置 → 系统 → 清单第一项），不是拿会话值反猜。
-  // 没有有效默认时才退回 meta.model（例如后端模型清单为空）。
+  /**
+   * 头部显示的模型 = **实际运行模型**（Task 0017）。
+   *
+   * 旧规则（2026-10-22）是：用过 `/model` → 显示覆盖模型；没用过 → 显示 Agent 的有效默认。
+   * 它造成了一个真实事故：amr-link 缺凭据，Pi 把实际模型偷偷换成了 deepseek-v4-pro，
+   * 而头部因为 `modelOverridden === false` 仍显示 amr-link —— 界面替 bug 打了掩护，
+   * 用户直到看见 402 才知道请求打到了别处（实测：`test:ui` 的
+   * 「头部显示会话实际模型（与接口 meta 一致）」当场变红）。
+   *
+   * 现在恒取 `meta.model`（后端 sessionMeta 报的实际模型）。语义上更硬：
+   * 头部 = 我发的请求实际打到哪，而不是“我配的是什么”。两者不一致时该被看见，不该被掩盖。
+   * 新建会话（还没 meta）时仍用 Agent 默认——那时还没有“实际”。
+   */
   const headerModel = sessionId !== undefined
-    ? (meta?.modelOverridden === true ? meta?.model : (agentDefaultModel ?? meta?.model))
+    ? (meta?.model ?? agentDefaultModel)
     : agentDefaultModel;
 
   return (

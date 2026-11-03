@@ -21,7 +21,14 @@ test("超时 vs 连不上：Pi 自己的 Request timed out 是超时；connectio
 
 test("鉴权 / 限流 / 额度 / 服务端", () => {
   assert.equal(classify("401 Unauthorized"), "auth");
-  assert.equal(classify("No API key for local-flashnext/x"), "auth");
+  // 2026-11-03（Task 0017）契约变更："key 压根没给" 从 auth 拆出来成 model_not_configured。
+  // 依据：Pi 在 models.json 用 `${VAR}` 引用环境变量，变量缺失时抛的是**本地解析失败**
+  // （`Failed to resolve API key … from environment variable: AMR_LINK_API_KEY`），
+  // 不是 HTTP 401。两种病的下一步不同：auth＝“key 错了”；model_not_configured＝“没给 key”。
+  assert.equal(classify("No API key for local-flashnext/x"), "model_not_configured");
+  assert.equal(classify('Failed to resolve API key for provider "amr-link" from environment variable: AMR_LINK_API_KEY'), "model_not_configured");
+  assert.equal(classify("No API key found for amr-link."), "model_not_configured");
+  assert.equal(classify("Provider is not configured: amr-link"), "model_not_configured");
   assert.equal(classify("429 Too Many Requests"), "rate_limit");
   // 2026-11-03（Task 0007 · B）契约变更：额度耗尽从 rate_limit 拆出来成 quota。
   // 依据 Pi 的 NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN（ai/src/utils/retry.ts:7-28）：

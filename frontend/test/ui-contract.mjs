@@ -500,35 +500,46 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   headerModel.expected === null || headerModel.line.includes(`${headerModel.expected.provider}/${headerModel.expected.id}`),
   `${headerModel.line}（接口 ${headerModel.expected === null ? "无模型" : `${headerModel.expected.provider}/${headerModel.expected.id}`}）`);
 
-// 头部模型显示规则（用户 2026-10-22）：没 /model 覆盖 → 有效默认；覆盖过 → 会话模型。
-// 用拦截响应证明“显示规则”，不依赖真实会话恰好被 /model 切过。
+// 头部模型显示规则（Task 0017 改）：**恒显示实际运行模型**（`meta.model`）。
+//
+// 旧规则是"没 /model 覆盖 → 显示有效默认；覆盖过 → 显示会话模型"（2026-10-22 拍板），
+// 它造成了一次真实事故：amr-link 缺凭据，Pi 把实际模型悄悄换成 deepseek-v4-pro，
+// 而头部因为 modelOverridden === false 仍显示 amr-link —— 界面替 bug 打了掩护，
+// 用户直到看见 402 才知道请求打到了别处。所以契约反转：
+//   - 未覆盖：也必须显示实际（此时实际 = 期望，看起来"没变"，但语义是硬的）；
+//   - 覆盖过：显示覆盖模型（它就等于实际）。
+// 关键用例是**两者不一致时必须以实际为准**，下面第三条专测这个。
 {
   const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
-  let overridden = false;
+  const mockSession = (meta) => displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ messages: [], meta: { thinkingLevel: "off", running: false, context: null, ...meta } }),
+  }));
   await displayPage.route(/\/api\/agents\/[^/]+\/config$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ config: null, effective: { defaultProvider: "test", defaultModel: "display-default" }, source: "catalog" }),
   }));
-  await displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
-    status: 200, contentType: "application/json",
-    body: JSON.stringify({
-      messages: [],
-      meta: {
-        model: { provider: "actual", id: "session-model" },
-        modelOverridden: overridden,
-        thinkingLevel: "off",
-        running: false,
-        context: null,
-      },
-    }),
-  }));
+
+  // 1) 未覆盖：实际 = 默认，头部显示实际（这就是用户平时看到的样子）
+  await mockSession({ model: { provider: "test", id: "display-default" }, modelOverridden: false });
   await displayPage.goto(page.url(), { waitUntil: "networkidle" });
   await displayPage.waitForTimeout(400);
-  const notOverriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
-  check("未覆盖会话头部显示有效默认（不显示会话实际值）",
-    notOverriddenLine.includes("test/display-default") && !notOverriddenLine.includes("actual/session-model"),
-    notOverriddenLine);
-  overridden = true;
+  const sameLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
+  check("未覆盖会话：头部显示实际模型（与有效默认一致时看不出差别）",
+    sameLine.includes("test/display-default"), sameLine);
+
+  // 2) 未覆盖但实际 ≠ 默认（本次事故的形状）：**必须显示实际**，不能显示默认
+  await displayPage.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
+  await mockSession({ model: { provider: "actual", id: "substituted-model" }, modelOverridden: false });
+  await displayPage.reload({ waitUntil: "networkidle" });
+  await displayPage.waitForTimeout(400);
+  const mismatchedLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
+  check("未覆盖但实际被换掉：头部必须显示实际模型，不能显示默认（Task 0017 事故形状）",
+    mismatchedLine.includes("actual/substituted-model") && !mismatchedLine.includes("test/display-default"),
+    mismatchedLine);
+
+  // 3) 覆盖过：显示覆盖模型
+  await mockSession({ model: { provider: "actual", id: "session-model" }, modelOverridden: true });
   await displayPage.reload({ waitUntil: "networkidle" });
   await displayPage.waitForTimeout(400);
   const overriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";

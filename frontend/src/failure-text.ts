@@ -4,7 +4,7 @@
  */
 export type FailureKind =
   | "aborted" | "truncated" | "empty" | "timeout" | "network" | "auth" | "rate_limit" | "quota" | "server"
-  | "payload_too_large" | "unknown";
+  | "payload_too_large" | "model_not_configured" | "unknown";
 
 const LABELS: Record<FailureKind, string> = {
   aborted: "本轮已中断",
@@ -17,6 +17,8 @@ const LABELS: Record<FailureKind, string> = {
   quota: "模型额度已用尽：需要充值或换一个模型（重试没有用）",
   server: "模型服务内部错误",
   payload_too_large: "请求体太大被网关拒绝：历史图片过多，删掉一些或新建会话（重试没有用）",
+  // Task 0017：不静默换模型。这条比什么都重要——用户选的模型用不了，就得当面说。
+  model_not_configured: "所选模型没有配置好凭据（缺环境变量或变量为空）",
   unknown: "模型调用失败",
 };
 
@@ -32,12 +34,15 @@ export function failureLabel(kind: FailureKind | undefined): string {
  * NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN）。不给按钮是对的，但不能让用户没方向 ——
  * 这三个出口是**可执行**的，而不是"失败了"。
  */
-export type FixKind = "fix-auth" | "fix-payload" | "fix-quota";
+export type FixKind = "fix-auth" | "fix-payload" | "fix-quota" | "fix-model-config";
 
 const FIX_HINTS: Record<FixKind, string> = {
   "fix-auth": "下一步：打开助手配置检查默认模型的 API key 与访问权限，改好后重新发送这句话。",
   "fix-payload": "下一步：删掉这条消息里的部分图片，或用「新建会话」重新开始（上下文已经太大，重发会再被拒）。",
   "fix-quota": "下一步：在助手配置里换一个还有额度的模型，或给当前服务商充值。",
+  // Task 0017：变量名由后端错误文案带出（它从 models.json 的 `${VAR}` 解析而来），
+  // 这里只说“去哪里补”，不重复猜变量名。
+  "fix-model-config": "下一步：按上面的变量名到 ~/.zshenv 里配好，再重启后端（或让我重新读取环境变量）。",
 };
 
 export function fixHint(kind: FixKind): string {

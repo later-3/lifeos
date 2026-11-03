@@ -18,6 +18,8 @@ import { createAgentTools } from "./agent-tools.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
+import { envRefsOf, envRefState, isCommandConfigValue } from "./env-refs.ts";
+import { reloadEnvFromShellConfigs } from "./env-reload.ts";
 import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
 // 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
@@ -190,7 +192,22 @@ async function createHostedSession(
     ...(model !== undefined ? { model } : {}),
     ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
   });
-  if (mode !== "new") await adoptAgentDefault(session, sessionManager, modelRuntime, agentId);
+  if (mode !== "new") {
+    await adoptAgentDefault(session, sessionManager, modelRuntime, agentId);
+  } else {
+    // 新建会话（Task 0017）：Pi 拿不到指定模型的凭据时会**静默**换成另一个有凭据的模型
+    // （pi/packages/coding-agent/src/core/sdk.ts:224-249 的 findInitialModel）。
+    // 我们传了 model 却没得到它，说明用户选的那个用不了——必须当场报错，
+    // 否则用户看到的界面与实际请求会分叉。
+    if (model !== undefined) {
+      const actual = session.model;
+      if (actual === undefined || actual.provider !== model.provider || actual.id !== model.id) {
+        await session.abort().catch(() => undefined);
+        const detail = describeModelUnavailable(model, await readProvidersConfig());
+        throw new Error(formatModelUnavailable(model, detail));
+      }
+    }
+  }
   return { session, modelRuntime, modelLabel };
 }
 
@@ -529,6 +546,20 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
   try {
+    // 发送前守卫（Task 0017）：会话可能是在凭据还正常时打开的，之后 key 被削/被改；
+    // 也可能因为历史原因带着 Pi 偷换的模型。发请求前再验一次，不把用户的钱花在
+    // “他不知道发生了替换”的请求上。checkAuth 实测 0.008ms/次，不需要缓存。
+    const running = target.session.model;
+    if (running !== undefined) {
+      // 环境变量是唯一事实源，但本进程可能在变量写入 rc 之前就启动了（实测真实现场）：
+      // 每次发送前都去 shell 配置文件里补一次缺失的变量（0.01-0.04ms，不执行任何命令），
+      // 这样用户改好 key 后不用重启后端。已存在的值不会被覆盖。
+      await reloadEnvFromShellConfigs().catch(() => undefined);
+      if ((await target.modelRuntime.checkAuth(running.provider)) === undefined) {
+        const detail = describeModelUnavailable(running, await readProvidersConfig());
+        throw new Error(formatModelUnavailable(running, detail));
+      }
+    }
     // P7b / D7：用户图先落盘，**发出去的消息只带引用行**（历史里没有 base64 → 压缩路径也不会带大图）；
     // 当轮可见性由 context 钩子的重注入保证（引用行在最后一条 user 消息里，走 A 段全量）。
     // 落盘失败 → 该张回退成 inline，功能降级但不丢图。
@@ -726,8 +757,81 @@ function hasThinkingOverrideIn(manager: SessionManagerLike): boolean {
 }
 
 /**
- * 恢复会话时处理"默认 vs 覆盖"（用户 2026-10-20 规则）：
- * 没被 `/model` 覆盖过的会话，重开时也要跟随最新默认；覆盖过的保留用户选择。
+ * 说清楚"这个模型为什么不能用"（Task 0017）。
+ *
+ * 为什么要这么麻烦：Pi 的原始错误是
+ *   `Failed to resolve API key for provider "amr-link" from environment variable: AMR_LINK_API_KEY`
+ * 混在多层错误里。用户看到的必须是“缺 AMR_LINK_API_KEY”，而不是“模型调用失败”。
+ *
+ * 变量名从**哪里**来：`models.json` 的 `apiKey` 字段（唯一事实源）。
+ * 不用 `runtime.getRegisteredProviderConfig()`（那是给扩展注册用的，实测回落到 undefined），
+ * 也不用 `runtime.config.getProvider()`（不在公开 `.d.ts` 上）。
+ *
+ * 只报“缺什么 + 怎么补”，不报值（凭据零泄露，`backend/code.md` §2.10）。
+ */
+function describeModelUnavailable(
+  model: { provider: string; id: string },
+  modelsConfig: Record<string, unknown>,
+): string {
+  const provider = modelsConfig[model.provider] as { apiKey?: unknown; name?: unknown } | undefined;
+  const rawKey = typeof provider?.apiKey === "string" ? provider.apiKey : undefined;
+  const label = `${model.provider}/${model.id}`;
+  if (isCommandConfigValue(rawKey)) {
+    return `${label} 的 API key 由命令提供（models.json 里 ! 开头的配置），命令执行失败或没返回内容`;
+  }
+  const refs = envRefsOf(rawKey);
+  if (refs.length === 0) {
+    // 明文 key 或 provider 自带的 env 约定：我们没有可指名的变量，只能报结果
+    return rawKey === undefined ? `${label} 在 models.json 里没有配 apiKey` : `${label} 有 apiKey 但无法解析`;
+  }
+  const bad = refs
+    .map((name) => ({ name, state: envRefState(process.env, name) }))
+    .filter((item) => item.state.kind !== "ok");
+  if (bad.length === 0) {
+    // 变量都在且格式正常，但仍被拒：不是缺变量（可能被删了、或 Pi 判定更严）
+    return `${label} 的凭据无法解析（环境变量 ${refs.join("、")} 看起来是设置了的）`;
+  }
+  return bad.map(({ name, state }) => {
+    if (state.kind === "missing") return `缺少环境变量 ${name}`;
+    if (state.kind === "empty") return `环境变量 ${name} 已设置但为空`;
+    if (state.kind !== "malformed") return `环境变量 ${name} 不可用`;
+    const why = state.reason === "quoted" ? "带了引号" : state.reason === "newline" ? "带了换行符" : "首尾有空格";
+    return `环境变量 ${name} ${why}`;
+  }).join("；");
+}
+
+/** 读 models.json 的 providers（唯一事实源；读不到就当空，不猜）。 */
+async function readProvidersConfig(): Promise<Record<string, unknown>> {
+  const path = process.env.LIFEOS_MODELS_PATH?.trim() || join(resolveHome(), "config", "models.json");
+  const text = await readFile(path, "utf8").catch(() => "");
+  if (text === "") return {};
+  try {
+    const data = JSON.parse(text) as { providers?: unknown };
+    return typeof data.providers === "object" && data.providers !== null
+      ? (data.providers as Record<string, unknown>)
+      : {};
+  } catch { return {}; }
+}
+
+/** 拼成给用户看的一句话（带“怎么补”的下一步）。 */
+function formatModelUnavailable(
+  model: { provider: string; id: string },
+  detail: string,
+  error?: unknown,
+): string {
+  const raw = error instanceof Error ? error.message.trim() : "";
+  const head = `${model.provider}/${model.id} 不可用：${detail}`;
+  // 补得上就告诉他怎么补；补不上（明文 key / 命令式）就把 Pi 原话附在后面
+  const hint = detail.startsWith("缺少环境变量") || detail.startsWith("环境变量")
+    ? "。请在 ~/.zshenv 里配置好这个变量后重启后端"
+    : "";
+  return raw === "" ? `${head}${hint}` : `${head}${hint}\n（原始错误：${raw.slice(0, 300)}）`;
+}
+
+/**
+ * 会话启动失败（凭据不可用）：不让会话存在，否则后端会拿 Pi 偷换的模型继续跑。
+ *
+ * 这里抛出的错误最终落到 HTTP 400 或回合 error，两者都会把 message 显示给用户。
  */
 async function adoptAgentDefault(
   session: HostedSession,
@@ -738,17 +842,47 @@ async function adoptAgentDefault(
   const resolution = await resolveModelChoice(agentId);
   const agentDefault: ModelRef | undefined = resolution === undefined ? undefined
     : { provider: resolution.choice.defaultProvider, id: resolution.choice.defaultModel };
+  const overridden = hasOverrideIn(manager);
   const decision = decideRestoreModel({
     stored: sessionModelOf(manager),
     agentDefault,
-    overridden: hasOverrideIn(manager),
+    overridden,
   });
-  if (decision === "follow" && agentDefault !== undefined) {
-    const target = modelRuntime.getModel(agentDefault.provider, agentDefault.id);
-    if (target !== undefined) {
-      try { await session.setModel(target); } catch { /* 默认模型此刻不可用（缺 key 等）：保持原样，下次再试 */ }
+
+  // "期望模型"分两种情况（Task 0017）：
+  //   1. 用户用 /model 显式覆盖过 → 期望 = 覆盖的那个（`stored`）；
+  //   2. 没覆盖过 → 期望 = Agent 默认。
+  //
+  // ⚠ 本次静默换模型的根因：以前只在 decision === "follow" 时调 setModel，
+  // 而 decideRestoreModel 比较的是「文件里的 model_change」与「Agent 默认」——
+  // 两者都是 amr-link 时判 "keep"（值相同，没必要跟随），于是**没有任何一行代码
+  // 去看 session.model 到底是什么**。Pi 已经因为 amr-link 缺凭据把它偷偷换成了
+  // deepseek-v4-pro（sdk.ts:224-249 的 findInitialModel），而我们一无所知。
+  //
+  // 所以：只要决定了"期望是谁"，就必须让**实际**等于它；不等就切回去，切不回去就报错。
+  const expected = overridden ? sessionModelOf(manager) : agentDefault;
+  if (expected === undefined) {
+    // 既没覆盖也没默认：无可期望，交给 Pi 的回落（此时没有"用户的选择"可违背）
+  } else {
+    const wanted = modelRuntime.getModel(expected.provider, expected.id);
+    if (wanted !== undefined) {
+      const actual = session.model;
+      const same = actual !== undefined && actual.provider === wanted.provider && actual.id === wanted.id;
+      // decision 只决定"要不要主动跟随默认"，不决定"要不要保证实际=期望"：
+      // 显式覆盖的会话已不等于默认，decision 是 keep，但实际仍可能被 Pi 换掉了。
+      if (!same || decision === "follow") {
+        try {
+          await session.setModel(wanted);
+        } catch (error) {
+          // 切不回去 ⇒ 用户选的模型真的不可用。如实报，绝不留一个
+          // "界面写 A、实际跑 B"的会话继续花钱。
+          const detail = describeModelUnavailable(wanted, await readProvidersConfig());
+          throw new Error(formatModelUnavailable(wanted, detail, error));
+        }
+      }
     }
   }
+
   // 思考级别同规则（C120）：没被 `/thinking` 覆盖过 → 跟随配置；覆盖过 → 保留。
   const wantThinking = resolution?.choice.defaultThinkingLevel;
   const thinkingDecision = decideRestoreThinking({

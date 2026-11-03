@@ -91,3 +91,13 @@
 
 - 规则：标题等派生名称在第一条消息发出时同步写入内存会话名（与重命名同一方法）；这一步必须在 POST 返回 202 之前完成。Pi 只在助手回复后才落盘，所以"等文件出现"会让标题晚于用户动作。首轮失败时不得删除待落盘登记（否则会话从列表消失）。
 - 依据：2026-10-25 C127（标题要等首个回复才出现；模型不可用时新会话隐身）。机器检查：`test/session-title.test.mjs`（T70）。
+
+### 2.17 凭据与模型选择必须显式：实际必须等于期望，缺凭据要在发请求前拦住
+
+- 规则：
+  1. **期望模型** = 用户 `/model` 显式覆盖值，否则 = Agent 默认；**实际模型** = `session.model`。四条路径（新建会话 / 恢复会话 / 发送消息 / 切模型）都必须校验 `实际 === 期望`：不等就切回，切不回就**报错**，绝不允许"界面写 A、实际跑 B"。
+  2. 凭据预检用**实时** `checkAuth()`，**不得**用 `hasConfiguredAuth()`（读 `ModelRuntime.snapshot` 缓存，`process.env` 变更后仍返回旧值）。
+  3. 错误必须说到**变量级**，并区分 `missing` / `empty` / `malformed` 三种病（空白值与带引号的值在 Pi 那里是不同的判定结果）；变量名从 `models.json` 的 `${VAR}` 引用解析得出，不写死。
+  4. 界面显示模型必须取**实际运行模型**（`sessionMeta().model`），不得显示配置值来"代表"实际。
+- 依据：2026-11-03 C162（用户选 amr-link，实际请求打到 DeepSeek 官方并 402；`adoptAgentDefault` 只在 `decision === "follow"` 时调 `setModel`，而该判定比较的是两个**记录值**，两者相同时判 `keep`，**没有任何代码检查 `session.model`**）。实测数据：`checkAuth` 0.008ms/次；Pi 的 `setModel()` 内部用的正是 `checkAuth`（`agent-session.ts:2508`）；`hasConfiguredAuth` 在写 `process.env` 后仍为 `false`。
+- 机器检查：`test/model-follow.test.mjs`（2 条回归锁定"keep ≠ 实际模型正确"）、`test/env-refs.test.mjs`（变量名解析与三种病穷举）、`test/env-reload.test.mjs`（只补缺失项、需 shell 求值的整行跳过）、`test/failure.test.mjs`（`No API key` → `model_not_configured` 而非 `auth`）、`frontend/test/ui-contract.mjs`（"未覆盖但实际被换掉 → 头部显示实际"）。
