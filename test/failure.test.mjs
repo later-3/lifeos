@@ -19,13 +19,40 @@ test("超时 vs 连不上：Pi 自己的 Request timed out 是超时；connectio
   assert.equal(classify("fetch failed"), "network");
 });
 
-test("鉴权 / 限流 / 服务端", () => {
+test("鉴权 / 限流 / 额度 / 服务端", () => {
   assert.equal(classify("401 Unauthorized"), "auth");
   assert.equal(classify("No API key for local-flashnext/x"), "auth");
   assert.equal(classify("429 Too Many Requests"), "rate_limit");
-  assert.equal(classify("insufficient_quota"), "rate_limit");
+  // 2026-11-03（Task 0007 · B）契约变更：额度耗尽从 rate_limit 拆出来成 quota。
+  // 依据 Pi 的 NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN（ai/src/utils/retry.ts:7-28）：
+  // 这类错误 Pi 明确不重试；与"限流等一会儿就好"是两种处置（充值/换模型 vs 稍后重试）。
+  assert.equal(classify("insufficient_quota"), "quota");
+  assert.equal(classify("quota exceeded"), "quota");
+  assert.equal(classify("Monthly usage limit reached"), "quota");
+  assert.equal(classify("out of budget"), "quota");
   assert.equal(classify("503 Service Unavailable"), "server");
   assert.equal(classify("provider returned error"), "server");
+});
+
+// Task 0007 · B：补齐 Pi 可重试清单里我们此前落进 unknown 的网络类错误。
+// 依据 pi/packages/ai/src/utils/retry.ts:60-96（RETRYABLE_PROVIDER_ERROR_PATTERN）。
+test("网络类：Pi 认为可重试的传输错误都要归到 network（不能落进 unknown）", () => {
+  const networkMessages = [
+    "Connection error.",
+    "connection lost",
+    "stream ended before message_stop",
+    "ended without",
+    "http2 request did not get a response",
+    "reset before headers",
+    "websocket closed",
+    "socket hang up",
+    "fetch failed",
+    "getaddrinfo ENOTFOUND api.deepseek.com",
+    "other side closed",
+  ];
+  for (const message of networkMessages) {
+    assert.equal(classify(message), "network", message);
+  }
 });
 
 test("stopReason：中断 / 截断 / 空回复 / 未知错误", () => {

@@ -11,7 +11,7 @@ import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining }
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
-  abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
+  abortRetryOf, abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask,
 } from "./agent-host.ts";
@@ -612,6 +612,22 @@ app.use(async (c, next) => {
     if (!aborted) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
     return c.json({ aborted: true });
   });
+
+  // 只取消正在进行的自动重试，不打断整轮（Task 0007 · A2）。
+  // Pi CLI 在重试退避期间按 Esc 走的是 abortRetry()（interactive-mode.ts:3749-3752），语义与 abort() 不同：
+  // 取消重试 = "别试了，我自己处理"；abort = "整轮别跑了"。我们此前只有后者。
+  app.post("/api/agents/:id/sessions/:sessionId/retry/abort", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    if (!(await sessionExists(agent.id, c.req.param("sessionId")))) {
+      const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
+    }
+    if (!abortRetryOf(agent.id, c.req.param("sessionId"))) {
+      const error = problem("not_retrying", "这个会话当前没有在自动重试", 409); return c.json(error.body, error.status);
+    }
+    return c.json({ retryAborted: true });
+  });
+
 
   // 压缩上下文（Pi compact()；会先 abort 当前 run）
   app.post("/api/agents/:id/sessions/:sessionId/compact", async (c) => {

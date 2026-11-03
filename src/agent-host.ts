@@ -803,6 +803,24 @@ export async function abortSession(agentId: string, sessionId: string): Promise<
   return true;
 }
 
+/**
+ * 只取消"正在进行中的自动重试"，不打断整轮（Task 0007 · A2）。
+ *
+ * 为什么单独出来：Pi CLI 在重试退避期间按 Esc 调的是 `session.abortRetry()`
+ * （pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts:3749-3752），
+ * 不是 `abort()`。两者语义不同：取消重试 = "别试了，我要自己处理"；
+ * abort = "整轮别跑了"。我们此前只有后者，用户在 7 秒倒计时里按 Esc 会把整轮打断。
+ *
+ * 返回 false 表示当前没有在重试（调用方据此决定是否退回到 abort 语义）。
+ */
+export function abortRetryOf(agentId: string, sessionId: string): boolean {
+  const state = stateOf(agentId).sessions.get(sessionId);
+  if (state === undefined) return false;
+  if (!state.session.isRetrying) return false;
+  state.session.abortRetry();
+  return true;
+}
+
 /** 生成中投入输入：steer 插进当前思考，followUp 本轮结束后处理（都是 Pi 原生队列）。 */
 export type QueueVerdict = { queued: "steer" | "followUp" } | { code: "session_idle" | "session_not_found" } | { code: "error"; message: string };
 
@@ -990,6 +1008,12 @@ export function messagesOf(state: SessionState) {
   const out: Array<{
     role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind;
     durationMs?: number; tokens?: number;
+    /**
+     * Pi 的回合终态原样透出（Task 0007）：前端要按与后端**同一张表**判定"这一轮算不算失败"，
+     * 就必须拿到同一个输入。在此之前前端只看得到 text/error，只能用"文本是否为空"猜，
+     * 于是出现"提示条说可以点重新发送、按钮不出现"。不做任何判断，只搬运。
+     */
+    stopReason?: string;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
@@ -1042,6 +1066,7 @@ export function messagesOf(state: SessionState) {
         ...(errorText !== undefined ? { error: errorText } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
         ...(tokens !== undefined ? { tokens } : {}),
+        ...(typeof raw.stopReason === "string" && raw.stopReason !== "" ? { stopReason: raw.stopReason } : {}),
       });
     } else if (message.role === "toolResult") {
       const result = textOf(message);

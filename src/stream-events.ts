@@ -26,7 +26,13 @@ export type StreamEvent =
   | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number; images?: Array<{ data: string; mimeType: string }> }
   // Pi 的自动重试：让界面能显示"失败原因 + 第几次/共几次"（否则失败时界面一片空白）
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
-  | { type: "retry_end"; success: boolean };
+  /**
+   * 重试结束。`attempt` / `finalError` 是 Pi 的 `auto_retry_end` 本来就带的字段
+   * （pi/packages/coding-agent/src/core/agent-session.ts:1966-1969）。
+   * Pi CLI 用它说 "Retry failed after N attempts: <原因>"（interactive-mode.ts:3768），
+   * 我们此前丢掉这两个字段，于是失败时无法告诉用户"已经自动试过几次"。
+   */
+  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string };
 
 /** 工具结果里的图片上限：单张字节数与张数（实测 read 出来的图片 13KB–382KB，见 image-input.md）。 */
 export const MAX_TOOL_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -86,7 +92,8 @@ type PiEvent = {
   toolName?: unknown;
   args?: unknown;
   partialResult?: unknown;
-  attempt?: unknown; maxAttempts?: unknown; delayMs?: unknown; errorMessage?: unknown; success?: unknown;
+  // finalError 来自 Pi 的 auto_retry_end（agent-session.ts:1969）；Pi CLI 用它渲染失败文案
+  attempt?: unknown; maxAttempts?: unknown; delayMs?: unknown; errorMessage?: unknown; success?: unknown; finalError?: unknown;
   result?: unknown;
   isError?: unknown;
   durationMs?: unknown;
@@ -139,7 +146,12 @@ export function toStreamEvent(event: unknown): StreamEvent | undefined {
     };
   }
   if (input.type === "auto_retry_end") {
-    return { type: "retry_end", success: input.success === true };
+    return {
+      type: "retry_end",
+      success: input.success === true,
+      ...(typeof input.attempt === "number" ? { attempt: input.attempt } : {}),
+      ...(typeof input.finalError === "string" && input.finalError !== "" ? { finalError: input.finalError } : {}),
+    };
   }
 
   if (input.type === "tool_execution_start") {

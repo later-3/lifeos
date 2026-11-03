@@ -11,8 +11,12 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// 必须用 fileURLToPath，不能用 `new URL(...).pathname`：后者保留百分号编码，
+// 中文目录名（Task 目录常是中文）会被编成 `%E9%87%8D…`，readdirSync 直接 ENOENT。
+// 2026-11-03 实测：在 `tasks/0007-重新发送按钮不出现/evidence/worktree` 里跑 lint:tokens 失败。
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "frontend/src");
 const ALLOW_DIRS = [join(SRC, "design")];                 // primitive 层可以写布局常量，但仍不许调色板
 

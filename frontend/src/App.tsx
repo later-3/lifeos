@@ -33,8 +33,8 @@ import { MessageView, type Block } from "./Message";
 import { TurnStatusBar } from "./turn-status";
 import { MobileNav, type Level } from "./mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
-import { resendPlan } from "./resend";
-import { failureLabel, type FailureKind } from "./failure-text";
+import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
+import { failureLabel, fixHint, type FailureKind } from "./failure-text";
 import type { TurnStep } from "./working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
@@ -119,6 +119,11 @@ type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
   /** 这一段的生成耗时（ms）与 token（input+output）：过程条统计用（2026-11-02） */
   durationMs?: number; tokens?: number;
+  /**
+   * Pi 的回合终态（Task 0007）：`done` / `lost` 的唯一判据输入。
+   * 后端 `messagesOf()` 原样透出；前端交给 `turnOutcomeOf()` 判，不再用"文本是否为空"猜。
+   */
+  stopReason?: string;
 };
 type Group = { project: Project; sessions: SessionItem[] };
 // 流事件（思考/文本/工具）与运行边界（done/error）都在一条 SSE 上；事件名 = 事件类型。
@@ -286,6 +291,12 @@ export default function App() {
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
   const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
+  /**
+   * 最近一轮失败前，Pi 自动重试了几次（Task 0007 · A1）。
+   * 来源是 `auto_retry_end` 的 `attempt`（Pi CLI 同款：`Retry failed after N attempts`）。
+   * 只用于失败块的说明文字；换会话/新回合时清空。
+   */
+  const [retriedTimes, setRetriedTimes] = useState<number | undefined>();
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
@@ -700,6 +711,7 @@ export default function App() {
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
+    setRetriedTimes(undefined);   // 换会话/开草稿：上一轮的重试次数不再适用于新会话
     setTurnStatus(undefined);
     setActiveTool(undefined);
     activeTurnIdRef.current = null;
@@ -727,11 +739,13 @@ export default function App() {
     } else if (current.current === sid) {
       setRunFacts((f) => settleStopped(f, sid, Date.now()));   // 服务端说不在跑：清掉可能残留的运行点
       // 最近一轮若是被中断（lost）：状态条给出原因，而不是只剩一个"重新发送"按钮（任务 0006）
+      // Task 0007：提示与按钮同源——`turnNoticeOf()` 与 `resendPlan()` 向 `turnOutcomeOf()` 问同一个问题；
+      // 此处服务端已说不在跑（上面 running 分支进不来），所以 busy=false，提示提按钮时按钮一定在。
       void fetch(`/api/agents/${a.id}/sessions/${sid}/turns/last`)
         .then((response) => (response.ok ? response.json() as Promise<{ turn?: { state: string } | null }> : undefined))
         .then((body) => {
           if (current.current !== sid) return;
-          const notice = lostNoticeFor(body?.turn);
+          const notice = turnNoticeOf({ outcome: outcomeOfTurn(body?.turn), busy: false });
           if (notice !== undefined) setTurnStatus(notice);
         })
         .catch(() => undefined);
@@ -928,7 +942,15 @@ export default function App() {
         if (payload.type === "done") return finishFocused(payload, "done");
         if (payload.type === "error") return finishFocused(payload, "error");
         if (payload.type === "retrying") return applyRetrying(payload);
-        if (payload.type === "retry_end") { lastEventAtRef.current = Date.now(); setRetry(undefined); return; }
+        if (payload.type === "retry_end") {
+          lastEventAtRef.current = Date.now();
+          // Pi 的 auto_retry_end 带着"试到第几次"与最终错误（agent-session.ts:1966-1969）；
+          // Pi CLI 用它说 "Retry failed after N attempts: <原因>"（interactive-mode.ts:3768）。
+          // 留下来给失败块用：否则用户只看到"超时了"，不知道系统已经自动试过 N 次。
+          if (payload.success !== true && typeof payload.attempt === "number") setRetriedTimes(payload.attempt);
+          setRetry(undefined);
+          return;
+        }
         applyStreamMessage(payload);
         return;
       case "refresh-groups":
@@ -1351,6 +1373,7 @@ export default function App() {
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
+    setRetriedTimes(undefined);   // 新回合：重新计数（上一轮试了几次与本轮无关）
     setTurnStatus(undefined);
     setActiveTool(undefined);
     lastEventAtRef.current = Date.now();   // 发送即重置心跳：否则"页面静置>60s 后发送"会被误判成丢轮
@@ -1527,10 +1550,27 @@ export default function App() {
   }
 
   /** 打断：Pi 原生 abort()；run 的 finally 会发 done，前端据此收尾。 */
+  /**
+   * 打断（Esc / 停止钮）。
+   *
+   * 与 Pi CLI 对齐（Task 0007 · A2）：重试退避期间按 Esc，只取消"这次自动重试"，
+   * 不打断整轮 —— Pi CLI 在这里调的是 `abortRetry()` 而不是 `abort()`
+   * （interactive-mode.ts:3749-3752）。原因：重试中用户的意图通常是"别试了，我自己来"，
+   * 而不是"这一轮整个不要了"。没在重试时才退回整套打断语义。
+   */
   async function stop() {
     if (sessionId !== undefined) setRunFacts((f) => queueClear(f, sessionId));
 
     if (agent === undefined || sessionId === undefined) return;
+    if (retry !== undefined) {
+      const retryResponse = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/retry/abort`, { method: "POST" }).catch(() => undefined);
+      if (retryResponse?.ok === true) {
+        // 服务端会在随后发 retry_end(success=false)，由它统一清 retry 状态；这里只给反馈
+        toast("已取消自动重试", "success");
+        return;
+      }
+      // 409 not_retrying：已经不在重试了 → 落到下面按整套打断处理
+    }
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
     toast(response?.ok === true ? "已请求打断" : "打断失败", response?.ok === true ? "success" : "error");
   }
@@ -1911,6 +1951,29 @@ export default function App() {
   const closeAllLeft = () => { setShowNav(false); setShowGroups(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
+  /**
+   * 状态条上的回合提示（Task 0007）：**从与按钮同一份数据派生**。
+   *
+   * 为什么不用 `turnStatus` 的 state：那个值由打开会话时的一次 `turns/last` 设下，之后回合转 running
+   * 也不会被清（`applyFocusedTurn` 只改 busy）。于是出现用户报的现象：提示条还写着"可以点重新发送"，
+   * 按钮已经被 busy 抑掉。现在提示由 `resend` 同一个判定得出（同一个 `turnOutcomeOf` + 同一个 `busy`），
+   * 从结构上不可能与按钮不一致。`turnStatus` 仍保留，用於非回合类状态文案（对账成功/中断等）。
+   */
+  const outcomeNotice = turnNoticeOf({ outcome: turnOutcomeOfMessages(messages), busy });
+  /**
+   * 不可重试错误的出口文案（Task 0007 · 阶段一）：auth / quota / payload_too_large 不给重发，
+   * 但必须给"下一步做什么"（`src/next-action.ts` 判 kind=fix，文案在 `failure-text.ts`）。
+   * 生成中不显示：那时这一轮还没结束。
+   */
+  const turnAction = nextActionOfMessages(messages);
+  const failureFixHint = !busy && turnAction.kind === "fix" ? fixHint(turnAction.fix) : undefined;
+  /**
+   * 状态条最终文案：**回合提示优先**（它与按钮同源），否则用 `turnStatus`（非回合类状态，如对账成功）。
+   *
+   * 两者互斥地覆盖：`outcomeNotice` 在 busy 时也会给出（“正在生成中…”）或不出，所以只要它在，
+   * 就不会让一句"可以点重新发送"和"没有按钮"同时出现在屏幕上。
+   */
+  const renderStatus = outcomeNotice ?? turnStatus;
   // 显示规则（用户 2026-10-22）：用过 /model → 显示会话覆盖模型；
   // 没用过 → 显示 Agent 的**有效默认**（配置 → 系统 → 清单第一项），不是拿会话值反猜。
   // 没有有效默认时才退回 meta.model（例如后端模型清单为空）。
@@ -2062,6 +2125,8 @@ export default function App() {
                       {...(message.error !== undefined ? { error: message.error } : {})}
                       {...(message.failure !== undefined ? { failure: message.failure } : {})}
                       {...(message.failure !== undefined && index !== messages.length - 1 ? { historical: true } : {})}
+                      {...(retriedTimes !== undefined && index === messages.length - 1 ? { retriedTimes } : {})}
+                      {...(failureFixHint !== undefined && index === messages.length - 1 ? { fixHintText: failureFixHint } : {})}
                       {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
                   );
                 });
@@ -2088,13 +2153,13 @@ export default function App() {
                 左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
                 手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
             <div data-testid="composer-dock"
-              className={`${!(isMobile && !busy && turnStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
+              className={`${!(isMobile && !busy && renderStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
               <div className="min-w-0 flex-1" data-testid="turn-status-bar">
                 <TurnStatusBar busy={busy} step={turnStep} phase={phase}
                   {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
                   {...(activeTool !== undefined ? { activeTool } : {})}
                   {...(retry !== undefined ? { retry } : {})}
-                  {...(turnStatus !== undefined ? { status: turnStatus } : {})}
+                  {...(renderStatus !== undefined ? { status: renderStatus } : {})}
                   {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
                   {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
                   {...(meta?.context !== undefined ? { context: meta.context } : {})}
@@ -2412,5 +2477,5 @@ import { logger } from "./logger";
 import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, isRunning, hasUnread, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
 import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
-import { lostNoticeFor } from "./turn-notice";
+import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./event-guards";
