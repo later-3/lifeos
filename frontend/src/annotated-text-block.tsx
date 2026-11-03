@@ -72,7 +72,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
   const [draft, setDraft] = useState<{ start: number; end: number; quote: string; rects: readonly DOMRect[] } | null>(null);
   const hideTimer = useRef<number | undefined>(undefined);
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
-  const holdRef = useRef({ dragging: false, inBox: false });
+  const holdRef = useRef({ dragging: false, inBox: false, freeze: false });
   /** 正在拖动哪一条（null = 没在拖）。Connector 用它决定是否 rAF 跟随。 */
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // scheduleHide 在定时器/事件里执行，闭包可能拿到旧的 annotations，用 ref 取最新
@@ -102,11 +102,27 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       if (host !== null) setHostRect(host.getBoundingClientRect());
     };
     refresh();
-    window.addEventListener("resize", refresh);
-    window.addEventListener("scroll", refresh, true);
+    // resize/scroll 会让鼠标相对位置变化，但那不是"用户移开了"。
+    // 把它们当"移开"处理会把框收掉（实测：窗口变窄后框消失且不回来）。
+    // 这里只刷新坐标，不动显示状态。
+    // 布局变化（resize/scroll）期间冻结"移开就收起"：
+    // 这两个动作会让鼠标相对位置变化，但那不是"用户移开了"。
+    // 实测：窗口变窄后框消失且不回来。冻结一个短窗口，让布局先稳定。
+    let freezeTimer: number | undefined;
+    const refreshKeepOpen = () => {
+      clearHideTimer();
+      holdRef.current.freeze = true;
+      if (freezeTimer !== undefined) window.clearTimeout(freezeTimer);
+      freezeTimer = window.setTimeout(() => { holdRef.current.freeze = false; }, 400);
+      refresh();
+    };
+    window.addEventListener("resize", refreshKeepOpen);
+    window.addEventListener("scroll", refreshKeepOpen, true);
     return () => {
-      window.removeEventListener("resize", refresh);
-      window.removeEventListener("scroll", refresh, true);
+      if (freezeTimer !== undefined) window.clearTimeout(freezeTimer);
+      holdRef.current.freeze = false;
+      window.removeEventListener("resize", refreshKeepOpen);
+      window.removeEventListener("scroll", refreshKeepOpen, true);
     };
   }, [openIds, draft]);
 
@@ -118,7 +134,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
   }, []);
 
   const scheduleHide = useCallback(() => {
-    if (holdRef.current.dragging || holdRef.current.inBox) return;
+    if (holdRef.current.dragging || holdRef.current.inBox || holdRef.current.freeze) return;
     clearHideTimer();
     hideTimer.current = window.setTimeout(() => {
       // 只收起**未钉住**的框；钉住的一个都不动（"钉"的唯一职责）

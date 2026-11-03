@@ -377,7 +377,8 @@ export function AnnotationCard({
       bar={<>
         {bar}
         <span className="ml-auto flex items-center gap-0.5">
-          <IconButton size="sm" label={ui.pinned ? "已固定 · 点一下解除" : "固定在这个位置（钉住后才能拖）"}
+          <IconButton size="sm"
+            label={ui.pinned ? "已钉住 · 点一下解除" : "钉住，让它一直显示"}
             active={ui.pinned} data-testid="card-pin" onClick={onTogglePinned}>
             <PinIcon />
           </IconButton>
