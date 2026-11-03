@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconPlus, IconTrash, IconX,
+  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
@@ -41,7 +41,7 @@ import { TurnInspector } from "./SessionHistory";
 import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
-import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import { shortTitleOf } from "../../src/session-title.ts";
 
@@ -1156,6 +1156,34 @@ export default function App() {
     if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
   }
 
+  /**
+   * 在**指定的项目**下开新会话草稿（Task 0006）。
+   *
+   * 与 `newSession()` 的差别只有一件事：归属由参数决定，不由 `selectedProjectId` 的现值决定。
+   * 为什么这样更可靠：入口长在那个项目的分组头里，"点谁就在谁下面开"不再依赖"上次选中了谁"；
+   * 改前点会话行/点其他分组头都不会改 `selectedProjectId`，于是草稿会落回上一个项目。
+   *
+   * 为什么不用 `selectProject()`：它会 `openSession(最新会话)`——那是"进入项目"，不是"开草稿"。
+   * 这里只复用它的**清理语义**（清会话/清 meta/刷新默认模型），落点是空白草稿。
+   */
+  function newSessionIn(project: Project) {
+    if (agent === undefined) return;
+    // 已经在这个项目的草稿里：幂等（本组按钮已禁用，这里是兜底，不重复 reset）
+    if (selectedProjectId === project.id && sessionId === undefined) return;
+    if (selectedProjectId !== project.id) {
+      setHistory(undefined);
+      setSelectedProjectId(project.id);
+      void refreshAgentDefaultModel(agent.id);
+    }
+    resetChatState();
+    setSessionId(undefined);      // draftKey 随之落到新项目；URL 去 session
+    current.current = undefined;
+    setShowGroups(true);
+    // 折叠的组点了 ＋ 要能看见结果：展开它
+    setCollapsedGroups((previous) => ({ ...previous, [project.id]: false }));
+    if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
   async function registerProject(path: string): Promise<string | null> {
     if (agent === undefined) return "没有当前助手";
     const response = await fetch(`/api/agents/${agent.id}/projects`, {
@@ -1449,12 +1477,24 @@ export default function App() {
 
   // 草稿态（还没有会话）所有命令都无法执行：置灰并说明“发送后可用”（决策 ②；参考 Open WebUI 只列可用的命令）。
   const draftMode = sessionId === undefined;
+  /**
+   * `/new` 的落点：**当前项目**（Task 0006）。
+   *
+   * 按钮已经把归属变成界面位置，但命令没有这层信息，所以它只能落到当前项目。
+   * 两者走同一个 `newSessionIn()`，不出现两套“归属规则”。
+   * 当前项目在列表里查不到（极少：项目刚被移除）时退回旧行为（保留当前项目不变）。
+   */
+  function newSessionCommand() {
+    const project = groups.find((group) => group.project.id === selectedProjectId)?.project;
+    if (project === undefined) { newSession(); return; }
+    newSessionIn(project);
+  }
   const COMMANDS: PaletteItem[] = [
     { key: "/compact", label: "/compact", hint: "压缩上下文（Pi 原生 compact）", disabled: draftMode, run: () => void compactNow() },
     { key: "/model", label: "/model", hint: "切换本会话模型", disabled: draftMode, run: () => void openModelPalette() },
     { key: "/thinking", label: "/thinking", hint: "切换思考级别", disabled: draftMode, run: () => setPalette({ items: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ key: level, label: level, hint: meta?.thinkingLevel === level ? "当前" : "思考级别", run: () => { void applyThinking(level); } })), index: 0 }) },
     { key: "/name", label: "/name <名称>", hint: "重命名会话", disabled: draftMode, run: () => setInput("/name ") },
-    { key: "/new", label: "/new", hint: "新建会话", disabled: draftMode, run: () => void newSession() },
+    { key: "/new", label: "/new", hint: "新建会话", disabled: draftMode, run: () => void newSessionCommand() },
     { key: "/copy", label: "/copy", hint: "复制最后一条回复", disabled: draftMode, run: copyLastAssistant },
     { key: "/export", label: "/export", hint: "导出为 Markdown", disabled: draftMode, run: exportMarkdown },
     { key: "/abort", label: "/abort", hint: "打断当前回复（Esc）", disabled: draftMode, run: () => void stop() },
@@ -1779,6 +1819,8 @@ export default function App() {
                       selected={group.project.id === selectedProjectId}
                       onToggle={() => setCollapsedGroups((previous) => ({ ...previous, [group.project.id]: open }))}
                       onSelect={() => { setSelectedProjectId(group.project.id); setCollapsedGroups((previous) => ({ ...previous, [group.project.id]: false })); }}
+                      onNewSession={() => newSessionIn(group.project)}
+                      onNewSessionDisabled={group.project.id === selectedProjectId && sessionId === undefined}
                       {...(group.project.path !== undefined ? {
                         onRemove: () => setConfirm({
                           title: `移除「${group.project.name}」`,
@@ -1857,14 +1899,7 @@ export default function App() {
               })}
             </div>
             <PanelFooter>
-              <div className="space-y-1.5">
-                <span className="block" title={sessionId === undefined ? "已经在新建会话里：直接输入并发送即可" : undefined}>
-                  <Button size="sm" className="w-full disabled:bg-sunken disabled:ring-0" disabled={sessionId === undefined} onClick={() => void newSession()}>
-                    <IconPlus size={14} /> 新建会话
-                  </Button>
-                </span>
-                <AddProjectButton onClick={() => setAddingProject(true)} />
-              </div>
+              <AddProjectButton onClick={() => setAddingProject(true)} />
             </PanelFooter>
           </aside>
           <DragHandle onStart={(event) => beginDrag("c2", event)} />

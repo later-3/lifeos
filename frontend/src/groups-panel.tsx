@@ -14,13 +14,13 @@
  * - 组内行缩进 = 28 + 8 = 36（只允许两条左缘）；组内行双行 56；组间距 8；列内边距 8。
  */
 import type { ReactNode } from "react";
-import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconPencil, IconTrash, IconX } from "@tabler/icons-react";
+import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconPencil, IconPlus, IconTrash, IconX } from "@tabler/icons-react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar } from "./user-avatar";
 import { Button, IconButton, Label } from "./design/ui";
 
 /** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数。 */
-export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onRemove, actions }: {
+export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onRemove, actions }: {
   name: string;
   count: number;
   open: boolean;
@@ -35,6 +35,17 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
    */
   onSelect?: () => void;
   selected?: boolean;
+  /**
+   * 在这个项目下开新会话（Task 0006）。
+   *
+   * 为什么要长在分组头里：合并成一个面板后，「新建会话」原来只剩列底一个全局按钮，
+   * 它**不知道用户想建到哪个项目**——落点由 `selectedProjectId` 这个变量决定，
+   * 而点会话行/点分组头都不改它（`App.tsx:1805` / `:1781`），于是新会话会落进
+   * 上一个项目。把按钮放进项目名那一行，归属就变成**界面位置**，不再依赖隐式状态。
+   */
+  onNewSession?: () => void;
+  /** 已经在这个项目的草稿里：本组按钮禁用（其他组照常可点，点了切过去）。 */
+  onNewSessionDisabled?: boolean;
   onRemove?: () => void;
   actions?: ReactNode;
 }) {
@@ -56,6 +67,16 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         </span>
         <span className="min-w-0 flex-1 truncate text-content font-semibold text-ink-900">{name}</span>
       </button>
+      {/* 新建会话：在项目名之后、计数之前。
+          不放最右是因为最右是「移除项目」（hover 出现），两个图标紧挨着误点代价不对称。 */}
+      {onNewSession !== undefined && (
+        <span className="shrink-0">
+          <IconButton size="sm" label={`在 ${name} 新建会话`} onClick={onNewSession}
+            {...(onNewSessionDisabled === true ? { disabled: true } : {})}>
+            <IconPlus size={14} />
+          </IconButton>
+        </span>
+      )}
       <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
         className="shrink-0 text-micro tabular-nums text-ink-500">{count}</span>
       <span className="flex shrink-0 items-center">
