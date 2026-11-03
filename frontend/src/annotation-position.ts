@@ -11,14 +11,17 @@
  */
 export type OccupiedBox = { left: number; top: number; width: number; height: number };
 
-/** 由选区矩形算浮框位置（相对容器左上角）。纯函数。 */
-export function popupPosition(
+/** 默认位置（未拖动、未避让）：文字正下方 8px、水平居中；下方放不下 → 上方；水平夹在容器内。
+ *
+ *  抽出来单独存在的理由：**拖动偏移必须以它为基准**。
+ *  早期拖动分支用的是"第一行矩形的左边"作基准，和默认的"居中"不是同一个基准，
+ *  于是刚开始拖的那一像素会看到框突然跳一下（实测）。
+ */
+export function popupBasePosition(
   rects: readonly DOMRect[],
   hostRect: DOMRect,
   hostHeight: number,
   size: { width: number; height: number },
-  offset: { dx: number; dy: number; moved?: boolean } = { dx: 0, dy: 0 },
-  occupied: readonly OccupiedBox[] = [],
 ): { left: number; top: number } {
   if (rects.length === 0) return { left: 8, top: 8 };
   const left = Math.min(...rects.map((r) => r.left));
@@ -29,21 +32,35 @@ export function popupPosition(
   const GAP = 8;
   const MARGIN = 8;
 
-  // 拖动过的：以第一行矩形为基准加偏移。
-  // 判据是 `moved` 而不是 `dx/dy !== 0`：拖回原点（0,0）也算拖过，不能重算位置。
-  if (offset.moved === true || offset.dx !== 0 || offset.dy !== 0) {
-    const first = rects[0] ?? { left, bottom };
-    return {
-      left: first.left - hostRect.left + offset.dx,
-      top: first.bottom - hostRect.top + GAP + offset.dy,
-    };
-  }
-
-  // 默认：文字下方 8px 居中；下方放不下 → 上方；水平夹在容器内
   let x = (left + right) / 2 - size.width / 2 - hostRect.left;
   let y = bottom - hostRect.top + GAP;
   if (y + size.height > hostHeight) y = Math.max(0, top - hostRect.top - size.height - GAP);
   x = Math.max(MARGIN, Math.min(hostRect.width - size.width - MARGIN, x));
+  return { left: Math.round(x), top: Math.round(Math.max(0, y)) };
+}
+
+/** 由选区矩形算浮框位置（相对容器左上角）。纯函数。 */
+export function popupPosition(
+  rects: readonly DOMRect[],
+  hostRect: DOMRect,
+  hostHeight: number,
+  size: { width: number; height: number },
+  offset: { dx: number; dy: number; moved?: boolean } = { dx: 0, dy: 0 },
+  occupied: readonly OccupiedBox[] = [],
+): { left: number; top: number } {
+  if (rects.length === 0) return { left: 8, top: 8 };
+
+  // 基准永远是**默认位置**（与未拖动时同一个公式），拖动只在它上面加偏移。
+  // 这样"刚开始拖的那一像素"不会因为换公式而跳。
+  const base = popupBasePosition(rects, hostRect, hostHeight, size);
+
+  if (offset.moved === true || offset.dx !== 0 || offset.dy !== 0) {
+    // 拖过的框：不再参与避让（用户摆哪儿就是哪儿）
+    return { left: Math.round(base.left + offset.dx), top: Math.round(Math.max(0, base.top + offset.dy)) };
+  }
+
+  const GAP = 8;
+  let { left: x, top: y } = base;
 
   // 与已展开的其他框错开：横向有重叠就往下推，直到不压住任何一个。
   // （没有这一步，同一段文字上的两条批注会完全叠在一起，看着像只有一个。）

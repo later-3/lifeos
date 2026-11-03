@@ -45,11 +45,30 @@ test("位置：多行选区取外接矩形（跨行居中）", () => {
   assert.equal(pos.top, 158);
 });
 
-test("位置：拖动过的（dx/dy 非零）以第一行矩形为基准加偏移", () => {
+test("位置：拖动偏移以**默认位置**为基准（不是第一行矩形）", () => {
+  // 关键：基准必须与"未拖动时的位置"同一个公式，否则刚开始拖第一像素会跳。
   const sel = [rect(300, 100, 100, 20)];
-  const pos = popupPosition(sel, host(), 1000, { width: 300, height: 120 }, { dx: -50, dy: 30 });
-  assert.equal(pos.left, 300 - 50, "第一行左边 + dx");
-  assert.equal(pos.top, 120 + 8 + 30, "第一行底 + 8 + dy");
+  const size = { width: 300, height: 120 };
+  const base = popupPosition(sel, host(), 1000, size);            // 默认位置
+  const dragged = popupPosition(sel, host(), 1000, size, { dx: -50, dy: 30 });
+  assert.equal(dragged.left, base.left - 50, "left = 默认 left + dx");
+  assert.equal(dragged.top, base.top + 30, "top = 默认 top + dy");
+});
+
+test("位置：拖动位移为 0 时与默认位置完全一致（无跳变）", () => {
+  const sel = [rect(300, 100, 100, 20)];
+  const size = { width: 300, height: 120 };
+  const base = popupPosition(sel, host(), 1000, size);
+  // moved=true 但还没动（刚按下）：必须和默认位置一模一样
+  const justPressed = popupPosition(sel, host(), 1000, size, { dx: 0, dy: 0, moved: true });
+  assert.deepEqual(justPressed, base, "按下但未移动时不能跳");
+});
+
+test("位置：拖回原点（dx=dy=0 且 moved）仍是默认位置", () => {
+  const sel = [rect(300, 100, 100, 20)];
+  const size = { width: 300, height: 120 };
+  const base = popupPosition(sel, host(), 1000, size);
+  assert.deepEqual(popupPosition(sel, host(), 1000, size, { dx: 0, dy: 0, moved: true }), base);
 });
 
 test("位置：空选区不崩，给一个安全值", () => {
