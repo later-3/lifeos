@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { Annotation } from "./annotations.ts";
+import type { Annotation, AnnotationAuthor } from "./annotations.ts";
 
 /** 一条待创建批注的定位信息（拖选得到）。 */
 export type AnnotationDraftAnchor = {
@@ -25,8 +25,11 @@ export type AnnotationStore = {
   annotations: readonly Annotation[];
   /** 按消息+块取（渲染时用）。返回稳定顺序：按 start 升序。 */
   ofBlock: (messageId: string, blockIndex: number) => readonly Annotation[];
-  /** 新增一条；返回它的 id。 */
-  add: (anchor: AnnotationDraftAnchor, marks: readonly string[], note: string) => string;
+  /**
+   * 新增一条；返回它的 id。
+   * `author` 现在固定是当前用户（双向标注是待办 C4）。不传就留空 id —— 调用方应传真实 id。
+   */
+  add: (anchor: AnnotationDraftAnchor, marks: readonly string[], note: string, author?: AnnotationAuthor) => string;
   /** 改语气（至少留 1 个；给空数组会被忽略）。 */
   setMarks: (id: string, marks: readonly string[]) => void;
   /** 改内容。 */
@@ -47,6 +50,11 @@ export type AnnotationStore = {
    * 这里把当时的快照放回去（含 id/ui，顺序不变）。
    */
   restore: (snapshot: readonly Annotation[]) => void;
+  /**
+   * 整批替换（加载会话时用）：服务端事实优先。
+   * 与 `restore` 的区别：restore 是"回滚刚才的操作"，replaceAll 是"以服务端为准重建"。
+   */
+  replaceAll: (list: readonly Annotation[]) => void;
   /**
    * 打开一条批注的框（P3）。
    * 这里只切 mode；"当前打开的是哪一条"由渲染层自己管（同一块里同一时刻只开一个）。
@@ -79,12 +87,14 @@ export function useAnnotations(): AnnotationStore {
     return fresh === null ? [] : (fresh.map.get(`${messageId}\u0000${blockIndex}`) ?? []);
   }, [annotations]);
 
-  const add = useCallback((anchor: AnnotationDraftAnchor, marks: readonly string[], note: string) => {
+  const add = useCallback((anchor: AnnotationDraftAnchor, marks: readonly string[], note: string, author?: AnnotationAuthor) => {
     const id = nextId();
     setAnnotations((list) => [
       ...list,
       {
         id,
+        // 谁写的：现在只可能是用户；Agent 标注是待办 C4
+        author: author ?? { kind: "user", id: "" },
         messageId: anchor.messageId,
         blockIndex: anchor.blockIndex,
         start: anchor.start,
@@ -141,12 +151,16 @@ export function useAnnotations(): AnnotationStore {
     setAnnotations([...snapshot]);
   }, []);
 
+  const replaceAll = useCallback((list: readonly Annotation[]) => {
+    setAnnotations([...list]);
+  }, []);
+
   const open = useCallback((id: string) => {
     patch(id, (anno) => ({ ...anno, ui: { ...anno.ui, mode: "open" } }));
   }, [patch]);
 
   return useMemo(
-    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, open }),
-    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, open],
+    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, replaceAll, open }),
+    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, replaceAll, open],
   );
 }

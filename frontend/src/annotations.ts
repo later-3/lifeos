@@ -154,8 +154,26 @@ export function toOffset(index: BlockIndex, range: Range): { start: number; end:
 import { MARK_ID_PATTERN, MARKS } from "./marks.ts";
 
 /** 一条批注（与 `02-design.md` §2.1 一致）。 */
+/**
+ * 批注作者（2026-11-03 用户定，为"双向标注"留位）。
+ *
+ * 用户与 Agent 都是**实体**，都有稳定 id：
+ * - 用户：`users/<id>/user.json`（`src/profile.ts` 的 `readProfile`），实际值如 `xu-later`；
+ * - Agent：`agents/<id>/agent.json`，如 `coder`。
+ *
+ * 现在只写 `kind: "user"`；Agent 也能标注是待办 C4 的事，
+ * 但字段现在就加——一并补比将来迁移已存的批注便宜得多。
+ */
+export type AnnotationAuthor = {
+  kind: "user" | "agent";
+  /** 用户 id（`users/<id>`）或 Agent id（`agents/<id>`）。 */
+  id: string;
+};
+
 export type Annotation = {
   id: string;
+  /** 谁写的这条批注。 */
+  author: AnnotationAuthor;
   messageId: string;
   blockIndex: number;
   start: number;

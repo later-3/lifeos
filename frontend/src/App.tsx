@@ -10,7 +10,7 @@ import {
 } from "./attachments";
 import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
-import type { Annotation } from "./annotations";
+import type { Annotation, AnnotationAuthor } from "./annotations";
 import { AnnotationPanel } from "./annotation-panel";
 import { annotationsMessage } from "./annotation-message";
 import { rebuildHighlightStyles } from "./annotations";
@@ -97,6 +97,12 @@ type StreamSnapshot = {
   running: Array<{ agentId: string; sessionId: string; turnId?: string; startedAt: string }>;
   unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
 };
+
+/** 落盘前去掉纯展示态（ui）：展开/钉住/拖动偏移是"当下正在看"的状态，不存。 */
+function stripUi(anno: Annotation): Omit<Annotation, "ui"> {
+  const { ui: _ui, ...rest } = anno;
+  return rest;
+}
 
 type SessionMeta = {
   model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean;
@@ -266,12 +272,65 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
   const anno = useAnnotations();
+  /**
+   * 批注落盘（Task 0003 · P5）：边标边存，与发消息解耦。
+   * 失败只提示不回滚——批注在本机已可见，丢掉它的代价比"存不上"更大；
+   * 下次改动会再写一次（事件流最后一条生效）。
+   */
+  /** toast 在下面才 useToast()，这里用 ref 转发，避免 TDZ（定义顺序问题）。 */
+  const toastRef = useRef<((text: string, tone?: "success" | "error") => void) | undefined>(undefined);
+
+  const persistAnnotation = useCallback((
+    op: "add" | "update" | "remove",
+    payload: Annotation | { id: string },
+    targetSessionId: string | undefined,
+  ) => {
+    const aid = agent?.id;
+    if (aid === undefined || targetSessionId === undefined) return;
+    void fetch(`/api/agents/${aid}/sessions/${targetSessionId}/annotations`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      // ui 是纯展示态，不落盘（见 phases/P5 的"哪些字段落盘"）
+      body: JSON.stringify({ op, annotation: op === "remove" ? payload : stripUi(payload as Annotation) }),
+    }).then((r) => { if (!r.ok) toastRef.current?.("批注保存失败（本机仍可见，下次改动会重试）", "error"); })
+      .catch(() => { toastRef.current?.("批注保存失败（网络错误）", "error"); });
+  }, [agent?.id]);
+
   /** 传给消息体的批注操作（用 useMemo 稳定引用，否则每条消息每帧都重建）。 */
+  /**
+   * 批注作者：当前用户。id 来自 `/api/profile`（`users/<id>/user.json`，实测 `xu-later`）。
+   * 拿不到时退回 "user"——宁可 id 不精确，也不要让 `author` 为空字符串。
+   */
+  const annoAuthor = useMemo<AnnotationAuthor>(
+    () => ({ kind: "user", id: profile?.id ?? "user" }),
+    [profile?.id],
+  );
   const annoActions = useMemo(() => ({
-    add: anno.add, setMarks: anno.setMarks, setNote: anno.setNote,
+    add: (anchor: Parameters<typeof anno.add>[0], marks: Parameters<typeof anno.add>[1], note: Parameters<typeof anno.add>[2]) => {
+      const id = anno.add(anchor, marks, note, annoAuthor);
+      persistAnnotation("add", {
+        id, author: annoAuthor, messageId: anchor.messageId, blockIndex: anchor.blockIndex,
+        start: anchor.start, end: anchor.end, quote: anchor.quote, marks: [...marks], note,
+        ui: { mode: "open", pinned: false, dx: 0, dy: 0 },
+      }, sessionId);
+      return id;
+    },
+    setMarks: (id: string, marks: readonly string[]) => {
+      anno.setMarks(id, marks);
+      const next = anno.annotations.find((a) => a.id === id);
+      if (next !== undefined) persistAnnotation("update", { ...next, marks: [...marks] }, sessionId);
+    },
+    setNote: (id: string, note: string) => {
+      anno.setNote(id, note);
+      const next = anno.annotations.find((a) => a.id === id);
+      if (next !== undefined) persistAnnotation("update", { ...next, note }, sessionId);
+    },
     togglePinned: anno.togglePinned, setOffset: anno.setOffset,
-    remove: anno.remove, open: anno.open,
-  }), [anno.add, anno.setMarks, anno.setNote, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
+    remove: (id: string) => {
+      anno.remove(id);
+      persistAnnotation("remove", { id }, sessionId);
+    },
+    open: anno.open,
+  }), [anno, annoAuthor, persistAnnotation, sessionId]);
 
   /**
    * 发送失败时要恢复的批注快照。
@@ -371,6 +430,7 @@ export default function App() {
   const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
+  toastRef.current = toast;
   const [loaded, setLoaded] = useState(false);
   const [showNav, setShowNav] = useFold("agents");
   /*
@@ -683,6 +743,18 @@ export default function App() {
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+    // 批注存在会话 custom entry 里，不在 messages 投影中 → 单独拉一次（Task 0003 · P5）
+    void fetch(`/api/agents/${id}/sessions/${sid}/annotations`)
+      .then((r) => (r.ok ? r.json() : undefined))
+      .then((payload: { annotations?: Annotation[] } | undefined) => {
+        if (payload?.annotations === undefined) return;
+        // 服务端只存数据字段，ui 用默认值补齐（展开、未钉住、默认位置）
+        anno.replaceAll(payload.annotations.map((a) => ({
+          ...a,
+          ui: { mode: "open" as const, pinned: false, dx: 0, dy: 0 },
+        })));
+      })
+      .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
     if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
       const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
@@ -2209,7 +2281,7 @@ export default function App() {
                     folded={annoPanelFolded}
                     onToggleFold={() => setAnnoPanelFolded((v) => !v)}
                     onLocate={locateAnnotation}
-                    onRemove={anno.remove}
+                    onRemove={annoActions.remove}
                   />
                 </div>
               )}
