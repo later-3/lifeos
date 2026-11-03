@@ -32,12 +32,25 @@ export function AnnotationPanel({
   const count = annotations.length;
 
   return (
-    <section data-testid="annotation-panel" className="overflow-hidden rounded-panel ring-1 ring-line">
+    <section
+      data-testid="annotation-panel"
+      aria-label="批注"
+      className="overflow-hidden rounded-panel ring-1 ring-line"
+    >
+      {/*
+        无障碍（Task 0003 · P6）：`::highlight()` 画出来的高亮对读屏**完全不可见**，
+        所以读屏用户只能靠这张表知道"我在哪段文字上标了什么"。
+        数量变化用 aria-live 播报，新增/删除都有声音反馈。
+      */}
+      <p data-testid="annotation-announcer" aria-live="polite" className="sr-only">
+        {count === 0 ? "还没有批注" : `共有 ${count} 条批注`}
+      </p>
       {/* 标题栏：点击折叠 */}
       <button
         type="button"
         data-testid="annotation-panel-toggle"
         aria-expanded={!folded}
+        aria-controls="annotation-panel-rows"
         onClick={onToggleFold}
         className="flex w-full items-center gap-2 bg-sunken px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover"
       >
@@ -49,13 +62,16 @@ export function AnnotationPanel({
       </button>
 
       {!folded && (
-        <div data-testid="annotation-panel-rows" className="overflow-auto" style={{ maxHeight: "var(--container-anno-panel)" }}>
+        <div id="annotation-panel-rows" data-testid="annotation-panel-rows" className="overflow-auto" style={{ maxHeight: "var(--container-anno-panel)" }}>
           {count === 0 ? (
             <p data-testid="annotation-panel-empty" className="px-3 py-3.5 text-center text-meta text-ink-300">
               还没有批注。在正文里拖选一段文字试试。
             </p>
           ) : (
             <table className="w-full border-collapse text-meta">
+              <caption className="sr-only">
+                批注列表：每条包含被批注的原文、你写的话、语气，以及定位与删除按钮
+              </caption>
               <thead>
                 <tr className="text-micro uppercase tracking-wide text-ink-300">
                   <th className="w-8 px-2.5 py-1.5 text-left font-semibold" />
@@ -90,6 +106,7 @@ export function AnnotationPanel({
                             if (mark === undefined) return null;
                             return (
                               <span key={id} data-mark={id}
+                                aria-label={`语气：${mark.label}`}
                                 className="rounded-full px-1.5 py-px text-micro font-semibold"
                                 style={{
                                   background: `var(--color-anno-${mark.tone}-soft)`,
