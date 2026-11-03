@@ -42,7 +42,7 @@ export function AnnotationPanel({
         所以读屏用户只能靠这张表知道"我在哪段文字上标了什么"。
         数量变化用 aria-live 播报，新增/删除都有声音反馈。
       */}
-      <p data-testid="annotation-announcer" aria-live="polite" className="sr-only">
+      <p data-testid="annotation-announcer" data-no-clip-check aria-live="polite" className="sr-only">
         {count === 0 ? "还没有批注" : `共有 ${count} 条批注`}
       </p>
       {/* 标题栏：点击折叠 */}
@@ -52,28 +52,28 @@ export function AnnotationPanel({
         aria-expanded={!folded}
         aria-controls="annotation-panel-rows"
         onClick={onToggleFold}
-        className="flex w-full items-center gap-2 bg-sunken px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover"
+        className="flex w-full items-center gap-2 bg-sunken px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
       >
-        <span className="text-micro text-ink-300" aria-hidden="true">{folded ? "▶" : "▼"}</span>
+        <span className="text-micro text-ink-500" aria-hidden="true">{folded ? "▶" : "▼"}</span>
         <span>批注转化成的消息</span>
         <span data-testid="annotation-panel-count"
           className="rounded-full bg-hover px-1.5 py-px text-micro tabular-nums text-ink-700">{count}</span>
-        <span className="ml-auto text-micro font-normal text-ink-300">点「定位」跳到原文</span>
+        <span className="ml-auto text-micro font-normal text-ink-500">点「定位」跳到原文</span>
       </button>
 
       {!folded && (
         <div id="annotation-panel-rows" data-testid="annotation-panel-rows" className="overflow-auto" style={{ maxHeight: "var(--container-anno-panel)" }}>
           {count === 0 ? (
-            <p data-testid="annotation-panel-empty" className="px-3 py-3.5 text-center text-meta text-ink-300">
+            <p data-testid="annotation-panel-empty" className="px-3 py-3.5 text-center text-meta text-ink-500">
               还没有批注。在正文里拖选一段文字试试。
             </p>
           ) : (
             <table className="w-full border-collapse text-meta">
-              <caption className="sr-only">
+              <caption data-no-clip-check className="sr-only">
                 批注列表：每条包含被批注的原文、你写的话、语气，以及定位与删除按钮
               </caption>
               <thead>
-                <tr className="text-micro uppercase tracking-wide text-ink-300">
+                <tr className="text-micro uppercase tracking-wide text-ink-500">
                   <th className="w-8 px-2.5 py-1.5 text-left font-semibold" />
                   <th className="px-2.5 py-1.5 text-left font-semibold">被批注的原文</th>
                   <th className="px-2.5 py-1.5 text-left font-semibold">用户的话</th>
@@ -87,16 +87,16 @@ export function AnnotationPanel({
                   return (
                     <tr key={anno.id} data-testid="annotation-row" data-anno={anno.id}
                       className="border-t border-line align-top hover:bg-hover">
-                      <td className="px-2.5 py-1.5 tabular-nums text-ink-300">{index + 1}.</td>
+                      <td className="px-2.5 py-1.5 tabular-nums text-ink-500">{index + 1}.</td>
                       <td className="px-2.5 py-1.5 text-ink-700">
                         <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
                         {ordinal !== undefined && (
-                          <span className="mt-0.5 block text-micro text-ink-300">第 {ordinal} 条回复</span>
+                          <span className="mt-0.5 block text-micro text-ink-500">第 {ordinal} 条回复</span>
                         )}
                       </td>
                       <td className="px-2.5 py-1.5">
                         {anno.note === ""
-                          ? <span className="italic text-ink-300">（没写话）</span>
+                          ? <span className="italic text-ink-500">（没写话）</span>
                           : <span className="whitespace-pre-wrap text-ink-900">{anno.note}</span>}
                       </td>
                       <td className="px-2.5 py-1.5">
@@ -121,13 +121,13 @@ export function AnnotationPanel({
                       <td className="px-2.5 py-1.5 text-right">
                         <button type="button" data-testid="annotation-locate" data-anno={anno.id}
                           onClick={() => onLocate(anno.id)}
-                          className="rounded-control px-1.5 py-0.5 text-micro text-accent hover:bg-accent-soft">
+                          className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-control px-1.5 text-micro text-accent hover:bg-accent-soft max-sm:min-h-11 max-sm:min-w-11">
                           定位
                         </button>
                         <button type="button" data-testid="annotation-remove" data-anno={anno.id}
                           onClick={() => onRemove(anno.id)}
                           aria-label="删除这条批注"
-                          className="ml-1 rounded-control px-1 py-0.5 text-micro text-ink-300 hover:bg-danger-soft hover:text-danger">
+                          className="ml-1 inline-flex min-h-7 min-w-7 items-center justify-center rounded-control text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11 max-sm:min-w-11">
                           ✕
                         </button>
                       </td>

@@ -2,7 +2,10 @@
 /** PWA 安装契约：manifest、图标、iOS meta、service worker 必须齐全。 */
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-const root = new URL("../..", import.meta.url).pathname;
+import { fileURLToPath } from "node:url";
+// fileURLToPath 而不是 .pathname：worktree 路径可能含中文/空格，
+// pathname 是 URL 编码串，直接拼路径会 ENOENT（2026-11-03 在 evidence/worktree 下实测）。
+const root = fileURLToPath(new URL("../..", import.meta.url));
 const pub = join(root, "frontend/public");
 const failures = [];
 const check = (name, ok, detail = "") => {
