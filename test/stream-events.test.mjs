@@ -91,6 +91,17 @@ test("自动重试也映射（界面上要能显示失败原因与第几次）",
     { type: "retrying", attempt: 2, maxAttempts: 3, delayMs: 4000, message: "Request timed out." },
   );
   assert.deepEqual(toStreamEvent({ type: "auto_retry_end", success: false }), { type: "retry_end", success: false });
+  // Task 0007 · A1：attempt / finalError 必须透出 —— Pi CLI 用它们说
+  // "Retry failed after N attempts: <原因>"（interactive-mode.ts:3768），我们此前把这两个字段丢了。
+  assert.deepEqual(
+    toStreamEvent({ type: "auto_retry_end", success: false, attempt: 3, finalError: "Connection error." }),
+    { type: "retry_end", success: false, attempt: 3, finalError: "Connection error." },
+  );
+  // 成功时也不丢（调用方自己决定要不要用），但空串不落字段
+  assert.deepEqual(
+    toStreamEvent({ type: "auto_retry_end", success: true, attempt: 1, finalError: "" }),
+    { type: "retry_end", success: true, attempt: 1 },
+  );
   // 缺字段时给安全默认值（不崩、不造假）
   assert.deepEqual(toStreamEvent({ type: "auto_retry_start" }), { type: "retrying", attempt: 0, maxAttempts: 0, delayMs: 0, message: "" });
 });

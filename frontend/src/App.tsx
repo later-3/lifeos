@@ -33,8 +33,8 @@ import { MessageView, type Block } from "./Message";
 import { TurnStatusBar } from "./turn-status";
 import { MobileNav, type Level } from "./mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
-import { resendPlan, turnOutcomeOfMessages } from "./resend";
-import { failureLabel, type FailureKind } from "./failure-text";
+import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
+import { failureLabel, fixHint, type FailureKind } from "./failure-text";
 import type { TurnStep } from "./working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
 import { TurnInspector } from "./SessionHistory";
@@ -291,6 +291,12 @@ export default function App() {
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
   const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
+  /**
+   * 最近一轮失败前，Pi 自动重试了几次（Task 0007 · A1）。
+   * 来源是 `auto_retry_end` 的 `attempt`（Pi CLI 同款：`Retry failed after N attempts`）。
+   * 只用于失败块的说明文字；换会话/新回合时清空。
+   */
+  const [retriedTimes, setRetriedTimes] = useState<number | undefined>();
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
@@ -705,6 +711,7 @@ export default function App() {
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
+    setRetriedTimes(undefined);   // 换会话/开草稿：上一轮的重试次数不再适用于新会话
     setTurnStatus(undefined);
     setActiveTool(undefined);
     activeTurnIdRef.current = null;
@@ -935,7 +942,15 @@ export default function App() {
         if (payload.type === "done") return finishFocused(payload, "done");
         if (payload.type === "error") return finishFocused(payload, "error");
         if (payload.type === "retrying") return applyRetrying(payload);
-        if (payload.type === "retry_end") { lastEventAtRef.current = Date.now(); setRetry(undefined); return; }
+        if (payload.type === "retry_end") {
+          lastEventAtRef.current = Date.now();
+          // Pi 的 auto_retry_end 带着"试到第几次"与最终错误（agent-session.ts:1966-1969）；
+          // Pi CLI 用它说 "Retry failed after N attempts: <原因>"（interactive-mode.ts:3768）。
+          // 留下来给失败块用：否则用户只看到"超时了"，不知道系统已经自动试过 N 次。
+          if (payload.success !== true && typeof payload.attempt === "number") setRetriedTimes(payload.attempt);
+          setRetry(undefined);
+          return;
+        }
         applyStreamMessage(payload);
         return;
       case "refresh-groups":
@@ -1330,6 +1345,7 @@ export default function App() {
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
+    setRetriedTimes(undefined);   // 新回合：重新计数（上一轮试了几次与本轮无关）
     setTurnStatus(undefined);
     setActiveTool(undefined);
     lastEventAtRef.current = Date.now();   // 发送即重置心跳：否则"页面静置>60s 后发送"会被误判成丢轮
@@ -1494,10 +1510,27 @@ export default function App() {
   }
 
   /** 打断：Pi 原生 abort()；run 的 finally 会发 done，前端据此收尾。 */
+  /**
+   * 打断（Esc / 停止钮）。
+   *
+   * 与 Pi CLI 对齐（Task 0007 · A2）：重试退避期间按 Esc，只取消"这次自动重试"，
+   * 不打断整轮 —— Pi CLI 在这里调的是 `abortRetry()` 而不是 `abort()`
+   * （interactive-mode.ts:3749-3752）。原因：重试中用户的意图通常是"别试了，我自己来"，
+   * 而不是"这一轮整个不要了"。没在重试时才退回整套打断语义。
+   */
   async function stop() {
     if (sessionId !== undefined) setRunFacts((f) => queueClear(f, sessionId));
 
     if (agent === undefined || sessionId === undefined) return;
+    if (retry !== undefined) {
+      const retryResponse = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/retry/abort`, { method: "POST" }).catch(() => undefined);
+      if (retryResponse?.ok === true) {
+        // 服务端会在随后发 retry_end(success=false)，由它统一清 retry 状态；这里只给反馈
+        toast("已取消自动重试", "success");
+        return;
+      }
+      // 409 not_retrying：已经不在重试了 → 落到下面按整套打断处理
+    }
     const response = await fetch(`/api/agents/${agent.id}/sessions/${sessionId}/abort`, { method: "POST" }).catch(() => undefined);
     toast(response?.ok === true ? "已请求打断" : "打断失败", response?.ok === true ? "success" : "error");
   }
@@ -1893,6 +1926,13 @@ export default function App() {
    */
   const outcomeNotice = turnNoticeOf({ outcome: turnOutcomeOfMessages(messages), busy });
   /**
+   * 不可重试错误的出口文案（Task 0007 · 阶段一）：auth / quota / payload_too_large 不给重发，
+   * 但必须给"下一步做什么"（`src/next-action.ts` 判 kind=fix，文案在 `failure-text.ts`）。
+   * 生成中不显示：那时这一轮还没结束。
+   */
+  const turnAction = nextActionOfMessages(messages);
+  const failureFixHint = !busy && turnAction.kind === "fix" ? fixHint(turnAction.fix) : undefined;
+  /**
    * 状态条最终文案：**回合提示优先**（它与按钮同源），否则用 `turnStatus`（非回合类状态，如对账成功）。
    *
    * 两者互斥地覆盖：`outcomeNotice` 在 busy 时也会给出（“正在生成中…”）或不出，所以只要它在，
@@ -2050,6 +2090,8 @@ export default function App() {
                       {...(message.error !== undefined ? { error: message.error } : {})}
                       {...(message.failure !== undefined ? { failure: message.failure } : {})}
                       {...(message.failure !== undefined && index !== messages.length - 1 ? { historical: true } : {})}
+                      {...(retriedTimes !== undefined && index === messages.length - 1 ? { retriedTimes } : {})}
+                      {...(failureFixHint !== undefined && index === messages.length - 1 ? { fixHintText: failureFixHint } : {})}
                       {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
                   );
                 });

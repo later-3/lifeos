@@ -19,7 +19,7 @@ export type StreamEvent =
   | { type: "tool_update"; id: string }
   | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number; images?: Array<{ data: string; mimeType: string }> }
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
-  | { type: "retry_end"; success: boolean };
+  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string };
 
 /** 界面上的"正在干什么"阶段（工作指示文案由 Message.tsx 决定）。 */
 export type Phase = "waiting" | "thinking" | "tool" | "text";

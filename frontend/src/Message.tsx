@@ -132,7 +132,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
@@ -144,6 +144,18 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** 这条失败不是最后一条消息：标明它是历史记录，不是当前状态 */
   historical?: boolean;
+  /**
+   * 失败前 Pi 自动重试了几次（Task 0007 · A1）。
+   * Pi CLI 的同一句话是 `Retry failed after N attempts: <原因>`（interactive-mode.ts:3768）——
+   * 不说这句，用户只看到"超时了"，不知道系统已经自动试过 N 次，于是误以为该自己点重试。
+   */
+  retriedTimes?: number;
+  /**
+   * 不可重试错误的出口（Task 0007）：auth/quota/payload_too_large 三类的"下一步做什么"。
+   * 这三类不给「重新发送」（Pi 自己都不重试它们），所以必须给一条可执行的出路，
+   * 否则用户面对的就是"失败了、没按钮、不知道怎么办"。
+   */
+  fixHintText?: string;
   /** 说话人的头像（用户 = 你本人，助手 = 当前 Agent）；不传就不显示头像（老调用点逐步迁移） */
   avatar?: ReactNode;
   /** 说话人名字（社交媒体式：头像旁要能看出是谁） */
@@ -237,9 +249,17 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
         <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
           <p className="text-meta text-danger">
             {failureLabel(failure)}
+            {/* Pi CLI 同款信息（interactive-mode.ts:3768 `Retry failed after N attempts`）：
+                告诉用户"已经自动试过 N 次"，否则他只会看到"超时"，以为没人在管。 */}
+            {retriedTimes !== undefined && retriedTimes > 0 && (
+              <span className="ml-2 font-normal text-ink-700" data-testid="retried-times">已自动重试 {retriedTimes} 次</span>
+            )}
             {at !== undefined && <span className="ml-2 font-normal tabular-nums text-ink-500">{formatClock(at)}</span>}
             {historical === true && <span className="ml-2 font-normal text-ink-500">历史记录</span>}
           </p>
+          {fixHintText !== undefined && (
+            <p className="mt-1 text-meta text-ink-700" data-testid="failure-fix-hint">{fixHintText}</p>
+          )}
           {error !== undefined && <p className="text-micro text-ink-500">{error}</p>}
         </div>
       )}
