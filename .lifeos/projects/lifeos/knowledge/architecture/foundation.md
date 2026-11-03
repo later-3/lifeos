@@ -102,6 +102,7 @@ install-receipt.json    安装收据
 ## 7 依赖
 
 - 保留：`@earendil-works/pi-*`（agent-core / ai / coding-agent）、`hono` + `@hono/node-server`；前端自己的 react/vite/tailwind 走 `frontend/package.json`。
+- `undici`（^8，与 Pi 自带版本对齐）：只用于出站代理装配，见 §11。为什么不能用 Pi 的：那个函数没从包里导出。
 
 ## 8 验收
 
@@ -121,3 +122,76 @@ install-receipt.json    安装收据
 - **接上先给快照**（`snapshot`：`connectionId`、基线 `seq`、跨 Agent 运行列表、服务端未读）；不回放历史；过载即断线，客户端重连重取快照。
 - **发消息是命令，不是订阅**：`POST …/sessions/:sid/messages` 返回 `202 { accepted: true }`，输出只走事件流（运行与传输解耦）。
 - **运行注册表**在服务端按 `sessionId` 记录运行状态（running/done/error），供快照与列表使用。
+
+## 11 出站 HTTP 与代理（现状）
+
+**要解决什么问题**：模型端点（如 `amr-link.open-design.ai`，走 Cloudflare）在部分网络环境下**直连不可达**，TCP 握手根本发不出去。不处理的话，每次模型调用都会卡到超时（实测每次正好 **10.5 秒**），对话完全不可用，而日志里只有一句 `Request timed out.`，看不出是网络层。
+
+### 11.1 出站链路（事实）
+
+```text
+pi-ai → openai SDK → Shims.getDefaultFetch() → globalThis.fetch → undici 的全局 dispatcher
+```
+
+openai SDK 取 fetch 的实现只有一句（`openai/internal/shims.mjs`）：
+
+```js
+if (typeof fetch !== 'undefined') return fetch;   // 直接用 globalThis.fetch
+```
+
+**它自己不判断代理，一切交给全局 fetch 背后的 dispatcher。**
+
+### 11.2 为什么 `NODE_USE_ENV_PROXY=1` 不够（这是踩过的坑）
+
+Node 的 `NODE_USE_ENV_PROXY=1` 只让**内置 fetch 的默认 dispatcher** 读代理变量。而 `pi-ai` 用的 openai SDK 走的是**内置 undici 的 dispatcher**，两者是不同的实现 —— 所以那个开关对它无效。
+
+实测证据（2026-11-03，后端进程环境里 `HTTPS_PROXY` 与 `NODE_USE_ENV_PROXY=1` 都在）：
+
+```text
+lsof -a -p <后端> -iTCP
+  node  TCP 192.168.225.50:60262 -> 104.21.45.58:443 (SYN_SENT)   ← 直连卡死
+                                                                   ← 一条到 127.0.0.1:7897 的连接都没有
+```
+
+每次请求 `durationMs` 都是 10505–10540ms（整数倍 = 连接超时特征），`stopReason=error`，`errorMessage="Request timed out."`。
+
+**教训**：只验证"代理可达"（`node -e 'fetch(...)'` 拿到 401）**不等于**"后端真的走了代理"。那天就是因为只做了前者，误判成已修复，隔两周又犯一次。正确验证必须落在 **`lsof` 里出现到代理端口的连接** 上。
+
+### 11.3 我们的做法（`src/http-proxy.ts`）
+
+与 Pi CLI 的 `pi/packages/coding-agent/src/core/http-dispatcher.ts` 同一套机制：
+
+```ts
+undici.setGlobalDispatcher(new undici.EnvHttpProxyAgent({ httpProxy, httpsProxy, noProxy }));
+undici.install?.();   // 把 globalThis.fetch 换成与 dispatcher 配套的那份
+```
+
+- **必须在 `src/main.ts` 最早执行**：要早于任何出站请求。
+- **`undici.install()` 不能省**：只换 dispatcher 不换 fetch，两者不配套（压缩响应会解压失败，Pi 那边的注释写明过这点）。
+- **只在检测到代理变量时才做**：`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`（大小写都认）任一存在才装；没有就整段跳过，**连 `undici` 都不 import**，行为与未改动前完全一致。
+- **启动日志会明说装没装**：`出站代理已按环境变量启用：…` 或 `出站未配置代理（没有 … 环境变量）`。
+
+### 11.4 不这样设计会遇到什么问题
+
+| 不做的后果 | 表现 |
+|---|---|
+| 直连不可达的端点 | 每次请求卡 10.5 秒后失败，对话不可用 |
+| 只设环境变量不装 dispatcher | 变量看起来"配好了"，实际仍直连（就是上面 11.2 的坑） |
+| 只换 dispatcher 不 `install()` | 压缩响应解压失败，报错难懂 |
+| 无条件 `install()` | 没代理时也替换全局 fetch，引入不必要的差异风险 |
+| 依赖用户开 TUN 模式 | 换机器/换网络就得重配，Agent 自己起实例时也会踩 |
+
+### 11.5 不用代理时会不会冲突
+
+不会。`EnvHttpProxyAgent` 是"按环境变量决定"的：变量没了就直连，`NO_PROXY` 命中的地址也直连（本项目的 `NO_PROXY=127.0.0.1,localhost` 保证 Vite → 后端的本地请求不被代理接管）。清掉代理变量重启，代码走的就是"不安装"分支。
+
+### 11.6 实现位置与验证
+
+- 实现：`src/http-proxy.ts`（`installProxyIfConfigured` / `proxyUrlOf`），入口 `src/main.ts`。
+- 测试：`test/http-proxy.test.mjs`（6 条）。关键的 `T0021-3` 断言 **HTTPS 请求以 `CONNECT` 真的打到了假代理端口**，而不是"函数被调用过"；`T0021-5` 断言 `NO_PROXY` 命中时直连；`T0021-6` 断言清空变量后不再安装。
+- **测代理必须用 HTTPS**：明文 HTTP 走"绝对 URI 转发"（域名解析在代理端完成），用不可达域名测会得到"代理没收到请求"的假失败；HTTPS 走 `CONNECT` 隧道，连接目标直接写在请求行里。生产场景（模型端点）也都是 HTTPS。
+- 端到端实测（2026-11-03，独立端口 + 真实家目录）：
+  - 改动前：`-> 104.21.45.58:443 (SYN_SENT)`，会话 `error` / 10506ms；
+  - 改动后：`-> 127.0.0.1:7897 (ESTABLISHED)`，同一会话 `toolUse` 成功回复。
+- **依赖**：`undici@^8`（与 Pi 自带的 8.x 对齐）。Pi 的 `configureHttpDispatcher` 没有从包里导出（`ERR_PACKAGE_PATH_NOT_EXPORTED`），Node 内置模块也没暴露 `EnvHttpProxyAgent`，所以必须自己持有这个依赖。
+- **坑（会静默失败）**：`EnvHttpProxyAgent` 的构造参数是**驼峰** `httpProxy` / `httpsProxy` / `noProxy`，不是 `HTTP_PROXY` 那种大写下划线。传错名字不会报错，只是代理装不上。
