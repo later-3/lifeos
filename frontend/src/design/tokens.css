@@ -44,7 +44,10 @@
   --color-anno-query-soft: #fff6d6;
   --color-anno-critic: #c53030;
   --color-anno-critic-soft: #ffe8e8;
-  --color-anno-praise: #2f855a;
+  /* 2026-11-03 修：原 #2f855a 压在 --color-anno-praise-soft (#e2f6ea) 上只有 4.02:1，
+     不足 WCAG AA 的 4.5。fixture 里从没渲染过"鼓励"chip，所以门禁一直没抓到。
+     调深到 5.69:1（白底 6.42:1），色相不变。 */
+  --color-anno-praise: #2b6a4d;
   --color-anno-praise-soft: #e2f6ea;
   --color-anno-archive: #4c51bf;
   --color-anno-archive-soft: #e8eaff;

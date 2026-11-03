@@ -1,12 +1,15 @@
 /**
- * 底部批注表格（Task 0003 · P4）。
+ * 批注列表（Task 0003 · P4，P6 后按用户反馈改过交互）。
  *
- * 与 demo（`tools/anno-demo/`）的表格一致，但**发送形态改了**（用户 2026-11-03 定）：
- * demo 是"N 条批注 → N 条消息"，真实实现是"N 条批注 → 1 条消息（内部 N 行）"。
- * 原因：真实发送每次 POST 都走 `runTurn()` → `session.prompt()`，是一次真实模型调用。
+ * **与 demo 的差异**（用户 2026-11-03 两处裁决）：
+ *  1. demo 是"N 条批注 → N 条消息"，真实实现是"N 条 → 1 条消息（内部 N 行）"：
+ *     每次发送都走 `runTurn()` → `session.prompt()`，是**一次真实模型调用**。
+ *  2. 它本身就是"批注转化成的消息"（内容就是将要发出去的那些行），
+ *     所以去掉了单独的「定位」按钮：**单击整行 = 定位并钉住，再点一次 = 取消钉住**。
+ *     理由（用户原话）："不用展示那个定位，单击那一行就是定位，就是盯住，
+ *     再次单击就是取消盯住。" 每行一个按钮等于把同一件事说两遍。
  *
- * 这个组件只负责**显示与交互**，不持有批注数据（数据在 `useAnnotations`）；
- * 发起发送由调用方（composer）决定。
+ * 这个组件只负责**显示与交互**，不持有批注数据（数据在 `useAnnotations`）。
  */
 
 import type { Annotation } from "./annotations.ts";
@@ -20,14 +23,19 @@ export type AnnotationPanelProps = {
   /** 是否折叠。 */
   folded: boolean;
   onToggleFold: () => void;
-  /** 定位：跳到原文并展开那个批注框。 */
-  onLocate: (id: string) => void;
+  /**
+   * 单击一行：定位到原文 + 钉住（再点一次取消钉住）。
+   * 是否"已钉住"由 `pinnedOf` 查，行据此加底色。
+   */
+  onRowClick: (id: string) => void;
+  /** 这一条当前是否钉住（决定行是否高亮）。 */
+  pinnedOf: (id: string) => boolean;
   /** 删除一条批注（高亮一起消失）。 */
   onRemove: (id: string) => void;
 };
 
 export function AnnotationPanel({
-  annotations, messageOrdinal, folded, onToggleFold, onLocate, onRemove,
+  annotations, messageOrdinal, folded, onToggleFold, onRowClick, pinnedOf, onRemove,
 }: AnnotationPanelProps) {
   const count = annotations.length;
 
@@ -58,7 +66,7 @@ export function AnnotationPanel({
         <span>批注转化成的消息</span>
         <span data-testid="annotation-panel-count"
           className="rounded-full bg-hover px-1.5 py-px text-micro tabular-nums text-ink-700">{count}</span>
-        <span className="ml-auto text-micro font-normal text-ink-500">点「定位」跳到原文</span>
+        <span className="ml-auto text-micro font-normal text-ink-500">单击一行跳到原文并钉住</span>
       </button>
 
       {!folded && (
@@ -84,9 +92,15 @@ export function AnnotationPanel({
               <tbody>
                 {annotations.map((anno, index) => {
                   const ordinal = messageOrdinal(anno.messageId);
+                  const pinned = pinnedOf(anno.id);
                   return (
                     <tr key={anno.id} data-testid="annotation-row" data-anno={anno.id}
-                      className="border-t border-line align-top hover:bg-hover">
+                      data-pinned={pinned ? "true" : "false"}
+                      aria-selected={pinned}
+                      onClick={() => onRowClick(anno.id)}
+                      className={`cursor-pointer border-t border-line align-top hover:bg-hover ${
+                        pinned ? "bg-accent-soft" : ""
+                      }`}>
                       <td className="px-2.5 py-1.5 tabular-nums text-ink-500">{index + 1}.</td>
                       <td className="px-2.5 py-1.5 text-ink-700">
                         <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
@@ -119,15 +133,10 @@ export function AnnotationPanel({
                         </span>
                       </td>
                       <td className="px-2.5 py-1.5 text-right">
-                        <button type="button" data-testid="annotation-locate" data-anno={anno.id}
-                          onClick={() => onLocate(anno.id)}
-                          className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-control px-1.5 text-micro text-accent hover:bg-accent-soft max-sm:min-h-11 max-sm:min-w-11">
-                          定位
-                        </button>
                         <button type="button" data-testid="annotation-remove" data-anno={anno.id}
-                          onClick={() => onRemove(anno.id)}
+                          onClick={(event) => { event.stopPropagation(); onRemove(anno.id); }}
                           aria-label="删除这条批注"
-                          className="ml-1 inline-flex min-h-7 min-w-7 items-center justify-center rounded-control text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11 max-sm:min-w-11">
+                          className="inline-flex min-h-7 min-w-7 items-center justify-center rounded-control text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11 max-sm:min-w-11">
                           ✕
                         </button>
                       </td>

@@ -368,19 +368,37 @@ export default function App() {
    * 定位：滚到被批注文字处，并展开那条批注的框。
    * 用 DOM 查询 + scrollIntoView；展开通过 store 的 open()（渲染层会按 id 打开）。
    */
-  const locateAnnotation = useCallback((id: string) => {
-    const anno_ = anno.annotations.find((a) => a.id === id);
-    if (anno_ === undefined) return;
+  /**
+   * 单击批注列表的一行 = **定位 + 钉住**；再点一次 = 取消钉住。
+   * （用户 2026-11-03："不用展示那个定位，单击那一行就是定位，就是盯住，
+   *   再次单击就是取消钉住。"）
+   *
+   * 取消钉住时**不滚到原文**——用户是在"收起来"，再把他拉过去没有道理；
+   * 也不清偏移（位置是用户摆的，与钉住无关）。
+   */
+  const onAnnoRowClick = useCallback((id: string) => {
+    const target = anno.annotations.find((a) => a.id === id);
+    if (target === undefined) return;
+    const wasPinned = target.ui.pinned;
+    anno.togglePinned(id);
+    if (wasPinned) return;                 // 取消钉住：到此为止
     anno.open(id);
     // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
     window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
     window.requestAnimationFrame(() => {
       const host = document.querySelector(
-        `[data-message-id="${anno_.messageId}"] [data-testid="message-text"][data-block-index="${anno_.blockIndex}"]`,
+        `[data-message-id="${target.messageId}"] [data-testid="message-text"][data-block-index="${target.blockIndex}"]`,
       );
       if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   }, [anno]);
+
+  /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
+  const annoPinnedOf = useCallback(
+    (id: string) => anno.annotations.find((a) => a.id === id)?.ui.pinned === true,
+    [anno.annotations],
+  );
+
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
@@ -2280,7 +2298,8 @@ export default function App() {
                     messageOrdinal={(id) => messageOrdinal.get(id)}
                     folded={annoPanelFolded}
                     onToggleFold={() => setAnnoPanelFolded((v) => !v)}
-                    onLocate={locateAnnotation}
+                    onRowClick={onAnnoRowClick}
+                    pinnedOf={annoPinnedOf}
                     onRemove={annoActions.remove}
                   />
                 </div>

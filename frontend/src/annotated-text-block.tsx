@@ -85,6 +85,17 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
    * 用户看到的是"点了定位，框闪一下就没了"。
    */
   const holdUntilRef = useRef(0);
+  /**
+   * 已摆定的槽位：`anno.id → 相对容器的位置与尺寸`。
+   *
+   * 为什么需要它（用户 2026-11-03 报的 bug：拖 A，B 跟着跑）：
+   * 原来避让每帧按"其他框的当前 DOM 位置"重算——A 被拖走后 B 就少了障碍物、重排。
+   * 现在**第一次摆定就写进这张表，之后只读**；拖动只在自己的基准上加偏移，
+   * 别人怎么拖都改不了我的基准。
+   *
+   * 什么时候失效：容器宽度变了（resize）几何就不成立了，整块清空重摆。
+   */
+  const slotsRef = useRef<Map<string, { left: number; top: number; width: number; height: number }>>(new Map());
   /** 正在拖动哪一条（null = 没在拖）。Connector 用它决定是否 rAF 跟随。 */
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // scheduleHide 在定时器/事件里执行，闭包可能拿到旧的 annotations，用 ref 取最新
@@ -125,6 +136,8 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     // 实测：窗口变窄后框消失且不回来。冻结一个短窗口，让布局先稳定。
     let freezeTimer: number | undefined;
     const refreshKeepOpen = () => {
+      // 容器宽度变了 → 旧的槽位几何不成立，整块重摆（这也是唯一该重摆的时机）
+      slotsRef.current.clear();
       clearHideTimer();
       holdRef.current.freeze = true;
       if (freezeTimer !== undefined) window.clearTimeout(freezeTimer);
@@ -313,26 +326,17 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       })}
 
       {/* 批注卡片（可以有多个同时展开） */}
-      {hostRect !== null && openedList.map((anno, index) => {
+      {hostRect !== null && openedList.map((anno) => {
         const rects = rectsFor(anno.start, anno.end);
         if (rects.length === 0) return null;
-        // 按渲染顺序：前面的框已经占位，本条要往下错开（否则同一段上的两条会完全叠住）
-        const occupied = openedList.slice(0, index).map((prev) => {
-          const el = wrapRef.current?.querySelector(`[data-testid="annotation-card"][data-anno="${prev.id}"]`);
-          if (el === null || el === undefined) return null;
-          const r = el.getBoundingClientRect();
-          const w = wrapRef.current?.getBoundingClientRect();
-          if (w === undefined) return null;
-          return { left: r.left - w.left, top: r.top - w.top, width: r.width, height: r.height };
-        }).filter((x): x is { left: number; top: number; width: number; height: number } => x !== null);
-
         return (
           <AnnotationCard
             key={anno.id}
             annotation={anno}
             rects={rects}
             hostRect={hostRect}
-            occupied={occupied}
+            slots={slotsRef.current}
+            onSlot={(slot) => { slotsRef.current.set(anno.id, slot); }}
             onChangeMarks={(marks) => actions?.setMarks(anno.id, marks)}
             onChangeNote={(note) => actions?.setNote(anno.id, note)}
             onTogglePinned={() => {

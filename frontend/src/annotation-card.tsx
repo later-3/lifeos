@@ -88,8 +88,9 @@ type ShellProps = {
   rects: readonly DOMRect[];
   hostRect: DOMRect;
   offset: { dx: number; dy: number; moved?: boolean };
-  /** 同一块里**已经占位**的其他框（避免完全重叠）。 */
-  occupied?: readonly OccupiedBox[];
+  /** 已摆定的槽位表（见 AnnotationCardProps.slots）。不传 = 每次都按默认位置算（draft 用）。 */
+  slots?: Map<string, { left: number; top: number; width: number; height: number }>;
+  onSlot?: (slot: { left: number; top: number; width: number; height: number }) => void;
   pinned: boolean;
   onDragStart?: () => void;
   /** 拖动过程中持续回调（父层用来抑制"移开就收起"）。 */
@@ -105,7 +106,7 @@ type ShellProps = {
   onMouseLeave?: () => void;
 };
 
-function PopupShell({ rects, hostRect, offset, pinned, occupied = [], onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
+function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   /**
@@ -135,18 +136,22 @@ function PopupShell({ rects, hostRect, offset, pinned, occupied = [], onDragStar
     window.addEventListener("mouseup", release);
   }, [onMouseEnter, onMouseLeave]);
 
-  // 定位（每次尺寸/选区变化都重算）
+  // 定位：**槽位摆定后不再重算**（这就是"拖 A 不动 B"的关键）
   useLayoutEffect(() => {
     const el = ref.current;
     if (el === null) return;
-    const { left, top } = popupPosition(
-      rects, hostRect, hostRect.height,
-      { width: el.offsetWidth, height: el.offsetHeight },
-      offset,
-      occupied,
-    );
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
+    const size = { width: el.offsetWidth, height: el.offsetHeight };
+    const known = slots?.get(annoId);
+    let base = known;
+    if (base === undefined) {
+      // 第一次摆：读此刻已摆定的其他槽位，算一个不与它们相撞的位置，然后固定下来
+      const occupied: OccupiedBox[] = [...(slots?.values() ?? [])].map((o) => ({ ...o }));
+      const pos = popupPosition(rects, hostRect, hostRect.height, size, { dx: 0, dy: 0 }, occupied);
+      base = { left: pos.left, top: pos.top, width: size.width, height: size.height };
+      onSlot?.(base);
+    }
+    el.style.left = `${base.left + offset.dx}px`;
+    el.style.top = `${Math.max(0, base.top + offset.dy)}px`;
   });
 
   return (
@@ -336,14 +341,26 @@ export type AnnotationCardProps = {
   onRemove: () => void;
   onEnter?: () => void;
   onLeave?: () => void;
-  /** 同一块里已经占位的其他框（避免完全重叠）。 */
-  occupied?: readonly OccupiedBox[];
+  /**
+   * 同一块里**已摆定**的槽位（避免完全重叠）。
+   *
+   * 为什么传 Map 而不是算好的数组，且为什么在 effect 里读：
+   * 用户 2026-11-03 报的 bug——拖 A，B 跟着跑。
+   * 根因是避让每帧重算，且障碍物取的是"其他框当前的 DOM 位置"：
+   * A 被拖走 → A 的 DOM 变了 → B 的障碍物变了 → B 重排。
+   * 现在改成：每块第一次摆框时算一次并**写进这张表**，之后只读，
+   * 别人怎么拖都改不了我的基准。表是 mutable 的，所以在 effect 里读最新值
+   *（同一批卡片按渲染顺序执行 effect，前一个写进去的槽位后一个能读到）。
+   */
+  slots?: Map<string, { left: number; top: number; width: number; height: number }>;
+  /** 本框第一次摆定后回报槽位（由上层写进 slots）。 */
+  onSlot?: (slot: { left: number; top: number; width: number; height: number }) => void;
 };
 
 export function AnnotationCard({
   annotation, rects, hostRect,
   onChangeMarks, onChangeNote, onTogglePinned, onDragStart, onDragMove, onPressEnd, onOffsetChange,
-  onRemove, onEnter, onLeave, occupied,
+  onRemove, onEnter, onLeave, slots, onSlot,
 }: AnnotationCardProps) {
   const { marks, note, ui } = annotation;
 
@@ -369,7 +386,8 @@ export function AnnotationCard({
       testId="annotation-card" annoId={annotation.id}
       rects={rects} hostRect={hostRect}
       offset={{ dx: ui.dx, dy: ui.dy, moved: ui.moved === true }} pinned={ui.pinned}
-      occupied={occupied}
+      {...(slots === undefined ? {} : { slots })}
+      {...(onSlot === undefined ? {} : { onSlot })}
       onDragStart={() => onDragStart?.()}
       onDragMove={() => onDragMove?.()}
       onPressEnd={() => onPressEnd?.()}

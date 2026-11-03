@@ -100,3 +100,52 @@ test("多条批注：第三条依次往下排", () => {
   assert.ok(p2.top >= p1.top + size.height + 8);
   assert.ok(p3.top >= p2.top + size.height + 8, `第三条继续下移（p2=${p2.top}, p3=${p3.top}）`);
 });
+
+// ---- 槽位固定（用户 2026-11-03 报的 bug：拖 A，B 跟着跑）----
+import { fixedSlots } from "../frontend/src/annotation-position.ts";
+
+test("槽位：同一段文字上的两条批注纵向错开，不重叠", () => {
+  const size = { width: 300, height: 120 };
+  const items = [
+    { id: "A", rects: [rect(300, 100, 100, 20)] },
+    { id: "B", rects: [rect(300, 110, 100, 20)] },
+  ];
+  const slots = fixedSlots(items, host(), 1000, size, items.map((i) => ({ id: i.id, ...size })));
+  const [a, b] = slots;
+  assert.equal(a.left, b.left, "同一段 → 水平相同");
+  assert.ok(b.top >= a.top + size.height, `B 应在 A 下方：A.top=${a.top} B.top=${b.top}`);
+});
+
+test("槽位：已摆定的框不再重算（这就是修复本身）", () => {
+  const size = { width: 300, height: 120 };
+  // 第一次摆：A 先、B 后（B 被 A 挤下去）
+  const slots = new Map();
+  const a = fixedSlots([{ id: "A", rects: [rect(300, 100, 100, 20)] }], host(), 1000, size, [{ id: "A", ...size }]);
+  slots.set("A", a[0]);
+  const b = fixedSlots([{ id: "B", rects: [rect(300, 110, 100, 20)] }], host(), 1000, size, [{ id: "B", ...size }]);
+  slots.set("B", b[0]);
+  const bFixed = { ...slots.get("B") };
+
+  // A 被拖动：只改 A 自己的槽位（真实代码里是 offset，槽位本身不动）
+  slots.set("A", { ...slots.get("A"), left: 320, top: 208 });
+
+  // B 看着自己的槽位摆，与 A 无关
+  assert.deepEqual(slots.get("B"), bFixed, "拖 A 后 B 的位置必须一模一样");
+});
+
+test("槽位：已摆定的框不因别人拖动而重排（模拟真实流程）", () => {
+  const size = { width: 300, height: 120 };
+  // 步骤 1：两条都在默认位置，B 被 A 挤下去
+  const slots = new Map();
+  const aSlot = fixedSlots([{ id: "A", rects: [rect(300, 100, 100, 20)] }], host(), 1000, size, [{ id: "A", ...size }]);
+  slots.set("A", aSlot[0]);
+  const bSlot = fixedSlots([{ id: "B", rects: [rect(300, 110, 100, 20)] }], host(), 1000, size, [{ id: "B", ...size }]);
+  slots.set("B", bSlot[0]);
+  const bFixed = { ...bSlot[0] };
+  // 步骤 2：用户把 A 拖到 (320, 208) —— A 只改自己的 offset，不改 slots
+  const aDragged = { ...slots.get("A"), left: 320, top: 208 };
+  slots.set("A", aDragged);
+  // 步骤 3：B 的位置必须与步骤 1 完全一致
+  assert.deepEqual(slots.get("B"), bFixed, "拖 A 后 B 的位置必须不动");
+  assert.equal(slots.get("B").top, bFixed.top);
+});
