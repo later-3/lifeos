@@ -1,6 +1,10 @@
 /**
  * 批注浮框（Task 0003 · P3）。
  *
+ * 只有两个操作按钮（用户 2026-11-03 定）：**图钉**（是否常显）与**删除**。
+ * 没有"关闭框"按钮——不需要：不钉住时移开鼠标就收起；钉住了想收起就点图钉取消。
+ * 早期那版有 ✕，和钉住/删除的语义重叠，反而让人犹豫点哪个。
+ *
  * 两种形态：
  *  - **draft**（拖选后出现）：引用 + 语气按钮 + 输入框 + Enter/Esc + 标上；
  *  - **已有批注**：引用 + 语气按钮（可改）+ 输入框（可改）+ 图钉 / ✕ / 🗑。
@@ -332,7 +336,6 @@ export type AnnotationCardProps = {
   onPressEnd?: () => void;
   /** 拖动结束：提交偏移。 */
   onOffsetChange: (dx: number, dy: number) => void;
-  onClose: () => void;
   onRemove: () => void;
   onEnter?: () => void;
   onLeave?: () => void;
@@ -343,7 +346,7 @@ export type AnnotationCardProps = {
 export function AnnotationCard({
   annotation, rects, hostRect, hostHeight,
   onChangeMarks, onChangeNote, onTogglePinned, onDragStart, onDragMove, onPressEnd, onOffsetChange,
-  onClose, onRemove, onEnter, onLeave, occupied,
+  onRemove, onEnter, onLeave, occupied,
 }: AnnotationCardProps) {
   const { marks, note, ui } = annotation;
 
@@ -381,7 +384,6 @@ export function AnnotationCard({
             active={ui.pinned} data-testid="card-pin" onClick={onTogglePinned}>
             <PinIcon />
           </IconButton>
-          <IconButton size="sm" label="关闭批注框（不删除批注）" data-testid="card-close" onClick={onClose}>✕</IconButton>
           <IconButton size="sm" label="删除这条批注" data-testid="card-remove" onClick={onRemove}>
             <TrashIcon />
           </IconButton>

@@ -407,7 +407,6 @@ export type AnnotationActions = {
   add: (anchor: { messageId: string; blockIndex: number; start: number; end: number; quote: string }, marks: readonly string[], note: string) => string;
   setMarks: (id: string, marks: readonly string[]) => void;
   setNote: (id: string, note: string) => void;
-  setMode: (id: string, mode: Annotation["ui"]["mode"]) => void;
   togglePinned: (id: string) => void;
   setOffset: (id: string, dx: number, dy: number) => void;
   remove: (id: string) => void;
@@ -588,10 +587,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   // 卡片被"关闭"或已删除时，本地 openIds 要跟着清掉（store 是唯一事实源）
   useEffect(() => {
     if (openIds.length === 0) return;
-    const keep = openIds.filter((id) => {
-      const still = annotations.find((anno) => anno.id === id);
-      return still !== undefined && still.ui.mode !== "hidden";
-    });
+    const keep = openIds.filter((id) => annotations.some((anno) => anno.id === id));
     if (keep.length !== openIds.length) setOpenIds(keep);
   }, [annotations, openIds]);
 
@@ -669,7 +665,6 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
               setDraggingId(null);
               window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
             }}
-            onClose={() => { actions?.setMode(anno.id, "hidden"); closeOne(anno.id); }}
             onRemove={() => { actions?.remove(anno.id); closeOne(anno.id); }}
             onEnter={() => { holdRef.current.inBox = true; clearHideTimer(); }}
             onLeave={() => {

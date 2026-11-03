@@ -266,9 +266,9 @@ export default function App() {
   /** 传给消息体的批注操作（用 useMemo 稳定引用，否则每条消息每帧都重建）。 */
   const annoActions = useMemo(() => ({
     add: anno.add, setMarks: anno.setMarks, setNote: anno.setNote,
-    setMode: anno.setMode, togglePinned: anno.togglePinned, setOffset: anno.setOffset,
+    togglePinned: anno.togglePinned, setOffset: anno.setOffset,
     remove: anno.remove, open: anno.open,
-  }), [anno.add, anno.setMarks, anno.setNote, anno.setMode, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
+  }), [anno.add, anno.setMarks, anno.setNote, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
