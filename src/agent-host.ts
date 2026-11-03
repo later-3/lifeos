@@ -990,6 +990,12 @@ export function messagesOf(state: SessionState) {
   const out: Array<{
     role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind;
     durationMs?: number; tokens?: number;
+    /**
+     * Pi 的回合终态原样透出（Task 0007）：前端要按与后端**同一张表**判定"这一轮算不算失败"，
+     * 就必须拿到同一个输入。在此之前前端只看得到 text/error，只能用"文本是否为空"猜，
+     * 于是出现"提示条说可以点重新发送、按钮不出现"。不做任何判断，只搬运。
+     */
+    stopReason?: string;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
@@ -1042,6 +1048,7 @@ export function messagesOf(state: SessionState) {
         ...(errorText !== undefined ? { error: errorText } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
         ...(tokens !== undefined ? { tokens } : {}),
+        ...(typeof raw.stopReason === "string" && raw.stopReason !== "" ? { stopReason: raw.stopReason } : {}),
       });
     } else if (message.role === "toolResult") {
       const result = textOf(message);

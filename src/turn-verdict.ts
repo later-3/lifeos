@@ -9,11 +9,13 @@
 // - aborted（用户打断）归入"未正常完成"，对应 FR-13 的"中断"分支，不冒充"已完成"。
 import { readFile } from "node:fs/promises";
 import type { StopReason } from "@earendil-works/pi-ai";
+import { turnOutcomeOf } from "./turn-state.ts";
 
 export type TurnVerdict = { turnId: string; state: "done" | "lost" } | null;
 
-/** 终态且"正常结束"的集合（aborted 单独处理为 lost）。 */
-const COMPLETED_REASONS = new Set<StopReason>(["stop", "length", "error"]);
+// 判据集中在 `src/turn-state.ts`（Task 0007）：前端"要不要给重新发送"与这里的兜底对账
+// 必须用同一张 stopReason 表，否则会出现"提示条说可以点重新发送、按钮不出现"。
+// 本地不再维护 COMPLETED_REASONS。
 
 type EntryLike = {
   type?: string;
@@ -51,10 +53,8 @@ async function lastUserTurnVerdict(path: string): Promise<TurnVerdict> {
       lastAssistantStop = entry.message.stopReason;
     } catch { /* skip */ }
   }
-  if (!sawAssistant) return { turnId, state: "lost" };          // 只有 user → 没跑起来/被掐断
-  if (lastAssistantStop === undefined) return { turnId, state: "done" };  // 老条目无字段：保守视为完成（兼容）
-  if (lastAssistantStop === "aborted") return { turnId, state: "lost" };  // 用户打断 = 中断，不是完成
-  return { turnId, state: COMPLETED_REASONS.has(lastAssistantStop) ? "done" : "lost" };
+  if (!sawAssistant) return { turnId, state: turnOutcomeOf({ sawAssistant: false }) };   // 只有 user → 没跑起来/被掐断
+  return { turnId, state: turnOutcomeOf({ sawAssistant: true, ...(lastAssistantStop !== undefined ? { lastStop: lastAssistantStop } : {}) }) };
 }
 
 /** 对账入口：文件不存在/空 → null；能读就按终态判定。 */

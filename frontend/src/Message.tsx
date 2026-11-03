@@ -48,6 +48,11 @@ export type Message = {
   failure?: FailureKind;
   /** 仅客户端：这条正在被流事件更新（工作指示与块自动展开都只认它）。loadMessages 重建后自然清掉。 */
   streaming?: boolean;
+  /**
+   * Pi 的回合终态（Task 0007）：`done` / `lost` 的唯一判据输入，后端 `messagesOf()` 原样透出。
+   * 前端只把它交给 `turnOutcomeOf()`（`src/turn-state.ts`），不再用"文本是否为空"猜。
+   */
+  stopReason?: string;
 };
 
 function renderMarkdown(text: string): string {
