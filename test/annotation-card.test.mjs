@@ -55,3 +55,29 @@ test("位置：拖动过的（dx/dy 非零）以第一行矩形为基准加偏�
 test("位置：空选区不崩，给一个安全值", () => {
   assert.deepEqual(popupPosition([], host(), 1000, { width: 300, height: 100 }), { left: 8, top: 8 });
 });
+
+test("多条批注：与已占用的框错开（不完全重叠）", () => {
+  const sel = [rect(300, 100, 100, 20)];
+  const size = { width: 320, height: 175 };
+  const first = popupPosition(sel, host(), 2000, size);
+  // 第二条与第一条同一选区（最坏情况：同一段文字上的两条批注）
+  const second = popupPosition(sel, host(), 2000, size, { dx: 0, dy: 0 }, [
+    { left: first.left, top: first.top, width: size.width, height: size.height },
+  ]);
+  assert.equal(second.left, first.left, "横向保持对齐");
+  assert.ok(second.top >= first.top + size.height + 8,
+    `第二条必须推到第一条下方（first.top=${first.top}, second.top=${second.top}）`);
+});
+
+test("多条批注：第三条依次往下排", () => {
+  const sel = [rect(300, 100, 100, 20)];
+  const size = { width: 320, height: 175 };
+  const p1 = popupPosition(sel, host(), 3000, size);
+  const p2 = popupPosition(sel, host(), 3000, size, { dx: 0, dy: 0 }, [{ left: p1.left, top: p1.top, width: size.width, height: size.height }]);
+  const p3 = popupPosition(sel, host(), 3000, size, { dx: 0, dy: 0 }, [
+    { left: p1.left, top: p1.top, width: size.width, height: size.height },
+    { left: p2.left, top: p2.top, width: size.width, height: size.height },
+  ]);
+  assert.ok(p2.top >= p1.top + size.height + 8);
+  assert.ok(p3.top >= p2.top + size.height + 8, `第三条继续下移（p2=${p2.top}, p3=${p3.top}）`);
+});

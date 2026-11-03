@@ -15,6 +15,7 @@ import {
 } from "./annotations";
 import { AnnotationCard, AnnotationDraft } from "./annotation-card";
 import { markById } from "./marks";
+import { popupPosition } from "./annotation-position";
 import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
@@ -430,7 +431,17 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   const wrapRef = useRef<HTMLDivElement>(null);
   const indexRef = useRef<BlockIndex | null>(null);
   const [hostRect, setHostRect] = useState<DOMRect | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  /**
+   * 当前展开的批注框（**可以有多个**）。
+   * 2026-11-03 用户反馈"钉两个就不行"：根因这里是单个 string，
+   * 开第二个就把第一个顶掉了。钉住的尤其要能并存。
+   */
+  const [openIds, setOpenIds] = useState<readonly string[]>([]);
+  const openIdsRef = useRef(openIds);
+  openIdsRef.current = openIds;
+  const isOpen = (id: string) => openIds.includes(id);
+  const openOne = (id: string) => setOpenIds((list) => (list.includes(id) ? list : [...list, id]));
+  const closeOne = (id: string) => setOpenIds((list) => list.filter((x) => x !== id));
   const [draft, setDraft] = useState<{ start: number; end: number; quote: string; rects: readonly DOMRect[] } | null>(null);
   const hideTimer = useRef<number | undefined>(undefined);
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
@@ -456,7 +467,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
 
   // 窗口尺寸/滚动变化：重算宿主矩形（浮框位置依赖它）
   useEffect(() => {
-    if (openId === null && draft === null) return;
+    if (openIds.length === 0 && draft === null) return;
     const refresh = () => {
       const host = hostRef.current;
       if (host !== null) setHostRect(host.getBoundingClientRect());
@@ -468,7 +479,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
       window.removeEventListener("resize", refresh);
       window.removeEventListener("scroll", refresh, true);
     };
-  }, [openId, draft]);
+  }, [openIds, draft]);
 
   const rectsFor = useCallback((start: number, end: number): readonly DOMRect[] => {
     const index = indexRef.current;
@@ -480,17 +491,20 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   const openCard = useCallback((id: string) => {
     clearHideTimer();
     setDraft(null);
-    setOpenId(id);
+    openOne(id);
   }, []);
 
   const scheduleHide = useCallback(() => {
-    // 钉住的不收起（"钉"的唯一职责：不需要鼠标也一直显示）
-    const current = openId === null ? undefined : annotationsRef.current.find((a) => a.id === openId);
-    if (current?.ui.pinned === true) return;
     if (holdRef.current.dragging || holdRef.current.inBox) return;
     clearHideTimer();
-    hideTimer.current = window.setTimeout(() => setOpenId(null), 220);
-  }, [openId]);
+    hideTimer.current = window.setTimeout(() => {
+      // 只收起**未钉住**的框；钉住的一个都不动（"钉"的唯一职责）
+      setOpenIds((list) => list.filter((id) => {
+        const anno = annotationsRef.current.find((a) => a.id === id);
+        return anno?.ui.pinned === true;
+      }));
+    }, 220);
+  }, []);
 
   /**
    * 统一用 document 级 mousemove 判定"鼠标在不在框里"。
@@ -499,7 +513,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
    * 结果是"拖一下就消失"（实测踩了三次）。move 事件带坐标，判断的是**当下**的事实。
    */
   useEffect(() => {
-    if (openId === null && draft === null) return;
+    if (openIds.length === 0 && draft === null) return;
     const onDocMove = (event: MouseEvent) => {
       const wrap = wrapRef.current;
       if (wrap === null) return;
@@ -514,7 +528,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
     };
     document.addEventListener("mousemove", onDocMove, true);
     return () => document.removeEventListener("mousemove", onDocMove, true);
-  }, [openId, draft, scheduleHide]);
+  }, [openIds, draft, scheduleHide]);
 
   /** 鼠标在高亮上：找出命中的批注并打开它。 */
   const onMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -532,7 +546,7 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
     if (top === undefined) return;
     clearHideTimer();
     setHostRect(host.getBoundingClientRect());
-    setOpenId(top.id);
+    openOne(top.id);
   }, [annotations, scheduleHide]);
 
   /** 拖选 → 浮出 draft。 */
@@ -554,7 +568,8 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
 
     const rects = rectsFor(start, end);
     clearHideTimer();
-    setOpenId(null);
+    // 进入编辑态：只收未钉住的框（钉住的保持）
+    setOpenIds((list) => list.filter((id) => annotationsRef.current.find((a) => a.id === id)?.ui.pinned === true));
     setHostRect(host.getBoundingClientRect());
     setDraft({ start, end, quote, rects });
     selection.removeAllRanges();
@@ -565,18 +580,21 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
     const id = actions.add({ messageId, blockIndex, start: draft.start, end: draft.end, quote: draft.quote }, marks, note);
     setDraft(null);
     // 确认后立刻展开刚建的这条（用户要能马上看到并可继续改）
-    setOpenId(id ?? null);
+    if (id !== undefined) openOne(id);
   }, [actions, messageId, blockIndex, draft]);
 
-  // 卡片被"关闭"或已删除时，本地 openId 要跟着清掉（store 是唯一事实源）
+  // 卡片被"关闭"或已删除时，本地 openIds 要跟着清掉（store 是唯一事实源）
   useEffect(() => {
-    if (openId === null) return;
-    const still = annotations.find((anno) => anno.id === openId);
-    if (still === undefined || still.ui.mode === "hidden") setOpenId(null);
-  }, [annotations, openId]);
+    if (openIds.length === 0) return;
+    const keep = openIds.filter((id) => {
+      const still = annotations.find((anno) => anno.id === id);
+      return still !== undefined && still.ui.mode !== "hidden";
+    });
+    if (keep.length !== openIds.length) setOpenIds(keep);
+  }, [annotations, openIds]);
 
-  const opened = openId === null ? undefined : annotations.find((anno) => anno.id === openId);
-  const openedRects = opened === undefined ? [] : rectsFor(opened.start, opened.end);
+  // 要渲染的卡片：openIds ∩ 现有批注（顺序按批注自身顺序，避免每帧抖动）
+  const openedList = annotations.filter((anno) => openIds.includes(anno.id));
 
   return (
     <div className="relative" ref={wrapRef}>
@@ -587,56 +605,72 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
         <Markdown text={text} />
       </div>
 
-      {/* 虚线指引：只在框展开时画 */}
-      {opened !== undefined && openedRects.length > 0 && hostRect !== null && (
-        <Connector
-          rects={openedRects}
-          hostRect={hostRect}
-          cardId={opened.id}
-          tone={markById(opened.marks[0] ?? "")?.tone}
-          wrapRef={wrapRef}
-        />
-      )}
+      {/* 虚线指引：每个展开的框各一条 */}
+      {openedList.map((anno) => {
+        const rects = rectsFor(anno.start, anno.end);
+        if (rects.length === 0 || hostRect === null) return null;
+        return (
+          <Connector
+            key={`conn-${anno.id}`}
+            rects={rects}
+            hostRect={hostRect}
+            cardId={anno.id}
+            tone={markById(anno.marks[0] ?? "")?.tone}
+            wrapRef={wrapRef}
+          />
+        );
+      })}
 
-      {/* 批注卡片 */}
-      {opened !== undefined && openedRects.length > 0 && hostRect !== null && (
-        <AnnotationCard
-          annotation={opened}
-          rects={openedRects}
-          hostRect={hostRect}
-          hostHeight={hostRect.height}
-          onChangeMarks={(marks) => actions?.setMarks(opened.id, marks)}
-          onChangeNote={(note) => actions?.setNote(opened.id, note)}
-          onTogglePinned={() => {
-            const willPin = !opened.ui.pinned;
-            actions?.togglePinned(opened.id);
-            if (willPin) clearHideTimer();       // 刚钉住 → 一定保持显示
-          }}
-          onDragStart={() => { holdRef.current.dragging = true; clearHideTimer(); }}
-          onDragMove={() => clearHideTimer()}
-          onPressEnd={() => {
-            // 松开后给 300ms 宽限：用户刚操作完，别立刻收走。
-            // （实测：松手瞬间 document 的 mousemove 会排一次隐藏，框就没了。）
-            clearHideTimer();
-            window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
-          }}
-          onOffsetChange={(dx, dy) => {
-            actions?.setOffset(opened.id, dx, dy);
-            // 同一套宽限期：拖完立刻收走会很突然（实测）
-            clearHideTimer();
-            window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
-          }}
-          onClose={() => actions?.setMode(opened.id, "hidden")}
-          onRemove={() => actions?.remove(opened.id)}
-          onEnter={() => { holdRef.current.inBox = true; clearHideTimer(); }}
-          onLeave={() => {
-            // 注意：拖动时鼠标会划出框，此时 dragging=true → scheduleHide 直接返回，
-            // 框不会消失。拖动结束后 dragging 由 onOffsetChange 复位。
-            holdRef.current.inBox = false;
-            scheduleHide();
-          }}
-        />
-      )}
+      {/* 批注卡片（可以有多个同时展开） */}
+      {hostRect !== null && openedList.map((anno, index) => {
+        const rects = rectsFor(anno.start, anno.end);
+        if (rects.length === 0) return null;
+        // 按渲染顺序：前面的框已经占位，本条要往下错开（否则同一段上的两条会完全叠住）
+        const occupied = openedList.slice(0, index).map((prev) => {
+          const el = wrapRef.current?.querySelector(`[data-testid="annotation-card"][data-anno="${prev.id}"]`);
+          if (el === null || el === undefined) return null;
+          const r = el.getBoundingClientRect();
+          const w = wrapRef.current?.getBoundingClientRect();
+          if (w === undefined) return null;
+          return { left: r.left - w.left, top: r.top - w.top, width: r.width, height: r.height };
+        }).filter((x): x is { left: number; top: number; width: number; height: number } => x !== null);
+
+        return (
+          <AnnotationCard
+            key={anno.id}
+            annotation={anno}
+            rects={rects}
+            hostRect={hostRect}
+            hostHeight={hostRect.height}
+            occupied={occupied}
+            onChangeMarks={(marks) => actions?.setMarks(anno.id, marks)}
+            onChangeNote={(note) => actions?.setNote(anno.id, note)}
+            onTogglePinned={() => {
+              const willPin = !anno.ui.pinned;
+              actions?.togglePinned(anno.id);
+              if (willPin) clearHideTimer();
+            }}
+            onDragStart={() => { holdRef.current.dragging = true; clearHideTimer(); }}
+            onDragMove={() => clearHideTimer()}
+            onPressEnd={() => {
+              clearHideTimer();
+              window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
+            }}
+            onOffsetChange={(dx, dy) => {
+              actions?.setOffset(anno.id, dx, dy);
+              clearHideTimer();
+              window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
+            }}
+            onClose={() => { actions?.setMode(anno.id, "hidden"); closeOne(anno.id); }}
+            onRemove={() => { actions?.remove(anno.id); closeOne(anno.id); }}
+            onEnter={() => { holdRef.current.inBox = true; clearHideTimer(); }}
+            onLeave={() => {
+              holdRef.current.inBox = false;
+              scheduleHide();
+            }}
+          />
+        );
+      })}
 
       {/* draft 编辑框 */}
       {draft !== null && hostRect !== null && (

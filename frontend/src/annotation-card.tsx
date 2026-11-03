@@ -85,6 +85,8 @@ type ShellProps = {
   hostRect: DOMRect;
   hostHeight: number;
   offset: { dx: number; dy: number; moved?: boolean };
+  /** 同一块里**已经占位**的其他框（避免完全重叠）。 */
+  occupied?: readonly import("./annotation-position").OccupiedBox[];
   pinned: boolean;
   onDragStart?: () => void;
   /** 拖动过程中持续回调（父层用来抑制"移开就收起"）。 */
@@ -100,7 +102,7 @@ type ShellProps = {
   onMouseLeave?: () => void;
 };
 
-function PopupShell({ rects, hostRect, hostHeight, offset, pinned, onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
+function PopupShell({ rects, hostRect, hostHeight, offset, pinned, occupied = [], onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   /**
@@ -138,6 +140,7 @@ function PopupShell({ rects, hostRect, hostHeight, offset, pinned, onDragStart, 
       rects, hostRect, hostHeight,
       { width: el.offsetWidth, height: el.offsetHeight },
       offset,
+      occupied,
     );
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
@@ -333,12 +336,14 @@ export type AnnotationCardProps = {
   onRemove: () => void;
   onEnter?: () => void;
   onLeave?: () => void;
+  /** 同一块里已经占位的其他框（避免完全重叠）。 */
+  occupied?: readonly import("./annotation-position").OccupiedBox[];
 };
 
 export function AnnotationCard({
   annotation, rects, hostRect, hostHeight,
   onChangeMarks, onChangeNote, onTogglePinned, onDragStart, onDragMove, onPressEnd, onOffsetChange,
-  onClose, onRemove, onEnter, onLeave,
+  onClose, onRemove, onEnter, onLeave, occupied,
 }: AnnotationCardProps) {
   const { marks, note, ui } = annotation;
 
@@ -364,6 +369,7 @@ export function AnnotationCard({
       testId="annotation-card" annoId={annotation.id}
       rects={rects} hostRect={hostRect} hostHeight={hostHeight}
       offset={{ dx: ui.dx, dy: ui.dy, moved: ui.moved === true }} pinned={ui.pinned}
+      occupied={occupied}
       onDragStart={() => onDragStart?.()}
       onDragMove={() => onDragMove?.()}
       onPressEnd={() => onPressEnd?.()}
