@@ -199,7 +199,7 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
         </span>
       </span>
       <span className="relative flex w-16 shrink-0 items-center justify-end">
-        <span className="transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{status}</span>
+        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{status}</span>
         <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><IconHistory size={14} /></IconButton>
           <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><IconPencil size={14} /></IconButton>

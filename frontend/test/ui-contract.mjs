@@ -1196,21 +1196,68 @@ for (const [name, width, setup, clipTo, install] of SHOTS) {
 await shotBrowser.close();
 
 
-// —— P1·1.4 三态点契约（run-facts）—— 跨会话运行 / 完成未读 / 已读时间 三态语义。
-// 不依赖截图基线；以"渲染后的会话列表行"断言（DOM 里 title=生成中/完成未读/时间）。
+// —— P1·1.4 三态点契约（run-facts）—— 跨会话运行 / 完成未读 / 失败 三态标记必须**画出来**。
+//
+// 2026-11-02 重写（Task 0004 · C161 反例）：上一版用 `[data-session-id]` 取行（前端从未渲染这个属性，
+// 实测 0 个）、用 `[title="完成未读"]` 匹配（真实 title 是 "完成未读（查看后消失）"，实测 0 个），
+// 唯一断言数页面上的 `[data-testid]` 个数 —— 于是"点渲染成 0×0"的回归它是绿的。
+// 现在按真实结构断言三点：① 行选择器能用；② 点**存在**；③ 点**有布局盒**（≥6×6 且 offsetParent 非空）。
+// 状态由注入的 SSE 快照决定（route 拦截），不依赖这台机器上恰好有未读/在跑的会话，也不写真实数据。
 {
   const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
-  await runPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
-  await runPage.waitForTimeout(700);
-  const sessionStates = await runPage.evaluate(() => {
-    return [...document.querySelectorAll("[data-testid]")].map((row) => ({
-      sessionId: row.getAttribute("data-session-id"),
-      running: row.querySelector('[title="生成中"]') !== null,
-      unread: row.querySelector('[title="完成未读"]') !== null,
-      anyDot: row.querySelector('[title="生成中"], [title="完成未读"]') !== null,
+  // 焦点上报会改服务端"已读"时间：拦掉不转发，门禁只读不写。
+  await runPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
+  const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
+  const ids = (listed.items ?? []).map((item) => item.sessionId).filter((id) => typeof id === "string");
+  check("P1·1.4 三态点：能拿到夹具会话", ids.length >= 2, `${ids.length} 条`);
+  if (ids.length >= 2) {
+    const now = new Date().toISOString();
+    const snapshot = {
+      connectionId: "ui-contract-status-dot", seq: 1, turns: [],
+      running: [{ agentId: "lifeosagent", sessionId: ids[0], startedAt: now }],
+      unread: [{ agentId: "lifeosagent", projectId: "workspace", sessionId: ids[1], completedAt: now }],
+    };
+    await runPage.route("**/api/events", (route) => route.fulfill({
+      status: 200, headers: { "content-type": "text/event-stream" },
+      body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`,
     }));
-  });
-  check("P1·1.4 三态点：会话列表行可捕捉", sessionStates.length >= 1, `${sessionStates.length} 行`);
+    // 运行态每 30 秒（以及打开页首次）用 /api/runtime 对账，真值说"没在跑"就会把夹具冲掉——
+    // 夹具里也把对账接口对齐，否则测的是"没有运行点"而不是"运行点画不出来"。
+    await runPage.route("**/api/runtime", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ running: snapshot.running, draining: false }),
+    }));
+    await runPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
+    // 等会话行渲染（骨架屏 / 空态都不算）
+    const rowsReady = await runPage.waitForFunction(
+      () => document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length > 0, null, { timeout: 15000 },
+    ).then(() => true, () => false);
+    check("P1·1.4 三态点：会话行能渲染", rowsReady);
+    await runPage.waitForTimeout(1200);
+    const dots = await runPage.evaluate(() => {
+      const pick = (selector) => [...document.querySelectorAll(selector)].map((el) => {
+        const box = el.getBoundingClientRect();
+        return { title: el.getAttribute("title") ?? "",
+          w: Math.round(box.width), h: Math.round(box.height), attached: el.offsetParent !== null };
+      });
+      return {
+        running: pick('[title="生成中"]'),
+        // 未读的 title 带引导语后缀（Task 0015 加），所以按前缀匹配
+        unread: pick('[title^="完成未读"]'),
+        failure: pick('[title^="失败："]'),
+        rows: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length,
+      };
+    });
+    // ① 存在性：注入的快照里各有一个，必须各画出至少一个（漏画 = 缺陷）
+    check("P1·1.4 三态点：运行点已渲染", dots.running.length >= 1, `${dots.running.length} 个`);
+    check("P1·1.4 三态点：未读点已渲染", dots.unread.length >= 1, `${dots.unread.length} 个`);
+    // ② 有布局盒：0×0 等于没画（本次回归的判据）。6×6 是 h-1.5/w-1.5 的设计尺寸。
+    const flat = [...dots.running, ...dots.unread, ...dots.failure]
+      .filter((dot) => dot.w < 6 || dot.h < 6 || !dot.attached)
+      .map((dot) => `${dot.title || "(无 title)"} ${dot.w}×${dot.h}${dot.attached ? "" : " 未挂载"}`);
+    check("P1·1.4 三态点：每个点都有布局盒（≥6×6）", flat.length === 0, flat.slice(0, 4).join(" | "));
+    await runPage.close();
+  }
 }
 
 // —— 图片查看器（用户 2026-10-27：不新开页面，浮层里放大缩小）——
