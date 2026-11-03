@@ -96,6 +96,8 @@
    */
   --container-anno-popup: clamp(240px, 26vw, 320px);
   --container-anno-popup-max: calc(100vw - 24px);
+  /* 底部批注表格的最大高度（超出内部滚动）。与 demo 一致：min(30vh, 240px)。 */
+  --container-anno-panel: min(30vh, 240px);
   --shadow-anno: 0 8px 28px rgba(31, 35, 40, .15), 0 1px 3px rgba(31, 35, 40, .07);
   --shadow-anno-pinned: 0 12px 34px rgba(31, 35, 40, .2);
 

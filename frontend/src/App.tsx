@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
@@ -10,6 +10,8 @@ import {
 } from "./attachments";
 import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
+import { AnnotationPanel } from "./annotation-panel";
+import { annotationsMessage } from "./annotation-message";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -269,6 +271,49 @@ export default function App() {
     togglePinned: anno.togglePinned, setOffset: anno.setOffset,
     remove: anno.remove, open: anno.open,
   }), [anno.add, anno.setMarks, anno.setNote, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
+
+  /** 批注面板折叠态（默认展开）。 */
+  const [annoPanelFolded, setAnnoPanelFolded] = useState(false);
+
+  /**
+   * 批注列表（表格用）：按"消息顺序 + 段内偏移"排序。
+   * 用 messages 的 id 序列当消息顺序，避免按数组下标排（下标会随重渲染变）。
+   */
+  const annoOrdered = useMemo(() => {
+    const order = messages.map((m) => m.id).filter((id): id is string => id !== undefined);
+    const rank = (id: string): number => { const at = order.indexOf(id); return at < 0 ? Number.MAX_SAFE_INTEGER : at; };
+    return [...anno.annotations].sort((a, b) => {
+      const byMessage = rank(a.messageId) - rank(b.messageId);
+      if (byMessage !== 0) return byMessage;
+      if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
+      return a.start - b.start;
+    });
+  }, [anno.annotations, messages]);
+
+  /** messageId → 它在对话里的序号（1 起，用户/助手消息一起数，与 demo 的"第 N 条回复"一致）。 */
+  const messageOrdinal = useMemo(() => {
+    const map = new Map<string, number>();
+    messages.forEach((m, index) => { if (m.id !== undefined) map.set(m.id, index + 1); });
+    return map;
+  }, [messages]);
+
+  /**
+   * 定位：滚到被批注文字处，并展开那条批注的框。
+   * 用 DOM 查询 + scrollIntoView；展开通过 store 的 open()（渲染层会按 id 打开）。
+   */
+  const locateAnnotation = useCallback((id: string) => {
+    const anno_ = anno.annotations.find((a) => a.id === id);
+    if (anno_ === undefined) return;
+    anno.open(id);
+    // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
+    window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
+    window.requestAnimationFrame(() => {
+      const host = document.querySelector(
+        `[data-message-id="${anno_.messageId}"] [data-testid="message-text"][data-block-index="${anno_.blockIndex}"]`,
+      );
+      if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }, [anno]);
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
@@ -1602,12 +1647,34 @@ export default function App() {
   }, []);
   function send() {
     const raw = input.trim();
+    // 斜杠命令优先：有命令就走命令，不掺批注（命令是会话动作，不是对话内容）
     if (raw.startsWith("/")) { void runSlash(raw); return; }
+
+    // 有批注 → 批注与输入合成**一条**消息（用户 2026-11-03 定：一次发送 = 一次模型调用）
+    if (anno.annotations.length > 0) {
+      const annosText = annotationsMessage(annoOrdered, {
+        order: messages.map((m) => m.id).filter((id): id is string => id !== undefined),
+      });
+      const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
+      if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
+      historyIndexRef.current = -1;
+      anno.clear();
+      void sendText(merged);
+      return;
+    }
+
     if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
     void sendText(raw);
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
+  /**
+   * 当前会话是不是"与其他 Agent 的对话"。
+   * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts:564-570`），
+   * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
+   */
+  const isPeerSession = sessionId !== undefined
+    && currentGroup?.sessions.some((item) => item.sessionId === sessionId && item.peer !== undefined) === true;
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
@@ -2034,7 +2101,7 @@ export default function App() {
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
-                      annotationActions={annoActions}
+                      annotationActions={isPeerSession ? undefined : annoActions}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
                         panelWasOpenBeforePeer.current = panelOpen;
@@ -2116,6 +2183,20 @@ export default function App() {
                 void collectImages(files);
               }}
               className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              {/* 批注面板（Task 0003 · P4）：放在输入框上方，与输入框互不污染。
+                  peer 会话不显示（由对端驱动，不能往里发消息，见 server.ts:564-570）。 */}
+              {!isPeerSession && anno.annotations.length > 0 && (
+                <div className="border-b border-line p-2">
+                  <AnnotationPanel
+                    annotations={annoOrdered}
+                    messageOrdinal={(id) => messageOrdinal.get(id)}
+                    folded={annoPanelFolded}
+                    onToggleFold={() => setAnnoPanelFolded((v) => !v)}
+                    onLocate={locateAnnotation}
+                    onRemove={anno.remove}
+                  />
+                </div>
+              )}
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden rounded-t-panel border-b border-line bg-sunken p-1">
                   {/* 草稿态：一句说明放在面板顶部，下面各行只留命令名（不逐行重复“发送后可用”） */}
@@ -2254,7 +2335,7 @@ export default function App() {
                       <IconPlayerStopIcon />
                     </ComposerButton>
                   ) : (
-                    <ComposerButton label="发送" disabled={input.trim() === "" || selectedProjectId === undefined}
+                    <ComposerButton label="发送" disabled={(input.trim() === "" && anno.annotations.length === 0) || selectedProjectId === undefined}
                       onClick={() => void send()}>
                       <IconArrowUpIcon />
                     </ComposerButton>

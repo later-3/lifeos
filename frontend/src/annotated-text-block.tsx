@@ -73,6 +73,12 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
   const hideTimer = useRef<number | undefined>(undefined);
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
   const holdRef = useRef({ dragging: false, inBox: false, freeze: false });
+  /**
+   * 外部要"打开并保持一会儿"（表格点「定位」时用）。
+   * 定位后鼠标还停在表格上，不在卡片里；不保护的话 220ms 后就被收掉了，
+   * 用户看到的是"点了定位，框闪一下就没了"。
+   */
+  const holdUntilRef = useRef(0);
   /** 正在拖动哪一条（null = 没在拖）。Connector 用它决定是否 rAF 跟随。 */
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // scheduleHide 在定时器/事件里执行，闭包可能拿到旧的 annotations，用 ref 取最新
@@ -126,6 +132,22 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     };
   }, [openIds, draft]);
 
+  /** 表格「定位」会派发这个事件请求"打开并保持"；用事件解耦，免得把 store 的方法一路透传。 */
+  useEffect(() => {
+    const onLocate = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (id === undefined) return;
+      const target = annotations.find((anno) => anno.id === id);
+      if (target === undefined) return;
+      clearHideTimer();
+      holdUntilRef.current = Date.now() + 1500;
+      setHostRect(hostRef.current?.getBoundingClientRect() ?? null);
+      setOpenIds((list) => (list.includes(id) ? list : [...list, id]));
+    };
+    window.addEventListener("lifeos:annotation-locate", onLocate as EventListener);
+    return () => window.removeEventListener("lifeos:annotation-locate", onLocate as EventListener);
+  }, [annotations]);
+
   const rectsFor = useCallback((start: number, end: number): readonly DOMRect[] => {
     const index = indexRef.current;
     if (index === null) return [];
@@ -135,6 +157,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
 
   const scheduleHide = useCallback(() => {
     if (holdRef.current.dragging || holdRef.current.inBox || holdRef.current.freeze) return;
+    if (Date.now() < holdUntilRef.current) return;   // 定位后的保护期
     clearHideTimer();
     hideTimer.current = window.setTimeout(() => {
       // 只收起**未钉住**的框；钉住的一个都不动（"钉"的唯一职责）
