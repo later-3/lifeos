@@ -125,6 +125,43 @@ try {
     check("点他组 ＋：草稿落在他项目（只有 1 个项目，跳过）", true);
   }
 
+  // 4b) 折叠状态下点该组的 ＋：组要展开（否则用户点了看不见结果）
+  //     这一条补的是 Task 0006 收尾时「只有代码推断、没有实测」的缺口。
+  {
+    const headerBtn = (name) => page.locator(`[data-testid="group-header"][data-group-name="${name}"] button`).first();
+    const currentName = await page.evaluate(() => {
+      const selected = [...document.querySelectorAll('[data-testid="group-header"]')]
+        .find((el) => el.querySelector('button[aria-current="true"]') !== null);
+      return selected?.getAttribute("data-group-name") ?? null;
+    });
+    const foldTarget = currentName ?? projectName;
+    // 先折叠
+    if ((await headerBtn(foldTarget).getAttribute("aria-expanded")) === "true") {
+      await headerBtn(foldTarget).click();
+      await page.waitForTimeout(400);
+    }
+    check("折叠后 aria-expanded=false", (await headerBtn(foldTarget).getAttribute("aria-expanded")) === "false", foldTarget);
+    // 折叠状态下点该组 ＋（若该组正是草稿项目，按钮禁用 → 换一个可用的组；只有一个组时跳过这条断言）
+    const candidates = await page.evaluate(() => [...document.querySelectorAll('[data-testid="group-header"]')]
+      .map((el) => el.getAttribute("data-group-name") ?? ""));
+    const clickable = [];
+    for (const name of candidates) {
+      if (!(await groupNewButton(name).isDisabled())) clickable.push(name);
+    }
+    if (clickable.length > 0) {
+      const pick = clickable[0];
+      if ((await headerBtn(pick).getAttribute("aria-expanded")) === "true") {
+        await headerBtn(pick).click();
+        await page.waitForTimeout(400);
+      }
+      await groupNewButton(pick).click();
+      await page.waitForTimeout(600);
+      check("折叠组点 ＋ 会展开该组", (await headerBtn(pick).getAttribute("aria-expanded")) === "true", pick);
+    } else {
+      check("折叠组点 ＋ 会展开该组（所有组按钮都禁用，跳过）", true);
+    }
+  }
+
   // 5) 首条消息被明确拒绝：删掉刚建的会话、退回草稿、文字回填
   const rejectPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const rejectCalls = [];
