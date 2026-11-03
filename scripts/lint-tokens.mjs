@@ -10,9 +10,12 @@
  * 用法：node scripts/lint-tokens.mjs    （CI 与 pnpm lint:tokens 共用）
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// fileURLToPath 而不是 .pathname：worktree 路径可能含中文/空格，pathname 是 URL 编码串，
+// 直接用来 scandir 会 ENOENT（2026-11-03 在 evidence/worktree 下实测踩到）。
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "frontend/src");
 const ALLOW_DIRS = [join(SRC, "design")];                 // primitive 层可以写布局常量，但仍不许调色板
 

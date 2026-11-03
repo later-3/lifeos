@@ -990,17 +990,30 @@ export function messagesOf(state: SessionState) {
   const out: Array<{
     role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind;
     durationMs?: number; tokens?: number;
+    /** ★ 消息身份（Task 0003 · P1）：session entry 的 id。
+     *  批注要挂到"哪条消息"上，没有稳定 id 就只能挂 index，而 index 会随重渲染/切换漂移。
+     *  实测：一个 entry 恰好对应一条消息（398 条消息 0 个多产出），entry.id 全局唯一。 */
+    id: string;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
   const projection = state.session.sessionManager.buildSessionProjection();
-  const items = projection.entries.flatMap((entry) => {
+  const items = projection.entries.flatMap((entry, entryIndex) => {
     const raw = (entry.sourceEntry as { timestamp?: unknown }).timestamp;
     const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
     const at = Number.isNaN(parsed) ? undefined : parsed;
-    return entry.messages.map((message) => ({ message, at }));
+    // 消息身份取 entry 的 id（消息体内没有 id，实测 398 条消息的 message 都没有 id 字段）。
+    // 兜底：理论上不该为空；真为空时给一个稳定占位并记 warn，绝不输出 undefined
+    //（否则前端拿不到批注挂载点，且 JSON 里该字段会被整个丢掉）。
+    const rawId = (entry.sourceEntry as { id?: unknown }).id;
+    let id = typeof rawId === "string" && rawId !== "" ? rawId : "";
+    if (id === "") {
+      id = `entry-${entryIndex}`;
+      void log.warn("agent-host", "messagesOf", "session entry 缺少 id，已降级为占位", { details: { entryIndex } });
+    }
+    return entry.messages.map((message) => ({ message, at, id }));
   });
-  for (const { message, at } of items) {
+  for (const { message, at, id } of items) {
     if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
@@ -1014,7 +1027,7 @@ export function messagesOf(state: SessionState) {
       }
       // D7：引用化后用户消息里只有引用行 —— 显示时按附件目录还原（老会话已有图块则原样，见 imageBlocksOfRefs）
       for (const refBlock of imageBlocksOfRefs(message)) blocks.push(refBlock);
-      out.push({ role: "user", text, blocks, ...(at !== undefined ? { at } : {}) });
+      out.push({ role: "user", text, blocks, id, ...(at !== undefined ? { at } : {}) });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
@@ -1036,7 +1049,7 @@ export function messagesOf(state: SessionState) {
       const output = typeof raw.usage?.output === "number" ? raw.usage.output : 0;
       const tokens = input + output > 0 ? input + output : undefined;
       out.push({
-        role: "assistant", text, blocks,
+        role: "assistant", text, blocks, id,
         ...(at !== undefined ? { at } : {}),
         ...(kind !== undefined ? { failure: kind } : {}),
         ...(errorText !== undefined ? { error: errorText } : {}),

@@ -117,6 +117,9 @@ type SessionItem = {
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
+  /** ★ 消息身份（Task 0003 · P1）：后端 messagesOf 透出的 session entry id。
+   *  历史消息必有；客户端刚推送的流式消息还没有（下一轮 loadMessages 才补上）。 */
+  id?: string;
   /** 这一段的生成耗时（ms）与 token（input+output）：过程条统计用（2026-11-02） */
   durationMs?: number; tokens?: number;
 };
@@ -2013,7 +2016,7 @@ export default function App() {
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
                   return (
-                    <MessageView key={index} role={message.role} blocks={renderBlocks} busy={message.streaming === true}
+                    <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
                         panelWasOpenBeforePeer.current = panelOpen;

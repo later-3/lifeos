@@ -127,7 +127,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process, messageId }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
@@ -149,6 +149,9 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
    * `textIndexes` = 哪几个块属于"最终正文"（其余块进过程区）。
    */
   process?: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] };
+  /** ★ 消息身份（Task 0003 · P1）：批注挂到"哪条消息"上靠它。
+   *  不传就不渲染属性（老数据/老会话兼容）。 */
+  messageId?: string;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -183,7 +186,7 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
     const images = blocks.filter((block): block is Extract<Block, { type: "image" }> => block.type === "image");
     return (
       <div className={`flex flex-col gap-1 ${align === "end" ? "items-end" : "items-start"}`}
-        data-testid="message" data-role="user" {...hover}>
+        data-testid="message" data-role="user" data-message-id={messageId} {...hover}>
         {header}
         {text !== "" && (
           /* text-content：让气泡自己的字号与正文同行（`.md-body` 也是 --text-content）。
@@ -207,13 +210,13 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const inside = (index: number): boolean =>
     process !== undefined && !process.textIndexes.includes(index);
   const renderBlock = (block: Block, index: number, keyScope: string) => (
-    <BlockView key={`${keyScope}-${index}`} block={block} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+    <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
       live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
       forceOpen={failure !== undefined} />
   );
 
   return (
-    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-process={process === undefined ? undefined : "folded"} {...hover}>
+    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-message-id={messageId} data-process={process === undefined ? undefined : "folded"} {...hover}>
       {header}
       {process !== undefined ? (
         <>
@@ -366,11 +369,60 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
   );
 }
 
-function BlockView({ block, live, forceOpen = false, onOpenPeer }: { block: Block; live: boolean; forceOpen?: boolean; onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void }) {
+/**
+ * 临时调试出口（Task 0003 · P1-4）：
+ * 打开 `window.__ANNO_DEBUG__ = true` 时，拖选 text 块里的文字会把定位数据打到 console，
+ * 用来人工核对"算得准"。**P2 开工时删除本函数与它的引用。**
+ */
+function debugLogSelection(event: { currentTarget: EventTarget | null }, messageId: string | undefined, blockIndex: number | undefined): void {
+  if (typeof window === "undefined") return;
+  if ((window as unknown as { __ANNO_DEBUG__?: boolean }).__ANNO_DEBUG__ !== true) return;
+  const host = event.currentTarget;
+  if (!(host instanceof HTMLElement)) return;
+  const selection = window.getSelection();
+  if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!host.contains(range.commonAncestorContainer)) return;
+
+  // 延迟到 annotations.ts 的索引函数可用时再算（避免这里重复实现一遍）
+  void import("./annotations.ts").then(({ buildIndex, toRange, toOffset, quoteOf }) => {
+    const index = buildIndex(host);
+    const { start, end } = toOffset(index, range);
+    if (start < 0 || end <= start) return;
+    // quote 取自扁平串（不是 selection.toString()）：跨表格单元格时两者分隔符不同（\t vs \n）
+    const quote = quoteOf(index, start, end);
+    const back = toRange(index, start, end);
+    // 正确性判据看 **Range 边界**，不看 toString（浏览器会自己换分隔符）
+    const ok = back !== null
+      && back.startContainer === range.startContainer && back.startOffset === range.startOffset
+      && back.endContainer === range.endContainer && back.endOffset === range.endOffset;
+    // eslint-disable-next-line no-console
+    console.log("[anno-debug]", {
+      messageId, blockIndex, start, end,
+      quote: quote.length > 40 ? `${quote.slice(0, 40)}…` : quote,
+      ok,
+    });
+  });
+}
+
+function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId }: {
+  block: Block; live: boolean; forceOpen?: boolean;
+  onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
+  /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
+   *  批注要定位到"哪条消息的第几个 text 块"，只给 text 块（thinking/工具/图片不批）。 */
+  blockIndex?: number;
+  /** ★ 消息身份（Task 0003 · P1）：调试打印与后续批注挂载都用它。 */
+  messageId?: string;
+}) {
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
-    return <div data-testid="message-text"><Markdown text={block.text} /></div>;
+    return (
+      <div data-testid="message-text" data-block-index={blockIndex}
+        onMouseUp={(event) => debugLogSelection(event, messageId, blockIndex)}>
+        <Markdown text={block.text} />
+      </div>
+    );
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
   return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
