@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
@@ -261,8 +261,14 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
-  /** 批注（Task 0003 · P2）：独立于消息的一条状态线，不混进 messages。 */
+  /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
   const anno = useAnnotations();
+  /** 传给消息体的批注操作（用 useMemo 稳定引用，否则每条消息每帧都重建）。 */
+  const annoActions = useMemo(() => ({
+    add: anno.add, setMarks: anno.setMarks, setNote: anno.setNote,
+    setMode: anno.setMode, togglePinned: anno.togglePinned, setOffset: anno.setOffset,
+    remove: anno.remove, open: anno.open,
+  }), [anno.add, anno.setMarks, anno.setNote, anno.setMode, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
@@ -356,43 +362,7 @@ export default function App() {
   // 只建一次；标记表变动时重跑即可。
   useEffect(() => { rebuildHighlightStyles(); }, []);
 
-  /**
-   * P2 验证用的示例批注（临时）：
-   * 在控制台执行 `localStorage.setItem("anno-demo","1")` 后刷新，会给最后一条 Agent 消息挂四条。
-   * **P3 接入真实拖选后删除本段。**
-   *
-   * 为什么用 localStorage 而不是 URL 参数：App 会用 `history.replaceState` 把 URL 重置成
-   * 只含 agent/project/session 三键（`App.tsx` 里那个 effect），URL 上的额外参数会被冲掉。
-   */
-  const demoSeeded = useRef(false);
-  useEffect(() => {
-    if (demoSeeded.current) return;
-    if (window.localStorage.getItem("anno-demo") !== "1") return;
-    const target = [...messages].reverse().find((message) => message.role === "assistant" && message.id !== undefined && message.blocks.length > 0);
-    if (target?.id === undefined) return;
-    const targetId = target.id;
-    // 用真实渲染后的扁平文本定位，避免手写偏移写错
-    const host = document.querySelector(`[data-message-id="${targetId}"] [data-testid="message-text"]`);
-    if (!(host instanceof HTMLElement)) return;
-    demoSeeded.current = true;
-    void import("./annotations").then(({ buildIndex }) => {
-      const text = buildIndex(host).text;
-      const seeds: Array<{ needle: string; marks: string[]; note: string }> = [
-        { needle: "加粗的重点", marks: ["critic"], note: "这个统计口径是按文件算还是按条目算？" },
-        { needle: "列表第一项", marks: ["query"], note: "这里有点武断" },
-        { needle: "数据1", marks: ["todo"], note: "这条要记进待办" },
-        { needle: "最后一段普通文字", marks: ["praise"], note: "这段写得清楚，保持" },
-      ];
-      for (const seed of seeds) {
-        const at = text.indexOf(seed.needle);
-        if (at < 0) continue;
-        anno.add(
-          { messageId: targetId, blockIndex: 0, start: at, end: at + seed.needle.length, quote: seed.needle },
-          seed.marks, seed.note,
-        );
-      }
-    });
-  }, [messages, anno]);
+
   // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
   const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
   const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
@@ -2064,6 +2034,7 @@ export default function App() {
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
+                      annotationActions={annoActions}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
                         panelWasOpenBeforePeer.current = panelOpen;

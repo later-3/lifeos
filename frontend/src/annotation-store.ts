@@ -41,6 +41,11 @@ export type AnnotationStore = {
   remove: (id: string) => void;
   /** 全部清空。 */
   clear: () => void;
+  /**
+   * 打开一条批注的框（P3）。
+   * 这里只切 mode；"当前打开的是哪一条"由渲染层自己管（同一块里同一时刻只开一个）。
+   */
+  open: (id: string) => void;
 };
 
 let seq = 0;
@@ -124,8 +129,12 @@ export function useAnnotations(): AnnotationStore {
 
   const clear = useCallback(() => { setAnnotations([]); }, []);
 
+  const open = useCallback((id: string) => {
+    patch(id, (anno) => ({ ...anno, ui: { ...anno.ui, mode: "open" } }));
+  }, [patch]);
+
   return useMemo(
-    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear }),
-    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear],
+    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, open }),
+    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, open],
   );
 }
