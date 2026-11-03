@@ -397,7 +397,7 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
     if (block.text === "" && live) return null;
     return (
       <AnnotatedTextBlock text={block.text} blockIndex={blockIndex} messageId={messageId}
-        annotations={blockAnnotations} actions={blockActions} />
+        annotations={blockAnnotations} actions={blockActions} busy={live} />
     );
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;

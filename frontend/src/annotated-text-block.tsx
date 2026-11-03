@@ -29,6 +29,12 @@ type AnnotatedTextBlockProps = {
   annotations: readonly Annotation[];
   /** 批注操作（P3）。不传 = 只读展示（历史时间线等场景）。 */
   actions?: AnnotationActions;
+  /**
+   * 这一条消息正在流式生成（Task 0003 · P6）。
+   * 流式期**不允许新建批注**：文字每帧都在变，偏移会漂，用户在生成中圈的那句话
+   * 下一秒可能已经不是那句话了。等这一轮结束、文字定稿再标。
+   */
+  busy?: boolean;
 };
 
 /** 批注的可写操作集合；由 App 用 store 组装。 */
@@ -54,7 +60,7 @@ export type AnnotationActions = {
  * **无批注且无 actions 时行为与改造前完全一致**（不加节点、不挂监听）。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions }: AnnotatedTextBlockProps) {
+export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions, busy = false }: AnnotatedTextBlockProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const indexRef = useRef<BlockIndex | null>(null);
@@ -235,6 +241,8 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
 
   /** 拖选 → 浮出 draft。 */
   const onUp = useCallback(() => {
+    // 流式期不建批注：文字还在变，锚点会漂（用户同意：等这一轮完成再标）
+    if (busy) return;
     if (actions === undefined || messageId === undefined || blockIndex === undefined) return;
     const host = hostRef.current;
     const index = indexRef.current;
@@ -257,7 +265,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     setHostRect(host.getBoundingClientRect());
     setDraft({ start, end, quote, rects });
     selection.removeAllRanges();
-  }, [actions, messageId, blockIndex, rectsFor]);
+  }, [actions, messageId, blockIndex, rectsFor, busy]);
 
   const commitDraft = useCallback((marks: readonly string[], note: string) => {
     if (actions === undefined || messageId === undefined || blockIndex === undefined || draft === null) return;
@@ -280,6 +288,8 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
   return (
     <div className="relative" ref={wrapRef}>
       <div ref={hostRef} data-testid="message-text" data-block-index={blockIndex}
+        data-anno-busy={busy ? "1" : undefined}
+        title={busy && actions !== undefined ? "这一轮生成完成后才能批注" : undefined}
         onMouseMove={annotations.length > 0 ? onMove : undefined}
         onMouseLeave={annotations.length > 0 ? scheduleHide : undefined}
         onMouseUp={actions !== undefined ? onUp : undefined}>
