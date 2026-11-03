@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
@@ -9,6 +9,11 @@ import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
 import { retryRemainingSeconds, turnStepText, type TurnStep } from "./working";
+import {
+  annotationsAt, buildIndex, paintAnnotations, toRange,
+  type Annotation, type BlockIndex,
+} from "./annotations";
+import { AnnotationPopup } from "./annotation-popup";
 import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
@@ -127,7 +132,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process, messageId }: {
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock }: {
   role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
@@ -152,6 +157,8 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   /** ★ 消息身份（Task 0003 · P1）：批注挂到"哪条消息"上靠它。
    *  不传就不渲染属性（老数据/老会话兼容）。 */
   messageId?: string;
+  /** ★ 取某块的批注（Task 0003 · P2）。不传 = 这条消息没有批注，行为与改造前完全一致。 */
+  annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -209,8 +216,11 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   // 过程折叠：分两组块——进过程区的、留在外面的最终正文
   const inside = (index: number): boolean =>
     process !== undefined && !process.textIndexes.includes(index);
+  const blockAnnotationsOf = (index: number): readonly Annotation[] =>
+    annotationsOfBlock === undefined ? [] : annotationsOfBlock(index);
   const renderBlock = (block: Block, index: number, keyScope: string) => (
-    <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+    <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId}
+      blockAnnotations={blockAnnotationsOf(index)} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
       live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
       forceOpen={failure !== undefined} />
   );
@@ -370,42 +380,97 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
 }
 
 /**
- * 临时调试出口（Task 0003 · P1-4）：
- * 打开 `window.__ANNO_DEBUG__ = true` 时，拖选 text 块里的文字会把定位数据打到 console，
- * 用来人工核对"算得准"。**P2 开工时删除本函数与它的引用。**
+ * 带批注的文本块（Task 0003 · P2）。
+ *
+ * 职责边界很窄：把 Markdown 渲染出来，然后
+ *  1. 按批注偏移**上色**（CSS Highlight API，不改 DOM）；
+ *  2. 鼠标移到高亮上 → 浮出批注框；移开 → 收起。
+ *
+ * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
+ * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-function debugLogSelection(event: { currentTarget: EventTarget | null }, messageId: string | undefined, blockIndex: number | undefined): void {
-  if (typeof window === "undefined") return;
-  if ((window as unknown as { __ANNO_DEBUG__?: boolean }).__ANNO_DEBUG__ !== true) return;
-  const host = event.currentTarget;
-  if (!(host instanceof HTMLElement)) return;
-  const selection = window.getSelection();
-  if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return;
-  const range = selection.getRangeAt(0);
-  if (!host.contains(range.commonAncestorContainer)) return;
+function AnnotatedTextBlock({ text, blockIndex, messageId, annotations }: {
+  text: string;
+  blockIndex?: number;
+  messageId?: string;
+  annotations: readonly Annotation[];
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const indexRef = useRef<BlockIndex | null>(null);
+  const [hovered, setHovered] = useState<Annotation | null>(null);
+  const [hostRect, setHostRect] = useState<DOMRect | null>(null);
+  const anchorRects = useRef<readonly DOMRect[]>([]);
+  const hideTimer = useRef<number | undefined>(undefined);
 
-  // 延迟到 annotations.ts 的索引函数可用时再算（避免这里重复实现一遍）
-  void import("./annotations.ts").then(({ buildIndex, toRange, toOffset, quoteOf }) => {
+  // 上色：每次渲染后重算 Range（CSS Highlight 不持有 DOM，Range 会随重渲染失效）
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (host === null) return;
     const index = buildIndex(host);
-    const { start, end } = toOffset(index, range);
-    if (start < 0 || end <= start) return;
-    // quote 取自扁平串（不是 selection.toString()）：跨表格单元格时两者分隔符不同（\t vs \n）
-    const quote = quoteOf(index, start, end);
-    const back = toRange(index, start, end);
-    // 正确性判据看 **Range 边界**，不看 toString（浏览器会自己换分隔符）
-    const ok = back !== null
-      && back.startContainer === range.startContainer && back.startOffset === range.startOffset
-      && back.endContainer === range.endContainer && back.endOffset === range.endOffset;
-    // eslint-disable-next-line no-console
-    console.log("[anno-debug]", {
-      messageId, blockIndex, start, end,
-      quote: quote.length > 40 ? `${quote.slice(0, 40)}…` : quote,
-      ok,
-    });
-  });
+    indexRef.current = index;
+    paintAnnotations(index, annotations);
+  }, [text, annotations]);
+
+  // 卸载时清掉本块留下的高亮（切会话/换消息）
+  useEffect(() => () => {
+    if (hideTimer.current !== undefined) window.clearTimeout(hideTimer.current);
+  }, []);
+
+  const pick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const index = indexRef.current;
+    const host = hostRef.current;
+    if (index === null || host === null || annotations.length === 0) return;
+    // 正在拖选时不抢事件（否则选区还没成形就弹出框）
+    const selection = window.getSelection();
+    if (selection !== null && !selection.isCollapsed) return;
+
+    const hit = annotationsAt(index, annotations, { x: event.clientX, y: event.clientY });
+    if (hideTimer.current !== undefined) window.clearTimeout(hideTimer.current);
+    if (hit.length === 0) {
+      hideTimer.current = window.setTimeout(() => setHovered(null), 220);
+      return;
+    }
+    // 命中多条时优先钉住的（P3 才有钉住；P2 取最后一条）
+    const top = [...hit].reverse().find((anno) => anno.ui.pinned) ?? hit[hit.length - 1];
+    const anno = top ?? null;
+    if (anno === null) return;
+    const range = toRange(index, anno.start, anno.end);
+    anchorRects.current = range === null ? [] : [...range.getClientRects()];
+    setHostRect(host.getBoundingClientRect());
+    setHovered(anno);
+  }, [annotations]);
+
+  const keepOpen = useCallback(() => {
+    if (hideTimer.current !== undefined) window.clearTimeout(hideTimer.current);
+  }, []);
+  const scheduleHide = useCallback(() => {
+    if (hideTimer.current !== undefined) window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => setHovered(null), 220);
+  }, []);
+
+  return (
+    <div className="relative">
+      <div ref={hostRef} data-testid="message-text" data-block-index={blockIndex}
+        onMouseMove={annotations.length > 0 ? pick : undefined}
+        onMouseLeave={annotations.length > 0 ? scheduleHide : undefined}>
+        <Markdown text={text} />
+      </div>
+      {hovered !== null && hostRect !== null && (
+        <div className="absolute inset-0" style={{ pointerEvents: "none" }}
+          onMouseEnter={keepOpen} onMouseLeave={scheduleHide} data-testid="annotation-layer">
+          <AnnotationPopup
+            annotation={hovered}
+            anchorRects={anchorRects.current}
+            hostRect={hostRect}
+            hostHeight={hostRect.height}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
-function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId }: {
+function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [] }: {
   block: Block; live: boolean; forceOpen?: boolean;
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
@@ -413,15 +478,15 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
   blockIndex?: number;
   /** ★ 消息身份（Task 0003 · P1）：调试打印与后续批注挂载都用它。 */
   messageId?: string;
+  /** ★ 本块的批注（Task 0003 · P2）：为空数组时行为与没有批注完全一致。 */
+  blockAnnotations?: readonly Annotation[];
 }) {
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
     return (
-      <div data-testid="message-text" data-block-index={blockIndex}
-        onMouseUp={(event) => debugLogSelection(event, messageId, blockIndex)}>
-        <Markdown text={block.text} />
-      </div>
+      <AnnotatedTextBlock text={block.text} blockIndex={blockIndex} messageId={messageId}
+        annotations={blockAnnotations} />
     );
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;

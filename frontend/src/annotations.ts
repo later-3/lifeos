@@ -106,3 +106,136 @@ export function toOffset(index: BlockIndex, range: Range): { start: number; end:
     end: offsetOf(range.endContainer, range.endOffset),
   };
 }
+
+/* ============================================================
+   以下是 P2 新增：批注的状态形状、上色、命中检测
+   ============================================================ */
+
+import { MARK_ID_PATTERN, MARKS } from "./marks.ts";
+
+/** 一条批注（与 `02-design.md` §2.1 一致）。 */
+export type Annotation = {
+  id: string;
+  messageId: string;
+  blockIndex: number;
+  start: number;
+  end: number;
+  quote: string;
+  /** 语气 id 数组，可叠加，**至少 1 个**。 */
+  marks: string[];
+  /** 用户写的话，可为空串。 */
+  note: string;
+  /** 只影响展示，不影响定位。 */
+  ui: {
+    mode: "open" | "hidden";
+    pinned: boolean;
+    dx: number;
+    dy: number;
+  };
+};
+
+/** 上色用的样式表（模块级单例）。
+ *
+ *  为什么运行时生成而不用静态 CSS：
+ *  「加一个标记 = 加一行数据」要求 CSS 里**不预写任何标记名**。
+ *  `replaceSync` 可以整表替换，新增标记时只要重跑一次 `rebuildHighlightStyles()`。 */
+let highlightSheet: CSSStyleSheet | null = null;
+
+/** 按当前标记表重建 `::highlight()` 规则。
+ *
+ *  - 只接受白名单 id（否则选择器可被注入）；
+ *  - 颜色走 CSS 变量，不写色值（tokens.css 是唯一色值来源）；
+ *  - 背景透明度 26%（与 demo 一致）：淡，但一眼能看出这段被标过。 */
+export function rebuildHighlightStyles(): void {
+  const doc = typeof document === "undefined" ? undefined : document;
+  if (doc === undefined) return;
+  if (highlightSheet === null) {
+    highlightSheet = new CSSStyleSheet();
+    doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, highlightSheet];
+  }
+  const rules = MARKS
+    .filter((mark) => MARK_ID_PATTERN.test(mark.id))
+    .map((mark) => `::highlight(anno-${mark.id}){background-color:color-mix(in srgb, var(--color-anno-${mark.tone}) 26%, transparent);}`)
+    .join("\n");
+  highlightSheet.replaceSync(rules);
+}
+
+/** 某条消息某个块的批注集合（调用方保证已按 messageId/blockIndex 过滤好）。 */
+export type BlockAnnotations = readonly Annotation[];
+
+/** 把批注画成高亮：**按标记分组**，同一标记的所有区间装进一个 Highlight。
+ *
+ *  为什么按标记分组而不是按批注：`::highlight` 的名字决定样式，同标记必然同样式，
+ *  分组后一次 `set` 处理多个 Range，也避免同名反复覆盖。
+ *
+ *  ⚠️ 每次渲染后都要重跑本函数：整块重渲染会让旧 Range 失效
+ *  （实测：`innerHTML` 同文本替换后 `Range.toString()` 全空，但 `isConnected` 仍是 true）。 */
+export function paintAnnotations(
+  index: BlockIndex,
+  annotations: BlockAnnotations,
+  registry: HighlightRegistry | undefined = typeof CSS === "undefined" ? undefined : CSS.highlights,
+): void {
+  if (registry === undefined) return;
+
+  const perMark = new Map<string, Range[]>();
+  for (const anno of annotations) {
+    const range = toRange(index, anno.start, anno.end);
+    if (range === null) continue;          // 偏移失效：跳过（不静默改数据，见 02-design §3.5）
+    for (const markId of anno.marks) {
+      if (!MARK_ID_PATTERN.test(markId)) continue;
+      const list = perMark.get(markId);
+      if (list === undefined) perMark.set(markId, [range]);
+      else list.push(range);
+    }
+  }
+
+  for (const mark of MARKS) {
+    if (!MARK_ID_PATTERN.test(mark.id)) continue;
+    const name = `anno-${mark.id}`;
+    const ranges = perMark.get(mark.id);
+    if (ranges !== undefined && ranges.length > 0) {
+      registry.set(name, new Highlight(...ranges));
+    } else if (registry.has(name)) {
+      registry.delete(name);
+    }
+  }
+}
+
+/** 清掉本模块给某个块画的所有高亮（切会话/卸载时用）。 */
+export function clearAnnotations(
+  registry: HighlightRegistry | undefined = typeof CSS === "undefined" ? undefined : CSS.highlights,
+): void {
+  if (registry === undefined) return;
+  for (const mark of MARKS) registry.delete(`anno-${mark.id}`);
+}
+
+/** 几何命中：某个坐标落在哪些批注上。
+ *
+ *  CSS Highlight API **不提供**"点到哪条高亮"，只能自己用 `getClientRects()` 比对。
+ *  实测三处：段内命中 1 个、两段重叠命中 2 个、空白命中 0 个。
+ *
+ *  @param slack 容差（px）：高亮区的边界差一点也算命中，默认 1。
+ */
+export function annotationsAt(
+  index: BlockIndex,
+  annotations: BlockAnnotations,
+  point: { x: number; y: number },
+  slack = 1,
+): Annotation[] {
+  const hit: Annotation[] = [];
+  for (const anno of annotations) {
+    const range = toRange(index, anno.start, anno.end);
+    if (range === null) continue;
+    const rects = range.getClientRects();
+    for (let i = 0; i < rects.length; i += 1) {
+      const rect = rects[i];
+      if (rect === undefined) continue;
+      if (point.x >= rect.left - slack && point.x <= rect.right + slack
+        && point.y >= rect.top - slack && point.y <= rect.bottom + slack) {
+        hit.push(anno);
+        break;
+      }
+    }
+  }
+  return hit;
+}

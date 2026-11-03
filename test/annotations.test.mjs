@@ -32,13 +32,15 @@ if (found === undefined) {
   const pwmod = await import(found);
   const chromium = (pwmod.default ?? pwmod).chromium;
 
-  // 用 esbuild 把 TS 编成浏览器可执行的 JS（annotations.ts 没有 import，天然自包含）。
-  // 不用正则剥类型——那种做法一碰注释/f字符串就碎（本轮踩过）。
+  // 用 esbuild 把 TS 编成浏览器可执行的 JS。
+  // bundle: true —— P2 起 annotations.ts 依赖 marks.ts，不打包会因 import 解析失败而整体不执行
+  //（症状：window.__M 是 undefined，所有用例一起红）。
+  // 不用正则剥类型——那种做法一碰注释/中文就碎（P1 踩过）。
   const esbuildPath = join(ROOT, "node_modules/esbuild/lib/main.js");
   const esbuild = (await import(esbuildPath)).default ?? (await import(esbuildPath));
   const built = await esbuild.build({
     entryPoints: [join(ROOT, "frontend/src/annotations.ts")],
-    bundle: false, format: "iife", globalName: "__M", write: false, target: "es2020",
+    bundle: true, format: "iife", globalName: "__M", write: false, target: "es2020",
   });
   const src = built.outputFiles[0].text;
 
