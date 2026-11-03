@@ -16,66 +16,106 @@
  * 本文件只放纯函数：不读全局 document、不持有状态，方便单测。
  */
 
-/** 一个块内文字 ↔ 偏移的双向映射。 */
-export type BlockIndex = {
-  /** 按文档顺序排列的文本节点，及其在扁平串里的区间（左闭右开）。 */
-  nodes: Array<{ node: Text; start: number; end: number }>;
-  /** 扁平串总长度。 */
-  total: number;
-  /** 所有文本节点按顺序拼接的结果。 */
-  text: string;
-};
-
 /** 建索引：遍历 `root` 下所有文本节点，拼成一条扁平串并记录每段的区间。
  *
  *  - 只走 `NodeFilter.SHOW_TEXT`，不碰元素节点；
  *  - 不裁剪空白（`\n` 与缩进都计入偏移）——裁剪会让偏移与实际 DOM 对不上；
- *  - 空文本节点也计入（length 0，区间 [n, n)），保证节点顺序不丢。 */
+ *  - 空文本节点也计入（length 0，区间 [n, n)），保证节点顺序不丢；
+ *  - **`<br>` 记为一个虚拟字符**（见下）。
+ *
+ *  为什么 `<br>` 要有虚拟字符（2026-11-03 对标 hypothesis/client 发现）：
+ *    `textContent` 里 `<br>` 不贡献任何字符，于是 "第一行<br>第二行" 的扁平串是
+ *    "第一行第二行"——**和屏幕上看到的两行不一致**。用户圈选跨行的文字时，
+ *    存下来的 quote 会丢掉换行，将来按 quote 兜底重定位就可能匹配到别处。
+ *    Hypothesis 的做法是把 `<br>` 替换成一个空格（`rendered-text.ts` 的
+ *    `substituteBrs`），我们沿用同一口径：**`<br>` → 一个 `\n`**。
+ *
+ *    这里用 `\n` 而不是空格：我们希望 quote 里保留"这里是换行"这个事实。
+ *
+ *  实现方式：`nodes` 里除了真实文本节点，还可以有 **合成节点**（`node` 为 null，
+ *  只占一个字符），由 `toRange` 在边界落在它上面时折到相邻的真实节点。 */
+export type IndexChar =
+  | { node: Text; start: number; end: number; synthetic?: undefined }
+  /** `<br>` 之类的换行占位：只占 1 个字符，没有对应文本节点。 */
+  | { node: null; start: number; end: number; synthetic: true };
+
+export type BlockIndex = {
+  /** 按文档顺序排列的片段（真实文本节点 + `<br>` 占位）。 */
+  nodes: IndexChar[];
+  /** 扁平串总长度。 */
+  total: number;
+  /** 所有片段按顺序拼接的结果（`<br>` 以 `\n` 出现）。 */
+  text: string;
+};
+
 export function buildIndex(root: HTMLElement): BlockIndex {
-  const walker = root.ownerDocument.createTreeWalker(root, 0x4 /* NodeFilter.SHOW_TEXT */);
+  const doc = root.ownerDocument;
+  const walker = doc.createTreeWalker(root, 0x1 /* NodeFilter.SHOW_ELEMENT */ | 0x4 /* SHOW_TEXT */);
   const nodes: BlockIndex["nodes"] = [];
-  let node: Node | null;
+  const parts: string[] = [];
   let acc = 0;
+  let node: Node | null = walker.currentNode === root ? null : walker.currentNode;
+  const push = (piece: IndexChar, text: string): void => {
+    nodes.push({ ...piece, start: acc, end: acc + text.length } as IndexChar);
+    parts.push(text);
+    acc += text.length;
+  };
   while ((node = walker.nextNode()) !== null) {
-    const text = node as Text;
-    const len = text.data.length;
-    nodes.push({ node: text, start: acc, end: acc + len });
-    acc += len;
+    if (node.nodeType === 3 /* TEXT_NODE */) {
+      const text = node as Text;
+      push({ node: text, start: 0, end: 0 }, text.data);
+      continue;
+    }
+    // 元素：只有 <br> 需要占位（块级元素之间的换行由源里的 \n 文本节点承担）
+    if (node.nodeName === "BR") {
+      push({ node: null, start: 0, end: 0, synthetic: true }, "\n");
+    }
   }
-  return { nodes, total: acc, text: nodes.map((it) => it.node.data).join("") };
+  return { nodes, total: acc, text: parts.join("") };
 }
 
 /** 偏移 → Range。无法定位时返回 null（不抛异常）。
  *
  *  区间语义：`[start, end)`。
- *  - 起点归属：节点满足 `start ∈ [it.start, it.end)`；
- *  - 终点归属：节点满足 `end ∈ (it.start, it.end]`（终点落在节点右边界时归到本节点，
- *    否则「整段恰好以一个节点结尾」会落到下一个节点的 0 位，Range 仍能建但语义别扭）。
+ *  - 起点归属：片段满足 `start ∈ [it.start, it.end)`；
+ *  - 终点归属：片段满足 `end ∈ (it.start, it.end]`（终点落在片段右边界时归到本片段，
+ *    否则「整段恰好以一个片段结尾」会落到下一个片段的 0 位，Range 仍能建但语义别扭）。
+ *  - **边界落在 `<br>` 占位上时**：折到相邻的真实文本节点（起点往后找、终点往前找），
+ *    因为 Range 的端点必须落在文本节点里。折不到（整个块只有 `<br>`）→ null。
  *  - `end <= start` 或越界 → null。 */
 export function toRange(index: BlockIndex, start: number, end: number): Range | null {
   if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
   if (start < 0 || end <= start || end > index.total) return null;
 
-  const doc = index.nodes[0]?.node.ownerDocument;
+  const firstReal = index.nodes.find((it) => it.node !== null);
+  const doc = firstReal?.node?.ownerDocument;
   if (doc === undefined) return null;
 
+  /** 找覆盖 `offset` 的真实文本节点（含方向偏好）。 */
+  const locate = (offset: number, isStart: boolean): { node: Text; inNode: number } | null => {
+    const inRange = (it: IndexChar): boolean => (
+      isStart ? offset >= it.start && offset < it.end : offset > it.start && offset <= it.end
+    );
+    const hit = index.nodes.find((it) => it.node !== null && inRange(it));
+    if (hit !== undefined && hit.node !== null) return { node: hit.node, inNode: offset - hit.start };
+    // 边界落在合成节点上：起点向后找、终点向前找最近的真实文本节点
+    const list = isStart ? index.nodes : [...index.nodes].reverse();
+    for (const it of list) {
+      if (it.node === null) continue;
+      if (isStart ? it.start >= offset : it.end <= offset) {
+        return { node: it.node, inNode: isStart ? 0 : it.node.data.length };
+      }
+    }
+    return null;
+  };
+
+  const s = locate(start, true);
+  const e = locate(end, false);
+  if (s === null || e === null) return null;
+
   const range = doc.createRange();
-  let startSet = false;
-  let endSet = false;
-  for (const it of index.nodes) {
-    const len = it.node.data.length;
-    if (len === 0) continue;
-    if (!startSet && start >= it.start && start < it.end) {
-      range.setStart(it.node, start - it.start);
-      startSet = true;
-    }
-    if (!endSet && end > it.start && end <= it.end) {
-      range.setEnd(it.node, end - it.start);
-      endSet = true;
-    }
-    if (startSet && endSet) break;
-  }
-  if (!startSet || !endSet) return null;
+  range.setStart(s.node, s.inNode);
+  range.setEnd(e.node, e.inNode);
   return range;
 }
 
@@ -97,7 +137,7 @@ export function quoteOf(index: BlockIndex, start: number, end: number): string {
 export function toOffset(index: BlockIndex, range: Range): { start: number; end: number } {
   const offsetOf = (node: Node, offset: number): number => {
     for (const it of index.nodes) {
-      if (it.node === node) return it.start + offset;
+      if (it.node !== null && it.node === node) return it.start + offset;
     }
     return -1;
   };

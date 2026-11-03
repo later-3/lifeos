@@ -23,7 +23,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { Annotation } from "./annotations.ts";
 import { MARKS, markById } from "./marks.ts";
 import { IconButton } from "./design/ui";
-import { popupPosition } from "./annotation-position";
+import { popupPosition, type OccupiedBox } from "./annotation-position";
 
 export { popupPosition };
 
@@ -87,10 +87,9 @@ function MarkButtons({ selected, onToggle, testId }: {
 type ShellProps = {
   rects: readonly DOMRect[];
   hostRect: DOMRect;
-  hostHeight: number;
   offset: { dx: number; dy: number; moved?: boolean };
   /** 同一块里**已经占位**的其他框（避免完全重叠）。 */
-  occupied?: readonly import("./annotation-position").OccupiedBox[];
+  occupied?: readonly OccupiedBox[];
   pinned: boolean;
   onDragStart?: () => void;
   /** 拖动过程中持续回调（父层用来抑制"移开就收起"）。 */
@@ -106,7 +105,7 @@ type ShellProps = {
   onMouseLeave?: () => void;
 };
 
-function PopupShell({ rects, hostRect, hostHeight, offset, pinned, occupied = [], onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
+function PopupShell({ rects, hostRect, offset, pinned, occupied = [], onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   /**
@@ -141,7 +140,7 @@ function PopupShell({ rects, hostRect, hostHeight, offset, pinned, occupied = []
     const el = ref.current;
     if (el === null) return;
     const { left, top } = popupPosition(
-      rects, hostRect, hostHeight,
+      rects, hostRect, hostRect.height,
       { width: el.offsetWidth, height: el.offsetHeight },
       offset,
       occupied,
@@ -236,7 +235,6 @@ export type AnnotationDraftProps = {
   quote: string;
   rects: readonly DOMRect[];
   hostRect: DOMRect;
-  hostHeight: number;
   onCommit: (marks: readonly string[], note: string) => void;
   onCancel: () => void;
   /** 鼠标进出框（用于抑制"移开就收起"）。 */
@@ -244,7 +242,7 @@ export type AnnotationDraftProps = {
   onLeave?: () => void;
 };
 
-export function AnnotationDraft({ quote, rects, hostRect, hostHeight, onCommit, onCancel, onEnter, onLeave }: AnnotationDraftProps) {
+export function AnnotationDraft({ quote, rects, hostRect, onCommit, onCancel, onEnter, onLeave }: AnnotationDraftProps) {
   const [picked, setPicked] = useState<readonly string[]>([]);
   const [note, setNote] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -278,7 +276,7 @@ export function AnnotationDraft({ quote, rects, hostRect, hostHeight, onCommit, 
   return (
     <PopupShell
       testId="annotation-draft" annoId="draft"
-      rects={rects} hostRect={hostRect} hostHeight={hostHeight}
+      rects={rects} hostRect={hostRect}
       offset={{ dx: 0, dy: 0 }} pinned={false}
       bar={<>
         {bar}
@@ -324,7 +322,6 @@ export type AnnotationCardProps = {
   annotation: Annotation;
   rects: readonly DOMRect[];
   hostRect: DOMRect;
-  hostHeight: number;
   onChangeMarks: (marks: readonly string[]) => void;
   onChangeNote: (note: string) => void;
   onTogglePinned: () => void;
@@ -340,11 +337,11 @@ export type AnnotationCardProps = {
   onEnter?: () => void;
   onLeave?: () => void;
   /** 同一块里已经占位的其他框（避免完全重叠）。 */
-  occupied?: readonly import("./annotation-position").OccupiedBox[];
+  occupied?: readonly OccupiedBox[];
 };
 
 export function AnnotationCard({
-  annotation, rects, hostRect, hostHeight,
+  annotation, rects, hostRect,
   onChangeMarks, onChangeNote, onTogglePinned, onDragStart, onDragMove, onPressEnd, onOffsetChange,
   onRemove, onEnter, onLeave, occupied,
 }: AnnotationCardProps) {
@@ -370,7 +367,7 @@ export function AnnotationCard({
   return (
     <PopupShell
       testId="annotation-card" annoId={annotation.id}
-      rects={rects} hostRect={hostRect} hostHeight={hostHeight}
+      rects={rects} hostRect={hostRect}
       offset={{ dx: ui.dx, dy: ui.dy, moved: ui.moved === true }} pinned={ui.pinned}
       occupied={occupied}
       onDragStart={() => onDragStart?.()}
