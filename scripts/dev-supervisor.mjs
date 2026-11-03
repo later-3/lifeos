@@ -7,7 +7,7 @@ import { watch } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decideRestart } from "./dev-supervisor-core.mjs";
-import { DEFAULT_LOG, checkIsolation } from "./dev-supervisor-guard.mjs";
+import { CRASH_LIMIT, CRASH_WINDOW_MS, DEFAULT_LOG, checkIsolation, checkUserInstance, launchKind, shouldGiveUp, srcChangeAction } from "./dev-supervisor-guard.mjs";
 import { readRegistry } from "./dev-ports-core.mjs";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
@@ -22,6 +22,10 @@ const DEBOUNCE_MS = 300;
 
 let child;
 let changed = false;
+/** 最近的退出时间戳（熔断用）。 */
+const exits = [];
+/** 被改动的文件（报警时指名用）。必须定义在 tryRestart 之前（const 不提升）。 */
+const touched = new Set();
 let debounce;
 let polling;
 let stopping = false;
@@ -81,7 +85,10 @@ const ownerOf = (port) => {
 // 端口必须有来源：从登记表里找这个号属于哪个 Task（Task 0016）。
 const registry = await readRegistry(homedir() + "/.lifeos");
 const registration = Object.entries(registry.instances).find(([, entry]) => entry.backend === backendPort)?.[0];
-const problems = checkIsolation({
+// 先分清启动者：用户手敲终端 = 他的主实例，隔离检查一条都不适用；
+// Agent 起的 shell = 开发实例，必须四件套齐全（Task 0016）。
+const kind = launchKind();
+const problems = kind === "user" ? checkUserInstance() : checkIsolation({
   port: backendPort,
   home: process.env.LIFEOS_HOME ?? homedir() + "/.lifeos",
   // 非 worktree（主仓库）本身没有 .git 文件；git rev-parse 能区分
@@ -93,13 +100,20 @@ const problems = checkIsolation({
   registration: registration === undefined ? undefined : { taskId: registration },
   requireRegistration: true,
 });
+
+// 用户实例的守卫（不是准入）：主 worktree 的 src/ 被改动时**不重启**，
+// 只打印是谁在改。原来一律重启，等于忠实执行"改了就要重启"，
+// 结果是 Agent 在主仓一存盘就把用户的后端打断（2026-11-03 实际发生）。
+if (kind === "user" && process.env.LIFEOS_SUPERVISOR_ALLOW_MAIN_EDITS !== "1") {
+  log("用户实例守卫已启用：主 worktree 的 src/ 改动不会触发重启（Agent 应改用独立 worktree）");
+}
 if (problems.length > 0) {
-  console.error("[dev-supervisor] 启动自检未通过，拒绝启动（不会重试）：");
+  console.error(`[dev-supervisor] 启动自检未通过，拒绝启动（不会重试）：启动者=${kind}`);
   for (const problem of problems) console.error(`  · ${problem}`);
   console.error("[dev-supervisor] 修正方式：node scripts/dev-port.mjs claim --task <NNNN>，按输出起实例。");
   process.exit(2);
 }
-log(`自检通过：worktree=${root} LIFEOS_HOME=${process.env.LIFEOS_HOME ?? "(默认)"} 端口=${backendPort} 日志=${logFile}`);
+log(`自检通过（启动者=${kind}）：worktree=${root} LIFEOS_HOME=${process.env.LIFEOS_HOME ?? "(默认)"} 端口=${backendPort} 日志=${logFile}`);
 
 /** 启动一个后端进程。同一时刻只允许一个存活的子进程（否则会抢端口，见 2026-10-25 的 EADDRINUSE 循环）。 */
 function start() {
@@ -111,6 +125,12 @@ function start() {
   mine.on("exit", (code, signal) => {
     if (child === mine) child = undefined;
     if (stopping || mine.lifeosStopping === true) return;   // 主动停止：不是意外退出，不重启（由调用方重启）
+    const now = Date.now();
+    exits.push(now);
+    if (shouldGiveUp({ history: exits, now })) {
+      log(`后端 ${CRASH_WINDOW_MS / 1000} 秒内已退出 ${CRASH_LIMIT} 次，停止重启（熔断）。先修掉启动错误再重试。`);
+      process.exit(3);
+    }
     log(`后端意外退出（code=${code ?? "-"} signal=${signal ?? "-"}），1 秒后重启`);
     setTimeout(() => { if (!stopping) start(); }, 1000);
   });
@@ -129,6 +149,19 @@ function stopChild() {
 
 async function tryRestart() {
   if (!changed || stopping) return;
+  // 用户实例守卫（2026-11-03）：主 worktree 的 src/ 被改 → 不重启，只报警。
+  // 为什么：Agent 直接改主仓时，旧行为会忠实地重启用户后端，把用户正在用的实例打断。
+  // 自己改代码想看效果：用 LIFEOS_SUPERVISOR_ALLOW_MAIN_EDITS=1 启动。
+  if (srcChangeAction({ kind, allowMainEdits: process.env.LIFEOS_SUPERVISOR_ALLOW_MAIN_EDITS === "1" }) === "guard") {
+    changed = false;
+    clearInterval(polling); polling = undefined;
+    const files = [...touched].slice(-8).join(", ");
+    touched.clear();
+    log(`⚠ 主 worktree 的 src/ 被改动了（${files || "文件未知"}），但这是用户实例：**不重启**，后端继续用旧代码运行。`);
+    log("   谁在改？`git status --short` 与 `git diff` 查看。Agent 应改用独立 worktree（规范 §7）。");
+    log("   你要是自己改的、想看效果：设 LIFEOS_SUPERVISOR_ALLOW_MAIN_EDITS=1 重启本进程。");
+    return;
+  }
   await requestDrain();
   const running = await runningCount();
   const decision = decideRestart({ changed, running });
@@ -151,6 +184,7 @@ async function tryRestart() {
 
 watch(join(root, "src"), { recursive: true }, (_event, file) => {
   if (file !== null && !/\.(ts|mjs|json)$/.test(file)) return;
+  if (file !== null) touched.add(file);
   changed = true;
   clearTimeout(debounce);
   debounce = setTimeout(() => { void tryRestart(); }, DEBOUNCE_MS);

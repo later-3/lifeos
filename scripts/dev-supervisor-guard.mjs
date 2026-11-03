@@ -5,7 +5,29 @@ export const RESERVED_BACKEND = 43120;
 export const DEFAULT_LOG = "/tmp/lifeos-dev-supervisor.log";
 
 /**
- * 一组参数是否构成"隔离实例"。返回问题清单，空数组 = 通过。
+ * 启动者是谁：用户自己手敲终端，还是 Agent 起的 shell。
+ *
+ * 为什么需要它（2026-11-03）：初版自检不区分启动者，结果**拦住了用户自己**
+ * 用 `pnpm dev:all` 起主实例（报"保留号/用户家目录/主 worktree"等 7 条），
+ * 而真正该拦的 Agent 改主 worktree 却完全没被碰到。判据是 Pi 在 shell 里
+ * 注入的 `PI_*` 环境变量：用户手敲的终端没有，Agent 的命令一律有。
+ */
+export function launchKind(env = process.env) {
+  const keys = Object.keys(env);
+  if (keys.some((key) => key === "PI_CODING_AGENT" || key === "PI_SESSION_ID" || key === "PI_SESSION_FILE")) return "agent";
+  return keys.some((key) => key.startsWith("PI_")) ? "agent" : "user";
+}
+
+/**
+ * **用户实例**（用户手敲终端起的）：主 worktree + 用户家目录 + 43120/5173 都合法，
+ * 一条隔离检查都不该跑。这里只回答"能不能起"，永远能起；风险交给运行时守卫。
+ */
+export function checkUserInstance() {
+  return [];
+}
+
+/**
+ * **开发实例**（Agent 起的）：一组参数是否构成"隔离实例"。返回问题清单，空数组 = 通过。
  * probe: { busy, owner } 端口探测结果；
  * registration: { taskId, backend, web } 登记表里该端口对应的条目（undefined = 没人登记过）。
  */
@@ -40,4 +62,29 @@ export function checkIsolation({ port, home, worktree, logFile, expectedHome, ex
     }
   }
   return problems;
+}
+
+/**
+ * src/ 改动后该不该重启后端。
+ *
+ * - 用户实例：**不重启**，只报警（"guard"）。旧行为一律重启，等于忠实执行
+ *   "改了就要重启"，Agent 在主仓一存盘就把用户后端打断（2026-11-03 实际发生）。
+ * - 开发实例：按原逻辑（等回合结束再重启）。
+ */
+export function srcChangeAction({ kind, allowMainEdits = false }) {
+  return kind === "user" && !allowMainEdits ? "guard" : "restart";
+}
+
+/**
+ * 崩溃熔断：后端连续快速退出时不要无限重启。
+ * 依据：2026-11-02 三份实例 EADDRINUSE 导致每秒重启、日志涨到 91 万行；
+ * 2026-11-03 演练中无效家目录又出现一次 1 秒一次的重启。
+ */
+export const CRASH_WINDOW_MS = 60_000;
+export const CRASH_LIMIT = 5;
+
+/** history: 最近若干次退出的时间戳（毫秒）。返回 true = 应当停止重启。 */
+export function shouldGiveUp({ history, now, windowMs = CRASH_WINDOW_MS, limit = CRASH_LIMIT }) {
+  const recent = history.filter((at) => now - at <= windowMs);
+  return recent.length >= limit;
 }

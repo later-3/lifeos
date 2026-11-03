@@ -2,7 +2,9 @@
 // 依据：2026-11-02 三份实例共用 43130 + 一份共用 ~/.lifeos + 全部共用同一日志（案例 C160）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_LOG, RESERVED_BACKEND, checkIsolation } from "../scripts/dev-supervisor-guard.mjs";
+import {
+  DEFAULT_LOG, RESERVED_BACKEND, checkIsolation, checkUserInstance, launchKind, shouldGiveUp, srcChangeAction,
+} from "../scripts/dev-supervisor-guard.mjs";
 
 const ok = { port: 43131, home: "/home/dev/0016", worktree: "/w/0016", logFile: "/tmp/lifeos-0016.log" };
 
@@ -64,4 +66,32 @@ test("T0016-20 已登记的端口放行；worktree 必须在 Task 的 evidence/ 
   const outside = checkIsolation({ ...ok, worktree: "/Users/xulater/Code/lifeos-dev/coder", requireRegistration: true, registration: { taskId: "0016" } });
   assert.equal(outside.length, 1);
   assert.match(outside[0], /不在 Task 的 evidence\/ 下/);
+});
+
+test("T0016-21 启动者判定：Pi 注入的 PI_* 变量 = agent，干净环境 = user", () => {
+  assert.equal(launchKind({}), "user");
+  assert.equal(launchKind({ PATH: "/usr/bin", HOME: "/Users/x" }), "user");
+  assert.equal(launchKind({ PI_CODING_AGENT: "true" }), "agent");
+  assert.equal(launchKind({ PI_SESSION_ID: "x" }), "agent");
+  assert.equal(launchKind({ PI_MODEL: "m" }), "agent");
+  // 用户自己的终端也可能设 PI_* ? 不会：PI_* 只由 Pi 在子 shell 注入
+});
+
+test("T0016-22 用户实例放行：主 worktree + 用户家目录 + 43120 一条都不报", () => {
+  assert.deepEqual(checkUserInstance(), []);
+});
+
+test("T0016-23 src 改动：用户实例只守卫不重启；开发实例照常重启", () => {
+  assert.equal(srcChangeAction({ kind: "user" }), "guard");
+  assert.equal(srcChangeAction({ kind: "agent" }), "restart");
+  assert.equal(srcChangeAction({ kind: "user", allowMainEdits: true }), "restart");
+});
+
+test("T0016-24 崩溃熔断：窗口内达到上限即停止重启", () => {
+  const now = 1_000_000;
+  assert.equal(shouldGiveUp({ history: [], now }), false);
+  assert.equal(shouldGiveUp({ history: [now - 1000, now - 2000, now - 3000, now - 4000], now }), false);
+  assert.equal(shouldGiveUp({ history: [now - 1000, now - 2000, now - 3000, now - 4000, now - 5000], now }), true);
+  // 窗口外的旧退出不算
+  assert.equal(shouldGiveUp({ history: [now - 120_000, now - 130_000, now - 140_000, now - 150_000, now - 160_000], now }), false);
 });
