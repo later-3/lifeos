@@ -8,6 +8,7 @@ import { createBoundedSink } from "./bounded-sink.ts";
 import { MAX_WATCHING, setFocusOf, subscribeBus } from "./events.ts";
 import { peerMarkerOf } from "./peer.ts";
 import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining } from "./session-runtime.ts";
+import { sessionRowsOf } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
@@ -150,109 +151,8 @@ function projectSessionsDir(agentId: string, projectId: string): string {
   return join(agentsRoot(), agentId, "projects", projectId, "sessions");
 }
 
-/** 会话列表：标题优先 `session_info` 展示名（重命名写的就是它），否则取首句；
- * `defaultSessionId`（agent.json）命中的那条标为默认会话。 */
-async function listSessions(agentId: string, projectId: string, defaultSessionId?: string) {
-  const dir = projectSessionsDir(agentId, projectId);
-  const names = await readdir(dir).catch(() => [] as string[]);
-  const items = [];
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
-    const path = join(dir, name);
-    const content = await readFile(path, "utf8");
-    const lines = content.split("\n").filter((line) => line.trim() !== "");
-    let title = "";
-    let displayName = "";
-    let sessionId = "";
-    let activeTaskId: string | undefined;
-    let peerAgentId: string | undefined;
-    // 消息条数只数 `type === "message"` 的条目（Task 0015 · todo #30）：
-    // 以前用 `lines.length`，把 session 头 / session_info / custom 都算进去了（实测 389 vs 31）。
-    let messageCount = 0;
-    // 失败态（Task 0015 · 结论 5）：会话**最后一条** assistant 若以 error 结束，就带上分类。
-    // 复用 messagesOf 的同一套判定（stopReason + errorMessage → classifyFailure），不另写一份规则。
-    let lastAssistant: { stopReason?: string; errorMessage?: string; hasContent: boolean } | undefined;
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as {
-          type?: string; id?: string; name?: string; customType?: string;
-          message?: { role?: string; content?: unknown }; data?: { taskId?: unknown; peerAgentId?: unknown };
-        };
-        if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
-        if (entry.type === "message") {
-          messageCount += 1;
-          const msg = (entry as { message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown } }).message;
-          if (msg?.role === "assistant") {
-            const content = msg.content;
-            const hasContent = typeof content === "string"
-              ? content.trim() !== ""
-              : Array.isArray(content) && content.length > 0;
-            lastAssistant = {
-              ...(typeof msg.stopReason === "string" ? { stopReason: msg.stopReason } : {}),
-              ...(typeof msg.errorMessage === "string" && msg.errorMessage.trim() !== "" ? { errorMessage: msg.errorMessage.trim() } : {}),
-              hasContent,
-            };
-          } else {
-            // 之后又有新消息：上一条失败不再代表"现在"的状态
-            lastAssistant = undefined;
-          }
-        }
-        if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") displayName = entry.name;
-        if (title === "" && entry.type === "message" && entry.message?.role === "user") title = textOf(entry.message);
-        // Task 0015：列表要能回答"这条对话属于哪件事 / 和谁谈"（T16/T17）
-        if (entry.type === "custom" && entry.customType === "lifeos_active_task" && typeof entry.data?.taskId === "string") {
-          activeTaskId = entry.data.taskId;
-        }
-        if (entry.type === "custom" && entry.customType === "lifeos_peer" && typeof entry.data?.peerAgentId === "string") {
-          peerAgentId = entry.data.peerAgentId;
-        }
-      } catch { /* 跳过坏行 */ }
-    }
-    if (sessionId === "") continue;
-    items.push({
-      sessionId,
-      title: displayName !== "" ? displayName : title,
-      updatedAt: (await stat(path)).mtime.toISOString(),
-      messages: messageCount,
-      // 只有"最后一条 assistant 就是失败的"才算失败态（历史失败不该盖住当前状态）
-      ...(lastAssistant !== undefined && lastAssistant.stopReason === "error"
-        ? {
-            failure: classifyFailure({
-              stopReason: "error",
-              ...(lastAssistant.errorMessage !== undefined ? { errorMessage: lastAssistant.errorMessage } : {}),
-              hasContent: lastAssistant.hasContent,
-            }) ?? "unknown",
-          }
-        : {}),
-      isDefault: sessionId === defaultSessionId,
-      ...(activeTaskId !== undefined ? { activeTaskId } : {}),
-      ...(peerAgentId !== undefined ? { peer: peerAgentId } : {}),
-    });
-  }
-  // 合并未落盘的内存会话：Pi 延迟写文件，首条消息发出到落盘之间只存在于内存——
-  // 不并入的话，模型不可用（首轮失败）的新会话会从列表消失、标题也丢（C127）。
-  // 只收**有名字**的：还没有名字的会话等于“点了新建会话但没发”的草稿，不进列表（列表只列承载过用户动作的会话）。
-  const fileIds = new Set(items.map((item) => item.sessionId));
-  for (const pending of pendingSessions(agentId)) {
-    if (pending.projectId !== projectId || fileIds.has(pending.sessionId)) continue;
-    if (pending.name === undefined || pending.name === "") continue;
-    items.push({
-      sessionId: pending.sessionId,
-      title: pending.name,
-      updatedAt: pending.at,
-      messages: 0,
-      isDefault: pending.sessionId === defaultSessionId,
-    });
-  }
-  return items.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-}
-
-function textOf(message: { content?: unknown }): string {
-  const content = message.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((part) => (part as { type?: string; text?: string }).type === "text" ? [part.text ?? ""] : []).join("");
-}
+// `listSessions` 与 `textOf` 已删除（任务 0005）：会话行的组装下沉到 `src/session-rows.ts`，
+// 这里不再保留第二份扫描实现——两份实现正是 `peer` 一处字符串一处对象的来源。
 
 export function createApp() {
   const app = new Hono();
@@ -326,11 +226,14 @@ app.use(async (c, next) => {
     return c.json(agent);
   });
 
+  // 会话列表（默认项目）：与 `/projects/:pid/sessions` **同一个实现**（`sessionRowsOf`），
+  // 不再两份各拼一次（现状已漂移出 `peer` 一处字符串一处对象，见任务 0005 · 01 §3 第 1 条）。
   app.get("/api/agents/:id/sessions", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const running = runningOf(agent.id);
-    const items = (await listSessions(agent.id, agent.defaultProjectId ?? "workspace", agent.defaultSessionId)).map((item) => ({ ...item, running: running.some((run) => run.sessionId === item.sessionId) }));
+    const items = await sessionRowsOf(agent.id, agent.defaultProjectId ?? "workspace", {
+      ...(agent.defaultSessionId !== undefined ? { defaultSessionId: agent.defaultSessionId } : {}),
+    });
     return c.json({ items });
   });
 
@@ -350,26 +253,11 @@ app.use(async (c, next) => {
     if (await resolveProject(agent, pid) === undefined) {
       const error = problem("project_not_found", "找不到这个 project（未注册或未绑定）", 404); return c.json(error.body, error.status);
     }
-    const running = runningOf(agent.id);
-    // 对端解析（Task 0015 · T17）：`lifeos_peer` 里存的是**对端 agentId**（会话建在目标 Agent 的项目里，
-    // 对端就是发起方）。列表要显示"和谁在谈"，所以这里把它展开成 id/name/avatar。
-    const peerIds = new Set<string>();
-    const listed = await listSessions(agent.id, pid, agent.defaultSessionId);
-    for (const item of listed) if (typeof item.peer === "string") peerIds.add(item.peer);
-    // `avatar` 存在 agent.json 里但不在 AgentDefinition 类型上（历史事实，见 POST /avatar 的同一处理）
-    type AvatarSpec = { kind?: string; file?: string; revision?: number };
-    const peers = new Map<string, { id: string; name: string; avatar?: AvatarSpec }>();
-    for (const peerId of peerIds) {
-      const def = await readAgent(peerId);
-      if (def === undefined) continue;
-      const avatar = (def as AgentDefinition & { avatar?: AvatarSpec }).avatar;
-      peers.set(peerId, { id: def.id, name: def.name, ...(avatar !== undefined ? { avatar } : {}) });
-    }
-    const items = listed.map((item) => ({
-      ...item,
-      ...(typeof item.peer === "string" ? { peer: peers.get(item.peer) ?? { id: item.peer, name: item.peer } } : {}),
-      running: running.some((run) => run.sessionId === item.sessionId),
-    }));
+    // 与 `/api/agents/:id/sessions` **同一个实现**：一次组装出完整的 SessionRow
+    // （标题/项目/Task 名/对端/计数/时间/四态），不再由 HTTP 层各自拼。
+    const items = await sessionRowsOf(agent.id, pid, {
+      ...(agent.defaultSessionId !== undefined ? { defaultSessionId: agent.defaultSessionId } : {}),
+    });
     return c.json({ items });
   });
 

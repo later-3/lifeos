@@ -8,7 +8,23 @@ import { resolveHome } from "./home.ts";
 import { entityId, sanitizeSegment, uniqueId } from "./segments.ts";
 import { ensureSharedLayer } from "./project-skeleton.ts";
 
-export type GlobalProject = { schemaVersion: 1; id: string; name: string; path?: string };
+export type GlobalProject = { schemaVersion: 1; id: string; name: string; path?: string; icon?: string };
+
+/** `icon` 的形态（任务 0005 · 用户 2026-11-03 拍板）：
+ *  **一个 emoji 或一个内置图标名**，不是图片文件。
+ *  为什么不做图片：存储/尺寸/裁剪/缓存/迁移是另一个量级；6 个参考项目里
+ *  有视觉标识的 3 个（Open WebUI / Zulip / Rocket.Chat）全部是单字符形态。
+ *  空串、非字符串、超过 32 字符一律视为“没有图标”（不编占位）。 */
+export const ICON_MAX_CHARS = 32;
+
+export function normalizeIcon(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  if ([...trimmed].length > ICON_MAX_CHARS) return undefined;
+  if (/[\r\n\t]/.test(trimmed)) return undefined;
+  return trimmed;
+}
 
 const registryRoot = () => join(resolveHome(), "projects");
 
@@ -29,9 +45,11 @@ const parse = (raw: string): GlobalProject | undefined => {
   try {
     const parsed = JSON.parse(raw) as Partial<GlobalProject>;
     if (typeof parsed.id !== "string" || typeof parsed.name !== "string") return undefined;
+    const icon = normalizeIcon(parsed.icon);
     return {
       schemaVersion: 1, id: parsed.id, name: parsed.name,
       ...(typeof parsed.path === "string" && parsed.path !== "" ? { path: parsed.path } : {}),
+      ...(icon !== undefined ? { icon } : {}),
     };
   } catch { return undefined; }
 };

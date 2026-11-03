@@ -38,13 +38,14 @@ async function commonLayer(dir: string, withMemory: boolean): Promise<void> {
 }
 
 /** 共享层（共享 workspace 或共享项目，`projects/<pid>/`）：project.json 只在这一层（协议 §5.3）。 */
-export async function ensureSharedLayer(dir: string, project: { id: string; name: string; path?: string }): Promise<void> {
+export async function ensureSharedLayer(dir: string, project: { id: string; name: string; path?: string; icon?: string }): Promise<void> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const manifest = {
     schemaVersion: 1,
     id: project.id,
     name: project.name,
     ...(project.path !== undefined ? { path: project.path } : {}),
+    ...(project.icon !== undefined ? { icon: project.icon } : {}),
   };
   await writeIfMissing(join(dir, "project.json"), JSON.stringify(manifest, null, 2) + "\n");
   await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-shared"));
