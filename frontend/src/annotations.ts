@@ -127,10 +127,19 @@ export type Annotation = {
   note: string;
   /** 只影响展示，不影响定位。 */
   ui: {
+    /** open=框展开 / hidden=框收起（收起不删数据）。 */
     mode: "open" | "hidden";
+    /** 是否钉住：**只控制"移开鼠标收不收"**，不控制能否拖动（两者是不同逻辑）。 */
     pinned: boolean;
+    /** 用户拖动过的相对偏移（相对首次自动位置）。 */
     dx: number;
     dy: number;
+    /**
+     * 是否被拖动过。
+     * 不能只看 `dx/dy !== 0` 判断：用户可能把它拖回原点（dx=dy=0），
+     * 那时若按"没拖过"处理，框会被自动位置重算覆盖回原处。
+     */
+    moved?: boolean;
   };
 };
 

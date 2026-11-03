@@ -112,15 +112,17 @@ export function useAnnotations(): AnnotationStore {
   const togglePinned = useCallback((id: string) => {
     patch(id, (anno) => ({
       ...anno,
-      // 解除钉住 → 偏移归零，框回默认位置（demo 行为）
+      // "钉"只控制**是否常显**，不碰位置（用户 2026-11-03 明确：拖动与钉是两个逻辑）。
+      // 早期"解除钉住就把偏移归零"是错的——用户拖好的位置不该因为取消钉住而丢掉。
       ui: anno.ui.pinned
-        ? { ...anno.ui, pinned: false, dx: 0, dy: 0 }
+        ? { ...anno.ui, pinned: false }
         : { ...anno.ui, pinned: true, mode: "open" },
     }));
   }, [patch]);
 
   const setOffset = useCallback((id: string, dx: number, dy: number) => {
-    patch(id, (anno) => ({ ...anno, ui: { ...anno.ui, dx, dy } }));
+    // moved=true 一旦置上就不再回落：拖回原点也算"用户摆过位置"，不该被自动布局覆盖
+    patch(id, (anno) => ({ ...anno, ui: { ...anno.ui, dx, dy, moved: true } }));
   }, [patch]);
 
   const remove = useCallback((id: string) => {

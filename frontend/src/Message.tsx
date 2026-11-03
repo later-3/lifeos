@@ -435,6 +435,9 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   const hideTimer = useRef<number | undefined>(undefined);
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
   const holdRef = useRef({ dragging: false, inBox: false });
+  // scheduleHide 在定时器/事件里执行，闭包可能拿到旧的 annotations，用 ref 取最新
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
 
   const clearHideTimer = () => {
     if (hideTimer.current !== undefined) { window.clearTimeout(hideTimer.current); hideTimer.current = undefined; }
@@ -481,10 +484,13 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   }, []);
 
   const scheduleHide = useCallback(() => {
+    // 钉住的不收起（"钉"的唯一职责：不需要鼠标也一直显示）
+    const current = openId === null ? undefined : annotationsRef.current.find((a) => a.id === openId);
+    if (current?.ui.pinned === true) return;
     if (holdRef.current.dragging || holdRef.current.inBox) return;
     clearHideTimer();
     hideTimer.current = window.setTimeout(() => setOpenId(null), 220);
-  }, []);
+  }, [openId]);
 
   /**
    * 统一用 document 级 mousemove 判定"鼠标在不在框里"。
@@ -601,7 +607,11 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
           hostHeight={hostRect.height}
           onChangeMarks={(marks) => actions?.setMarks(opened.id, marks)}
           onChangeNote={(note) => actions?.setNote(opened.id, note)}
-          onTogglePinned={() => actions?.togglePinned(opened.id)}
+          onTogglePinned={() => {
+            const willPin = !opened.ui.pinned;
+            actions?.togglePinned(opened.id);
+            if (willPin) clearHideTimer();       // 刚钉住 → 一定保持显示
+          }}
           onDragStart={() => { holdRef.current.dragging = true; clearHideTimer(); }}
           onDragMove={() => clearHideTimer()}
           onPressEnd={() => {

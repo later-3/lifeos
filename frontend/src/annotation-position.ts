@@ -11,7 +11,7 @@ export function popupPosition(
   hostRect: DOMRect,
   hostHeight: number,
   size: { width: number; height: number },
-  offset: { dx: number; dy: number } = { dx: 0, dy: 0 },
+  offset: { dx: number; dy: number; moved?: boolean } = { dx: 0, dy: 0 },
 ): { left: number; top: number } {
   if (rects.length === 0) return { left: 8, top: 8 };
   const left = Math.min(...rects.map((r) => r.left));
@@ -22,8 +22,9 @@ export function popupPosition(
   const GAP = 8;
   const MARGIN = 8;
 
-  // 拖动过的：以第一行矩形为基准加偏移
-  if (offset.dx !== 0 || offset.dy !== 0) {
+  // 拖动过的：以第一行矩形为基准加偏移。
+  // 判据是 `moved` 而不是 `dx/dy !== 0`：拖回原点（0,0）也算拖过，不能重算位置。
+  if (offset.moved === true || offset.dx !== 0 || offset.dy !== 0) {
     const first = rects[0] ?? { left, bottom };
     return {
       left: first.left - hostRect.left + offset.dx,

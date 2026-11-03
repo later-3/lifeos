@@ -18,11 +18,12 @@ const seed = () => ({
 });
 
 /** 参照实现：与 annotation-store.ts 的迁移规则一一对应。 */
+/** 与 store 一致：钉 = 只控制是否常显，**不碰位置**（用户 2026-11-03 明确）。 */
 const togglePinned = (anno) => ({
   ...anno,
   ui: anno.ui.pinned
-    ? { ...anno.ui, pinned: false, dx: 0, dy: 0 }   // 解除钉住 → 偏移归零
-    : { ...anno.ui, pinned: true, mode: "open" },    // 钉住 → 强制展开
+    ? { ...anno.ui, pinned: false }
+    : { ...anno.ui, pinned: true, mode: "open" },
 });
 
 const setMarks = (anno, marks) => (marks.length === 0 ? anno : { ...anno, marks: [...marks] });
@@ -35,12 +36,13 @@ test("钉住：置 pinned、强制展开、保留偏移", () => {
   assert.equal(b.ui.dx, 20, "已拖动过的偏移在钉住时保留");
 });
 
-test("解除钉住：偏移归零、回到默认位置", () => {
-  const a = { ...seed(), ui: { mode: "open", pinned: true, dx: 20, dy: 30 } };
+test("解除钉住：位置保持不变（拖动与钉是两个逻辑）", () => {
+  const a = { ...seed(), ui: { mode: "open", pinned: true, dx: 20, dy: 30, moved: true } };
   const b = togglePinned(a);
   assert.equal(b.ui.pinned, false);
-  assert.equal(b.ui.dx, 0, "解除钉住必须归零（demo 行为：回到默认位置）");
-  assert.equal(b.ui.dy, 0);
+  assert.equal(b.ui.dx, 20, "用户拖好的位置不能因为取消钉住而丢掉");
+  assert.equal(b.ui.dy, 30);
+  assert.equal(b.ui.moved, true);
 });
 
 test("改语气：空数组被忽略（至少留一个）", () => {

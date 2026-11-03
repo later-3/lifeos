@@ -84,7 +84,7 @@ type ShellProps = {
   rects: readonly DOMRect[];
   hostRect: DOMRect;
   hostHeight: number;
-  offset: { dx: number; dy: number };
+  offset: { dx: number; dy: number; moved?: boolean };
   pinned: boolean;
   onDragStart?: () => void;
   /** 拖动过程中持续回调（父层用来抑制"移开就收起"）。 */
@@ -161,16 +161,16 @@ function PopupShell({ rects, hostRect, hostHeight, offset, pinned, onDragStart, 
       onMouseDown={onPressStart}
     >
       <div
-        className={`flex items-center gap-1 rounded-t-anno border-b border-line bg-sunken py-1.5 pl-2 pr-1.5 ${
-          pinned ? "cursor-grab active:cursor-grabbing" : "cursor-default"
-        }`}
+        className="flex cursor-grab items-center gap-1 rounded-t-anno border-b border-line bg-sunken py-1.5 pl-2 pr-1.5 active:cursor-grabbing"
         onMouseDown={(event) => {
           if ((event.target as HTMLElement).closest("button") !== null) return;
-          // 未钉住：**不许移动**，但必须报告"按住中"——
-          // 否则用户想拖 → 拖不动 → 鼠标划出框 → 220ms 定时器把框收走（实测症状：一拖就没）。
-          if (!pinned || onDragEnd === undefined) {
+          // **拖动与钉住是两件事**（用户 2026-11-03 明确）：
+          //   拖动 = 位置，随时可拖，拖到哪就是哪；
+          //   钉住 = 是否常显，只有它控制"移开收不收"。
+          // 早期把两者绑在一起（钉住才能拖）是错的。
+          if (onDragEnd === undefined) {
             event.preventDefault();
-            onDragStart?.();          // 只置"按住"标记，不改偏移
+            onDragStart?.();
             window.addEventListener("mouseup", () => onPressEnd?.(), { once: true });
             return;
           }
@@ -205,7 +205,7 @@ function PopupShell({ rects, hostRect, hostHeight, offset, pinned, onDragStart, 
           window.addEventListener("mouseup", onUp);
         }}
       >
-        <span className={`text-micro ${pinned ? "text-ink-700" : "text-ink-300"}`} aria-hidden="true">⠿</span>
+        <span className="text-micro text-ink-300" aria-hidden="true" title="拖动移动位置">⠿</span>
         <span className="flex flex-wrap items-center gap-1">{bar}</span>
       </div>
       <div className="px-3 pb-2.5 pt-2">{children}</div>
@@ -363,7 +363,7 @@ export function AnnotationCard({
     <PopupShell
       testId="annotation-card" annoId={annotation.id}
       rects={rects} hostRect={hostRect} hostHeight={hostHeight}
-      offset={{ dx: ui.dx, dy: ui.dy }} pinned={ui.pinned}
+      offset={{ dx: ui.dx, dy: ui.dy, moved: ui.moved === true }} pinned={ui.pinned}
       onDragStart={() => onDragStart?.()}
       onDragMove={() => onDragMove?.()}
       onPressEnd={() => onPressEnd?.()}
