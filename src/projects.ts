@@ -90,7 +90,14 @@ export async function readProjectManifests(agentId: string): Promise<Map<string,
  * 返回 404/400 错误语义交由调用方转 HTTP。
  */
 /** 项目在界面上的投影：id/name 都有；外部项目才带 path（workspace 的家目录不暴露）。 */
-export type ProjectItem = { id: string; name: string; isDefault: boolean; path?: string };
+export type ProjectItem = {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  path?: string;
+  /** 视觉标识（任务 0005）：一个 emoji 或内置图标名；没有该键 = 没有图标（不编占位）。 */
+  icon?: string;
+};
 
 /** 扫描某 Agent 的项目目录（只看目录，文件忽略；排序稳定）。 */
 export async function scanProjectDirs(agentId: string): Promise<string[]> {
@@ -109,9 +116,19 @@ export async function listAgentProjects(agentId: string): Promise<ProjectItem[]>
   for (const dir of await scanProjectDirs(agentId)) {
     if (hidden.has(dir)) continue;
     const manifest = manifests.get(dir);
-    const name = dir === "workspace" ? "workspace" : manifest !== undefined ? basename(manifest.path) || dir : dir;
+    // 任务 0005：项目名以 `project.json` 的 `name` 为准，`basename(path)` 只兜底。
+    // 旧写法只用 basename → worktree 绑定后项目名显示成 "worktree"（实测，01 §3 第 8 条）。
+    const global = dir === "workspace" ? undefined : await readGlobalProject(dir).catch(() => undefined);
+    const name = dir === "workspace"
+      ? "workspace"
+      : global !== undefined && global.name.trim() !== ""
+        ? global.name.trim()
+        : manifest !== undefined
+          ? basename(manifest.path) || dir
+          : dir;
+    const icon = global?.icon;
     const path = dir === "workspace" ? undefined : manifest?.path ?? join(agentProjectsRoot(agentId), dir);
-    items.push({ id: dir, name, isDefault: dir === defaultId, ...(path !== undefined ? { path } : {}) });
+    items.push({ id: dir, name, isDefault: dir === defaultId, ...(path !== undefined ? { path } : {}), ...(icon !== undefined ? { icon } : {}) });
   }
   items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
   return items;

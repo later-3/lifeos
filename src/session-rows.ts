@@ -244,10 +244,18 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   for (const pending of pendingSessions(agentId)) {
     if (pending.projectId !== projectId || fileIds.has(pending.sessionId)) continue;
     if (pending.name === undefined || pending.name === "") continue;   // 草稿不进列表
+    // 计数取内存会话的真实角色分布（与落盘后同一口径）。
+    // 注意一个**真实但正确**的情形：模型不可用时，`prompt` 立刻失败，内存会话里没有消息条目，
+    // 而标题已经写进 sessionManager 的名字 —— 于是出现"有标题、counts 全 0"。
+    // 这不是缺失语义错误：当时的真实事实就是"还没有成功发出任何消息条目"。
+    // （2026-11-03 在开发实例实测到；落盘后 counts 会由文件扫描给出真实值。）
+    const pendingCounts = pending.counts;
     scanned.push({
       sessionId: pending.sessionId,
       rawTitle: pending.name,
-      counts: emptyCounts(),
+      counts: pendingCounts !== undefined
+        ? { ...pendingCounts, total: pendingCounts.user + pendingCounts.assistant + pendingCounts.toolResult + pendingCounts.system }
+        : emptyCounts(),
       createdAt: pending.at,
       fileModifiedAt: pending.at,
       ...(pending.taskId !== undefined ? { activeTaskId: pending.taskId } : {}),

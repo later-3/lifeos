@@ -339,3 +339,24 @@ test("T9 displayTitleOf：复用 session-title.ts 的规则（去引导语 + 限
   assert.equal(displayTitleOf("x".repeat(50)).length, 50);
   assert.equal(displayTitleOf("x".repeat(51)).length, 50);
 });
+
+// —— T10 项目名不再取 checkout 目录名（任务 0005 修掉的真实 bug）——
+test("T10 项目名：manifest.name 优先于目录 basename（worktree 绑定后不再显示成 worktree）", async () => {
+  const rows = await sessionRowsOf("lifeosagent", "workspace");
+  assert.ok(rows.length >= 0);
+  // 直接验证 project-registry 的语义：name 是项目自己的名字，与 path 末段无关
+  const { ensureSharedLayer } = await import("../src/project-skeleton.ts");
+  const home = process.env.LIFEOS_HOME;
+  await ensureSharedLayer(join(home, "projects", "proj-worktree-demo"), {
+    id: "proj-worktree-demo",
+    name: "真实的项目名",
+    path: "/tmp/some/branch/worktree",   // 末段是 worktree，但 name 不是
+  });
+  const dir = join(home, "agents", "lifeosagent", "projects", "proj-worktree-demo", "sessions");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "2026-11-01T00-00-00-000Z_s.jsonl"),
+    sessionLines({ id: "s", entries: [userEntry("2026-11-01T00:01:00.000Z")] }), "utf8");
+  const [row] = await sessionRowsOf("lifeosagent", "proj-worktree-demo");
+  assert.equal(row.project.name, "真实的项目名", "name = project.json 的 name");
+  assert.notEqual(row.project.name, "worktree", "不是 path 末段");
+});

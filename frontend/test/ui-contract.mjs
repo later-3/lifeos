@@ -203,8 +203,10 @@ const ENTRY_URL = await (async () => {
     const body = await res.json();
     // 优先选有真实消息的非默认会话；默认欢迎会话可能没有 usage，状态条/截图契约会无数据。
     // 选消息数最多的非默认会话（有回复且带用量的概率最高；不依赖"最近更新"这种会变的顺序，2026-10-25 修复）
-    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && item.messages > 0)
-      .sort((a, b) => b.messages - a.messages)[0]?.sessionId
+    // 2026-11-03（任务 0005）：`messages` 已被 `counts` 分项取代 → 用 `counts.total`。
+    // 这是**自己的门禁**：字段改了这里没跟着改，选择器会静默选不到会话，后面十几条断言全变成环境失败。
+    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && (item.counts?.total ?? 0) > 0)
+      .sort((a, b) => (b.counts?.total ?? 0) - (a.counts?.total ?? 0))[0]?.sessionId
       ?? body.items?.[0]?.sessionId;
     return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
   } catch { return APP_URL; }
@@ -821,10 +823,26 @@ const headerTexts = await page.evaluate(() => [...document.querySelectorAll("asi
   .map((el) => (el.textContent ?? "").trim()));
 check("列头不重复行内徽标（无“默认”）", headerTexts.every((text) => !text.includes("默认")), headerTexts.join(" | "));
 
-// 列内文本噪音：项目/会话行不再出现"默认"这类文字徽标（默认项目改用 6px 点 + title）
+// 列内文本噪音：项目/会话行不再出现"默认"这类**徽标**（默认项目改用 6px 点 + title）。
 // 只查"界面自称"的地方：三列 + 右侧面板。会话正文里的"默认"是用户/模型说的话，不是徽标。
-const chromeText = await page.evaluate(() => [...document.querySelectorAll("aside")].map((el) => el.innerText).join("\n"));
-check("界面的列与面板不再出现“默认”文字徽标", !chromeText.includes("默认"), chromeText.includes("默认") ? "仍有“默认”字样" : "");
+//
+// 2026-11-03 精确化（任务 0005）：行对象现在会显示 **Task 名字**，而默认 Task 的名字就叫「默认」
+// （`tasks/0001-default/task.md` 的第一行标题）。它是**数据**（Task 的标题），不是界面徽标——
+// 所以断言收紧为：不允许**独立的**"默认"徽标元素，允许它出现在"编号 + 名字"的 Task 段里。
+const chrome = await page.evaluate(() => {
+  const nodes = [...document.querySelectorAll("aside")];
+  const text = nodes.map((el) => el.innerText).join("\n");
+  // 独立徽标 = 某个元素自己的文字恰好是"默认"（或"默认"两字），且它不是 Task 段
+  const badges = nodes.flatMap((root) => [...root.querySelectorAll("*")])
+    .filter((el) => el.children.length === 0)
+    .filter((el) => (el.textContent ?? "").trim() === "默认")
+    .map((el) => (el.parentElement?.innerText ?? "").replace(/\n/g, " ").slice(0, 40));
+  return { text, badges };
+});
+// Task 段（"0001 默认"）是数据；只有"孤立的一个'默认'字"才是徽标噪音
+const isolatedBadge = chrome.badges.filter((parent) => !/\b\d{4}\b/.test(parent));
+check("界面的列与面板不再出现“默认”文字徽标", isolatedBadge.length === 0,
+  isolatedBadge.length === 0 ? "" : `仍有孤立徽标：${isolatedBadge.slice(0, 2).join(" | ")}`);
 
 // 键盘焦点可见（全局 :focus-visible 兜底）
 await page.keyboard.press("Tab");

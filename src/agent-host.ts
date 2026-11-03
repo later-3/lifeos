@@ -314,13 +314,40 @@ export async function createSession(agentId: string, cwd: string, projectIdInput
   return sessionId;
 }
 
-/** 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。 */
-export function pendingSessions(agentId: string): Array<{ sessionId: string; projectId: string; at: string; taskId?: string; name?: string }> {
+/**
+ * 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。
+ *
+ * 任务 0005：**同时给出内存里的消息角色计数**。为什么需要：
+ * 会话文件还没落盘时，若只给名字，行对象里的 `counts` 只能是 0 ——
+ * 而标题明明已经有了（首条消息已发出），用户看到的就是"有标题、0 条消息"的自相矛盾
+ * （2026-11-03 在开发实例实测到）。这里用与落盘后**同一个** `messagesOf()` 取数，不另写一套。
+ */
+export function pendingSessions(
+  agentId: string,
+): Array<{ sessionId: string; projectId: string; at: string; taskId?: string; name?: string; counts?: { user: number; assistant: number; toolResult: number; system: number } }> {
   const state = stateOf(agentId);
   return [...state.pending.entries()].map(([sessionId, meta]) => {
-    const name = state.sessions.get(sessionId)?.session.sessionManager.getSessionName();
-    return { sessionId, ...meta, ...(name !== undefined && name !== "" ? { name } : {}) };
+    const session = state.sessions.get(sessionId);
+    const name = session?.session.sessionManager.getSessionName();
+    const counts = session === undefined ? undefined : countsOfMessages(session);
+    return {
+      sessionId, ...meta,
+      ...(name !== undefined && name !== "" ? { name } : {}),
+      ...(counts !== undefined ? { counts } : {}),
+    };
   });
+}
+
+/** 内存会话的消息角色计数（与落盘扫描同一口径：只数 message 条目，按 role 归类）。 */
+function countsOfMessages(state: SessionState): { user: number; assistant: number; toolResult: number; system: number } {
+  const counts = { user: 0, assistant: 0, toolResult: 0, system: 0 };
+  for (const message of messagesOf(state)) {
+    if (message.role === "user") counts.user += 1;
+    else if (message.role === "assistant") counts.assistant += 1;
+    else if (message.role === "toolResult") counts.toolResult += 1;
+    else if (message.role === "system") counts.system += 1;
+  }
+  return counts;
 }
 
 /** 内存态会话的 cwd（刚创建还没落盘时是唯一来源）。 */
