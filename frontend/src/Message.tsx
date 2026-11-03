@@ -446,6 +446,8 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
   const hideTimer = useRef<number | undefined>(undefined);
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
   const holdRef = useRef({ dragging: false, inBox: false });
+  /** 正在拖动哪一条（null = 没在拖）。Connector 用它决定是否 rAF 跟随。 */
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   // scheduleHide 在定时器/事件里执行，闭包可能拿到旧的 annotations，用 ref 取最新
   const annotationsRef = useRef(annotations);
   annotationsRef.current = annotations;
@@ -613,10 +615,10 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
           <Connector
             key={`conn-${anno.id}`}
             rects={rects}
-            hostRect={hostRect}
             cardId={anno.id}
             tone={markById(anno.marks[0] ?? "")?.tone}
             wrapRef={wrapRef}
+            live={draggingId === anno.id}
           />
         );
       })}
@@ -650,15 +652,21 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
               actions?.togglePinned(anno.id);
               if (willPin) clearHideTimer();
             }}
-            onDragStart={() => { holdRef.current.dragging = true; clearHideTimer(); }}
+            onDragStart={() => {
+              holdRef.current.dragging = true;
+              setDraggingId(anno.id);      // 连接线开始逐帧跟随
+              clearHideTimer();
+            }}
             onDragMove={() => clearHideTimer()}
             onPressEnd={() => {
               clearHideTimer();
+              setDraggingId(null);
               window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
             }}
             onOffsetChange={(dx, dy) => {
               actions?.setOffset(anno.id, dx, dy);
               clearHideTimer();
+              setDraggingId(null);
               window.setTimeout(() => { holdRef.current.dragging = false; }, 300);
             }}
             onClose={() => { actions?.setMode(anno.id, "hidden"); closeOne(anno.id); }}
@@ -690,20 +698,30 @@ function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions 
 }
 
 /** 从选区最靠近框的那条边的中点，画虚线到框最靠近选区的那条边。 */
-function Connector({ rects, hostRect, cardId, tone, wrapRef }: {
+/**
+ * 虚线指引：从被批注文字画一条虚线到批注框。
+ *
+ * 为什么不能只在 `useLayoutEffect` 里算一次：
+ *   拖动时卡片是**直接改 DOM style** 的（为了跟手，不走 React 重渲染），
+ *   React 不会重新执行 effect，连接线就只在拖完（onOffsetChange 触发重渲染）时才跳到新位置。
+ * → 改成 rAF 跟随：拖动期间持续读卡片矩形、更新 path，做到连续。
+ */
+function Connector({ rects, cardId, tone, wrapRef, live }: {
   rects: readonly DOMRect[];
-  hostRect: DOMRect;
   cardId: string;
   tone: string | undefined;
   wrapRef: React.RefObject<HTMLDivElement | null>;
+  /** true = 正在拖动，需要逐帧跟随。 */
+  live: boolean;
 }) {
-  const [path, setPath] = useState<string | null>(null);
+  const pathRef = useRef<SVGPathElement>(null);
+  const rafRef = useRef<number | undefined>(undefined);
 
-  useLayoutEffect(() => {
+  const compute = useCallback((): string | null => {
     const wrap = wrapRef.current;
-    if (wrap === null) return;
+    if (wrap === null) return null;
     const card = wrap.querySelector(`[data-testid="annotation-card"][data-anno="${cardId}"]`);
-    if (!(card instanceof HTMLElement)) { setPath(null); return; }
+    if (!(card instanceof HTMLElement)) return null;
     const wrapRect = wrap.getBoundingClientRect();
     const cardRect = card.getBoundingClientRect();
 
@@ -722,13 +740,29 @@ function Connector({ rects, hostRect, cardId, tone, wrapRef }: {
       y: (below ? cardRect.top : cardRect.bottom) - wrapRect.top,
     };
     const midY = from.y + (to.y - from.y) / 2;
-    setPath(`M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`);
-  });
+    return `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
+  }, [rects, cardId, wrapRef]);
 
-  if (path === null) return null;
+  // 每帧写一次 d（不 setState：拖动的连续性比 React 一致性重要，且这里没有依赖它的逻辑）
+  const paint = useCallback(() => {
+    const d = compute();
+    const el = pathRef.current;
+    if (el !== null && d !== null) el.setAttribute("d", d);
+  }, [compute]);
+
+  useLayoutEffect(() => { paint(); });
+
+  // 拖动期间逐帧跟随
+  useEffect(() => {
+    if (!live) return;
+    const tick = () => { paint(); rafRef.current = window.requestAnimationFrame(tick); };
+    rafRef.current = window.requestAnimationFrame(tick);
+    return () => { if (rafRef.current !== undefined) window.cancelAnimationFrame(rafRef.current); };
+  }, [live, paint]);
+
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" data-testid="annotation-connector" aria-hidden="true">
-      <path d={path} fill="none" strokeWidth={1.3} strokeDasharray="4 3" opacity={0.75}
+      <path ref={pathRef} fill="none" strokeWidth={1.3} strokeDasharray="4 3" opacity={0.75}
         style={{ stroke: tone === undefined ? "var(--color-ink-300)" : `var(--color-anno-${tone})` }} />
     </svg>
   );
