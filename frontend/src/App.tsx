@@ -10,6 +10,7 @@ import {
 } from "./attachments";
 import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
+import type { Annotation } from "./annotations";
 import { AnnotationPanel } from "./annotation-panel";
 import { annotationsMessage } from "./annotation-message";
 import { rebuildHighlightStyles } from "./annotations";
@@ -271,6 +272,13 @@ export default function App() {
     togglePinned: anno.togglePinned, setOffset: anno.setOffset,
     remove: anno.remove, open: anno.open,
   }), [anno.add, anno.setMarks, anno.setNote, anno.togglePinned, anno.setOffset, anno.remove, anno.open]);
+
+  /**
+   * 发送失败时要恢复的批注快照。
+   * 为什么需要：点发送时批注会被 clear()，而 sendText 的 fail 路径会把文字回填到输入框——
+   * 如果不同时恢复批注，用户就丢了刚写的一批批注（实测会丢）。
+   */
+  const pendingAnnoRestore = useRef<readonly Annotation[] | undefined>(undefined);
 
   /** 批注面板折叠态（默认展开）。 */
   const [annoPanelFolded, setAnnoPanelFolded] = useState(false);
@@ -1400,12 +1408,19 @@ export default function App() {
     const fail = (message: string) => {
       setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
       setInput(text);                   // 失败回填草稿
+      // 批注也要回填：否则"发送失败"等于把用户刚写的一批批注也弄丢了
+      const snapshot = pendingAnnoRestore.current;
+      if (snapshot !== undefined) { anno.restore(snapshot); pendingAnnoRestore.current = undefined; }
       if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
       busyRef.current = false;
       busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
       turnMetricsPendingRef.current = false;
+      // 失败后重新拉一次消息：让"消息列表 / 批注渲染层"回到服务端事实。
+      // 不这么做的话，上面那次乐观插入 + 回滚会让批注渲染层重建在 DOM 尚未稳定时发生，
+      // 高亮不会重画（实测：批注数据回来了，但文字上没有颜色）。
+      if (sid !== undefined) void loadMessages(agent.id, sid);
     };
     try {
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
@@ -1658,6 +1673,7 @@ export default function App() {
       const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
       if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
       historyIndexRef.current = -1;
+      pendingAnnoRestore.current = [...anno.annotations];   // 失败时恢复用
       anno.clear();
       void sendText(merged);
       return;

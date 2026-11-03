@@ -42,6 +42,12 @@ export type AnnotationStore = {
   /** 全部清空。 */
   clear: () => void;
   /**
+   * 整批恢复（发送失败时用）。
+   * 发送成功后批注会被 `clear()` 掉；如果发送失败，用户不该丢掉那些批注——
+   * 这里把当时的快照放回去（含 id/ui，顺序不变）。
+   */
+  restore: (snapshot: readonly Annotation[]) => void;
+  /**
    * 打开一条批注的框（P3）。
    * 这里只切 mode；"当前打开的是哪一条"由渲染层自己管（同一块里同一时刻只开一个）。
    */
@@ -131,12 +137,16 @@ export function useAnnotations(): AnnotationStore {
 
   const clear = useCallback(() => { setAnnotations([]); }, []);
 
+  const restore = useCallback((snapshot: readonly Annotation[]) => {
+    setAnnotations([...snapshot]);
+  }, []);
+
   const open = useCallback((id: string) => {
     patch(id, (anno) => ({ ...anno, ui: { ...anno.ui, mode: "open" } }));
   }, [patch]);
 
   return useMemo(
-    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, open }),
-    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, open],
+    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, open }),
+    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, open],
   );
 }
