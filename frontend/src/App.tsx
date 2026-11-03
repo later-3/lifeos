@@ -44,6 +44,7 @@ import { ConfirmDialog } from "./design/overlay";
 import { Button, ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
+import type { RowFailureKind, RowPhase } from "../../src/row-activity.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -74,7 +75,7 @@ function StatusMarks({ status, unit }: { status: { running: boolean; unread: num
 
 /** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
 const STREAM_EVENT_NAMES = [
-  "turn", "done", "error", "agents_changed",
+  "turn", "done", "error", "agents_changed", "row",
   "message_start", "message_end", "delta", "thinking", "thinking_end",
   "tool_call", "tool_start", "tool_update", "tool_result", "retrying", "retry_end",
 ] as const;
@@ -83,6 +84,13 @@ const STREAM_EVENT_NAMES = [
 const STREAM_STALE_MS = 25_000;
 /** 运行态对账间隔：与 SSE 心跳无关的兜底，收敛"漏掉 done 事件"的绿点。 */
 const RUN_RECONCILE_MS = 30_000;
+/**
+ * 运行耗时的本地心跳（任务 0005 · D4）：**秒数不走网络**。
+ * 服务端只在 phase/tool 变化时推补丁（≥1000ms 节流）；"跑了多少秒"由前端每秒自己重算。
+ * 取值依据：pi-web 的 `CLOCK_TICK_MS = 60_000` 是给"5分钟前"这种粗粒度用的，
+ * 而运行耗时是用户盯着看的活数 —— 1 秒是"没卡住"的最小可感知粒度（`05-basis.md` §1.2）。
+ */
+const ELAPSED_TICK_MS = 1000;
 const STREAM_WATCHDOG_MS = 5_000;
 
 /** 全局快照（连接即发）：connectionId 用于焦点上报；seq 是事件基线；running/unread 是服务端真相。 */
@@ -107,6 +115,19 @@ type SessionMeta = {
  * 现在类型只有一处（`src/session-rows.ts`），tsc 会把所有漏改点爆出来。
  */
 type SessionItem = SessionRowData;
+/**
+ * 行补丁的载荷（任务 0005）：与服务端 `src/events.ts` 的 `RowPatch` 对应。
+ * 这里独立声明成"可空"版本 —— 线上可能收到老版本/新版本客户端不认识的值，
+ * 未知键一律忽略（前向兼容）。
+ */
+type RowPatchPayload = {
+  running?: { since: string; phase?: RowPhase; tool?: string } | null;
+  unread?: { since: string } | null;
+  failure?: { kind: RowFailureKind; detail: string; at?: string } | null;
+  lastActivityAt?: string;
+  title?: { raw: string; display: string };
+  task?: { id: string; title: string; status: string; type: string } | null;
+};
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
@@ -128,6 +149,23 @@ function readLast(key: string): string | undefined {
 }
 function writeLast(key: string, value: string | undefined) {
   try { if (value === undefined) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* 忽略 */ }
+}
+
+/**
+ * 运行耗时的显示形态（任务 0005）：`12s` / `1m 05s` / `1h 02m`。
+ *
+ * 为什么带 `tick` 参数：函数本身是纯的，但 React 需要知道"每秒都要重算"——
+ * 把 tick 传进来成为依赖，比在组件里塞一个假的 state 读更明确。
+ */
+function formatElapsed(ms: number, tick: number): string {
+  void tick;   // 只为让调用点的渲染依赖它
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 function timeAgo(iso: string): string {
@@ -273,6 +311,8 @@ export default function App() {
   const sendTextRef = useRef<(raw: string) => void>(() => {});
   // 运行事实（协议 P1·1.4）：三态列表、turn 事件、排队区的唯一事实源；呈现层只读它
   const [runFacts, setRunFacts] = useState(emptyRunFacts);
+  /** 每秒 +1：只为让"运行耗时"重算（不触发任何请求、不改数据）。 */
+  const [elapsedTick, setElapsedTick] = useState(0);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
@@ -643,6 +683,17 @@ export default function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
+  /**
+   * 运行耗时的本地心跳（任务 0005）：每秒让"在跑多久"重算一次。
+   * 只在**真有会话在跑**时才启动 —— 空闲页面上不该有每秒的 setState。
+   */
+  useEffect(() => {
+    const anyRunning = groups.some((group) => group.sessions.some((item) => item.activity.state === "running"));
+    if (!anyRunning) return;
+    const timer = window.setInterval(() => setElapsedTick((n) => n + 1), ELAPSED_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [groups]);
+
   async function refreshAgentDefaultModel(id: string) {
     const response = await fetch(`/api/agents/${id}/config`).catch(() => undefined);
     const data = response?.ok === true
@@ -908,6 +959,54 @@ export default function App() {
     for (const action of routeEvent(payload as unknown as RouteEvent, currentFocus(), baselineRef.current)) runStreamAction(action, payload);
   }
 
+  /**
+   * 一行的局部补丁（任务 0005）：**只重建那一行**，其余行引用不变。
+   *
+   * 为什么不是 reloadGroups：那样一个字段变化要 1+N 次请求、每次全扫 JSONL
+   * （实测 60ms / 5,999B）。这里只做对象合并，零请求。
+   *
+   * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
+   */
+  function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined): void {
+    if (patch === undefined || patch === null) return;
+    if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
+    setGroups((previous) => {
+      let touched = false;
+      const next = previous.map((group) => {
+        const index = group.sessions.findIndex((item) => item.sessionId === sessionId);
+        if (index === -1) return group;
+        touched = true;
+        const current = group.sessions[index]!;
+        const activity = { ...current.activity };
+        if ("running" in patch) {
+          if (patch.running === null) { delete activity.running; if (activity.state === "running") activity.state = "idle"; }
+          else if (patch.running !== undefined) {
+            activity.running = { ...patch.running, elapsedMs: Math.max(0, Date.now() - Date.parse(patch.running.since)) };
+            activity.state = "running";
+          }
+        }
+        if ("unread" in patch) {
+          if (patch.unread === null) { delete activity.unread; if (activity.state === "unread") activity.state = "idle"; }
+          else if (patch.unread !== undefined) { activity.unread = patch.unread; if (activity.running === undefined) activity.state = "unread"; }
+        }
+        if ("failure" in patch) {
+          if (patch.failure === null) { delete activity.failure; if (activity.state === "failure") activity.state = "idle"; }
+          else if (patch.failure !== undefined) { activity.failure = patch.failure; if (activity.running === undefined) activity.state = "failure"; }
+        }
+        const sessions = [...group.sessions];
+        sessions[index] = {
+          ...current,
+          activity,
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...("task" in patch ? { task: patch.task ?? null } : {}),
+          ...(patch.lastActivityAt !== undefined ? { time: { ...current.time, lastActivityAt: patch.lastActivityAt } } : {}),
+        };
+        return { ...group, sessions };
+      });
+      return touched ? next : previous;
+    });
+  }
+
   function runStreamAction(action: RouteAction, payload: AgentEvent): void {
     switch (action.kind) {
       case "drop":
@@ -946,6 +1045,9 @@ export default function App() {
           .catch(() => announce(`会话 ${sid.slice(-6)}`));
         return;
       }
+      case "row":
+        applyRowPatch(action.agentId, action.sessionId, action.patch as RowPatchPayload);
+        return;
       case "agents-changed":
         void onAgentsChanged();
         return;
@@ -1801,6 +1903,13 @@ export default function App() {
                           const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
                           const peer = peerOfSession(item.sessionId);
                           const failure = item.activity.failure;
+                          // 运行耗时**本地现算**（任务 0005 · D4）：服务端只给 `since`，
+                          // 秒数由 `elapsedTick` 每秒推动，零网络。`elapsedTick` 参与计算是为了
+                          // 让它成为这个渲染的依赖 —— 没有它，React 不知道要重算。
+                          const runningSince = item.activity.running?.since;
+                          const elapsedText = runningSince === undefined
+                            ? ""
+                            : formatElapsed(Math.max(0, Date.now() - Date.parse(runningSince)), elapsedTick);
                           return (
                             <SessionRow key={item.sessionId} testId={item.sessionId}
                               selected={item.sessionId === sessionId}
@@ -1835,6 +1944,9 @@ export default function App() {
                                   {item.task !== null && <span title={`${item.task.id} ${item.task.title}（${item.task.status}）`}>{item.task.id} {item.task.title}</span>}
                                   {/* 失败态（结论 5）：红点 + 类别。"它挂了"和"它挂在哪"是两件事，
                                       只给红点用户不敢重试（不知道是网络抖还是需求本身有问题）。 */}
+                                  {runNow && elapsedText !== "" && (
+                                    <><span> · </span><span className="tabular-nums" title="本轮已运行时长">{elapsedText}</span></>
+                                  )}
                                   {failure !== undefined && !runNow && (
                                     <><span> · </span><span className="text-danger" title={failure.detail || undefined}>失败：{failureLabel(failure.kind)}</span></>
                                   )}

@@ -17,6 +17,8 @@ import { resolveHome } from "./home.ts";
 import { createAgentTools } from "./agent-tools.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
+import { phaseOfStreamEvent, rowPatches } from "./row-patch.ts";
+import { displayTitleOf } from "./row-activity.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
@@ -548,10 +550,26 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   startTurn(agentId, sessionId, turnId);
   publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "running" });
   void log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId, agentId, projectId: projectIdForLog });
-  markRunning(agentId, { sessionId, projectId: projectIdForLog, startedAt: new Date().toISOString() });
+  const startedAtIso = new Date().toISOString();
+  markRunning(agentId, { sessionId, projectId: projectIdForLog, startedAt: startedAtIso });
+  // 一开跑就推一条（`phase: "waiting"` = 等模型），让列表立刻显示"在跑 + 计时开始"，
+  // 而不是等第一个 thinking/text 事件才亮（那之前有网络往返的空白期）。
+  rowPatches().pushRunning(agentId, sessionId, projectIdForLog, { since: startedAtIso, phase: "waiting" });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
-    if (mapped !== undefined) publish(agentId, { sessionId, ...mapped });
+    if (mapped !== undefined) {
+      publish(agentId, { sessionId, ...mapped });
+      // 列表的动态信息（任务 0005）：只推"状态切换"，正文 delta/thinking 增量不推。
+      // 节流与去重都在 rowPatches() 里（每会话 ≥1000ms 至多一条 + 只在 phase/tool 变化时发）。
+      const phase = phaseOfStreamEvent(mapped);
+      if (phase !== undefined) {
+        rowPatches().pushRunning(agentId, sessionId, projectIdForLog, {
+          since: startedAtIso,
+          ...(phase.phase !== undefined ? { phase: phase.phase } : {}),
+          ...(phase.tool !== undefined ? { tool: phase.tool } : {}),
+        });
+      }
+    }
   });
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
@@ -575,6 +593,11 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "done");
     void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "done" });
+    // 列表行补丁（任务 0005）：终态立即发、不节流 —— 用户最需要立刻看到"完了"
+    rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
+      ...(aborted ? {} : { unread: { since: new Date().toISOString() } }),
+      lastActivityAt: new Date().toISOString(),
+    });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
   } catch (error) {
     abortRequested.delete(requestKey);
@@ -587,7 +610,14 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
-    publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown", turnId });
+    const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
+    // 列表行补丁：失败态 + 原文（用户裁决不脱敏）+ 未读
+    rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
+      unread: { since: new Date().toISOString() },
+      failure: { kind, detail: message, at: new Date().toISOString() },
+      lastActivityAt: new Date().toISOString(),
+    });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind, turnId });
   } finally {
     unsubscribe();
     clearRunning(agentId, sessionId);
@@ -872,6 +902,13 @@ export async function setSessionTask(agentId: string, sessionId: string, taskId:
   if (!tasks.some((task) => task.id === taskId)) return { ok: false, reason: "task_not_found" };
   state.session.sessionManager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
   state.taskId = taskId;
+  // 切 Task → 推一行补丁（同理不 broadcast 让所有人重取整个列表）
+  const task = tasks.find((item) => item.id === taskId);
+  if (task !== undefined) {
+    rowPatches().pushNow(agentId, sessionId, projectId, {
+      task: { id: task.id, title: task.title, status: task.status, type: task.type },
+    });
+  }
   return { ok: true, taskId };
 }
 
@@ -975,11 +1012,28 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
 /** 重命名会话：写 Pi 的 `session_info` 展示名（列表标题优先用它，否则回退首句）。 */
 export async function renameSession(agentId: string, sessionId: string, name: string, cwd: string): Promise<boolean> {
   const loaded = stateOf(agentId).sessions.get(sessionId);
-  if (loaded !== undefined) { loaded.session.sessionManager.appendSessionInfo(name); return true; }
+  if (loaded !== undefined) {
+    loaded.session.sessionManager.appendSessionInfo(name);
+    pushTitlePatch(agentId, sessionId, projectOfSessionDir(loaded.session.sessionManager.getSessionDir()), name);
+    return true;
+  }
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return false;
   SessionManager.open(found.path, found.dir, cwd).appendSessionInfo(name);
+  pushTitlePatch(agentId, sessionId, projectOfSessionDir(found.dir), name);
   return true;
+}
+
+/**
+ * 标题变了 → 推一行补丁（任务 0005 · 用户要求"不许刷新才更新"）。
+ *
+ * 为什么不 broadcast `agents_changed`：那会让**所有**客户端重取**所有**项目的整个列表
+ * （实测 1+N 次请求、每次全扫 JSONL）。标题是一个字段的变化，就只推那个字段。
+ */
+function pushTitlePatch(agentId: string, sessionId: string, projectId: string | undefined, raw: string): void {
+  rowPatches().pushNow(agentId, sessionId, projectId, {
+    title: { raw, display: displayTitleOf(raw) },
+  });
 }
 
 type TextBlock = { type: "text"; text: string };

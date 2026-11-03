@@ -47,3 +47,24 @@ test("T59 流陈旧判定：超过阈值没有任何帧（含心跳）才算死�
   assert.equal(isStreamStale(1_000, 1_000 + 25_000, 25_000), true);
   assert.equal(isStreamStale(0, 0, 25_000), false, "刚建立连接的时刻不算陈旧");
 });
+
+// —— T71–T73 行补丁（任务 0005）：不触发列表重取、不做焦点过滤、基线之前丢弃 ——
+test("T71 row 事件只产生一个 row 动作，**不**触发 refresh-groups（不重取整个列表）", async () => {
+  const row = { seq: 30, agentId: "A", sessionId: "s1", type: "row", patch: { running: { since: "T0", phase: "tool", tool: "read" } } };
+  const actions = routeEvent(row, focusA, 0);
+  assert.deepEqual(actions.map((a) => a.kind), ["row"], "只有一个动作");
+  assert.equal(actions.some((a) => a.kind === "refresh-groups"), false, "绝不能触发全量重取");
+  assert.equal(actions[0].sessionId, "s1");
+  assert.deepEqual(actions[0].patch, row.patch, "补丁原样传给执行侧");
+});
+
+test("T72 row 事件不做焦点过滤：非焦点会话的运行态也要更新列表", async () => {
+  const other = { seq: 31, agentId: "B", sessionId: "s9", type: "row", patch: { running: null } };
+  const actions = routeEvent(other, focusA, 0);   // 焦点在 A/s1，事件属于 B/s9
+  assert.deepEqual(actions.map((a) => a.kind), ["row"], "别的会话的补丁照样要应用（列表要显示它在跑）");
+});
+
+test("T73 row 事件遵守基线：快照之前的重放一律丢弃", async () => {
+  const stale = { seq: 5, agentId: "A", sessionId: "s1", type: "row", patch: { running: null } };
+  assert.deepEqual(routeEvent(stale, focusA, 5).map((a) => a.kind), ["drop"]);
+});

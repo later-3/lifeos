@@ -19,6 +19,8 @@ export type RouteEvent = {
   state?: string | undefined;
   aborted?: boolean | undefined;
   message?: string | undefined;
+  /** `type === "row"` 时的局部补丁（任务 0005）。 */
+  patch?: unknown;
 };
 
 export type RouteAction =
@@ -27,13 +29,23 @@ export type RouteAction =
   | { kind: "message"; event: RouteEvent }
   | { kind: "refresh-groups"; agentId: string }
   | { kind: "completion"; agentId: string; sessionId: string; outcome: "done" | "error" }
-  | { kind: "agents-changed" };
+  | { kind: "agents-changed" }
+  /** 一行的局部补丁（任务 0005）：只更新那一行，**不重取列表**。 */
+  | { kind: "row"; agentId: string; sessionId: string; patch: unknown };
 
 const TERMINAL = new Set(["done", "error"]);
 
 export function routeEvent(event: RouteEvent, focus: RouteFocus, baseline: number): RouteAction[] {
   if (event.seq <= baseline) return [{ kind: "drop", reason: "stale" }];
   if (event.type === "agents_changed") return [{ kind: "agents-changed" }];
+  // 行补丁：**不再触发 refresh-groups**（那会全量重取 1+N 个请求）；
+  // 也不做焦点过滤 —— 列表里每个会话的运行态都需要更新，不只当前打开那条。
+  if (event.type === "row") {
+    const agentId = event.agentId ?? "";
+    const sessionId = event.sessionId ?? "";
+    if (sessionId === "") return [{ kind: "drop", reason: "stale" }];
+    return [{ kind: "row", agentId, sessionId, patch: (event as { patch?: unknown }).patch }];
+  }
 
   const agentId = event.agentId ?? "";
   const sessionId = event.sessionId ?? "";

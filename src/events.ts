@@ -19,13 +19,43 @@ export type AgentEventPayload =
   | { sessionId: string; projectId?: string | undefined; type: "turn"; turnId: string; state: "running" | "done" | "error" }
   | { sessionId: string; projectId?: string | undefined; type: "error"; message: string; kind: FailureKind; turnId?: string }
   // 助手/项目列表变了（写操作在共享实现里广播）：前端收到后重取，无需手动刷新
-  | { type: "agents_changed" };
+  | { type: "agents_changed" }
+  /**
+   * 一行的局部补丁（任务 0005）：只带变了的字段，前端**只更新那一行**，不重取整个列表。
+   *
+   * 为什么新增事件而不是复用 `turn`：`turn` 已有语义（回合生命周期），塞 phase 会让它变成
+   * 两种含义，前端 `event-router` 也要跟着分叉（`specs/code/api/api.md` 2.2 允许"先加映射再进 UI"）。
+   *
+   * 频率控制（`02-design.md` D4）：服务端每会话 **≥1000ms 至多 1 条**，且**只在值变化时发**。
+   * 依据：实测最重会话一次回合 448 次工具调用 / 804 个内容块，逐条推必成风暴；
+   * 而"运行了多少秒"由前端本地 1s 计时器负责，不需要服务端每秒发。
+   */
+  | { sessionId: string; projectId?: string | undefined; type: "row"; patch: RowPatch };
+
+/**
+ * 行补丁允许携带的字段（任务 0005）：**只有这些**，且都对应 `SessionRow` 里的同名位置。
+ * 不在这里列出的字段不能通过补丁更新 —— 前端收到未列出的键应当忽略（前向兼容）。
+ */
+export type RowPatch = {
+  /** 运行态：`since` 起算，`phase`/`tool` 来自 Pi 的流事件。 */
+  running?: { since: string; phase?: string; tool?: string } | null;
+  /** 未读：完成即来一条（`null` = 已看过，清掉）。 */
+  unread?: { since: string } | null;
+  /** 失败：`detail` 为落盘原文。`null` = 恢复正常。 */
+  failure?: { kind: string; detail: string; at?: string } | null;
+  /** 最后活动时间（终态时推进）。 */
+  lastActivityAt?: string;
+  /** 标题变化（重命名、首条消息自动命名）。 */
+  title?: { raw: string; display: string };
+  /** Task 变化（切 Task、建 Task 即进入）。 */
+  task?: { id: string; title: string; status: string; type: string } | null;
+};
 
 /** 信封：全局序号 + 来源 Agent（agents_changed 等全局事件没有 agentId）。 */
 export type AgentEvent = AgentEventPayload & { seq: number; agentId?: string };
 
 /** 回合级事件类型：发给所有连接，不做焦点过滤。 */
-const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed"]);
+const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed", "row"]);
 export const isDetailEvent = (type: string): boolean => !TURN_LEVEL.has(type);
 
 /**
