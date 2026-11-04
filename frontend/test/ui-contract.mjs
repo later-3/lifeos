@@ -1516,6 +1516,79 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
 
 const failed = results.filter((item) => !item.ok);
+// —— P1·1.5 聚合数量契约（Task 0005）：项目行 / 助手行必须是**三个数量**，不是"有/无" ——
+//
+// 改之前：运行 = 一个呼吸点（几个在跑都一样），助手层数字是"项目个数"、项目层是"会话个数"。
+// 现在三层统一为会话数：正在工作 / 已完成待查看 / 失败，各自独立。
+// 断言到**可核对的事实**（数量文本 + aria-label + 有布局盒），不数 class。
+// 参照 Rocket.Chat `RoomListItem.stories.tsx:55`：用 role=status + aria-label 做断言最稳。
+{
+  const countPage = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
+  await countPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
+  const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
+  const ids = (listed.items ?? []).map((item) => item.sessionId);
+  check("P1·1.5 聚合数量：能拿到夹具会话", ids.length >= 6, `${ids.length} 条`);
+  if (ids.length >= 6) {
+    // 夹具：2 运行 + 3 待查看 + 1 失败 = 6，全部落在同一个项目里，所以项目行与助手行数字必须相同。
+    const plan = new Map();
+    const since = new Date(Date.now() - 90_000).toISOString();
+    ids.forEach((sid, i) => {
+      if (i < 2) plan.set(sid, { state: "running", running: { since, elapsedMs: 90_000 } });
+      else if (i < 5) plan.set(sid, { state: "unread", unread: { since: new Date().toISOString() } });
+      else if (i === 5) plan.set(sid, { state: "failure", failure: { kind: "auth", detail: "fixture", at: new Date().toISOString() } });
+    });
+    await countPage.route("**/sessions", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const item of body.items ?? []) { const p = plan.get(item.sessionId); if (p) item.activity = p; }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    });
+    await countPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
+    const ready = await countPage.waitForFunction(
+      () => document.querySelectorAll('[data-state-count]').length > 0, null, { timeout: 15000 },
+    ).then(() => true, () => false);
+    check("P1·1.5 聚合数量：数量徽标已渲染", ready);
+    await countPage.waitForTimeout(1200);
+    const read = await countPage.evaluate(() => {
+      const grab = (scope) => {
+        const root = document.querySelector(scope);
+        if (root === null) return [];
+        return [...root.querySelectorAll('[data-state-count]')].map((el) => {
+          const box = el.getBoundingClientRect();
+          return {
+            kind: el.dataset.stateCount, text: el.textContent.trim(),
+            aria: el.getAttribute("aria-label") ?? "",
+            shown: box.width >= 12 && box.height >= 12 && el.offsetParent !== null,
+            animated: getComputedStyle(el).animationName !== "none",
+          };
+        });
+      };
+      return { project: grab('[data-testid="groups-panel"]'), agent: grab('[data-shot-mask="agent-rows"]') };
+    });
+    const expectOf = (scope) => [{ kind: "running", text: "2" }, { kind: "unread", text: "3" }, { kind: "failure", text: "1" }];
+    for (const scope of ["project", "agent"]) {
+      const rows = read[scope];
+      const label = scope === "project" ? "项目行" : "助手行";
+      for (const want of expectOf(scope)) {
+        const got = rows.find((r) => r.kind === want.kind);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」显示 ${want.text}`, got !== undefined && got.text === want.text,
+          got === undefined ? "没有这个徽标" : `实际 ${got.text}`);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」有布局盒`, got !== undefined && got.shown,
+          got === undefined ? "缺失" : `${got.text} 未挂载或过小`);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」aria 带数量`, got !== undefined && got.aria.includes(want.text),
+          got === undefined ? "缺失" : got.aria);
+      }
+      // 只有运行中那个在呼吸（用户裁决 A：整个徽标呼吸）
+      const running = rows.find((r) => r.kind === "running");
+      const unread = rows.find((r) => r.kind === "unread");
+      check(`P1·1.5 聚合数量：${label}「运行中」在呼吸、「待查看」不呼吸`,
+        running?.animated === true && unread?.animated === false,
+        `running=${running?.animated} unread=${unread?.animated}`);
+    }
+    await countPage.close();
+  }
+}
+
 for (const item of results) console.log(`${item.ok ? "✔" : "✖"} ${item.name}${item.detail === "" ? "" : `  → ${item.detail}`}`);
 console.log(`\n${results.length - failed.length}/${results.length} 通过${failed.length === 0 ? "" : `；${failed.length} 项失败`}`);
 if (failed.length > 0) process.exit(1);

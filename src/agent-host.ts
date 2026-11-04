@@ -449,10 +449,23 @@ export function turnSnapshotAll(): Array<TurnRecord & { agentId: string }> {
  * 回合结束的服务端事实（任务 0007 P2）：完成即记未读；若此刻有人正在看这个会话，同时记为已读。
  * 被用户打断（aborted）的回合不算"完成"——pi-web 旧版同样不对打断的回合发完成通知（rpc-manager.ts:510）。
  */
+/**
+ * 标记已读 —— **两处调用必须走这一个函数**（`recordCompletion` 与 `server.ts` 的 focus 端点）。
+ *
+ * 为什么不各自调 `sessionViewsOf().markViewed()`：标已读有两个后果，必须一起发生
+ *   ① 服务端未读事实变化（`session-views.json`）；
+ *   ② 前端行的 `activity.unread` 消失、聚合层的"待查看"数减一。
+ * 只做①不做②，行上的绿点会一直留到下次全量重取列表 —— 这是 Task 0005 实测到的缺口。
+ */
+export function markSessionViewed(agentId: string, sessionId: string, at: string, projectId: string | undefined): void {
+  sessionViewsOf().markViewed(agentId, sessionId, at);
+  rowPatches().pushNow(agentId, sessionId, projectId, { unread: null });
+}
+
 function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined): void {
   const at = new Date().toISOString();
   if (!aborted) sessionViewsOf().markCompleted(agentId, sessionId, at, projectId);
-  if (isFocusedVisible(agentId, sessionId)) sessionViewsOf().markViewed(agentId, sessionId, at);
+  if (isFocusedVisible(agentId, sessionId)) markSessionViewed(agentId, sessionId, at, projectId);
 }
 
 /** 用户主动打断的会话键（runTurn 结束时取走；不打断的回合不会留下记录）。 */

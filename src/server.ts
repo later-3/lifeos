@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
-  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask, markSessionViewed,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -617,7 +617,10 @@ app.use(async (c, next) => {
     if (!setFocusOf(body.connectionId, focus)) {
       const error = problem("connection_not_found", "事件连接不存在（已断开）；请重连后重新上报焦点", 404); return c.json(error.body, error.status);
     }
-    if (focus !== undefined && focus.visible) sessionViewsOf().markViewed(focus.agentId, focus.sessionId, new Date().toISOString());
+    // 与回合结束时的已读走**同一个函数**（见 agent-host 的 markSessionViewed 注释）
+    // `Focus` 不带 projectId（它只用于投递路由）。补丁里的 projectId 是给排障看的附带信息，
+    // 缺省不影响前端应用补丁（前端按 sessionId 找行）——不为了一个日志字段去改事件契约。
+    if (focus !== undefined && focus.visible) markSessionViewed(focus.agentId, focus.sessionId, new Date().toISOString(), undefined);
     return c.json({ ok: true });
   });
 

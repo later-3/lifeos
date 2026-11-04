@@ -53,22 +53,58 @@ type Agent = { id: string; name: string; description?: string; avatar?: AgentAva
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type UsageSummary = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
 /**
- * 状态标记（任务 0008，项目行与 Agent 行共用）：运行中 = 绿色呼吸点；未读 = 数量徽标（个数，>0 才显示）。
- * 颜色与拍板语义一致：未读是绿色（不是蓝色——蓝色是交互态）。
+ * 状态标记（项目行与助手行共用）：三个**数量**，不是"有/无"。
+ *
+ * ## 为什么是三个数字（Task 0005 · 用户 2026-11-03 裁决）
+ *
+ * 改之前：运行 = 一个呼吸点（不管几个在跑），未读 = 数字。
+ * 两个问题：① "3 个会话在跑"和"1 个在跑"长得一样；② 助手层数字是**项目个数**、
+ * 项目层数字是**会话个数**，单位不同 → "助手显示 1，点进去看到 6 个未读"没法解释。
+ *
+ * 现在三层统一为会话数：正在工作 / 已完成待查看 / 失败。
+ *
+ * ## 样式依据
+ *
+ * - 运行中（呼吸）：用户裁决 A —— 整个徽标呼吸（与行上脉冲点同一节奏 `animate-pulse`）
+ * - 待查看：沿用既有样式（`success-soft` 底 + `success` 字），不新造
+ * - 失败：镜像待查看（`danger-soft` 底 + `danger` 字），三种都用同一尺寸，只换色
+ * - 排列：运行中(左) → 待查看(中) → 失败(右)（用户指定；与"越需要处理越靠右"一致）
+ * - 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）
+ * - `aria-label` 带数量（照 Rocket.Chat `RoomListItem.stories.tsx:55` 的门禁方式，
+ *   比按 class 断言稳）
  */
-function StatusMarks({ status, unit }: { status: { running: boolean; unread: number } | undefined; unit: "会话" | "项目" }) {
-  if (status === undefined) return null;
+function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unread" | "failure"; unit: "会话" }) {
+  if (count <= 0) return null;
+  // 99+ 规则：`design-language.md:217`「数字（超过 99 写 99+）」。上限 99 是设计规范给定的，
+  // 不是我们自创（§3.13）；徽标宽度靠 min-w-4 + px 自适应，不为此另设宽度上限。
+  const text = count > 99 ? "99+" : String(count);
+  const label = kind === "running"
+    ? `${count} 个${unit}正在工作`
+    : kind === "unread"
+      ? `${count} 个${unit}已完成待查看`
+      : `${count} 个${unit}失败`;
+  const tone = kind === "running"
+    ? "bg-success-soft text-success animate-pulse"
+    : kind === "unread"
+      ? "bg-success-soft text-success"
+      : "bg-danger-soft text-danger";
   return (
-    // 状态徽标是动态数据（随用户正常使用变化）：截图基线遮掉，只比骨架（testing 2.9）
+    // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
+    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1.5 text-micro font-medium tabular-nums ${tone}`}
+      role="status" aria-label={label} title={label} data-state-count={kind}>
+      {text}
+    </span>
+  );
+}
+
+function StatusMarks({ status, unit }: { status: { running: number; unread: number; failure: number } | undefined; unit: "会话" }) {
+  if (status === undefined) return null;
+  if (status.running === 0 && status.unread === 0 && status.failure === 0) return null;   // 零值不渲染
+  return (
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
-      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" data-state-dot="running" title="生成中" />}
-      {status.unread > 0 && (
-        // 数字语义（任务 0009）：Project 层 = 待查看的会话个数；Agent 层 = 待查看的 Project 个数
-        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-success-soft px-1.5 text-micro font-medium tabular-nums text-success"
-          aria-label={`${status.unread} 个${unit}待查看`} title={`${status.unread} 个${unit}待查看`}>
-          {status.unread}
-        </span>
-      )}
+      <CountBadge count={status.running} kind="running" unit={unit} />
+      <CountBadge count={status.unread} kind="unread" unit={unit} />
+      <CountBadge count={status.failure} kind="failure" unit={unit} />
     </span>
   );
 }
@@ -1814,10 +1850,15 @@ export default function App() {
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
   // 状态映射（任务 0008）：会话 → 项目 → Agent 的运行与未读全部由同一份会话事实派生
+  // 聚合只吃 **会话行的 activity**（Task 0005）：单一来源，行上的点和这里的数字不可能对不上。
+  // 归属取自 groups（列表就是归属的权威：项目 → 会话）；没有行的会话不参与聚合。
   const statusFacts: StatusFacts = {
-    sessions: runFacts.meta,
-    running: [...new Set([...runFacts.snapRunning, ...Object.keys(runFacts.lastTurn).filter((sid) => runFacts.lastTurn[sid]?.state === "running")])],
-    unread: Object.keys(runFacts.unread).filter((sid) => runFacts.unread[sid] === true),
+    sessions: Object.fromEntries(
+      groups.flatMap((group) => group.sessions.map((item) => [
+        item.sessionId,
+        { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity },
+      ])),
+    ),
   };
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
@@ -1837,7 +1878,7 @@ export default function App() {
                     <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
                   </button>
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                  <StatusMarks status={derived.agents[item.id]} unit="项目" />
+                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
                   <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
                     <IconButton label="删除助手" size="sm"
                       onClick={(event) => {
@@ -1896,11 +1937,13 @@ export default function App() {
                           <p className="px-1 py-2 text-micro text-ink-500">该项目还没有会话 · 在右下输入框发消息即可新建</p>
                         )}
                         {group.sessions.map((item) => {
+                          // 会话行的三态**只认 `item.activity`**（Task 0005）。
+                          // 它同时被两处维护：列表请求（服务端 rowActivityOf 四态）+ SSE `row` 补丁
+                          // （applyRowPatch 只重建这一行）。此前这里还叠了 runFacts 一套，
+                          // 等于同一个状态两个来源——删掉，四态是唯一判据。
                           const own = derived.sessions[item.sessionId];
-                          // 任务 0005：后端的 `activity.state` 是四态快照；前端仍以 SSE 实时事实为准
-                          // （`own` / `runFacts`），两者任一为真就算在跑 —— 不刷新页面也能更新。
-                          const runNow = item.activity.state === "running" || own?.running === true || isRunning(runFacts, item.sessionId);
-                          const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
+                          const runNow = item.activity.state === "running";
+                          const unread = item.activity.state === "unread" && own?.unread !== false;
                           const peer = peerOfSession(item.sessionId);
                           const failure = item.activity.failure;
                           // 运行耗时**本地现算**（任务 0005 · D4）：服务端只给 `since`，
