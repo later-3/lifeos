@@ -1196,39 +1196,41 @@ for (const [name, width, setup, clipTo, install] of SHOTS) {
 await shotBrowser.close();
 
 
-// —— P1·1.4 三态点契约（run-facts）—— 跨会话运行 / 完成未读 / 失败 三态标记必须**画出来**。
+// —— P1·1.4 三态点契约 —— 跨会话运行 / 完成未读 / 失败 三态标记必须**画出来**。
 //
-// 2026-11-02 重写（Task 0004 · C161 反例）：上一版用 `[data-session-id]` 取行（前端从未渲染这个属性，
-// 实测 0 个）、用 `[title="完成未读"]` 匹配（真实 title 是 "完成未读（查看后消失）"，实测 0 个），
-// 唯一断言数页面上的 `[data-testid]` 个数 —— 于是"点渲染成 0×0"的回归它是绿的。
-// 现在按真实结构断言三点：① 行选择器能用；② 点**存在**；③ 点**有布局盒**（≥6×6 且 offsetParent 非空）。
-// 状态由注入的 SSE 快照决定（route 拦截），不依赖这台机器上恰好有未读/在跑的会话，也不写真实数据。
+// 2026-11-02 重写（Task 0004 · C161 反例）：上一版用 `[data-session-id]` 取行（前端从未渲染这个属性）
+// 与 `[title="完成未读"]` 精确匹配（真实 title 带后缀），两者都命中 0，断言只剩"数元素个数" → 恒绿。
+// 现在断言三点：① 行选择器能用 ② 点**存在** ③ 点**有布局盒**（≥6×6 且 offsetParent 非空）。
+//
+// **2026-11-03 再改（Task 0005）**：注入点从 **SSE 快照** 改成 **sessions 接口的 `activity`**。
+// 为什么必须改：会话行的三态现在只认 `item.activity`（服务端四态 + `row` 补丁维护），
+// 不再读前端 run-facts。继续注入快照的话这条断言会**假通过**（快照不影响点，点永远是 0 个，
+// 而"0 个"又恰好满足"没有 0×0 的点"）——正好是 C161 那个假断言的新形态。
+// 教训写进 `specs/code/testing` 2.15：夹具跟实现走，实现换了数据源，夹具必须跟着换。
 {
   const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   // 焦点上报会改服务端"已读"时间：拦掉不转发，门禁只读不写。
   await runPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
   const ids = (listed.items ?? []).map((item) => item.sessionId).filter((id) => typeof id === "string");
-  check("P1·1.4 三态点：能拿到夹具会话", ids.length >= 2, `${ids.length} 条`);
-  if (ids.length >= 2) {
-    const now = new Date().toISOString();
-    const snapshot = {
-      connectionId: "ui-contract-status-dot", seq: 1, turns: [],
-      running: [{ agentId: "lifeosagent", sessionId: ids[0], startedAt: now }],
-      unread: [{ agentId: "lifeosagent", projectId: "workspace", sessionId: ids[1], completedAt: now }],
-    };
-    await runPage.route("**/api/events", (route) => route.fulfill({
-      status: 200, headers: { "content-type": "text/event-stream" },
-      body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`,
-    }));
-    // 运行态每 30 秒（以及打开页首次）用 /api/runtime 对账，真值说"没在跑"就会把夹具冲掉——
-    // 夹具里也把对账接口对齐，否则测的是"没有运行点"而不是"运行点画不出来"。
-    await runPage.route("**/api/runtime", (route) => route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify({ running: snapshot.running, draining: false }),
-    }));
+  check("P1·1.4 三态点：能拿到夹具会话", ids.length >= 3, `${ids.length} 条`);
+  if (ids.length >= 3) {
+    const at = new Date().toISOString();
+    const plan = new Map([
+      [ids[0], { state: "running", running: { since: at, elapsedMs: 0, phase: "tool", tool: "read" } }],
+      [ids[1], { state: "unread", unread: { since: at } }],
+      [ids[2], { state: "failure", failure: { kind: "auth", detail: "ui-contract fixture", at } }],
+    ]);
+    await runPage.route("**/sessions", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const item of body.items ?? []) {
+        const p = plan.get(item.sessionId);
+        if (p !== undefined) item.activity = p;
+      }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    });
     await runPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
-    // 等会话行渲染（骨架屏 / 空态都不算）
     const rowsReady = await runPage.waitForFunction(
       () => document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length > 0, null, { timeout: 15000 },
     ).then(() => true, () => false);
@@ -1244,13 +1246,15 @@ await shotBrowser.close();
         running: pick('[title="生成中"]'),
         // 未读的 title 带引导语后缀（Task 0015 加），所以按前缀匹配
         unread: pick('[title^="完成未读"]'),
-        failure: pick('[title^="失败："]'),
+        failure: pick('[title^="失败"]'),
         rows: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length,
       };
     });
-    // ① 存在性：注入的快照里各有一个，必须各画出至少一个（漏画 = 缺陷）
+    // ① 存在性：注入的三个状态各必须画出至少一个（漏画 = 缺陷）。
+    //    0 个不等于通过 —— 那是"夹具没生效"，必须在断言里说清，否则又是假绿。
     check("P1·1.4 三态点：运行点已渲染", dots.running.length >= 1, `${dots.running.length} 个`);
     check("P1·1.4 三态点：未读点已渲染", dots.unread.length >= 1, `${dots.unread.length} 个`);
+    check("P1·1.4 三态点：失败点已渲染", dots.failure.length >= 1, `${dots.failure.length} 个`);
     // ② 有布局盒：0×0 等于没画（本次回归的判据）。6×6 是 h-1.5/w-1.5 的设计尺寸。
     const flat = [...dots.running, ...dots.unread, ...dots.failure]
       .filter((dot) => dot.w < 6 || dot.h < 6 || !dot.attached)
@@ -1260,262 +1264,6 @@ await shotBrowser.close();
   }
 }
 
-// —— 图片查看器（用户 2026-10-27：不新开页面，浮层里放大缩小）——
-// 入口用"附件托盘缩略图"，它与消息图片共用同一个组件，且不依赖会话里恰好有图片
-const viewerPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-try {
-  await viewerPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
-  await viewerPage.waitForTimeout(700);
-  await viewerPage.setInputFiles('input[type=file]', join(HERE, "ui-baseline", "picker.png"));
-  await viewerPage.waitForSelector("[data-testid=attachment-thumb-trigger]", { timeout: 8000 });
-  await viewerPage.locator("[data-testid=attachment-thumb-trigger]").click();
-  await viewerPage.waitForSelector("[data-testid=image-viewer]", { timeout: 8000 });
-
-  const dialog = await viewerPage.locator("[data-testid=image-viewer]").evaluate((el) => ({
-    role: el.getAttribute("role"), modal: el.getAttribute("aria-modal"),
-  }));
-  check("图片查看器：页面内打开（role=dialog + aria-modal）", dialog.role === "dialog" && dialog.modal === "true", JSON.stringify(dialog));
-  check("图片查看器：不新开标签页", viewerPage.context().pages().length === 1, `标签页数 ${viewerPage.context().pages().length}`);
-
-  const widthOf = async () => {
-    const box = await viewerPage.locator("[data-testid=image-viewer-img]").boundingBox();
-    return box === null ? 0 : Math.round(box.width);
-  };
-  const baseW = await widthOf();
-  const pct = () => viewerPage.locator("[data-testid=zoom-reset]").innerText();
-  const pct0 = await pct();
-  await viewerPage.locator("[data-testid=zoom-in]").click();
-  await viewerPage.waitForTimeout(350);
-  const zoomW = await widthOf();
-  const pct1 = await pct();
-  await viewerPage.locator("[data-testid=zoom-reset]").click();
-  await viewerPage.waitForTimeout(350);
-  const resetW = await widthOf();
-  const pct2 = await pct();
-  check("图片查看器：放大改变显示尺寸", zoomW > baseW && pct1 !== pct0, `${baseW}→${zoomW}px (${pct0}→${pct1})`);
-  check("图片查看器：重置回到适应窗口", resetW === baseW && pct2 === "100%", `${resetW}px ${pct2}`);
-
-  // 命中区（闸 3）：浮层里的控件也要够大
-  const small = await viewerPage.evaluate(() =>
-    [...document.querySelectorAll("[data-testid=image-viewer] button")]
-      .map((el) => el.getBoundingClientRect())
-      .filter((box) => box.width < 28 || box.height < 28)
-      .map((box) => `${Math.round(box.width)}×${Math.round(box.height)}`));
-  check("图片查看器：控件命中区 ≥ 28", small.length === 0, small.join(" | "));
-
-  await viewerPage.keyboard.press("Escape");
-  await viewerPage.waitForTimeout(350);
-  check("图片查看器：Esc 关闭", (await viewerPage.locator("[data-testid=image-viewer]").count()) === 0, "关闭");
-  const remove = viewerPage.locator('button[aria-label="移除图片"]');
-  if (await remove.count() > 0) await remove.first().click();   // 清掉测试附件，别影响后续状态
-} finally {
-  await viewerPage.close();
-}
-
-
-// ===== 对话区升级（2026-11-02，Task 0014）=====
-// 视觉变更必须有可断言项（process.md 四步：每条视觉改动配检查）。
-// 这里用"计算样式 + 几何"断言，不靠截图基线（基线会把行内排版遮掉，案例 C152）。
-{
-  const page2 = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
-  try {
-    await page2.goto(ENTRY_URL, { waitUntil: "domcontentloaded" });
-    await page2.waitForTimeout(2000);
-
-    // 1) 头像 + 名字 + 时间：两条侧都要有头部，且都带名字与时间
-    const headerInfo = await page2.evaluate(() => {
-      const users = [...document.querySelectorAll('[data-testid="message"][data-role="user"] [data-testid="message-header"]')];
-      const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"] [data-testid="message-header"]')];
-      const clock = /\d{2}:\d{2}/;
-      return {
-        userCount: users.length,
-        assistantCount: asst.length,
-        userHasClock: users.every((el) => clock.test(el.textContent ?? "")),
-        assistantHasClock: asst.every((el) => clock.test(el.textContent ?? "")),
-        userHasAvatar: users.every((el) => el.querySelector("img,span") !== null),
-        assistantHasAvatar: asst.every((el) => el.querySelector("img,span") !== null),
-      };
-    });
-    check("对话区：两侧消息都有头像/名字/时间",
-      headerInfo.userCount > 0 && headerInfo.assistantCount > 0 && headerInfo.userHasClock && headerInfo.assistantHasClock
-      && headerInfo.userHasAvatar && headerInfo.assistantHasAvatar,
-      JSON.stringify(headerInfo));
-
-    // 2) 左右分侧：用户**整块**靠右（容器 flex-end），头部**内部顺序两边一致**
-    //    Task 0015 修订：原来用户侧用 flex-row-reverse 反转，视觉上变成「时间 名字 头像」——
-    //    用户指出读起来反了。现在靠 justify-end 让整块靠右，内部仍是「头像 名字 时间」。
-    const sides = await page2.evaluate(() => {
-      const user = document.querySelector('[data-testid="message"][data-role="user"]');
-      const asst = document.querySelector('[data-testid="message"][data-role="assistant"]');
-      const header = (el) => el?.querySelector('[data-testid="message-header"]');
-      const kids = (el) => {
-        const h = header(el);
-        if (h === null || h === undefined) return null;
-        return [...h.children].map((c) => (c.textContent ?? "").trim());
-      };
-      return {
-        userAlign: user === null ? null : getComputedStyle(user).alignItems,
-        userHeaderDir: header(user) === null || header(user) === undefined ? null : getComputedStyle(header(user)).flexDirection,
-        assistantHeaderDir: header(asst) === null || header(asst) === undefined ? null : getComputedStyle(header(asst)).flexDirection,
-        userKids: kids(user),
-        assistantKids: kids(asst),
-      };
-    });
-    check("对话区：用户整块靠右、助手靠左",
-      sides.userAlign === "flex-end" && sides.userHeaderDir === "row" && sides.assistantHeaderDir === "row",
-      JSON.stringify(sides));
-    // 顺序判据用**形状**而不是内容：两边都是"3 段、第 1 段 1 个字（头像首字母）、最后一段是 HH:MM"
-    const shape = (kids) => (kids === null || kids.length !== 3
-      ? null
-      : { first: kids[0].length, clock: /^\d{2}:\d{2}$/.test(kids[2]) });
-    check("对话区：头部顺序两边一致 = 头像 → 名字 → 时间（不随分侧反转）",
-      JSON.stringify(shape(sides.userKids)) === JSON.stringify(shape(sides.assistantKids)) && shape(sides.userKids)?.clock === true,
-      JSON.stringify({ user: sides.userKids, assistant: sides.assistantKids }));
-
-    // 3) 过程条：轻量（无边框/无背景块）、**与正文左右边缘对齐**、文案只有统计没有摘要措辞
-    //    2026-11-02 用户拍板改口：原先"不拉满、跟正文同档 max-w-bubble(720)"，
-    //    在列宽 860 时右侧空出 140px 阶梯；现在助手侧统一跟随对话列宽。
-    const bar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
-      if (el === null) return null;
-      const btn = el.querySelector("button");
-      const cs = getComputedStyle(el);
-      const btnCs = btn === null ? null : getComputedStyle(btn);
-      const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
-      const box = (node) => { const b = node.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; };
-      // 对齐基准取**助手正文**（助手侧不改的那条，它一直跟随列宽）
-      const text = document.querySelector('[data-testid="message"][data-role="assistant"] [data-testid="message-text"]');
-      const column = document.querySelector('[data-shot-mask="chat-body"]');
-      return {
-        summary,
-        borderWidth: cs.borderTopWidth,
-        background: cs.backgroundColor,
-        buttonBackground: btnCs === null ? null : btnCs.backgroundColor,
-        bar: box(el),
-        text: text === null ? null : box(text),
-        column: column === null ? null : box(column),
-        hasExpand: (btn?.getAttribute("aria-expanded") ?? null) !== null,
-      };
-    });
-    const lightweight = bar === null || (bar.borderWidth === "0px" && (bar.buttonBackground === "rgba(0, 0, 0, 0)" || bar.buttonBackground === "transparent"));
-    // 对齐：左/右边缘与助手正文一致（容 1px 四舍五入）
-    const aligned = bar === null || bar.text === null
-      || (Math.abs(bar.bar.left - bar.text.left) <= 1 && Math.abs(bar.bar.right - bar.text.right) <= 1);
-    check("过程条：极轻量（无边框/无底色）且与正文左右对齐", lightweight && aligned && (bar === null || bar.hasExpand),
-      JSON.stringify(bar));
-    check("过程条：只数事实，不写摘要措辞",
-      bar === null || !/总结|摘要|概要|大意/.test(bar.summary),
-      bar?.summary ?? "(本次会话无过程条)");
-    // 过程条是统计行，不是消息块：不得占用 data-message-kind（那个属性的语义是"块背景可区分"）
-    const kindOfBar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
-      return el === null ? "none" : String(el.getAttribute("data-message-kind"));
-    });
-    check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);
-
-    // 3b) 用户气泡：内容宽自适应 + **相对量上限** min(90%, 56ch)（用户 2026-11-02 拍板）
-    //    - 不许回到写死像素（720 那种第二宽度来源）；
-    //    - 长文本不得撑满对话列（≤ 列宽 × 92%，留出右缘可辨的缩进）；
-    //    - 短文本不拉满（内容宽 = w-fit 行为）。
-    const bubbleProbe = await page2.evaluate(() => {
-      const bubble = document.querySelector('[data-testid="message"][data-role="user"] [data-testid="message-text"]');
-      const column = document.querySelector('[data-shot-mask="chat-body"]');
-      if (bubble === null || column === null) return null;
-      const md = bubble.querySelector(".md-body") ?? bubble.firstElementChild ?? bubble;
-      const original = md.innerHTML;
-      // 必须用**同一个气泡实例**量短/长两态：夹具里那条用户消息本身可能就很长（它不是"短"的样本）
-      md.textContent = "短";
-      const short = Math.round(bubble.getBoundingClientRect().width);
-      md.textContent = "长消息宽度探针".repeat(20);
-      const long = Math.round(bubble.getBoundingClientRect().width);
-      md.innerHTML = original;
-      return {
-        short,
-        long,
-        column: Math.round(column.getBoundingClientRect().width),
-        maxWidth: getComputedStyle(bubble).maxWidth,
-        /** 短消息必须按内容宽（严格窄于上限）；否则就是“不跟随文字长度” */
-        shortFits: short < long,
-      };
-    });
-    const relative = bubbleProbe === null || !/^\d+(\.\d+)?px$/.test(bubbleProbe.maxWidth);
-    const capped = bubbleProbe === null || bubbleProbe.long <= bubbleProbe.column * 0.92;
-    check("用户气泡：最大宽度是相对量（比例 + ch），不是写死像素", relative,
-      JSON.stringify(bubbleProbe));
-    check("用户气泡：长文本不撑满对话列、短文本按内容宽", capped && (bubbleProbe === null || bubbleProbe.shortFits),
-      JSON.stringify(bubbleProbe));
-
-    // 4) 两个滑块：存在、默认值正确、拖到底会改变 --text-scale 与阅读宽度
-    // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）
-    await page2.evaluate(() => {
-      document.querySelector('button[aria-label="显示设置"]')?.click();
-    });
-    await page2.waitForTimeout(250);
-    const sliders = await page2.evaluate(() => {
-      const panel = document.querySelector('[data-testid="display-prefs"]');
-      if (panel === null) return null;
-      const ranges = [...panel.querySelectorAll("input[type=range]")].map((input) => ({ id: input.id, value: input.value }));
-      return { ranges };
-    });
-    check("显示设置：两个滑块存在（宽度 + 字号）",
-      sliders !== null && sliders.ranges.length === 2 && sliders.ranges.some((r) => r.id === "width") && sliders.ranges.some((r) => r.id === "font"),
-      JSON.stringify(sliders));
-
-    const applied = await page2.evaluate(() => {
-      const panel = document.querySelector('[data-testid="display-prefs"]');
-      if (panel === null) return "no-panel";
-      const setVal = (el, v) => {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-        setter.call(el, String(v));
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-      };
-      setVal(panel.querySelector("#width"), 0);
-      setVal(panel.querySelector("#font"), 100);
-      return "set";
-    });
-    await page2.waitForTimeout(400);
-    const effect = await page2.evaluate(() => {
-      const cs = getComputedStyle(document.documentElement);
-      const body = document.querySelector('[data-testid="message-text"]');
-      return {
-        readingWidth: cs.getPropertyValue("--container-reading-width").trim(),
-        textScale: cs.getPropertyValue("--text-scale").trim(),
-        bodyFont: body === null ? null : parseFloat(getComputedStyle(body).fontSize),
-      };
-    });
-    const focusWidth = Number.parseInt(effect.readingWidth, 10);
-    check("显示设置：滑块真生效（专注变窄 + 字号放大）",
-      applied === "set" && Number.isFinite(focusWidth) && focusWidth < 860 && Number.parseFloat(effect.textScale) > 1.2,
-      `${applied} ${JSON.stringify(effect)}`);
-
-    // 5) 恢复默认（不把测试改过的偏好留在本地）
-    await page2.evaluate(() => {
-      const panel = document.querySelector('[data-testid="display-prefs"]');
-      const reset = panel === null ? null : [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("恢复默认"));
-      if (reset !== null && reset !== undefined) reset.click();
-    });
-    await page2.waitForTimeout(200);
-    const restored = await page2.evaluate(() => ({
-      readingWidth: getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim(),
-      textScale: getComputedStyle(document.documentElement).getPropertyValue("--text-scale").trim(),
-    }));
-    check("显示设置：恢复默认回到 860px / 100%",
-      restored.readingWidth === "860px" && parseFloat(restored.textScale) === 1,
-      JSON.stringify(restored));
-  } finally {
-    await page2.close();
-  }
-}
-
-await browser.close();
-
-// 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效"];
-const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
-check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
-  missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
-
-const failed = results.filter((item) => !item.ok);
 // —— P1·1.5 聚合数量契约（Task 0005）：项目行 / 助手行必须是**三个数量**，不是"有/无" ——
 //
 // 改之前：运行 = 一个呼吸点（几个在跑都一样），助手层数字是"项目个数"、项目层是"会话个数"。
