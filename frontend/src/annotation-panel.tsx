@@ -13,13 +13,17 @@
  */
 
 import type { Annotation } from "./annotations.ts";
-import { markById } from "./marks.ts";
+import { useMemo } from "react";
+import { annotationLine } from "./annotation-message.ts";
 
 export type AnnotationPanelProps = {
   /** 全部批注（已由调用方排好序：消息顺序 + 段内偏移）。 */
   annotations: readonly Annotation[];
-  /** messageId → 它在对话里的序号（1 起），用于显示"第 N 条回复"。 */
-  messageOrdinal: (messageId: string) => number | undefined;
+  /**
+   * 消息 id 的先后顺序（发送时也用它排序）。
+   * 面板与真正发出去的内容**必须是同一套排序**，否则"看到的"和"发出去的"会不一致。
+   */
+  messageOrder: readonly string[];
   /** 是否折叠。 */
   folded: boolean;
   onToggleFold: () => void;
@@ -37,9 +41,38 @@ export type AnnotationPanelProps = {
 };
 
 export function AnnotationPanel({
-  annotations, messageOrdinal, folded, onToggleFold, onRowClick, pinnedOf, onRemove, onClearAll,
+  annotations, messageOrder, folded, onToggleFold, onRowClick, pinnedOf, onRemove, onClearAll,
 }: AnnotationPanelProps) {
   const count = annotations.length;
+
+  /**
+   * 每行展示"**它会发送成什么样**"（用户 2026-11-03：表格本来就是表格，
+   * 不要把原始字段再并排摆一遍，要展示转换后的信息）。
+   *
+   * 直接复用 `annotationLine()`——**面板与发送走同一个函数**，
+   * 这样"表里看到的"和"发出去的"物理上不可能不一致。
+   * 序号按实际发出的行排（只有功能标记的行不占号，它们不发）。
+   */
+  const rows = useMemo(() => {
+    const rank = (id: string): number => {
+      const at = messageOrder.indexOf(id);
+      return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+    };
+    const sorted = [...annotations].sort((a, b) => {
+      const byMessage = rank(a.messageId) - rank(b.messageId);
+      if (byMessage !== 0) return byMessage;
+      if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
+      return a.start - b.start;
+    });
+    let sent = 0;
+    return sorted.map((anno) => {
+      const line = annotationLine(anno, sent + 1);
+      // 只有功能标记：不占用发送序号（它不进消息），但仍要显示以便删除
+      if (line === null) return { anno, line: null, sendable: false };
+      sent += 1;
+      return { anno, line, sendable: true };
+    });
+  }, [annotations, messageOrder]);
 
   return (
     <section
@@ -88,68 +121,43 @@ export function AnnotationPanel({
         <div id="annotation-panel-rows" data-testid="annotation-panel-rows"
           className="overflow-auto motion-safe:animate-anno-panel"
           style={{ maxHeight: "var(--container-anno-panel)" }}>
-          {count === 0 ? (
-            <p data-testid="annotation-panel-empty" className="px-3 py-3.5 text-center text-meta text-ink-500">
-              还没有批注。在正文里拖选一段文字试试。
-            </p>
-          ) : (
             <table className="w-full border-collapse text-meta">
               <caption data-no-clip-check className="sr-only">
-                批注列表：每条包含被批注的原文、你写的话、语气，以及定位与删除按钮
+                批注列表：每条显示它会发送成什么样，单击一行可跳到原文并钉住
               </caption>
               <thead>
                 <tr className="text-micro uppercase tracking-wide text-ink-500">
-                  <th className="w-8 px-2.5 py-1.5 text-left font-semibold" />
-                  <th className="px-2.5 py-1.5 text-left font-semibold">被批注的原文</th>
-                  <th className="px-2.5 py-1.5 text-left font-semibold">用户的话</th>
-                  <th className="w-32 px-2.5 py-1.5 text-left font-semibold">语气</th>
-                  <th className="w-14 px-2.5 py-1.5" />
+                  <th className="px-2.5 py-1.5 text-left font-semibold">发送时的样子</th>
+                  <th className="w-10 px-1 py-1.5" />
                 </tr>
               </thead>
               <tbody>
-                {annotations.map((anno, index) => {
-                  const ordinal = messageOrdinal(anno.messageId);
+                {rows.map((row) => {
+                  const { anno } = row;
                   const pinned = pinnedOf(anno.id);
                   return (
                     <tr key={anno.id} data-testid="annotation-row" data-anno={anno.id}
                       data-pinned={pinned ? "true" : "false"}
+                      data-sendable={row.sendable ? "true" : "false"}
                       aria-selected={pinned}
                       onClick={() => onRowClick(anno.id)}
                       className={`cursor-pointer border-t border-line align-top hover:bg-hover ${
                         pinned ? "bg-accent-soft" : ""
                       }`}>
-                      <td className="px-2.5 py-1.5 tabular-nums text-ink-500">{index + 1}.</td>
-                      <td className="px-2.5 py-1.5 text-ink-700">
-                        <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
-                        {ordinal !== undefined && (
-                          <span className="mt-0.5 block text-micro text-ink-500">第 {ordinal} 条回复</span>
+                      <td className="px-2.5 py-1.5">
+                        {row.line === null ? (
+                          // 只有功能标记：不发给 Agent，但用户要看得见、删得掉
+                          <span className="flex flex-wrap items-baseline gap-1.5">
+                            <span className="line-clamp-2 border-l-2 border-line pl-1.5 text-ink-700">「{anno.quote}」</span>
+                            <span className="text-micro text-ink-500">仅分类，不发送</span>
+                          </span>
+                        ) : (
+                          <span data-testid="annotation-line" className="block whitespace-pre-wrap font-mono text-micro leading-relaxed text-ink-900">
+                            {row.line}
+                          </span>
                         )}
                       </td>
-                      <td className="px-2.5 py-1.5">
-                        {anno.note === ""
-                          ? <span className="italic text-ink-500">（没写话）</span>
-                          : <span className="whitespace-pre-wrap text-ink-900">{anno.note}</span>}
-                      </td>
-                      <td className="px-2.5 py-1.5">
-                        <span className="flex flex-wrap gap-1">
-                          {anno.marks.map((id) => {
-                            const mark = markById(id);
-                            if (mark === undefined) return null;
-                            return (
-                              <span key={id} data-mark={id}
-                                aria-label={`语气：${mark.label}`}
-                                className="rounded-full px-1.5 py-px text-micro font-semibold"
-                                style={{
-                                  background: `var(--color-anno-${mark.tone}-soft)`,
-                                  color: `var(--color-anno-${mark.tone})`,
-                                }}>
-                                {mark.label}
-                              </span>
-                            );
-                          })}
-                        </span>
-                      </td>
-                      <td className="px-2.5 py-1.5 text-right">
+                      <td className="px-1 py-1.5 text-right">
                         <button type="button" data-testid="annotation-remove" data-anno={anno.id}
                           onClick={(event) => { event.stopPropagation(); onRemove(anno.id); }}
                           aria-label="删除这条批注"
@@ -162,7 +170,6 @@ export function AnnotationPanel({
                 })}
               </tbody>
             </table>
-          )}
         </div>
       )}
     </section>

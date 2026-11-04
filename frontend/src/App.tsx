@@ -357,13 +357,7 @@ export default function App() {
     });
   }, [anno.annotations, messages]);
 
-  /** messageId → 它在对话里的序号（1 起，用户/助手消息一起数，与 demo 的"第 N 条回复"一致）。 */
-  const messageOrdinal = useMemo(() => {
-    const map = new Map<string, number>();
-    messages.forEach((m, index) => { if (m.id !== undefined) map.set(m.id, index + 1); });
-    return map;
-  }, [messages]);
-
+  
   /**
    * 定位：滚到被批注文字处，并展开那条批注的框。
    * 用 DOM 查询 + scrollIntoView；展开通过 store 的 open()（渲染层会按 id 打开）。
@@ -2305,15 +2299,17 @@ export default function App() {
                 <div className="border-b border-line p-2">
                   <AnnotationPanel
                     annotations={annoOrdered}
-                    messageOrdinal={(id) => messageOrdinal.get(id)}
+                    messageOrder={messages.map((m) => m.id).filter((id): id is string => id !== undefined)}
                     folded={annoPanelFolded}
                     onToggleFold={() => setAnnoPanelFolded((v) => !v)}
                     onRowClick={onAnnoRowClick}
                     pinnedOf={annoPinnedOf}
                     onRemove={annoActions.remove}
                     onClearAll={() => {
-                      // 清空全部：与"删除一条"走同一条路径（数据 + 高亮 + 面板一起消失）
-                      for (const a of anno.annotations) anno.remove(a.id);
+                      // 必须走 annoActions.remove（会落盘），不能直接调 anno.remove（只改内存）。
+                      // 2026-11-04 用户追问"删除都测了吗"时发现：清空全部原本调的是内存版，
+                      // 刷新后批注全回来了。单条删除走的是持久化版，所以那条没暴露。
+                      for (const a of anno.annotations) annoActions.remove(a.id);
                     }}
                   />
                 </div>
