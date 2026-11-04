@@ -534,6 +534,8 @@ export default function App() {
   /** 每会话"上次是否在跑"（只在翻转时改聚合数字，避免节流重复补丁导致重复加）。 */
   const runningRef = useRef(new Map<string, boolean>());
   const unreadRef = useRef(new Map<string, boolean>());
+  /** 每会话当前计进了哪一格（查看时才知道该减 unreadDone 还是 unreadError）。 */
+  const unreadSlotRef = useRef(new Map<string, "unreadDone" | "unreadError">());
   const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>>([]);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
@@ -1318,6 +1320,18 @@ export default function App() {
         bumpAggregate(agentId, projectId, "running", nowRunning ? 1 : -1);
       }
     }
+    // **查看**（unread: null）：把对应的未读数字减掉。
+    // 用户实测：「coder 下面已完成的那个 1，始终不消失」——
+    // 服务端 markSessionViewed() 会发 {unread: null} 补丁，但前端只清了行的 activity，
+    // 没动 agentAggregate，所以徽标上的数字一直留着。
+    if (patch.unread === null) {
+      const known = unreadSlotRef.current.get(sessionId);
+      if (known !== undefined) {
+        unreadSlotRef.current.delete(sessionId);
+        bumpAggregate(agentId, projectId, known, -1);
+      }
+    }
+
     // 终态补丁（done/error）带 unread：这一格 +1。与 running 一样只在翻转时改。
     // 注意服务端 `pushTerminal` 会在同一条补丁里带 `running: null` + `unread`，
     // 所以上面的 running 减一与这里的 unread 加一会一起发生 —— 这正是要的结果。
@@ -1328,7 +1342,9 @@ export default function App() {
         // 服务端已经在快照里算过这条的话，不能再加一次 —— 但快照之后才发生的事件
         // 一定还没被算过（聚合是快照那一刻的切片），所以这里 +1 是对的。
         // 归哪一格由服务端的 `was`/终态补丁的 failure 决定：有 failure 就是 unreadError。
-        bumpAggregate(agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone", 1);
+        const slot = patch.failure !== undefined && patch.failure !== null ? "unreadError" as const : "unreadDone" as const;
+        unreadSlotRef.current.set(sessionId, slot);
+        bumpAggregate(agentId, projectId, slot, 1);
       }
     }
   }

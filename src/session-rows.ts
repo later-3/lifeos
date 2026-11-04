@@ -310,7 +310,9 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   const tasks = await taskIndexOf(agentId, projectId);
   const running = new Map(runningOf(agentId).map((entry) => [entry.sessionId, entry] as const));
   const unread = new Map(
-    sessionViewsOf().unread().map((item) => [`${item.agentId}\u0000${item.sessionId}`, item.completedAt] as const),
+    // 未读带 `state`：失败与成功分别判断（Task 0005 · 2026-11-04）。
+    // 绝不能只用 `completedAt` —— 一个会话可能失败多次后成功，那样失败会被成功覆盖。
+    sessionViewsOf().unread().map((item) => [`${item.agentId}\u0000${item.sessionId}`, item] as const),
   );
   const peerCache = new Map<string, RowPeer>();
 
@@ -346,7 +348,7 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   const rows: SessionRow[] = [];
   for (const item of scanned) {
     const runningEntry = running.get(item.sessionId);
-    const unreadSince = unread.get(`${agentId}\u0000${item.sessionId}`);
+    const unreadItem = unread.get(`${agentId}\u0000${item.sessionId}`);
     rows.push({
       sessionId: item.sessionId,
       title: { raw: item.rawTitle, display: displayTitleOf(item.rawTitle) },
@@ -363,8 +365,14 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
       },
       activity: rowActivityOf({
         ...(runningEntry !== undefined ? { runningSince: runningEntry.startedAt } : {}),
-        ...(unreadSince !== undefined ? { unreadSince } : {}),
-        ...(item.failure !== undefined ? { failure: { kind: item.failure.kind, detail: item.failure.detail, ...(item.failure.at !== undefined ? { at: item.failure.at } : {}) } } : {}),
+        ...(unreadItem !== undefined ? { unreadSince: unreadItem.completedAt } : {}),
+        // 失败：**索引优先**。索引里"有未看的失败"时，即使会话文件最后一条是成功（`item.failure` 为空），
+        // 也要显示红点 —— 否则数字说有一条失败、行上却没有，用户会找不到它。
+        ...(item.failure !== undefined
+          ? { failure: { kind: item.failure.kind, detail: item.failure.detail, ...(item.failure.at !== undefined ? { at: item.failure.at } : {}) } }
+          : unreadItem?.state === "error"
+            ? { failure: { kind: (unreadItem.failureKind ?? "unknown") as FailureKind, detail: unreadItem.failureDetail ?? "" } }
+            : {}),
         now,
       }),
       isDefault: item.sessionId === options.defaultSessionId,

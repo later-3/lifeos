@@ -142,10 +142,9 @@ function slotOf(lastState: "done" | "error" | undefined): "unreadDone" | "unread
  */
 export function aggregateSlotOf(agentId: string, sessionId: string): "running" | "unreadDone" | "unreadError" | undefined {
   if (isRunning(agentId, sessionId)) return "running";
-  const key = `${agentId}\u0000${sessionId}`;
-  if (!sessionViewsOf().unread().some((item) => `${item.agentId}\u0000${item.sessionId}` === key)) return undefined;
-  const outcome = sessionViewsOf().outcomeOf(agentId, sessionId);
-  return slotOf(outcome?.state);
+  const item = sessionViewsOf().unread().find((u) => u.agentId === agentId && u.sessionId === sessionId);
+  if (item === undefined) return undefined;
+  return item.state === "error" ? "unreadError" : item.state === "done" ? "unreadDone" : undefined;
 }
 
 export function aggregateStatus(): AgentProjectCount[] {
@@ -167,14 +166,13 @@ export function aggregateStatus(): AgentProjectCount[] {
     bucketOf(entry.agentId, entry.projectId).running += 1;
   }
 
-  // ②③ 未读终态：**只看没看过的**。两种结果的规则完全一样 —— 看过就不计。
-  const unreadKeys = new Set(sessionViewsOf().unread().map((item) => `${item.agentId}\u0000${item.sessionId}`));
-  for (const item of sessionViewsOf().states()) {
+  // ②③ 未读：**直接用 unread() 的结果**（它已经把"失败"与"成功"分别判过已读，
+  // 所以"失败后被成功覆盖"的会话仍会以 error 出现 —— 用户实测要求的行为）。
+  for (const item of sessionViewsOf().unread()) {
     const key = `${item.agentId}\u0000${item.sessionId}`;
     if (runningKeys.has(key)) continue;        // 在跑的不重复计（四态互斥）
-    if (!unreadKeys.has(key)) continue;        // 已看过 → 不计（这就是"看过就消失"）
-    const slot = slotOf(item.lastState);
-    if (slot === undefined) continue;          // 没有 lastState 的老记录不计：不知道它怎么结束的，就不编一个
+    const slot = item.state === "error" ? "unreadError" : item.state === "done" ? "unreadDone" : undefined;
+    if (slot === undefined) continue;          // 不知道它怎么结束的，就不编一个
     bucketOf(item.agentId, item.projectId)[slot] += 1;
   }
   return [...buckets.values()].filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0);
@@ -652,12 +650,14 @@ export function markSessionViewed(agentId: string, sessionId: string, at: string
  * 扫 69 个文件实测 156ms（经 sessionRowsOf 全链路 532ms），而这一步本来就是终态发生时，
  * 信息在手（`classifyFailure` 的返回值），零额外成本。
  */
-function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined, failureKind?: FailureKind): void {
+function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined, failureKind?: FailureKind, failureDetail?: string): void {
   const at = new Date().toISOString();
   // 被打断不算"完成"（既有语义）：不写未读、也不写终态，避免把一个中断的回合报成 done/error
   if (!aborted) {
     sessionViewsOf().markCompleted(agentId, sessionId, at, projectId,
-      failureKind !== undefined ? { state: "error", failureKind } : { state: "done" });
+      failureKind !== undefined
+        ? { state: "error", failureKind, ...(failureDetail !== undefined ? { failureDetail } : {}) }
+        : { state: "done" });
   }
   if (isFocusedVisible(agentId, sessionId)) markSessionViewed(agentId, sessionId, at, projectId);
 }
@@ -828,7 +828,7 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     finishTurn(agentId, sessionId, turnId, "error");
     // 先算出分类：终态索引要它（recordCompletion），行补丁也要它——只算一次，两处用同一个值
     const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
-    recordCompletion(agentId, sessionId, false, projectIdForLog, kind);
+    recordCompletion(agentId, sessionId, false, projectIdForLog, kind, message);
     // 失败也要回流（发起方要知道它失败了、为什么）——同一套去重与投递确认。
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
@@ -1325,16 +1325,25 @@ function imageSizesOf(messages: readonly unknown[]): number[] {
  *
  * 找不到（文件删了 / 没有 assistant 消息）→ undefined，不编造。
  */
-async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise<TurnOutcome | undefined> {
+async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise<
+  { outcome?: TurnOutcome; lastFailureAt?: string; lastFailureKind?: string } | undefined
+> {
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return undefined;
   const text = await readFile(found.path, "utf8").catch(() => undefined);
   if (text === undefined) return undefined;
   let last: { stopReason?: string; errorMessage?: string; hasContent: boolean } | undefined;
+  // 失败要**独立**记最后一次：会话可能失败多次后成功，只留"最后一条 assistant"会把失败全丢掉。
+  // （用户实测：某会话 08:32/09:19/09:34 失败、09:39 成功 → 界面上看不到任何失败。）
+  let lastFailureAt: string | undefined;
+  let lastFailureKind: string | undefined;
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     try {
-      const entry = JSON.parse(line) as { type?: string; message?: { role?: string; stopReason?: unknown; errorMessage?: unknown; content?: unknown } };
+      const entry = JSON.parse(line) as {
+        type?: string; timestamp?: string;
+        message?: { role?: string; stopReason?: unknown; errorMessage?: unknown; content?: unknown };
+      };
       if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
       const raw = entry.message;
       const content = Array.isArray(raw.content) ? raw.content : [];
@@ -1347,13 +1356,20 @@ async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise
         ...(typeof raw.errorMessage === "string" && raw.errorMessage.trim() !== "" ? { errorMessage: raw.errorMessage.trim() } : {}),
         hasContent,
       };
+      if (raw.stopReason === "error") {
+        const kind = classifyFailure(last);
+        if (kind !== undefined && kind !== "aborted" && typeof entry.timestamp === "string") {
+          lastFailureAt = entry.timestamp;
+          lastFailureKind = kind;
+        }
+      }
     } catch { /* 坏行跳过 */ }
   }
   if (last === undefined) return undefined;
   const kind = classifyFailure(last);
   // 被用户打断（aborted）不算"完成"，也不算"异常结束"：实时路径同样不给它记终态。
-  if (kind === "aborted") return undefined;
-  return kind === undefined ? { state: "done" } : { state: "error", failureKind: kind };
+  const outcome = kind === "aborted" ? undefined : kind === undefined ? { state: "done" as const } : { state: "error" as const, failureKind: kind };
+  return { ...(outcome !== undefined ? { outcome } : {}), ...(lastFailureAt !== undefined ? { lastFailureAt } : {}), ...(lastFailureKind !== undefined ? { lastFailureKind } : {}) };
 }
 
 /** 每个家目录只清理一次孤儿未读（启动后第一次建立事件流前）。 */

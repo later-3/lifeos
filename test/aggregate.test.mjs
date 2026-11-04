@@ -149,3 +149,60 @@ test("T89b 每条会话的 slot 汇总起来，必须等于 aggregateStatus 的�
   assert.deepEqual(counted, { unreadDone: agg.unreadDone, unreadError: agg.unreadError }, "逐条判定与聚合总数必须一致");
   assert.deepEqual(counted, { unreadDone: 2, unreadError: 1 });
 });
+
+// —— T90 先失败、后成功：失败**不能**被成功抹掉（Task 0005 · 2026-11-04 用户实测）——
+// 现场：coder 的某个会话 08:32 失败、09:19 失败、09:34 失败（额度用尽）、09:39 成功。
+// 用户看到过那两次失败提示，但助手行的失败数字是 0 —— 因为 lastState 被成功覆盖了。
+test("T90 失败两次后成功：只要没看过失败，失败数仍为 1（成功不抹掉失败）", async () => {
+  const views = sessionViewsOf();
+  const A = "fail-then-ok";
+  const t1 = "2026-11-04T08:32:31.000Z";
+  const t2 = "2026-11-04T09:34:54.000Z";
+  const t3 = "2026-11-04T09:39:31.000Z";
+
+  views.markCompleted(A, "s1", t1, "p1", { state: "error", failureKind: "network" });
+  views.markCompleted(A, "s1", t2, "p1", { state: "error", failureKind: "server" });
+  views.markCompleted(A, "s1", t3, "p1", { state: "done" });   // 后来成功了
+
+  const a = of(A);
+  assert.equal(a.unreadError, 1, "两次失败（都没看过）→ 必须仍有 1 条失败待查看");
+  assert.equal(a.unreadDone, 0, "后来那次成功也被算进来吗？不 —— 见下条断言");
+
+  // unread() 也要能报出"这是失败"，否则前端进不了 unreadError
+  const u = views.unread().find((x) => x.agentId === A);
+  assert.equal(u?.state, "error", "失败优先于成功（更需要处理）");
+});
+
+test("T90b 看过之后失败清除；此后再成功，只算成功", async () => {
+  const views = sessionViewsOf();
+  const A = "fail-then-ok-viewed";
+  views.markCompleted(A, "s1", "2026-11-04T08:32:31.000Z", "p1", { state: "error", failureKind: "network" });
+  assert.equal(of(A).unreadError, 1);
+  views.markViewed(A, "s1", "2026-11-04T08:35:00.000Z");
+  assert.equal(of(A), undefined, "看过了 → 失败消失");
+
+  views.markCompleted(A, "s1", "2026-11-04T09:39:31.000Z", "p1", { state: "done" });
+  assert.deepEqual({ e: of(A).unreadError, d: of(A).unreadDone }, { e: 0, d: 1 }, "之后成功 → 只有完成待看");
+});
+
+test("T90c 成功之后再失败：立刻变成失败待查看，且清掉旧的已看标记", async () => {
+  const views = sessionViewsOf();
+  const A = "ok-then-fail";
+  views.markCompleted(A, "s1", "2026-11-04T08:00:00.000Z", "p1", { state: "done" });
+  views.markViewed(A, "s1", "2026-11-04T08:01:00.000Z");
+  assert.equal(of(A), undefined);
+
+  views.markCompleted(A, "s1", "2026-11-04T09:00:00.000Z", "p1", { state: "error", failureKind: "auth" });
+  assert.equal(of(A).unreadError, 1, "新的失败要重新算未读");
+  assert.equal(views.unread().find((x) => x.agentId === A)?.state, "error");
+});
+
+test("T90d 失败与成功各自独立计数：不同会话互不影响", async () => {
+  const views = sessionViewsOf();
+  const A = "mix";
+  views.markCompleted(A, "f1", "2026-11-04T08:00:00.000Z", "p1", { state: "error", failureKind: "auth" });
+  views.markCompleted(A, "d1", "2026-11-04T08:10:00.000Z", "p1", { state: "done" });
+  assert.deepEqual({ e: of(A).unreadError, d: of(A).unreadDone }, { e: 1, d: 1 });
+  views.markViewed(A, "f1", "2026-11-04T08:20:00.000Z");
+  assert.deepEqual({ e: of(A).unreadError, d: of(A).unreadDone }, { e: 0, d: 1 }, "看掉失败，成功不受影响");
+});

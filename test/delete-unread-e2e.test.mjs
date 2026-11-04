@@ -31,6 +31,29 @@ async function snapshot(base) {
   } finally { clearTimeout(timer); }
 }
 
+/**
+ * 读快照**但保持连接打开**：`markViewed` 只在 focus 上报时发生，
+ * 而 focus 需要 connectionId 对应的连接仍然存活（实测：cancel 之后再 PUT 会 404）。
+ */
+async function snapshotKeepOpen(base) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  const res = await fetch(`${base}/api/events`, { signal: ctrl.signal });
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (!buf.includes("\n\n")) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+  }
+  const snap = JSON.parse(buf.split("\n").find((l) => l.startsWith("data:")).slice(5));
+  return {
+    snap,
+    close: () => { reader.cancel().catch(() => {}); clearTimeout(timer); ctrl.abort(); },
+  };
+}
+
 /** 造一条"已完成未读"的会话：写文件 + 写索引，与真实链路同形。 */
 async function makeUnreadSession(home, agentId, sessionId, outcome) {
   const dir = join(home, "agents", agentId, "projects", "workspace", "sessions");
@@ -119,5 +142,49 @@ test("E2E 删除的会话如果**已经看过**，聚合数字不该变（它本
     await fetch(`${base}/api/agents/${AID}/sessions/${sid}`, { method: "DELETE" });
     const after = await snapshot(base);
     assert.equal(after.aggregate.find((x) => x.agentId === AID)?.unreadDone ?? 0, 0, "删它不该把数字减成负数");
+  } finally { server.close(); }
+});
+
+// —— 查看后数字必须减少（Task 0005 · 2026-11-04 用户实测「1 始终不消失」）——
+// 服务端 markSessionViewed() 会发 {unread: null} 补丁；
+// 前端此前只清了行的 activity，没动 agentAggregate → 徽标数字一直留着。
+test("E2E 查看会话后，快照里的未读数必须减少（查看会清未读）", async () => {
+  const { server, base, home } = await start();
+  const AID = "lifeosagent";
+  try {
+    const sid = await makeUnreadSession(home, AID, "view-me-1", "done");
+    const conn = await snapshotKeepOpen(base);
+    const before = conn.snap;
+    assert.equal(before.aggregate.find((x) => x.agentId === AID)?.unreadDone, 1, "看之前：1 条未读完成");
+
+    // 真实链路：在同一连接上报焦点（服务端会 markViewed 并推 {unread:null} 补丁）
+    const put = await fetch(`${base}/api/events/focus`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionId: before.connectionId, agentId: AID, sessionId: sid, visible: true }),
+    });
+    assert.equal(put.status, 200);
+    conn.close();
+
+    const after = await snapshot(base);
+    assert.equal(after.aggregate.find((x) => x.agentId === AID)?.unreadDone ?? 0, 0, "看过之后：未读数归零");
+  } finally { server.close(); }
+});
+
+test("E2E 失败的会话查看后也归零（失败与成功同一规则）", async () => {
+  const { server, base, home } = await start();
+  const AID = "lifeosagent";
+  try {
+    const sid = await makeUnreadSession(home, AID, "view-err-1", "error");
+    const conn = await snapshotKeepOpen(base);
+    const before = conn.snap;
+    assert.equal(before.aggregate.find((x) => x.agentId === AID)?.unreadError, 1);
+
+    await fetch(`${base}/api/events/focus`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionId: before.connectionId, agentId: AID, sessionId: sid, visible: true }),
+    });
+    conn.close();
+    const after = await snapshot(base);
+    assert.equal(after.aggregate.find((x) => x.agentId === AID)?.unreadError ?? 0, 0);
   } finally { server.close(); }
 });
