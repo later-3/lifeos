@@ -120,7 +120,10 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
       : "bg-danger-soft text-danger";
   return (
     // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
-    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1.5 text-micro font-medium tabular-nums ${tone}`}
+    // 尺寸：单数字用正方形（14×14），双数字靠 px-1 自然撑开 —— 之前 min-w-4(16px) + px-1.5(12px)
+    // 让一个字符的水滴宽到 19px，视觉上像一块色块，用户反馈"绿色底太宽，很丑"。
+    // 现在用更紧的 min-w-3.5 + px-1；>9 时宽度自然增长，不需要另设规则。
+    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -528,6 +531,9 @@ export default function App() {
   /** 每秒 +1：只为让"运行耗时"重算（不触发任何请求、不改数据）。 */
   const [elapsedTick, setElapsedTick] = useState(0);
   /** 服务端给的跨 Agent 聚合（P8-3）；未收到快照前为空，此时只靠当前 Agent 的行。 */
+  /** 每会话"上次是否在跑"（只在翻转时改聚合数字，避免节流重复补丁导致重复加）。 */
+  const runningRef = useRef(new Map<string, boolean>());
+  const unreadRef = useRef(new Map<string, boolean>());
   const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>>([]);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
@@ -1213,6 +1219,38 @@ export default function App() {
    *
    * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
    */
+  /**
+   * 局部改聚合里某一格（Task 0005）：`delta` 为 +1/-1。
+   *
+   * 为什么需要它：助手行/项目行的数字来自**服务端聚合**，而聚合只在 SSE 快照里下发。
+   * 会话开跑、结束、删除都只发 `row` 补丁、不重发快照 —— 不在前端局部改的话，
+   * 数字会一直停在快照那一刻（用户实测："一个 session 正在回复，但正在跑的统计不出现"）。
+   *
+   * 前提：不影响其它格；某个分组三个数都归零时移除（与服务端"零值不占位"一致）。
+   */
+  function bumpAggregate(agentId: string, projectId: string | undefined, slot: "running" | "unreadDone" | "unreadError", delta: 1 | -1): void {
+    setAgentAggregate((previous) => {
+      // 匹配顺序（宁可少建一条，也不要建错）：
+      //   ① 完全匹配 agentId + projectId；
+      //   ② 补丁没带 projectId 时，取该 Agent 唯一那条（服务端可能把某些会话归在无项目组）；
+      //   ③ 都不匹配且是 +1 → 新建一条（新会话第一次开跑时服务端聚合里还没有它）。
+      //
+      // 为什么不能简单地"projectId 不匹配就新建"：服务端的聚合条目**可能没有 projectId**
+      // （会话未落盘、或旧记录没回填到项目）。那样前端会为同一个 Agent 建出两条，
+      // 助手行把它们加起来虽然数字对，但项目行会漏 —— 实测踩过。
+      let index = previous.findIndex((entry) => entry.agentId === agentId && entry.projectId === projectId);
+      if (index === -1 && (projectId === undefined || previous.filter((entry) => entry.agentId === agentId).length === 1)) {
+        index = previous.findIndex((entry) => entry.agentId === agentId);
+      }
+      if (index === -1) {
+        if (delta === -1) return previous;
+        return [...previous, { agentId, ...(projectId !== undefined ? { projectId } : {}), running: 0, unreadDone: 0, unreadError: 0, [slot]: 1 }];
+      }
+      const next = previous.map((entry, i) => i === index ? { ...entry, [slot]: Math.max(0, entry[slot] + delta) } : entry);
+      return next.filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0);
+    });
+  }
+
   function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined, projectId?: string): void {
     if (patch === undefined || patch === null) return;
     if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
@@ -1227,14 +1265,7 @@ export default function App() {
       // 不在这里减的话，行消失了但数字还在（用户实测：「删了一个未读，数量没有减少」）。
       // `was` 由服务端判定（与 aggregateStatus 共用 aggregateSlotOf），前端不自己推算。
       const was = patch.was;
-      if (was !== undefined) {
-        setAgentAggregate((previous) => previous.map((entry) => {
-          if (entry.agentId !== agentId) return entry;
-          if (projectId !== undefined && entry.projectId !== projectId) return entry;
-          const next = { ...entry, [was]: Math.max(0, entry[was] - 1) };
-          return next;
-        }).filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0));
-      }
+      if (was !== undefined) bumpAggregate(agentId, projectId, was, -1);
       return;
     }
     setGroups((previous) => {
@@ -1272,6 +1303,34 @@ export default function App() {
       });
       return touched ? next : previous;
     });
+
+    // 运行态变化也要驱动聚合（Task 0005 · 2026-11-04 修）：
+    // 会话开跑/结束时服务端**只发 row 补丁、不重发快照**，所以聚合数字停在快照那一刻。
+    // 用户实测："一个 session 正在回复，但项目列和 agent 那边都没有正在跑的数字"。
+    //
+    // 只在**状态真的翻转**时改（undefined → 有值 / 有值 → undefined）：
+    // 节流窗口内会重复收到同一个 `running` 补丁，按"有值就 +1"会越加越多。
+    if ("running" in patch) {
+      const wasRunning = runningRef.current.get(sessionId) === true;
+      const nowRunning = patch.running !== null && patch.running !== undefined;
+      if (wasRunning !== nowRunning) {
+        runningRef.current.set(sessionId, nowRunning);
+        bumpAggregate(agentId, projectId, "running", nowRunning ? 1 : -1);
+      }
+    }
+    // 终态补丁（done/error）带 unread：这一格 +1。与 running 一样只在翻转时改。
+    // 注意服务端 `pushTerminal` 会在同一条补丁里带 `running: null` + `unread`，
+    // 所以上面的 running 减一与这里的 unread 加一会一起发生 —— 这正是要的结果。
+    if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
+      const key = `${sessionId}:unread`;
+      if (unreadRef.current.get(key) !== true) {
+        unreadRef.current.set(key, true);
+        // 服务端已经在快照里算过这条的话，不能再加一次 —— 但快照之后才发生的事件
+        // 一定还没被算过（聚合是快照那一刻的切片），所以这里 +1 是对的。
+        // 归哪一格由服务端的 `was`/终态补丁的 failure 决定：有 failure 就是 unreadError。
+        bumpAggregate(agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone", 1);
+      }
+    }
   }
 
   function runStreamAction(action: RouteAction, payload: AgentEvent): void {

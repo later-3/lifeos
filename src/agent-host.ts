@@ -447,6 +447,11 @@ export function sessionCwd(agentId: string, sessionId: string): string | undefin
 
 /** 会话所属项目：由会话文件所在目录决定（`agents/<id>/projects/<pid>/sessions/*.jsonl`）—— 文件位置即事实。 */
 export async function projectIdOfSession(agentId: string, sessionId: string): Promise<string | undefined> {
+  // 先看内存：**新会话还没落盘时**（Pi 要等助手回复才写文件），`findSessionFile` 找不到它，
+  // 于是补丁/事件会缺 `projectId` —— 前端就不知道该把这个数字加到哪一个项目行上。
+  // 实测症状：新会话开跑，助手行有「正在跑 1」但项目行没有。
+  const pending = stateOf(agentId).pending.get(sessionId);
+  if (pending !== undefined) return pending.projectId;
   const found = await findSessionFile(agentId, sessionId);
   return found === undefined ? undefined : projectOfSessionDir(found.dir);
 }
