@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
 import { rowActivityOf, displayTitleOf } from "../src/row-activity.ts";
-import { sessionRowsOf, sessionsByTask } from "../src/session-rows.ts";
+import { clearSessionScanCache, sessionRowsOf, sessionsByTask } from "../src/session-rows.ts";
 import { ensureSharedLayer } from "../src/project-skeleton.ts";
 
 /** 造一个会话文件（按 Pi 的真实条目形状：session 头 + 各类条目）。 */
@@ -39,6 +39,9 @@ const systemEntry = (at) => ({
 
 /** 建一个最小家目录 + 一个项目 + 若干会话文件。 */
 async function fixture(sessions) {
+  // 每个用例用独立的临时家目录，路径天然不同；仍显式清一次缓存，
+  // 这样"缓存串味儿"这类问题不会因为路径恰好不同而被掩盖。
+  clearSessionScanCache();
   const home = await mkdtemp(join(tmpdir(), "lifeos-rows-"));
   await installHome(process.cwd(), home);
   process.env.LIFEOS_HOME = home;

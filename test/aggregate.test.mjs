@@ -68,3 +68,44 @@ test("T84 多次调用结果稳定（聚合是纯派生，不消耗状态）", a
   const b = aggregateStatus();
   assert.deepEqual(a, b);
 });
+
+// —— T85 删除的闭环：会话删了，聚合数字必须跟着减（否则助手列一直在骗人）——
+test("T85 删除会话后，它的终态从聚合里消失（数字 → 减少 → 归零）", async () => {
+  const views = sessionViewsOf();
+  // 造一个独立 Agent，避免与前几条用例互相影响
+  const A = "delete-test";
+  views.markCompleted(A, "d1", at, "p1", { state: "done" });
+  views.markCompleted(A, "d2", at, "p1", { state: "done" });
+  views.markCompleted(A, "d3", at, "p1", { state: "error", failureKind: "auth" });
+
+  const one = aggregateStatus().find((e) => e.agentId === A);
+  assert.deepEqual({ c: one.completed, f: one.failed }, { c: 2, f: 1 }, "初始：2 完成 1 失败");
+
+  // 删一条正常结束的 → 完成数减一
+  views.forget(A, "d1");
+  const two = aggregateStatus().find((e) => e.agentId === A);
+  assert.deepEqual({ c: two.completed, f: two.failed }, { c: 1, f: 1 });
+
+  // 删掉失败的 → 失败数减一
+  views.forget(A, "d3");
+  const three = aggregateStatus().find((e) => e.agentId === A);
+  assert.deepEqual({ c: three.completed, f: three.failed }, { c: 1, f: 0 });
+
+  // 全删光 → 这个 Agent 不再出现在聚合里（零值分组不占位，助手行也不该有徽标）
+  views.forget(A, "d2");
+  assert.equal(aggregateStatus().find((e) => e.agentId === A), undefined, "归零后整个分组消失");
+});
+
+test("T86 删除后再重建同名会话：计数从零重来，不残留旧终态", async () => {
+  const views = sessionViewsOf();
+  const A = "recreate-test";
+  views.markCompleted(A, "s1", at, "p1", { state: "error", failureKind: "auth" });
+  assert.deepEqual(aggregateStatus().find((e) => e.agentId === A)?.failed, 1);
+
+  views.forget(A, "s1");
+  assert.equal(aggregateStatus().find((e) => e.agentId === A), undefined, "删掉后归零");
+
+  views.markCompleted(A, "s1", at, "p1", { state: "done" });
+  const again = aggregateStatus().find((e) => e.agentId === A);
+  assert.deepEqual({ c: again.completed, f: again.failed }, { c: 1, f: 0 }, "旧失败不残留");
+});

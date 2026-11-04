@@ -1220,6 +1220,10 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
   sessionViewsOf().forget(agentId, sessionId);   // 已删会话不得留下未读点
   state.sessions.delete(sessionId);
   state.pending.delete(sessionId);
+  // 通知其他连接把这一行移除（Task 0005 · P8 补）：不通知的话，别的标签页的助手列数字
+  // 会一直停在旧值，直到它自己刷新。与 renameSession / setSessionTask 走同一条补丁通道。
+  // projectId 从被删文件所在目录推导（文件此刻已删，所以用删之前拿到的 `found`）。
+  rowPatches().pushNow(agentId, sessionId, found !== undefined ? projectOfSessionDir(found.dir) : undefined, { removed: true });
   return "deleted";
 }
 

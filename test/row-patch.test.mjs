@@ -148,3 +148,23 @@ test("T19 一轮完整的 waiting→thinking→tool→text→终态，只产生 
   assert.ok(h.sent.length <= 8, `实际 ${h.sent.length} 条，应 ≤ 8（不是几百条）`);
   assert.equal(h.sent.at(-1).patch.running, null, "最后一条是终态");
 });
+
+// —— T20 删除补丁（Task 0005 · P8 补）——
+// 背景：deleteSession 清了 session-views 索引，但**不通知其他客户端** ——
+// 别的标签页里那一行不会消失，助手列数字也不会减，直到它自己刷新。
+test("T20 removed 补丁立即发出、带 projectId，且不受「只在值变化时发」的去重影响", () => {
+  const h = harness();
+  h.publisher.pushNow("agent", "s1", "workspace", { removed: true });
+  assert.equal(h.sent.length, 1, "删除必须立刻发（不节流、不排队）");
+  assert.equal(h.sent[0].patch.removed, true);
+  assert.equal(h.sent[0].projectId, "workspace", "带项目归属，前端才知道该从哪一组移除");
+});
+
+test("T20b 删除与运行态可以先后到：先跑着，再被删", () => {
+  const h = harness();
+  h.publisher.pushRunning("agent", "s1", "workspace", { since: "T0", phase: "tool", tool: "read" });
+  assert.equal(h.sent.length, 1);
+  h.publisher.pushNow("agent", "s1", "workspace", { removed: true });
+  assert.equal(h.sent.length, 2);
+  assert.equal(h.sent.at(-1).patch.removed, true, "最后一条是删除，前端据此把行移除");
+});

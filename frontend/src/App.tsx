@@ -175,6 +175,8 @@ type SessionItem = SessionRowData;
  * 未知键一律忽略（前向兼容）。
  */
 type RowPatchPayload = {
+  /** 会话已被删除：把这一行移出列表（Task 0005 · P8 补）。 */
+  removed?: true;
   running?: { since: string; phase?: RowPhase; tool?: string } | null;
   unread?: { since: string } | null;
   failure?: { kind: RowFailureKind; detail: string; at?: string } | null;
@@ -1042,6 +1044,15 @@ export default function App() {
   function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined): void {
     if (patch === undefined || patch === null) return;
     if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
+    // 删除：把这一行移出列表（别的标签页删了它，这边要跟着消失）。
+    // 只删这一行，不重取整个列表 —— 与其它补丁一致。
+    if (patch.removed === true) {
+      setGroups((previous) => previous.map((group) => {
+        if (!group.sessions.some((item) => item.sessionId === sessionId)) return group;
+        return { ...group, sessions: group.sessions.filter((item) => item.sessionId !== sessionId) };
+      }));
+      return;
+    }
     setGroups((previous) => {
       let touched = false;
       const next = previous.map((group) => {
