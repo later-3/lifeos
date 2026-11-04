@@ -987,6 +987,11 @@ test("会话列表的失败态：最后一条 assistant 以 error 结束才带 f
     });
     await writeFile(path, `${original.trimEnd()}\n${errored}\n${ok}\n`, "utf8");
     const recovered = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
-    assert.notEqual(recovered.items.find((entry) => entry.sessionId === sid).activity.state, "failure", "之后又有正常回复 → 不再算失败");
+    // 2026-11-04 用户裁决：**失败历史要一直算到用户看过为止**，后来的成功不会抹掉它。
+    // 用户原话：「如果我没有看过的话，就要显示失败，如果我看过了就不显示」。
+    // （此前的断言是"之后又有正常回复 → 不再算失败"，那是旧语义，已被用户实测否掉：
+    //   某会话 08:32/09:19/09:34 连续失败、09:39 成功，界面上却完全看不到失败。）
+    assert.equal(recovered.items.find((entry) => entry.sessionId === sid).activity.state, "failure",
+      "失败过且未查看 → 即使后来成功，仍要显示失败（直到用户查看）");
   } finally { server.close(); }
 });

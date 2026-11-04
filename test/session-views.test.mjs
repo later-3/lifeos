@@ -178,7 +178,7 @@ test("T47 backfillOutcomes 只补缺失的，已有终态的一律不动", async
   // 新记录：已有终态
   h.views.markCompleted("A", "new-1", h.at(1000), "p1", { state: "error", failureKind: "auth" });
 
-  const filled = await h.views.backfillOutcomes(async (_a, sid) => (sid === "old-1" ? { state: "done" } : { state: "done" }));
+  const filled = await h.views.backfillOutcomes(async () => ({ outcome: { state: "done" } }));
   assert.equal(filled, 1, "只补了 old-1 一条（new-1 已经是新记录，不该被改）");
   assert.deepEqual(h.views.outcomeOf("A", "old-1"), { state: "done" });
   assert.deepEqual(h.views.outcomeOf("A", "new-1"), { state: "error", failureKind: "auth" }, "已有时终态不能被回填覆盖");
@@ -197,7 +197,7 @@ test("T49 回填结果落盘：重启后不用再扫一遍文件", async () => {
   const h = harness();
   await h.views.load();
   h.views.markCompleted("B", "s1", h.at(0), "p2");
-  await h.views.backfillOutcomes(async () => ({ state: "error", failureKind: "timeout" }));
+  await h.views.backfillOutcomes(async () => ({ outcome: { state: "error", failureKind: "timeout" } }));
   await h.views.flush();
 
   const restarted = createSessionViews({
