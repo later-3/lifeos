@@ -305,8 +305,11 @@ useLayoutEffect(() => {
 - **秒数不走网络**：服务端只给 `since`，前端每秒本地重算（`elapsedTick`，只在真有会话在跑时启动）。
 - **前端不因此重取列表**：`event-router` 把 `row` 路由成独立的行补丁动作，**不产生 `refresh-groups`**；
   且**不做焦点过滤** —— 列表里每个会话的运行态都要更新，不只当前打开那条。
-- **写操作也走它**：`renameSession`（标题）、`setSessionTask`（Task 名）、`markSessionViewed`（清未读）
-  推精确补丁，不再 broadcast 让所有客户端重取整个列表。
+- **写操作也走它**：`renameSession`（标题）、`setSessionTask`（Task 名）、`markSessionViewed`（清未读）、
+  `deleteSession`（`{removed: true}`）推精确补丁，不再 broadcast 让所有客户端重取整个列表。
+- **删除必须通知**（2026-11-04 补）：`deleteSession` 清了 `session-views` 索引但**不通知其他客户端**，
+  于是别的标签页里那一行不会消失、助手列数字也不会减，直到它自己刷新。
+  现在删完立即 `pushNow({removed: true})`，前端收到就把这一行移出列表。实测 3.0s 收到（与删除动作同步）。
 - **为什么补丁要合并而不是排队**：一条补丁 260B，一次全量刷新 5,999B + 60ms；实测一个完整回合只产生
   **2 条** row 事件（开始 + 终态）。
 

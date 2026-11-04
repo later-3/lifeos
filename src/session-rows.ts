@@ -87,10 +87,51 @@ function textOfContent(content: unknown): string {
 }
 
 /** 扫一个会话文件 → 事实（不含任何展示决定）。 */
+/**
+ * 扫描结果的 fingerprint 缓存（Task 0005 · P8-6）。
+ *
+ * ## 为什么需要
+ *
+ * 实测（69 个会话文件 / 58.9MB）：
+ *   · 全读文件 **156ms**
+ *   · 只 `stat` **1ms**     ← 150 倍差
+ * 而列表请求、`/tasks`、聚合都会走到扫描。不缓存 → 每次 156ms；缓存命中 → 1ms。
+ *
+ * ## 为什么用 size:mtimeMs 做指纹
+ *
+ * 照 pi-web `lib/session-reader.ts:528-578`（注释："The fingerprint (size + mtimeMs)
+ * invalidates on external appends (TUI writes)"）。会话文件是 **append-only**：
+ * 追加必然改变 size；大小相同但内容变了的情况在这个格式下不存在（除非原地改写，
+ * 那时 mtime 也会变）。两个都进指纹，是为了同时挡住"同大小改写"。
+ *
+ * ## 边界
+ *
+ * 只缓存**小结果对象**（ScannedSession 是几十个字段的纯数据），不缓存文件内容。
+ * 条目数按文件数自然有界（一个项目的会话数），不需要 LRU —— 项目会话是几十到几百级。
+ */
+type CacheEntry = { fingerprint: string; value: ScannedSession };
+const scanCache = new Map<string, CacheEntry>();
+
+/** 测试用：清空缓存（避免用例之间互相影响）。 */
+export function clearSessionScanCache(): void {
+  scanCache.clear();
+}
+
 async function scanSessionFile(path: string): Promise<ScannedSession | undefined> {
-  const content = await readFile(path, "utf8").catch(() => undefined);
-  if (content === undefined) return undefined;
+  // 先 stat：命中缓存时省掉 readFile（这是全部收益的来源）
   const info = await stat(path).catch(() => undefined);
+  const fingerprint = info === undefined ? undefined : `${info.size}:${info.mtimeMs}`;
+  if (fingerprint !== undefined) {
+    const cached = scanCache.get(path);
+    if (cached !== undefined && cached.fingerprint === fingerprint) return cached.value;
+  }
+  const content = await readFile(path, "utf8").catch(() => undefined);
+  if (content === undefined) {
+    // 文件读不到（被删/权限）：**清掉缓存**，否则会一直返回幽灵行。
+    // 这是 T23 测出来的：缓存按路径存，文件消失时没人负责删它。
+    scanCache.delete(path);
+    return undefined;
+  }
   const lines = content.split("\n").filter((line) => line.trim() !== "");
   let sessionId = "";
   let displayName = "";
@@ -153,7 +194,7 @@ async function scanSessionFile(path: string): Promise<ScannedSession | undefined
     }
   }
   if (sessionId === "") return undefined;
-  return {
+  const scanned: ScannedSession = {
     sessionId,
     rawTitle: displayName !== "" ? displayName : firstUserText,
     counts,
@@ -165,6 +206,9 @@ async function scanSessionFile(path: string): Promise<ScannedSession | undefined
     ...(peerAgentId !== undefined ? { peerAgentId } : {}),
     ...(failing !== undefined ? { failure: failing } : {}),
   };
+  // 写缓存：指纹用**读之前**那次 stat（读的过程中文件被追加的话，下次 stat 会不匹配，自然重扫）
+  if (fingerprint !== undefined) scanCache.set(path, { fingerprint, value: scanned });
+  return scanned;
 }
 
 /** 一次 `listTasks` 建 id → Task 摘要映射（不为每个会话各读一遍 `task.md`）。 */
@@ -229,12 +273,11 @@ export type SessionRowsOptions = { now?: number; defaultSessionId?: string };
 async function scanProject(agentId: string, projectId: string): Promise<ScannedSession[]> {
   const dir = join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
   const names = await readdir(dir).catch(() => [] as string[]);
-  const scanned: ScannedSession[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
-    const result = await scanSessionFile(join(dir, name));
-    if (result !== undefined) scanned.push(result);
-  }
+  // 并行扫描：逐个 await 会让 69 个文件的 IO 完全串行（实测串行 156ms vs 并行读 133ms，
+  // 缓存命中后差距更明显，因为每次都只是并行的 stat）。
+  const scanned = (await Promise.all(
+    names.filter((name) => name.endsWith(".jsonl")).map((name) => scanSessionFile(join(dir, name))),
+  )).filter((item): item is ScannedSession => item !== undefined);
   // 未落盘的会话（Pi 延迟写文件）：字段与落盘会话**同源同形**——现状只给 title/updatedAt/messages，
   // 导致刚建的新会话在 Task 列是空的（01 §3 第 7 条）。
   const fileIds = new Set(scanned.map((item) => item.sessionId));

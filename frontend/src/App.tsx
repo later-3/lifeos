@@ -78,19 +78,29 @@ type UsageSummary = { input: number; output: number; cacheRead: number; cacheWri
  * - `aria-label` 带数量（照 Rocket.Chat `RoomListItem.stories.tsx:55` 的门禁方式，
  *   比按 class 断言稳）
  */
-function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unread" | "failure"; unit: "会话" }) {
+/**
+ * 状态徽标（助手行与项目行共用）：**三个计数，都不看已读**。
+ *
+ * 用户裁决（2026-11-04）：三个徽标 ——
+ *   ① 正在跑（呼吸绿）  ② 已正常结束（固定绿）  ③ 异常结束（固定红）
+ *
+ * 为什么没有"未读"徽标：徽标回答「发生过什么」，不回答「我看没看」。
+ * 早期把 ② 做成"未读"，用户点开一个完成的会话后数字从 6 掉到 5 —— 历史事实不该因读过而消失。
+ * 「有未读」由**会话行的绿点**表达（那里才需要已读语义）。
+ *
+ * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）；`99+` 规则见 `design-language.md:217`。
+ */
+function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "completed" | "failed"; unit: "会话" }) {
   if (count <= 0) return null;
-  // 99+ 规则：`design-language.md:217`「数字（超过 99 写 99+）」。上限 99 是设计规范给定的，
-  // 不是我们自创（§3.13）；徽标宽度靠 min-w-4 + px 自适应，不为此另设宽度上限。
   const text = count > 99 ? "99+" : String(count);
   const label = kind === "running"
     ? `${count} 个${unit}正在工作`
-    : kind === "unread"
-      ? `${count} 个${unit}已完成待查看`
-      : `${count} 个${unit}失败`;
+    : kind === "completed"
+      ? `${count} 个${unit}已完成`
+      : `${count} 个${unit}异常结束`;
   const tone = kind === "running"
     ? "bg-success-soft text-success animate-pulse"
-    : kind === "unread"
+    : kind === "completed"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
   return (
@@ -102,17 +112,18 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
   );
 }
 
-function StatusMarks({ status, unit }: { status: { running: number; unread: number; failure: number } | undefined; unit: "会话" }) {
+function StatusMarks({ status, unit }: { status: { running: number; completed: number; failed: number } | undefined; unit: "会话" }) {
   if (status === undefined) return null;
-  if (status.running === 0 && status.unread === 0 && status.failure === 0) return null;   // 零值不渲染
+  if (status.running === 0 && status.completed === 0 && status.failed === 0) return null;   // 零值不渲染
   return (
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
       <CountBadge count={status.running} kind="running" unit={unit} />
-      <CountBadge count={status.unread} kind="unread" unit={unit} />
-      <CountBadge count={status.failure} kind="failure" unit={unit} />
+      <CountBadge count={status.completed} kind="completed" unit={unit} />
+      <CountBadge count={status.failed} kind="failed" unit={unit} />
     </span>
   );
 }
+
 
 /** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
 const STREAM_EVENT_NAMES = [
@@ -142,6 +153,11 @@ type StreamSnapshot = {
   // 不能只依赖"当前选中 Agent 的会话列表"。`projectId` 服务端一直有，此前类型漏写。
   running: Array<{ agentId: string; sessionId: string; projectId?: string; turnId?: string; startedAt: string }>;
   unread: Array<{ agentId: string; sessionId: string; projectId?: string; completedAt: string }>;
+  /**
+   * 跨 Agent 的数量聚合（服务端 `aggregateStatus()` 算好，Task 0005 · P8-3）。
+   * 左侧助手列与项目行直接吃它 —— 前端不再自己判断四态（那会重写 `running > failure > unread` 的优先级）。
+   */
+  aggregate?: Array<{ agentId: string; projectId?: string; running: number; completed: number; failed: number }>;
 };
 
 /** 落盘前去掉纯展示态（ui）：展开/钉住/拖动偏移是"当下正在看"的状态，不存。 */
@@ -170,6 +186,8 @@ type SessionItem = SessionRowData;
  * 未知键一律忽略（前向兼容）。
  */
 type RowPatchPayload = {
+  /** 会话已被删除：把这一行移出列表（Task 0005 · P8 补）。 */
+  removed?: true;
   running?: { since: string; phase?: RowPhase; tool?: string } | null;
   unread?: { since: string } | null;
   failure?: { kind: RowFailureKind; detail: string; at?: string } | null;
@@ -493,6 +511,8 @@ export default function App() {
   const [runFacts, setRunFacts] = useState(emptyRunFacts);
   /** 每秒 +1：只为让"运行耗时"重算（不触发任何请求、不改数据）。 */
   const [elapsedTick, setElapsedTick] = useState(0);
+  /** 服务端给的跨 Agent 聚合（P8-3）；未收到快照前为空，此时只靠当前 Agent 的行。 */
+  const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; completed: number; failed: number }>>([]);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
@@ -1133,6 +1153,8 @@ export default function App() {
     connectionRef.current = snapshot.connectionId;
     baselineRef.current = snapshot.seq;
     setRunFacts((f) => applySnapshotFacts(f, { running: snapshot.running, unread: snapshot.unread }, Date.now()));
+    setAgentAggregate(snapshot.aggregate ?? []);
+    (window as unknown as { __agg?: unknown }).__agg = { got: snapshot.aggregate, keys: Object.keys(snapshot) };
     lastEventAtRef.current = Date.now();
     const aid = ctx.current.agentId;
     const cur = current.current;
@@ -1178,6 +1200,15 @@ export default function App() {
   function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined): void {
     if (patch === undefined || patch === null) return;
     if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
+    // 删除：把这一行移出列表（别的标签页删了它，这边要跟着消失）。
+    // 只删这一行，不重取整个列表 —— 与其它补丁一致。
+    if (patch.removed === true) {
+      setGroups((previous) => previous.map((group) => {
+        if (!group.sessions.some((item) => item.sessionId === sessionId)) return group;
+        return { ...group, sessions: group.sessions.filter((item) => item.sessionId !== sessionId) };
+      }));
+      return;
+    }
     setGroups((previous) => {
       let touched = false;
       const next = previous.map((group) => {
@@ -2144,36 +2175,24 @@ export default function App() {
    * 为什么不给每个 Agent 各打一次 `/sessions`：13 个 Agent × 全扫 JSONL，
    * 违背本任务"不为展示重复取数"；而 SSE 已经把跨 Agent 的事实推过来了，零请求。
    */
-  const statusFacts: StatusFacts = (() => {
-    const sessions: StatusFacts["sessions"] = {};
-    const stateOf = (sid: string): RowActivity["state"] | undefined => {
-      if (runFacts.snapRunning.includes(sid)) return "running";
-      if (runFacts.lastTurn[sid]?.state === "running") return "running";
-      if (runFacts.lastTurn[sid]?.state === "error") return "failure";
-      if (runFacts.unread[sid] === true) return "unread";
-      return undefined;
-    };
-    const activityOf = (state: RowActivity["state"]): RowActivity =>
-      state === "failure"
-        // detail 不在跨 Agent 事件里（只有 error 事件的 message 有，但那属于焦点路径）。
-        // 助手列只数个数，不显示原因 → 这里给占位 detail，**不编造分类**。
-        ? { state: "failure", failure: { kind: "unknown", detail: "" } }
-        : { state };
-    // ① 跨 Agent 事实（来源：SSE 快照 + 回合事件）
-    for (const [sid, meta] of Object.entries(runFacts.meta)) {
-      if (meta === undefined) continue;
-      const state = stateOf(sid);
-      if (state === undefined) continue;
-      sessions[sid] = { meta: { agentId: meta.agentId, ...(meta.projectId !== undefined ? { projectId: meta.projectId } : {}) }, activity: activityOf(state) };
-    }
-    // ② 当前 Agent 的完整行（覆盖 ①，信息更全）
-    for (const group of groups) {
-      for (const item of group.sessions) {
-        sessions[item.sessionId] = { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity };
-      }
-    }
-    return { sessions };
-  })();
+  /**
+   * 聚合输入（Task 0005 · P8-3）：
+   *   ① `agentAggregate`：服务端算好的**跨 Agent** 数量（助手列能显示所有 Agent 的数字，靠它）；
+   *   ② `groups`：当前打开 Agent 的会话行（用于把数字细到会话级、并扣掉正在看的那条未读）。
+   *
+   * 四态判定**不在这里**：服务端用 `rowActivityOf()` 算，`deriveStatus` 只做减法。
+   * 曾经在这里手写过一份 `stateOf()`（running > failure > unread > idle）——
+   * 那是同一个规则的第二份实现，正是本任务要消灭的东西（C163）。
+   */
+  const statusFacts: StatusFacts = {
+    aggregate: agentAggregate,
+    sessions: Object.fromEntries(
+      groups.flatMap((group) => group.sessions.map((item) => [
+        item.sessionId,
+        { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity },
+      ])),
+    ),
+  };
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
     <>
@@ -2910,7 +2929,7 @@ function IconArrowUpIcon() {
   );
 }
 import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, isRunning, hasUnread, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
+import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
 import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";

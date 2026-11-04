@@ -4,12 +4,12 @@
 // 每条用例都从"改源头 → 该字段跟着变"入手，证明**来源唯一、不读别处的副本**。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
 import { rowActivityOf, displayTitleOf } from "../src/row-activity.ts";
-import { sessionRowsOf, sessionsByTask } from "../src/session-rows.ts";
+import { clearSessionScanCache, sessionRowsOf, sessionsByTask } from "../src/session-rows.ts";
 import { ensureSharedLayer } from "../src/project-skeleton.ts";
 
 /** 造一个会话文件（按 Pi 的真实条目形状：session 头 + 各类条目）。 */
@@ -39,6 +39,9 @@ const systemEntry = (at) => ({
 
 /** 建一个最小家目录 + 一个项目 + 若干会话文件。 */
 async function fixture(sessions) {
+  // 每个用例用独立的临时家目录，路径天然不同；仍显式清一次缓存，
+  // 这样"缓存串味儿"这类问题不会因为路径恰好不同而被掩盖。
+  clearSessionScanCache();
   const home = await mkdtemp(join(tmpdir(), "lifeos-rows-"));
   await installHome(process.cwd(), home);
   process.env.LIFEOS_HOME = home;
@@ -398,4 +401,53 @@ test("T20 sessionsByTask：一次扫描按 taskId 分组，结果与逐 Task 全
   }
   assert.equal(byId.get("s-c").task, null, "0002 目录不存在 → 行对象不编标题");
   assert.equal(grouped.get("0002").length, 1, "但分组照指针走，不因为解析不到就把会话丢掉");
+});
+
+// —— T21–T23 fingerprint 缓存（Task 0005 · P8-6）——
+// 目的：列表/tasks/聚合都会走扫描；不缓存每次 156ms（69 文件实测），缓存命中 1ms。
+// 风险：缓存过期 → 用户改了会话却看到旧数据。所以"什么时候必须失效"比"命中"更重要。
+test("T21 缓存命中返回同一结果；文件追加后指纹变化 → 必须重扫（不能给旧数据）", async () => {
+  const { projectId } = await fixture([
+    { fileName: "2026-11-01T00-00-00-000Z_s1.jsonl",
+      content: sessionLines({ id: "s1", name: "原标题", entries: [userEntry("2026-11-01T00:01:00.000Z")] }) },
+  ]);
+  const first = await sessionRowsOf("lifeosagent", projectId);
+  assert.equal(first[0].title.display, "原标题");
+
+  // 追加一条 session_info 改名：模真实的 append-only 写入
+  const dir = join(process.env.LIFEOS_HOME, "agents", "lifeosagent", "projects", projectId, "sessions");
+  await writeFile(join(dir, "2026-11-01T00-00-00-000Z_s1.jsonl"),
+    sessionLines({ id: "s1", name: "新标题", entries: [userEntry("2026-11-01T00:01:00.000Z")] }), "utf8");
+  // 确保 mtime 确实推进（同一毫秒内写两次时 mtimeMs 可能相同，size 也会变化兜底）
+  await new Promise((r) => setTimeout(r, 10));
+
+  const second = await sessionRowsOf("lifeosagent", projectId);
+  assert.equal(second[0].title.display, "新标题", "文件变了就必须重扫 —— 缓存过期会显示旧标题");
+});
+
+test("T22 缓存不跨文件串味：两个会话各自独立", async () => {
+  const { projectId } = await fixture([
+    { fileName: "2026-11-01T00-00-00-000Z_a.jsonl", content: sessionLines({ id: "s-a", name: "甲", entries: [userEntry("2026-11-01T00:01:00.000Z")] }) },
+    { fileName: "2026-11-01T00-01-00-000Z_b.jsonl", content: sessionLines({ id: "s-b", name: "乙", entries: [userEntry("2026-11-01T00:02:00.000Z")] }) },
+  ]);
+  const rows = await sessionRowsOf("lifeosagent", projectId);
+  const byId = new Map(rows.map((r) => [r.sessionId, r]));
+  assert.equal(byId.get("s-a").title.display, "甲");
+  assert.equal(byId.get("s-b").title.display, "乙");
+  // 第二次（全命中）结果必须一致
+  const again = await sessionRowsOf("lifeosagent", projectId);
+  assert.deepEqual(again.map((r) => [r.sessionId, r.title.display]), rows.map((r) => [r.sessionId, r.title.display]));
+});
+
+test("T23 文件被删除后不返回幽灵行（缓存条目不能顶替磁盘事实）", async () => {
+  const { projectId } = await fixture([
+    { fileName: "2026-11-01T00-00-00-000Z_x.jsonl", content: sessionLines({ id: "s-x", name: "临时", entries: [userEntry("2026-11-01T00:01:00.000Z")] }) },
+  ]);
+  // 注意：fixture 的 installHome 会装一条出厂会话，所以按 id 过滤，不数总数
+  const before = await sessionRowsOf("lifeosagent", projectId);
+  assert.ok(before.some((r) => r.sessionId === "s-x"), "删除前有 s-x");
+  const dir = join(process.env.LIFEOS_HOME, "agents", "lifeosagent", "projects", projectId, "sessions");
+  await rm(join(dir, "2026-11-01T00-00-00-000Z_x.jsonl"));
+  const after = await sessionRowsOf("lifeosagent", projectId);
+  assert.equal(after.some((r) => r.sessionId === "s-x"), false, "文件没了，行也必须没了（不能拿缓存顶替）");
 });

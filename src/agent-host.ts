@@ -66,10 +66,92 @@ function stateOf(agentId: string): AgentState {
  * 全局快照（任务 0007）：跨 Agent 的运行中会话（带当前 turnId）、服务端未读、最近回合账本。
  * 必须与 subscribeBus 在同一个同步块里生成（HTTP 层保证），否则快照与缓冲会重复一条终态。
  */
+/**
+ * 跨 Agent 的三计数聚合（Task 0005 · P8-3）。
+ *
+ * 回答："每个 Agent 的每个项目，各有几个会话在跑 / 已正常结束 / 异常结束"。
+ * 左侧助手列与项目行靠它显示数字——不点进去也要能看到。
+ *
+ * ## 为什么在服务端算（而不是把逐会话状态推给前端让它数）
+ *
+ * **计数规则只能有一处实现**。前端自己数就得重写"谁算在跑、谁算完成、谁算失败"，
+ * 那是 C163 那个反例（同一事实多份表达）。服务端算完发数，前端只读 + 做减法（扣焦点会话）。
+ *
+ * ## 为什么不走四态（`rowActivityOf`）
+ *
+ * 四态是**为一个会话行挑"显示哪一个信号"**（running > failure > unread > idle，互斥）。
+ * 而这里要的是**三个独立的计数** —— 它们不是互斥选择，是三个维度各数各的。
+ * 尤其"正常结束"在四态里根本不存在：已读的完成态归 `idle`，与"从没跑过"无法区分。
+ * 所以直接数 `lastState`，不经过四态。四态仍是**会话行**的唯一判据，职责不混。
+ *
+ * ## 为什么不会慢
+ *
+ * 两个事实源都是**索引**，不扫会话文件：
+ *   · 正在跑 → `runningAll()` 内存，O(1)
+ *   · 终态     → `sessionViewsOf().states()` 索引，实测 0.3ms
+ * 对照：靠 sessionRowsOf 扫 69 个文件实测 156ms（全链路 532ms），差三个数量级。
+ *
+ * 只统计**项目归属已知**的会话：没有 projectId 的进不了项目行；但助手层仍然要计入，
+ * 因此这类记录用空 projectId 归到助手层（前端按 `projectId === undefined` 处理）。
+ */
+/**
+ * 一个 Agent × 项目的三个数量（Task 0005 · P8，2026-11-04 定稿）。
+ *
+ * 用户裁决：助手列与项目行各显示**三个徽标** ——
+ *   ① `running` 正在跑（呼吸绿）
+ *   ② `completed` 已正常结束（固定绿）
+ *   ③ `failed` 异常结束（固定红）
+ *
+ * **三者都不看"已读"**。这是关键决定：徽标回答「发生过什么」，不回答「我看没看」。
+ * 早期实现把 ② 做成 `unread`（只看未读），后果是用户点开一个完成的会话后数字从 6 掉到 5
+ * —— 一个历史事实不该因为"我读过了"而消失。而 ③ 一直没看已读，两者行为不对称更难解释。
+ * 「有没有新东西没看」是另一个信号，由会话行的绿点表达（那里才需要已读语义）。
+ */
+export type AgentProjectCount = {
+  agentId: string;
+  projectId?: string;
+  running: number;
+  completed: number;
+  failed: number;
+};
+
+export function aggregateStatus(): AgentProjectCount[] {
+  const buckets = new Map<string, AgentProjectCount>();
+  const bucketOf = (agentId: string, projectId: string | undefined): AgentProjectCount => {
+    const key = `${agentId}\u0000${projectId ?? ""}`;
+    let entry = buckets.get(key);
+    if (entry === undefined) {
+      entry = { agentId, ...(projectId !== undefined && projectId !== "" ? { projectId } : {}), running: 0, completed: 0, failed: 0 };
+      buckets.set(key, entry);
+    }
+    return entry;
+  };
+
+  // ① 正在跑：运行注册表（内存），最即时
+  const runningKeys = new Set<string>();
+  for (const entry of runningAll()) {
+    runningKeys.add(`${entry.agentId}\u0000${entry.sessionId}`);
+    bucketOf(entry.agentId, entry.projectId).running += 1;
+  }
+
+  // ②③ 终态：session-views 索引里的 lastState（**不看 viewedAt**）
+  // 同一条会话在跑的时候只算 running —— 四态互斥，不重复计。
+  for (const item of sessionViewsOf().states()) {
+    if (runningKeys.has(`${item.agentId}\u0000${item.sessionId}`)) continue;
+    const bucket = bucketOf(item.agentId, item.projectId);
+    if (item.lastState === "error") bucket.failed += 1;
+    else if (item.lastState === "done") bucket.completed += 1;
+    // 没有 lastState 的老记录不计：不知道它怎么结束的，就不编一个
+  }
+  return [...buckets.values()].filter((entry) => entry.running + entry.completed + entry.failed > 0);
+}
+
 export function globalSnapshot(): {
   running: Array<RunSnapshot & { agentId: string; turnId?: string }>;
   unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
   turns: Array<TurnRecord & { agentId: string }>;
+  /** 跨 Agent 的数量聚合：左侧助手列与项目行直接吃它，不再前端自己数（P8-3）。 */
+  aggregate: AgentProjectCount[];
 } {
   const running = runningAll().map((entry) => {
     const record = turnLedger.get(`${entry.agentId}\u0000${entry.sessionId}`);
@@ -77,7 +159,9 @@ export function globalSnapshot(): {
       ? { ...entry, turnId: record.turnId }
       : entry;
   });
-  return { running, unread: sessionViewsOf().unread(), turns: turnSnapshotAll() };
+  // unread 只取一次：这既是快照字段，也是前端判"未读"的唯一来源（不再被 aggregate 顺手算第二遍）
+  const unread = sessionViewsOf().unread();
+  return { running, unread, turns: turnSnapshotAll(), aggregate: aggregateStatus() };
 }
 
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
@@ -522,9 +606,20 @@ export function markSessionViewed(agentId: string, sessionId: string, at: string
   rowPatches().pushNow(agentId, sessionId, projectId, { unread: null });
 }
 
-function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined): void {
+/**
+ * 记一次回合终态：未读事实 + 终态索引（Task 0005 · P8-2）。
+ *
+ * `failureKind` 只有失败时有。**顺手写进这里**而不是让聚合层回扫会话文件 ——
+ * 扫 69 个文件实测 156ms（经 sessionRowsOf 全链路 532ms），而这一步本来就是终态发生时，
+ * 信息在手（`classifyFailure` 的返回值），零额外成本。
+ */
+function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined, failureKind?: FailureKind): void {
   const at = new Date().toISOString();
-  if (!aborted) sessionViewsOf().markCompleted(agentId, sessionId, at, projectId);
+  // 被打断不算"完成"（既有语义）：不写未读、也不写终态，避免把一个中断的回合报成 done/error
+  if (!aborted) {
+    sessionViewsOf().markCompleted(agentId, sessionId, at, projectId,
+      failureKind !== undefined ? { state: "error", failureKind } : { state: "done" });
+  }
   if (isFocusedVisible(agentId, sessionId)) markSessionViewed(agentId, sessionId, at, projectId);
 }
 
@@ -692,12 +787,13 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     // 被网关以"请求体过大"拒过 → 记上界，下一次解析会自动降到 0.8× 该值
     if (PAYLOAD_TOO_LARGE.test(message)) await recordPayloadObservation(target, "too_large");
     finishTurn(agentId, sessionId, turnId, "error");
-    recordCompletion(agentId, sessionId, false, projectIdForLog);
+    // 先算出分类：终态索引要它（recordCompletion），行补丁也要它——只算一次，两处用同一个值
+    const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
+    recordCompletion(agentId, sessionId, false, projectIdForLog, kind);
     // 失败也要回流（发起方要知道它失败了、为什么）——同一套去重与投递确认。
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
-    const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
     // 列表行补丁：失败态 + 原文（用户裁决不脱敏）+ 未读
     rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
       unread: { since: new Date().toISOString() },
@@ -1214,6 +1310,10 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
   sessionViewsOf().forget(agentId, sessionId);   // 已删会话不得留下未读点
   state.sessions.delete(sessionId);
   state.pending.delete(sessionId);
+  // 通知其他连接把这一行移除（Task 0005 · P8 补）：不通知的话，别的标签页的助手列数字
+  // 会一直停在旧值，直到它自己刷新。与 renameSession / setSessionTask 走同一条补丁通道。
+  // projectId 从被删文件所在目录推导（文件此刻已删，所以用删之前拿到的 `found`）。
+  rowPatches().pushNow(agentId, sessionId, found !== undefined ? projectOfSessionDir(found.dir) : undefined, { removed: true });
   return "deleted";
 }
 

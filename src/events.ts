@@ -47,6 +47,13 @@ export type RowPatch = {
   lastActivityAt?: string;
   /** 标题变化（重命名、首条消息自动命名）。 */
   title?: { raw: string; display: string };
+  /**
+   * 会话已被删除（Task 0005 · P8 补）：收到即把这一行从列表里移除，并让聚合数字跟着减。
+   *
+   * 为什么需要：`deleteSession` 清了 `session-views` 索引，但**不通知其他客户端** ——
+   * 标签页 B 的助手列数字会一直是旧的，直到它自己刷新或重连。
+   */
+  removed?: true;
   /** Task 变化（切 Task、建 Task 即进入）。 */
   task?: { id: string; title: string; status: string; type: string } | null;
 };

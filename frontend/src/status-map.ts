@@ -51,6 +51,18 @@ export type StatusMeta = { agentId: string; projectId?: string | undefined };
 export type StatusFacts = {
   /** 全部 Agent 的会话：归属 + 该会话当前的四态。缺归属的会话不参与聚合（不臆造项目）。 */
   sessions: Record<string, { meta: StatusMeta; activity: RowActivity } | undefined>;
+  /**
+   * 服务端已算好的聚合（Task 0005 · P8-3）：`[{agentId, projectId?, running, unread, failure}]`。
+   *
+   * 它覆盖**所有** Agent，是助手列能显示数字的来源；`sessions` 只覆盖"当前打开的 Agent"，
+   * 用于把数字进一步细到会话级（例如焦点会话不算未读）。
+   *
+   * 为什么允许服务端直接给数（而不是坚持"前端数四态"）：四态优先级只能在
+   * `rowActivityOf()` 一处实现，前端若要自己数就得把 `running > failure > unread` 重写一遍
+   * —— C163 那个反例。服务端调同一个函数算完再发数，是唯一一处实现。
+   * 本模块只做**减法**（把焦点会话的未读扣掉），不重做四态判定。
+   */
+  aggregate?: Array<{ agentId: string; projectId?: string | undefined; running: number; completed: number; failed: number }>;
 };
 
 export type StatusFocus = { agentId?: string | undefined; sessionId?: string | undefined; visible: boolean };
@@ -60,13 +72,23 @@ export type StatusFocus = { agentId?: string | undefined; sessionId?: string | u
  *
  * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`：`running === 0 && unread === 0` → `null`）。
  */
+/**
+ * 一个层（项目 / 助手）的三个计数 —— **不看已读**。
+ *
+ * 用户裁决（2026-11-04）：三个徽标 = 正在跑（呼吸绿）/ 已正常结束（固定绿）/ 异常结束（固定红）。
+ *
+ * 为什么没有 `unread`：徽标回答「发生过什么」，不回答「我看没看」。
+ * 早期把"完成"做成 `unread`，用户点开一个完成的会话后数字就从 6 掉到 5 ——
+ * 历史事实不该因为读过了而消失。而"失败"一直没看已读，两者不对称更难解释。
+ * 「有未读」这个信号由**会话行的绿点**表达（那里才需要已读语义）。
+ */
 export type Status = {
-  /** 正在工作的会话数（呼吸数字）。 */
+  /** 正在跑（呼吸数字）。 */
   running: number;
-  /** 已完成待查看的会话数（固定绿底数字）。 */
-  unread: number;
-  /** 失败的会话数（固定红底数字）。 */
-  failure: number;
+  /** 最近一次正常结束的会话数（固定绿底数字）。 */
+  completed: number;
+  /** 最近一次异常结束的会话数（固定红底数字）。 */
+  failed: number;
 };
 
 export type DerivedStatus = {
@@ -78,36 +100,74 @@ export type DerivedStatus = {
 
 export const projectKey = (agentId: string, projectId: string): string => `${agentId}\u0000${projectId}`;
 
-const emptyStatus = (): Status => ({ running: 0, unread: 0, failure: 0 });
-
 export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedStatus {
   const sessions: DerivedStatus["sessions"] = {};
   const projects: Record<string, Status> = {};
   const agents: Record<string, Status> = {};
 
-  const bump = (bucket: Record<string, Status>, key: string, state: RowActivity["state"], watching: boolean): void => {
-    const entry = bucket[key] ?? emptyStatus();
-    if (state === "running") entry.running += 1;
-    // 正在看的会话不算未读：用户已经看到它了（与服务端 focus 上报、前端 markViewed 同一语义）
-    else if (state === "unread" && !watching) entry.unread += 1;
-    else if (state === "failure") entry.failure += 1;
+  const empty = (): Status => ({ running: 0, completed: 0, failed: 0 });
+  const bucketOf = (bucket: Record<string, Status>, key: string): Status => {
+    const entry = bucket[key] ?? empty();
     bucket[key] = entry;
+    return entry;
   };
 
+  /**
+   * 第一层：**服务端聚合**（覆盖所有 Agent）。
+   *
+   * 这是助手列能显示数字的唯一来源 —— 前端只持有"当前打开 Agent"的会话，
+   * 别的 Agent 一条都不在手上。
+   */
+  for (const entry of facts.aggregate ?? []) {
+    const agentStatus = bucketOf(agents, entry.agentId);
+    agentStatus.running += entry.running;
+    agentStatus.completed += entry.completed;
+    agentStatus.failed += entry.failed;
+    if (entry.projectId !== undefined) {
+      const projectStatus = bucketOf(projects, projectKey(entry.agentId, entry.projectId));
+      projectStatus.running += entry.running;
+      projectStatus.completed += entry.completed;
+      projectStatus.failed += entry.failed;
+    }
+  }
+
+  /**
+   * 第二层：**当前打开的 Agent 的会话行** —— 只用来把"正在跑"改成实时值。
+   *
+   * 为什么只改 running：跑/不跑是**此刻**的事实，SSE 的 row 补丁比快照即时；
+   * 而 completed/failed 是**历史终态**，快照里的索引值就是准的，用行去覆盖反而会漏
+   * （前端手上只有当前项目的会话，别的项目一条都没有 —— 覆盖式实现实测会让 6 变 1）。
+   */
+  const currentAgentId = focus.agentId;
+  const runningOf = (predicate: (meta: StatusMeta) => boolean): number => {
+    let count = 0;
+    for (const row of Object.values(facts.sessions)) {
+      if (row !== undefined && row.activity.state === "running" && predicate(row.meta)) count += 1;
+    }
+    return count;
+  };
   for (const [sessionId, row] of Object.entries(facts.sessions)) {
     if (row === undefined) continue;
     const { meta, activity } = row;
     const watching = focus.visible && focus.sessionId === sessionId && focus.agentId === meta.agentId;
-    const state = activity.state;
     sessions[sessionId] = {
-      running: state === "running",
-      unread: state === "unread" && !watching,
-      failure: state === "failure",
+      running: activity.state === "running",
+      unread: activity.state === "unread" && !watching,
+      failure: activity.state === "failure",
     };
-    // 助手层**累加会话数**（用户 2026-11-03 裁决）：旧实现是"有未读的项目个数"，
-    // 两层单位不同会让"助手显示 1、点进去看到 6 个未读"这种没法解释的现象。
-    bump(agents, meta.agentId, state, watching);
-    if (meta.projectId !== undefined) bump(projects, projectKey(meta.agentId, meta.projectId), state, watching);
+  }
+
+  // 用会话行的运行态替换服务端的运行数（同一 Agent 内，按 Agent / 按项目各自重算）
+  if (currentAgentId !== undefined && Object.keys(facts.sessions).length > 0) {
+    const agentStatus = agents[currentAgentId];
+    if (agentStatus !== undefined) {
+      agentStatus.running = runningOf((meta) => meta.agentId === currentAgentId);
+    }
+    for (const key of Object.keys(projects)) {
+      if (!key.startsWith(`${currentAgentId}\u0000`)) continue;
+      const projectId = key.split("\u0000")[1];
+      projects[key]!.running = runningOf((meta) => meta.agentId === currentAgentId && meta.projectId === projectId);
+    }
   }
   return { sessions, projects, agents };
 }
