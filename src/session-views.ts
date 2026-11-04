@@ -101,6 +101,36 @@ export function createSessionViews(options: SessionViewsOptions) {
       return filled;
     },
     /**
+     * 回填终态（`lastState`/`failureKind`）—— 给**旧版本写入的记录**补上（Task 0005 · P8）。
+     *
+     * 为什么必须有这一步：`lastState` 是本轮新加的字段，此前落盘的记录只有 `completedAt`。
+     * 不做迁移的话，用户打开界面看到的是**全 0**（几十条会话都"结束过"却一个都不计），
+     * 而且这个 0 会一直持续到那些会话各自重新跑一遍。
+     *
+     * 为什么可以推断：`completedAt` 存在 = 这条会话**确实结束过**；
+     * 结束方式写在会话文件最后一条 assistant 的 `stopReason`/`errorMessage` 里
+     * （调用方注入 `resolve` 去读，通常是 `classifyFailure`）。
+     * 读不到（文件已删/没有 assistant）→ 返回 undefined，**这条保持缺失，不编造**。
+     *
+     * 只处理 `lastState === undefined` 的记录：已经有终态的一律不动（新记录是对的）。
+     */
+    async backfillOutcomes(resolve: (agentId: string, sessionId: string) => Promise<TurnOutcome | undefined>): Promise<number> {
+      let filled = 0;
+      for (const [key, entry] of Array.from(state.entries())) {
+        if (entry.completedAt === undefined || entry.lastState !== undefined) continue;
+        const [agentId, sessionId] = key.split("\u0000");
+        const outcome = await resolve(agentId ?? "", sessionId ?? "").catch(() => undefined);
+        if (outcome === undefined) continue;
+        entry.lastState = outcome.state;
+        if (outcome.state === "error" && outcome.failureKind !== undefined) entry.failureKind = outcome.failureKind;
+        else delete entry.failureKind;
+        filled += 1;
+      }
+      if (filled > 0) persistNow();
+      return filled;
+    },
+
+    /**
      * 清理孤儿未读：只保留仍然存在的会话（exists 由调用方注入，通常是查会话文件）。
      * 为什么需要：修复前删除会话没有清未读，残留记录会让侧栏的蓝点永远去不掉（2026-10-25 实测）。
      */
