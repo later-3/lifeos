@@ -43,7 +43,8 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
-import { shortTitleOf } from "../../src/session-title.ts";
+import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
+import type { RowFailureKind, RowPhase } from "../../src/row-activity.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -52,29 +53,65 @@ type Agent = { id: string; name: string; description?: string; avatar?: AgentAva
 type Project = { id: string; name: string; isDefault: boolean; path?: string };
 type UsageSummary = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
 /**
- * 状态标记（任务 0008，项目行与 Agent 行共用）：运行中 = 绿色呼吸点；未读 = 数量徽标（个数，>0 才显示）。
- * 颜色与拍板语义一致：未读是绿色（不是蓝色——蓝色是交互态）。
+ * 状态标记（项目行与助手行共用）：三个**数量**，不是"有/无"。
+ *
+ * ## 为什么是三个数字（Task 0005 · 用户 2026-11-03 裁决）
+ *
+ * 改之前：运行 = 一个呼吸点（不管几个在跑），未读 = 数字。
+ * 两个问题：① "3 个会话在跑"和"1 个在跑"长得一样；② 助手层数字是**项目个数**、
+ * 项目层数字是**会话个数**，单位不同 → "助手显示 1，点进去看到 6 个未读"没法解释。
+ *
+ * 现在三层统一为会话数：正在工作 / 已完成待查看 / 失败。
+ *
+ * ## 样式依据
+ *
+ * - 运行中（呼吸）：用户裁决 A —— 整个徽标呼吸（与行上脉冲点同一节奏 `animate-pulse`）
+ * - 待查看：沿用既有样式（`success-soft` 底 + `success` 字），不新造
+ * - 失败：镜像待查看（`danger-soft` 底 + `danger` 字），三种都用同一尺寸，只换色
+ * - 排列：运行中(左) → 待查看(中) → 失败(右)（用户指定；与"越需要处理越靠右"一致）
+ * - 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）
+ * - `aria-label` 带数量（照 Rocket.Chat `RoomListItem.stories.tsx:55` 的门禁方式，
+ *   比按 class 断言稳）
  */
-function StatusMarks({ status, unit }: { status: { running: boolean; unread: number } | undefined; unit: "会话" | "项目" }) {
-  if (status === undefined) return null;
+function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unread" | "failure"; unit: "会话" }) {
+  if (count <= 0) return null;
+  // 99+ 规则：`design-language.md:217`「数字（超过 99 写 99+）」。上限 99 是设计规范给定的，
+  // 不是我们自创（§3.13）；徽标宽度靠 min-w-4 + px 自适应，不为此另设宽度上限。
+  const text = count > 99 ? "99+" : String(count);
+  const label = kind === "running"
+    ? `${count} 个${unit}正在工作`
+    : kind === "unread"
+      ? `${count} 个${unit}已完成待查看`
+      : `${count} 个${unit}失败`;
+  const tone = kind === "running"
+    ? "bg-success-soft text-success animate-pulse"
+    : kind === "unread"
+      ? "bg-success-soft text-success"
+      : "bg-danger-soft text-danger";
   return (
-    // 状态徽标是动态数据（随用户正常使用变化）：截图基线遮掉，只比骨架（testing 2.9）
+    // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
+    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1.5 text-micro font-medium tabular-nums ${tone}`}
+      role="status" aria-label={label} title={label} data-state-count={kind}>
+      {text}
+    </span>
+  );
+}
+
+function StatusMarks({ status, unit }: { status: { running: number; unread: number; failure: number } | undefined; unit: "会话" }) {
+  if (status === undefined) return null;
+  if (status.running === 0 && status.unread === 0 && status.failure === 0) return null;   // 零值不渲染
+  return (
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
-      {status.running && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" data-state-dot="running" title="生成中" />}
-      {status.unread > 0 && (
-        // 数字语义（任务 0009）：Project 层 = 待查看的会话个数；Agent 层 = 待查看的 Project 个数
-        <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-success-soft px-1.5 text-micro font-medium tabular-nums text-success"
-          aria-label={`${status.unread} 个${unit}待查看`} title={`${status.unread} 个${unit}待查看`}>
-          {status.unread}
-        </span>
-      )}
+      <CountBadge count={status.running} kind="running" unit={unit} />
+      <CountBadge count={status.unread} kind="unread" unit={unit} />
+      <CountBadge count={status.failure} kind="failure" unit={unit} />
     </span>
   );
 }
 
 /** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
 const STREAM_EVENT_NAMES = [
-  "turn", "done", "error", "agents_changed",
+  "turn", "done", "error", "agents_changed", "row",
   "message_start", "message_end", "delta", "thinking", "thinking_end",
   "tool_call", "tool_start", "tool_update", "tool_result", "retrying", "retry_end",
 ] as const;
@@ -83,6 +120,13 @@ const STREAM_EVENT_NAMES = [
 const STREAM_STALE_MS = 25_000;
 /** 运行态对账间隔：与 SSE 心跳无关的兜底，收敛"漏掉 done 事件"的绿点。 */
 const RUN_RECONCILE_MS = 30_000;
+/**
+ * 运行耗时的本地心跳（任务 0005 · D4）：**秒数不走网络**。
+ * 服务端只在 phase/tool 变化时推补丁（≥1000ms 节流）；"跑了多少秒"由前端每秒自己重算。
+ * 取值依据：pi-web 的 `CLOCK_TICK_MS = 60_000` 是给"5分钟前"这种粗粒度用的，
+ * 而运行耗时是用户盯着看的活数 —— 1 秒是"没卡住"的最小可感知粒度（`05-basis.md` §1.2）。
+ */
+const ELAPSED_TICK_MS = 1000;
 const STREAM_WATCHDOG_MS = 5_000;
 
 /** 全局快照（连接即发）：connectionId 用于焦点上报；seq 是事件基线；running/unread 是服务端真相。 */
@@ -99,20 +143,26 @@ type SessionMeta = {
   /** 请求体画像（Task 0012 P1）：图片/文本字节 + 上限来源 */
   payload?: { images: number; text: number; estimated: number; effective?: number; limit: number | null; source: string | null; triggerBytes: number | null; targetBytes: number | null };
 };
-type SessionItem = {
-  sessionId: string; title: string; updatedAt: string; messages: number; isDefault?: boolean; running?: boolean;
-  /** 会话当前的 Task（Task 0015 · T1/T16）：列表第二行显示"这条对话属于哪件事"。 */
-  activeTaskId?: string;
-  /**
-   * 对端 Agent（Task 0015 · T17）：只有"与其他 Agent 的对话"才有。
-   * 后端解析 `lifeos_peer` 标记后给出；普通会话没有这个字段。
-   */
-  peer?: { id: string; name: string; avatar?: AgentAvatarSpec };
-  /**
-   * 失败的**当前**状态（Task 0015 · 结论 5）：只有"最后一条 assistant 以 error 结束"才有。
-   * 历史失败不算（否则一条很久以前挂过的会话会永远显示红色）。
-   */
-  failure?: FailureKind;
+/**
+ * 会话行（任务 0005）：**直接复用后端的 SessionRow 类型**，前端不再自己拼一份投影。
+ *
+ * 为什么要 import 而不是再声明一遍：以前这里声明了 `{title: string, messages: number, peer: ..., failure: ...}`，
+ * 与后端实际返回的形状各自演化（`peer` 一处字符串一处对象），改一边另一边不知道。
+ * 现在类型只有一处（`src/session-rows.ts`），tsc 会把所有漏改点爆出来。
+ */
+type SessionItem = SessionRowData;
+/**
+ * 行补丁的载荷（任务 0005）：与服务端 `src/events.ts` 的 `RowPatch` 对应。
+ * 这里独立声明成"可空"版本 —— 线上可能收到老版本/新版本客户端不认识的值，
+ * 未知键一律忽略（前向兼容）。
+ */
+type RowPatchPayload = {
+  running?: { since: string; phase?: RowPhase; tool?: string } | null;
+  unread?: { since: string } | null;
+  failure?: { kind: RowFailureKind; detail: string; at?: string } | null;
+  lastActivityAt?: string;
+  title?: { raw: string; display: string };
+  task?: { id: string; title: string; status: string; type: string } | null;
 };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
@@ -140,6 +190,23 @@ function readLast(key: string): string | undefined {
 }
 function writeLast(key: string, value: string | undefined) {
   try { if (value === undefined) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* 忽略 */ }
+}
+
+/**
+ * 运行耗时的显示形态（任务 0005）：`12s` / `1m 05s` / `1h 02m`。
+ *
+ * 为什么带 `tick` 参数：函数本身是纯的，但 React 需要知道"每秒都要重算"——
+ * 把 tick 传进来成为依赖，比在组件里塞一个假的 state 读更明确。
+ */
+function formatElapsed(ms: number, tick: number): string {
+  void tick;   // 只为让调用点的渲染依赖它
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
 function timeAgo(iso: string): string {
@@ -285,6 +352,8 @@ export default function App() {
   const sendTextRef = useRef<(raw: string) => void>(() => {});
   // 运行事实（协议 P1·1.4）：三态列表、turn 事件、排队区的唯一事实源；呈现层只读它
   const [runFacts, setRunFacts] = useState(emptyRunFacts);
+  /** 每秒 +1：只为让"运行耗时"重算（不触发任何请求、不改数据）。 */
+  const [elapsedTick, setElapsedTick] = useState(0);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
@@ -661,6 +730,17 @@ export default function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
+  /**
+   * 运行耗时的本地心跳（任务 0005）：每秒让"在跑多久"重算一次。
+   * 只在**真有会话在跑**时才启动 —— 空闲页面上不该有每秒的 setState。
+   */
+  useEffect(() => {
+    const anyRunning = groups.some((group) => group.sessions.some((item) => item.activity.state === "running"));
+    if (!anyRunning) return;
+    const timer = window.setInterval(() => setElapsedTick((n) => n + 1), ELAPSED_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [groups]);
+
   async function refreshAgentDefaultModel(id: string) {
     const response = await fetch(`/api/agents/${id}/config`).catch(() => undefined);
     const data = response?.ok === true
@@ -685,7 +765,7 @@ export default function App() {
   }
 
   function pickLatest(list: SessionItem[]): SessionItem | undefined {
-    return [...list].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+    return [...list].sort((a, b) => (a.time.lastActivityAt < b.time.lastActivityAt ? 1 : -1))[0];
   }
 
   /** 归档助手 = 从列表移除（数据全留）；当前选中的被删时回落到第一个。 */
@@ -929,6 +1009,54 @@ export default function App() {
     for (const action of routeEvent(payload as unknown as RouteEvent, currentFocus(), baselineRef.current)) runStreamAction(action, payload);
   }
 
+  /**
+   * 一行的局部补丁（任务 0005）：**只重建那一行**，其余行引用不变。
+   *
+   * 为什么不是 reloadGroups：那样一个字段变化要 1+N 次请求、每次全扫 JSONL
+   * （实测 60ms / 5,999B）。这里只做对象合并，零请求。
+   *
+   * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
+   */
+  function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined): void {
+    if (patch === undefined || patch === null) return;
+    if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
+    setGroups((previous) => {
+      let touched = false;
+      const next = previous.map((group) => {
+        const index = group.sessions.findIndex((item) => item.sessionId === sessionId);
+        if (index === -1) return group;
+        touched = true;
+        const current = group.sessions[index]!;
+        const activity = { ...current.activity };
+        if ("running" in patch) {
+          if (patch.running === null) { delete activity.running; if (activity.state === "running") activity.state = "idle"; }
+          else if (patch.running !== undefined) {
+            activity.running = { ...patch.running, elapsedMs: Math.max(0, Date.now() - Date.parse(patch.running.since)) };
+            activity.state = "running";
+          }
+        }
+        if ("unread" in patch) {
+          if (patch.unread === null) { delete activity.unread; if (activity.state === "unread") activity.state = "idle"; }
+          else if (patch.unread !== undefined) { activity.unread = patch.unread; if (activity.running === undefined) activity.state = "unread"; }
+        }
+        if ("failure" in patch) {
+          if (patch.failure === null) { delete activity.failure; if (activity.state === "failure") activity.state = "idle"; }
+          else if (patch.failure !== undefined) { activity.failure = patch.failure; if (activity.running === undefined) activity.state = "failure"; }
+        }
+        const sessions = [...group.sessions];
+        sessions[index] = {
+          ...current,
+          activity,
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...("task" in patch ? { task: patch.task ?? null } : {}),
+          ...(patch.lastActivityAt !== undefined ? { time: { ...current.time, lastActivityAt: patch.lastActivityAt } } : {}),
+        };
+        return { ...group, sessions };
+      });
+      return touched ? next : previous;
+    });
+  }
+
   function runStreamAction(action: RouteAction, payload: AgentEvent): void {
     switch (action.kind) {
       case "drop":
@@ -959,7 +1087,7 @@ export default function App() {
       case "completion": {
         const sid = action.sessionId;
         const agentName = agents.find((item) => item.id === action.agentId)?.name ?? "助手";
-        const known = groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sid)?.title;
+        const known = groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sid)?.title.display;
         const announce = (label: string) => toast(`${agentName} · ${label} ${action.outcome === "done" ? "已完成" : "失败"}`, action.outcome === "done" ? "success" : "error", {
           label: "查看",
           run: () => void openFromNotice(action.agentId, sid),
@@ -967,14 +1095,17 @@ export default function App() {
         if (known !== undefined && known !== "") { announce(known.slice(0, 24)); return; }
         // 后台 Agent 的列表没有加载：按需取该 Agent 的会话标题（取不到就用短 id，提示照常出现）
         void fetch(`/api/agents/${action.agentId}/sessions`)
-          .then((response) => (response.ok ? response.json() as Promise<{ items: Array<{ sessionId: string; title?: string }> }> : undefined))
+          .then((response) => (response.ok ? response.json() as Promise<{ items: Array<{ sessionId: string; title?: { raw: string; display: string } }> }> : undefined))
           .then((body) => {
-            const title = body?.items.find((item) => item.sessionId === sid)?.title;
+            const title = body?.items.find((item) => item.sessionId === sid)?.title?.display;
             announce(title !== undefined && title !== "" ? title.slice(0, 24) : `会话 ${sid.slice(-6)}`);
           })
           .catch(() => announce(`会话 ${sid.slice(-6)}`));
         return;
       }
+      case "row":
+        applyRowPatch(action.agentId, action.sessionId, action.patch as RowPatchPayload);
+        return;
       case "agents-changed":
         void onAgentsChanged();
         return;
@@ -1250,7 +1381,7 @@ export default function App() {
   async function commitRename(session: SessionItem, value: string) {
     setRenaming(undefined);
     const trimmed = value.trim();
-    if (agent === undefined || trimmed === "" || trimmed === session.title) return;
+    if (agent === undefined || trimmed === "" || trimmed === session.title.raw) return;
     await fetch(`/api/agents/${agent.id}/sessions/${session.sessionId}`, {
       method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: trimmed }),
     });
@@ -1669,7 +1800,8 @@ export default function App() {
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
-  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title ?? "";
+  // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
+  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
   const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
@@ -1736,14 +1868,19 @@ export default function App() {
    * 显示规则（07-id-normalization.md §5）：界面永远优先显示可读名；
    * 只有在没有名字时才显示 id，并且**加视觉区分**（等宽 + 弱色），让人知道"这是 id 不是名字"。
    */
+  /**
+   * 显示用标题（任务 0005）：**直接用后端算好的 `title.display`**，前端不再自己削。
+   *
+   * 以前这里是 `shortTitleOf(item.title).slice(0, 50)` —— 与后端各算一遍，
+   * 同一条会话在列表与头部可能显示成两个不同的名字（01 §3 第 5 条）。
+   * 现在规则只在 `src/row-activity.ts` 的 `displayTitleOf()` 一处。
+   */
   const titleOf = (item?: SessionItem) => {
-    const title = (item?.title ?? "").trim();
-    // 显示用短标题（Task 0015 · 10.1）：去掉"请用/我们现在/我想要"这类没有区分度的引导语。
-    // **不改落盘数据**——存进会话文件的仍是原话（titleFromFirstMessage 不变）。
-    return title !== "" ? shortTitleOf(title).slice(0, 50) : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
+    const display = item?.title.display ?? "";
+    return display !== "" ? display : `会话 ${(item?.sessionId ?? "").slice(0, 8)}`;
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
-  const isIdFallback = (item?: SessionItem) => (item?.title ?? "").trim() === "";
+  const isIdFallback = (item?: SessionItem) => (item?.title.raw ?? "").trim() === "";
   /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
   const currentSessionItem = sessionId === undefined
     ? undefined
@@ -1768,8 +1905,9 @@ export default function App() {
    *   这不是猜，是存储事实（目录即归属）。
    */
   const peerOfSession = (sid: string) => {
+    // 任务 0005：行对象的 `peer` 是**对象或 null**（不再一处字符串一处对象）
     const explicit = groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sid)?.peer;
-    if (explicit !== undefined) return explicit;
+    if (explicit !== null && explicit !== undefined) return explicit;
     return agent === undefined ? undefined : { id: agent.id, name: agent.name, ...(agent.avatar !== undefined ? { avatar: agent.avatar } : {}) };
   };
 
@@ -1792,10 +1930,15 @@ export default function App() {
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
   // 状态映射（任务 0008）：会话 → 项目 → Agent 的运行与未读全部由同一份会话事实派生
+  // 聚合只吃 **会话行的 activity**（Task 0005）：单一来源，行上的点和这里的数字不可能对不上。
+  // 归属取自 groups（列表就是归属的权威：项目 → 会话）；没有行的会话不参与聚合。
   const statusFacts: StatusFacts = {
-    sessions: runFacts.meta,
-    running: [...new Set([...runFacts.snapRunning, ...Object.keys(runFacts.lastTurn).filter((sid) => runFacts.lastTurn[sid]?.state === "running")])],
-    unread: Object.keys(runFacts.unread).filter((sid) => runFacts.unread[sid] === true),
+    sessions: Object.fromEntries(
+      groups.flatMap((group) => group.sessions.map((item) => [
+        item.sessionId,
+        { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity },
+      ])),
+    ),
   };
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
@@ -1815,7 +1958,7 @@ export default function App() {
                     <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
                   </button>
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                  <StatusMarks status={derived.agents[item.id]} unit="项目" />
+                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
                   <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
                     <IconButton label="删除助手" size="sm"
                       onClick={(event) => {
@@ -1876,20 +2019,32 @@ export default function App() {
                           <p className="px-1 py-2 text-micro text-ink-500">该项目还没有会话 · 在右下输入框发消息即可新建</p>
                         )}
                         {group.sessions.map((item) => {
+                          // 会话行的三态**只认 `item.activity`**（Task 0005）。
+                          // 它同时被两处维护：列表请求（服务端 rowActivityOf 四态）+ SSE `row` 补丁
+                          // （applyRowPatch 只重建这一行）。此前这里还叠了 runFacts 一套，
+                          // 等于同一个状态两个来源——删掉，四态是唯一判据。
                           const own = derived.sessions[item.sessionId];
-                          const runNow = item.running || own?.running === true || isRunning(runFacts, item.sessionId);
-                          const unread = own !== undefined ? own.unread : hasUnread(runFacts, item.sessionId);
+                          const runNow = item.activity.state === "running";
+                          const unread = item.activity.state === "unread" && own?.unread !== false;
                           const peer = peerOfSession(item.sessionId);
+                          const failure = item.activity.failure;
+                          // 运行耗时**本地现算**（任务 0005 · D4）：服务端只给 `since`，
+                          // 秒数由 `elapsedTick` 每秒推动，零网络。`elapsedTick` 参与计算是为了
+                          // 让它成为这个渲染的依赖 —— 没有它，React 不知道要重算。
+                          const runningSince = item.activity.running?.since;
+                          const elapsedText = runningSince === undefined
+                            ? ""
+                            : formatElapsed(Math.max(0, Date.now() - Date.parse(runningSince)), elapsedTick);
                           return (
                             <SessionRow key={item.sessionId} testId={item.sessionId}
                               selected={item.sessionId === sessionId}
                               title={titleOf(item)} titleFallback={isIdFallback(item)}
                               onSelect={() => agent !== undefined && void openSession(agent, item.sessionId)}
                               onHistory={() => openHistory(item.sessionId, titleOf(item))}
-                              onRename={() => setRenaming({ sid: item.sessionId, value: item.title })}
+                              onRename={() => setRenaming({ sid: item.sessionId, value: item.title.raw })}
                               onDelete={() => setConfirm({
                                 title: "删除会话",
-                                message: `删除「${item.title || "未命名"}」？此操作不可恢复。`,
+                                message: `删除「${item.title.display || "未命名"}」？此操作不可恢复。`,
                                 confirmLabel: "删除",
                                 run: () => void removeSession(item),
                               })}
@@ -1901,19 +2056,24 @@ export default function App() {
                               participants={<ParticipantToken
                                 me={meParticipant}
                                 them={peer === undefined ? undefined : { id: peer.id, name: peer.name, ...(peer.avatar !== undefined ? { avatar: peer.avatar } : {}) }}
-                                showMe={item.peer !== undefined}
+                                showMe={item.peer !== null}
                                 ringClass={item.sessionId === sessionId ? "ring-2 ring-surface" : "ring-2 ring-sunken"} />}
                               meta={
                                 <>
                                   {/* 对端名字**只在对端不是当前 Agent 时**出现：
                                       右栏里的会话全部属于当前 Agent，把它的名字每行写一遍没有信息增量；
                                       只有 Agent ↔ Agent 的会话，"对方是谁"才是新信息（T17）。 */}
-                                  {item.peer !== undefined && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
-                                  {item.activeTaskId !== undefined && <span>{item.activeTaskId}</span>}
+                                  {item.peer !== null && <><span className="text-ink-700">{peer?.name ?? item.peer.id}</span><span> · </span></>}
+                                  {/* 任务 0005：Task 名现在直接来自行对象（一次请求即得），不再额外打 /tasks。
+                                      编号 + 名字都给：编号用于对照 Task 文档，名字用于人读。 */}
+                                  {item.task !== null && <span title={`${item.task.id} ${item.task.title}（${item.task.status}）`}>{item.task.id} {item.task.title}</span>}
                                   {/* 失败态（结论 5）：红点 + 类别。"它挂了"和"它挂在哪"是两件事，
                                       只给红点用户不敢重试（不知道是网络抖还是需求本身有问题）。 */}
-                                  {item.failure !== undefined && !runNow && (
-                                    <><span> · </span><span className="text-danger">失败：{failureLabel(item.failure)}</span></>
+                                  {runNow && elapsedText !== "" && (
+                                    <><span> · </span><span className="tabular-nums" title="本轮已运行时长">{elapsedText}</span></>
+                                  )}
+                                  {failure !== undefined && !runNow && (
+                                    <><span> · </span><span className="text-danger" title={failure.detail || undefined}>失败：{failureLabel(failure.kind)}</span></>
                                   )}
                                   {/* 运行中**不写阶段文案**（Task 0015 · 10.2 ②）：
                                       `phase` 只有"当前打开会话"一份，列表里每条运行中的会话都用它会显示
@@ -1924,12 +2084,12 @@ export default function App() {
                               }
                               status={runNow
                                 ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
-                                : item.failure !== undefined
+                                : failure !== undefined
                                   // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
-                                  ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(item.failure)}`} />
+                                  ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
                                   : unread
                                     ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
-                                    : <span className="text-micro text-ink-500">{timeAgo(item.updatedAt)}</span>} />
+                                    : <span className="text-micro text-ink-500">{timeAgo(item.time.lastActivityAt)}</span>} />
                           );
                         })}
                       </GroupBody>
@@ -2013,7 +2173,7 @@ export default function App() {
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
                 // 只有 Agent↔Agent 的会话才有对端（用户↔Agent 的对端就是当前 Agent，写了是重复）
-                ...(currentSessionItem?.peer !== undefined ? { peerName: currentSessionItem.peer.name } : {}),
+                ...(currentSessionItem?.peer != null ? { peerName: currentSessionItem.peer.name } : {}),
                 projectName: currentGroup?.project.name ?? "",
                 sessionTitle,
                 headerModel: headerModel ?? null,
@@ -2452,7 +2612,16 @@ export default function App() {
         onLevelChange={setMobileNavLevel}
         onBack={mobileNavBack}
         onClose={() => dismissMobile(() => setMobileNav(false))}
-        agents={agents} groups={groups} {...(agent !== undefined ? { agent } : {})}
+        agents={agents}
+        groups={groups.map((group) => ({
+          project: group.project,
+          sessions: group.sessions.map((session) => ({
+            sessionId: session.sessionId,
+            title: titleOf(session),
+            ...(session.activity.state === "running" ? { running: true } : {}),
+          })),
+        }))}
+        {...(agent !== undefined ? { agent } : {})}
         {...(selectedProjectId !== undefined ? { projectId: selectedProjectId } : {})}
         {...(sessionId !== undefined ? { sessionId } : {})}
         canNewSession={sessionId !== undefined}

@@ -14,6 +14,7 @@
 | 后端 / 会话改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/backend/code.md` |
 | 参考图 / 视觉参考 | `frontend/resources/AGENTS.md`（**先读索引**：每张图的内容/布局/风格/可借/不可借 + 四级读取阶梯）→ 需要细节再看联系表/单张缩略 → 最后才读原图 |
 | 接口 / 事件改动 | `.lifeos/projects/lifeos/knowledge/architecture/agent.md`、`.lifeos/projects/lifeos/knowledge/architecture/conversation.md`（先读事实）→ `.lifeos/projects/lifeos/specs/code/api/api.md` |
+| **会话列表 / 状态点 / 状态数量** | `knowledge/architecture/agent.md` §4（`SessionRow` 字段与来源、四态唯一实现）→ `knowledge/architecture/conversation.md` §13b（`row` 补丁事件的三条发送规则）→ `specs/code/api/api.md` 2.7/2.8（一个形状一处实现；局部补丁）→ `specs/code/testing/testing.md` 2.15（界面契约必须断言到几何，**0×0 的假断言会让回归恒绿**）→ 规模/虚拟化计划见 `knowledge/architecture/session-list-rendering.md` |
 | 测试用例 | `.lifeos/projects/lifeos/specs/code/testing/testing.md`；检视时的证据规则见 `.lifeos/projects/lifeos/specs/review/review.md` |
 | 检视 / 评审 | `.lifeos/projects/lifeos/specs/review/review.md` → 按范畴核对 `.lifeos/projects/lifeos/specs/code/` 对应条文 |
 | 架构 / 底座 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md`、`.lifeos/projects/lifeos/knowledge/architecture/foundation.md`（事实现状）→ `.lifeos/projects/lifeos/specs/code/architecture/architecture.md`（约束） |

@@ -1189,39 +1189,41 @@ for (const [name, width, setup, clipTo, install] of SHOTS) {
 await shotBrowser.close();
 
 
-// —— P1·1.4 三态点契约（run-facts）—— 跨会话运行 / 完成未读 / 失败 三态标记必须**画出来**。
+// —— P1·1.4 三态点契约 —— 跨会话运行 / 完成未读 / 失败 三态标记必须**画出来**。
 //
-// 2026-11-02 重写（Task 0004 · C161 反例）：上一版用 `[data-session-id]` 取行（前端从未渲染这个属性，
-// 实测 0 个）、用 `[title="完成未读"]` 匹配（真实 title 是 "完成未读（查看后消失）"，实测 0 个），
-// 唯一断言数页面上的 `[data-testid]` 个数 —— 于是"点渲染成 0×0"的回归它是绿的。
-// 现在按真实结构断言三点：① 行选择器能用；② 点**存在**；③ 点**有布局盒**（≥6×6 且 offsetParent 非空）。
-// 状态由注入的 SSE 快照决定（route 拦截），不依赖这台机器上恰好有未读/在跑的会话，也不写真实数据。
+// 2026-11-02 重写（Task 0004 · C161 反例）：上一版用 `[data-session-id]` 取行（前端从未渲染这个属性）
+// 与 `[title="完成未读"]` 精确匹配（真实 title 带后缀），两者都命中 0，断言只剩"数元素个数" → 恒绿。
+// 现在断言三点：① 行选择器能用 ② 点**存在** ③ 点**有布局盒**（≥6×6 且 offsetParent 非空）。
+//
+// **2026-11-03 再改（Task 0005）**：注入点从 **SSE 快照** 改成 **sessions 接口的 `activity`**。
+// 为什么必须改：会话行的三态现在只认 `item.activity`（服务端四态 + `row` 补丁维护），
+// 不再读前端 run-facts。继续注入快照的话这条断言会**假通过**（快照不影响点，点永远是 0 个，
+// 而"0 个"又恰好满足"没有 0×0 的点"）——正好是 C161 那个假断言的新形态。
+// 教训写进 `specs/code/testing` 2.15：夹具跟实现走，实现换了数据源，夹具必须跟着换。
 {
   const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   // 焦点上报会改服务端"已读"时间：拦掉不转发，门禁只读不写。
   await runPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
   const ids = (listed.items ?? []).map((item) => item.sessionId).filter((id) => typeof id === "string");
-  check("P1·1.4 三态点：能拿到夹具会话", ids.length >= 2, `${ids.length} 条`);
-  if (ids.length >= 2) {
-    const now = new Date().toISOString();
-    const snapshot = {
-      connectionId: "ui-contract-status-dot", seq: 1, turns: [],
-      running: [{ agentId: "lifeosagent", sessionId: ids[0], startedAt: now }],
-      unread: [{ agentId: "lifeosagent", projectId: "workspace", sessionId: ids[1], completedAt: now }],
-    };
-    await runPage.route("**/api/events", (route) => route.fulfill({
-      status: 200, headers: { "content-type": "text/event-stream" },
-      body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`,
-    }));
-    // 运行态每 30 秒（以及打开页首次）用 /api/runtime 对账，真值说"没在跑"就会把夹具冲掉——
-    // 夹具里也把对账接口对齐，否则测的是"没有运行点"而不是"运行点画不出来"。
-    await runPage.route("**/api/runtime", (route) => route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify({ running: snapshot.running, draining: false }),
-    }));
+  check("P1·1.4 三态点：能拿到夹具会话", ids.length >= 3, `${ids.length} 条`);
+  if (ids.length >= 3) {
+    const at = new Date().toISOString();
+    const plan = new Map([
+      [ids[0], { state: "running", running: { since: at, elapsedMs: 0, phase: "tool", tool: "read" } }],
+      [ids[1], { state: "unread", unread: { since: at } }],
+      [ids[2], { state: "failure", failure: { kind: "auth", detail: "ui-contract fixture", at } }],
+    ]);
+    await runPage.route("**/sessions", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const item of body.items ?? []) {
+        const p = plan.get(item.sessionId);
+        if (p !== undefined) item.activity = p;
+      }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    });
     await runPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
-    // 等会话行渲染（骨架屏 / 空态都不算）
     const rowsReady = await runPage.waitForFunction(
       () => document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length > 0, null, { timeout: 15000 },
     ).then(() => true, () => false);
@@ -1237,13 +1239,15 @@ await shotBrowser.close();
         running: pick('[title="生成中"]'),
         // 未读的 title 带引导语后缀（Task 0015 加），所以按前缀匹配
         unread: pick('[title^="完成未读"]'),
-        failure: pick('[title^="失败："]'),
+        failure: pick('[title^="失败"]'),
         rows: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length,
       };
     });
-    // ① 存在性：注入的快照里各有一个，必须各画出至少一个（漏画 = 缺陷）
+    // ① 存在性：注入的三个状态各必须画出至少一个（漏画 = 缺陷）。
+    //    0 个不等于通过 —— 那是"夹具没生效"，必须在断言里说清，否则又是假绿。
     check("P1·1.4 三态点：运行点已渲染", dots.running.length >= 1, `${dots.running.length} 个`);
     check("P1·1.4 三态点：未读点已渲染", dots.unread.length >= 1, `${dots.unread.length} 个`);
+    check("P1·1.4 三态点：失败点已渲染", dots.failure.length >= 1, `${dots.failure.length} 个`);
     // ② 有布局盒：0×0 等于没画（本次回归的判据）。6×6 是 h-1.5/w-1.5 的设计尺寸。
     const flat = [...dots.running, ...dots.unread, ...dots.failure]
       .filter((dot) => dot.w < 6 || dot.h < 6 || !dot.attached)
@@ -1507,6 +1511,78 @@ const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
+
+// —— P1·1.5 聚合数量契约（Task 0005）：项目行 / 助手行必须是**三个数量**，不是"有/无" ——
+//
+// 改之前：运行 = 一个呼吸点（几个在跑都一样），助手层数字是"项目个数"、项目层是"会话个数"。
+// 现在三层统一为会话数：正在工作 / 已完成待查看 / 失败，各自独立。
+// 断言到**可核对的事实**（数量文本 + aria-label + 有布局盒），不数 class。
+// 参照 Rocket.Chat `RoomListItem.stories.tsx:55`：用 role=status + aria-label 做断言最稳。
+{
+  const countPage = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
+  await countPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
+  const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
+  const ids = (listed.items ?? []).map((item) => item.sessionId);
+  check("P1·1.5 聚合数量：能拿到夹具会话", ids.length >= 6, `${ids.length} 条`);
+  if (ids.length >= 6) {
+    // 夹具：2 运行 + 3 待查看 + 1 失败 = 6，全部落在同一个项目里，所以项目行与助手行数字必须相同。
+    const plan = new Map();
+    const since = new Date(Date.now() - 90_000).toISOString();
+    ids.forEach((sid, i) => {
+      if (i < 2) plan.set(sid, { state: "running", running: { since, elapsedMs: 90_000 } });
+      else if (i < 5) plan.set(sid, { state: "unread", unread: { since: new Date().toISOString() } });
+      else if (i === 5) plan.set(sid, { state: "failure", failure: { kind: "auth", detail: "fixture", at: new Date().toISOString() } });
+    });
+    await countPage.route("**/sessions", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      for (const item of body.items ?? []) { const p = plan.get(item.sessionId); if (p) item.activity = p; }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    });
+    await countPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
+    const ready = await countPage.waitForFunction(
+      () => document.querySelectorAll('[data-state-count]').length > 0, null, { timeout: 15000 },
+    ).then(() => true, () => false);
+    check("P1·1.5 聚合数量：数量徽标已渲染", ready);
+    await countPage.waitForTimeout(1200);
+    const read = await countPage.evaluate(() => {
+      const grab = (scope) => {
+        const root = document.querySelector(scope);
+        if (root === null) return [];
+        return [...root.querySelectorAll('[data-state-count]')].map((el) => {
+          const box = el.getBoundingClientRect();
+          return {
+            kind: el.dataset.stateCount, text: el.textContent.trim(),
+            aria: el.getAttribute("aria-label") ?? "",
+            shown: box.width >= 12 && box.height >= 12 && el.offsetParent !== null,
+            animated: getComputedStyle(el).animationName !== "none",
+          };
+        });
+      };
+      return { project: grab('[data-testid="groups-panel"]'), agent: grab('[data-shot-mask="agent-rows"]') };
+    });
+    for (const scope of ["project", "agent"]) {
+      const rows = read[scope];
+      const label = scope === "project" ? "项目行" : "助手行";
+      for (const want of [{ kind: "running", text: "2" }, { kind: "unread", text: "3" }, { kind: "failure", text: "1" }]) {
+        const got = rows.find((r) => r.kind === want.kind);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」显示 ${want.text}`, got !== undefined && got.text === want.text,
+          got === undefined ? "没有这个徽标" : `实际 ${got.text}`);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」有布局盒`, got !== undefined && got.shown,
+          got === undefined ? "缺失" : `${got.text} 未挂载或过小`);
+        check(`P1·1.5 聚合数量：${label}「${want.kind}」aria 带数量`, got !== undefined && got.aria.includes(want.text),
+          got === undefined ? "缺失" : got.aria);
+      }
+      // 只有运行中那个在呼吸（用户裁决 A：整个徽标呼吸）
+      const running = rows.find((r) => r.kind === "running");
+      const unread = rows.find((r) => r.kind === "unread");
+      check(`P1·1.5 聚合数量：${label}「运行中」在呼吸、「待查看」不呼吸`,
+        running?.animated === true && unread?.animated === false,
+        `running=${running?.animated} unread=${unread?.animated}`);
+    }
+    await countPage.close();
+  }
+}
 
 const failed = results.filter((item) => !item.ok);
 for (const item of results) console.log(`${item.ok ? "✔" : "✖"} ${item.name}${item.detail === "" ? "" : `  → ${item.detail}`}`);

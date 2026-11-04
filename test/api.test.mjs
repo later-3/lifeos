@@ -60,12 +60,16 @@ test("出厂默认会话随模板预置：列表首条即它，第一条消息�
     assert.equal(list.items.length, 1, "新装家目录应只有出厂默认会话这一条");
     const sid = list.items[0].sessionId;
     assert.equal(list.items[0].isDefault, true, "出厂会话应带默认标记（agent.json defaultSessionId）");
-    assert.equal(list.items[0].title, "welcome to lifeos", "显示名=预置的 session_info.name");
-    // 消息条数只数 `type:"message"`（Task 0015 · todo #30）：出厂会话有 1 条 assistant 打招呼。
-    // 以前是文件总行数，会把手 session 头 / session_info 都算进去（实测 389 vs 31）。
-    assert.equal(list.items[0].messages, 1, "列表的 messages 必须是真实消息条数，不是文件行数");
-    // 失败态（Task 0015 · 结论 5）：成功的会话**不带** failure 字段（不带 ≠ 空值，前端据此判断红点）
-    assert.equal("failure" in list.items[0], false, "正常结束的会话不应带 failure");
+    // 任务 0005：行对象重定义为 SessionRow —— `title` 是 `{raw, display}`（同源派生，不是两份数据），
+    // 旧的 `title: string` / `messages: number` / `failure: string` 已被取代。
+    assert.equal(list.items[0].title.raw, "welcome to lifeos", "raw = 预置的 session_info.name（唯一一份）");
+    assert.equal(list.items[0].title.display, "welcome to lifeos", "display 由同一份 raw 派生");
+    // 计数改为分项（pi-web lib/session-stats.ts 同口径）：出厂会话有 1 条 assistant 打招呼。
+    assert.deepEqual(list.items[0].counts, { user: 0, assistant: 1, toolResult: 0, system: 0, total: 1 },
+      "counts 分项：只数 type===\"message\" 的条目，按 role 归类");
+    // 失败态改为 activity 四态：正常结束 → state 不是 failure（前端据此判断红点）
+    assert.notEqual(list.items[0].activity.state, "failure", "正常结束的会话不应是失败态");
+    assert.equal("failure" in list.items[0].activity, false, "不带 failure 键（不带 ≠ 空值）");
 
     // 加载即显示：第一条 = assistant 打招呼（不调模型，直接来自预置文件）
     const { messages } = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`)).json();
@@ -97,15 +101,21 @@ test("手动新建的会话是空白的（开场只属于出厂默认会话）",
   } finally { server.close(); }
 });
 
-test("三层结构：project 列表 = projects/ 目录（名称即目录名），按 project 列会话，未知 project 404", async () => {
+test("三层结构：project 列表 = projects/ 目录（id 即目录名，name 取 project.json），按 project 列会话，未知 project 404", async () => {
   const { server, base } = await start();
   try {
     const projects = await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json();
-    // 项目名 = 安装路径的目录 basename（project-registry.ts:80）；测试从任意 worktree 跑都可能，所以不硬编码仓库名。
-    assert.deepEqual(projects.items, [
-      { id: "workspace", name: "workspace", isDefault: true },
-      { id: "lifeos", name: basename(process.cwd()), isDefault: false, path: process.cwd() },
-    ], "出厂绑定：默认 workspace + LifeOS 项目（path 为安装时的仓库根）");
+    // 任务 0005 改了名称来源：**`project.json` 的 `name` 优先，`basename(path)` 只兜底**。
+    // 旧断言写死 "name = basename(cwd)"，正是被修掉的缺陷：worktree 绑定后项目名会显示成 "worktree"
+    // （实测见任务 0005 的 evidence/2026-11-02-09-list-bugs.json）。
+    // 现在 `id` 仍然是目录名（URL 用它），`name` 是项目自己的名字。
+    assert.equal(projects.items.length, 2, "出厂绑定：默认 workspace + LifeOS 项目");
+    assert.deepEqual(projects.items[0], { id: "workspace", name: "workspace", isDefault: true }, "默认项目在前");
+    const lifeos = projects.items[1];
+    assert.equal(lifeos.id, "lifeos", "id = 目录名（URL 用）");
+    assert.equal(lifeos.name, "lifeos", "name 取 project.json 的 name，**不是** checkout 目录名");
+    assert.equal(lifeos.path, process.cwd(), "path 为安装时的仓库根");
+    assert.equal(lifeos.isDefault, false);
 
     const sessions = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
     assert.ok(sessions.items.length >= 1, "默认工作区下应有出厂会话");
@@ -204,7 +214,10 @@ test("消息块：thinking / toolCall / toolResult 按 Pi 真实结构返回", a
     assert.equal(blocks[1].isError, false);
     assert.equal(messages[2].text, "有一个文件");
     const list = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
-    assert.equal(list.items.find((item) => item.sessionId === sid).title.length, 60, "首条用户消息全文返回（UI 层才截 50）");
+    // 任务 0005：`raw` 保留全文（上限 TITLE_MAX_CHARS=60），`display` 是显示形态（≤50，并去掉引导语）。
+    const titled = list.items.find((item) => item.sessionId === sid);
+    assert.equal(titled.title.raw.length, 60, "raw 是落盘原话（上限 60）");
+    assert.ok(titled.title.display.length <= 50, "display 是显示形态（≤50）");
   } finally { server.close(); }
 });
 
@@ -218,7 +231,7 @@ test("重命名会话：列表标题优先 session_info 展示名", async () => 
     });
     assert.equal(renamed.status, 200);
     const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
-    assert.equal(after.items.find((item) => item.sessionId === sid).title, "我的默认会话");
+    assert.equal(after.items.find((item) => item.sessionId === sid).title.raw, "我的默认会话", "重命名写的是 session_info.name = title.raw");
     const bad = await fetch(`${base}/api/agents/lifeosagent/sessions/${sid}`, {
       method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "  " }),
     });
@@ -956,7 +969,11 @@ test("会话列表的失败态：最后一条 assistant 以 error 结束才带 f
     const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
     const item = after.items.find((entry) => entry.sessionId === sid);
     assert.ok(item !== undefined);
-    assert.equal(item.failure, "network", "连不上 → classifyFailure 归为 network，界面上显示 '失败：连不上'");
+    // 任务 0005：失败信息升级为 `activity.failure = {kind, detail}`，
+    // `detail` 是落盘原文（不脱敏、不截断 —— 用户 2026-11-03 裁决）。
+    assert.equal(item.activity.state, "failure", "最后一条 assistant 以 error 结束 → 失败态");
+    assert.equal(item.activity.failure.kind, "network", "连不上 → classifyFailure 归为 network");
+    assert.equal(item.activity.failure.detail, "fetch failed: ECONNREFUSED", "detail = 落盘原文");
 
     // 历史失败不该盖住当前状态：再追加一条正常 assistant 消息 → failure 消失
     const ok = JSON.stringify({
@@ -965,6 +982,6 @@ test("会话列表的失败态：最后一条 assistant 以 error 结束才带 f
     });
     await writeFile(path, `${original.trimEnd()}\n${errored}\n${ok}\n`, "utf8");
     const recovered = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
-    assert.equal("failure" in recovered.items.find((entry) => entry.sessionId === sid), false, "之后又有正常回复 → 不再算失败");
+    assert.notEqual(recovered.items.find((entry) => entry.sessionId === sid).activity.state, "failure", "之后又有正常回复 → 不再算失败");
   } finally { server.close(); }
 });

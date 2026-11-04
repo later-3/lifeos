@@ -7,7 +7,12 @@ import { Button, Row } from "./design/ui";
 
 type AgentLite = { id: string; name: string; avatar?: AgentAvatarSpec };
 type ProjectLite = { id: string; name: string; isDefault?: boolean };
-type SessionLite = { sessionId: string; title: string; updatedAt: string; running?: boolean };
+/**
+ * 手机导航只用到三样东西（标题 / 是否在跑 / 是否未读），所以这里声明的是一份**投影**，
+ * 由 App 从 `SessionRow` 映射而来 —— 手机导航不直接吃整个行对象，避免它跟着后端字段一起改。
+ * （任务 0005：`title` 是显示形态、`running` 来自 `activity.state`。）
+ */
+type SessionLite = { sessionId: string; title: string; running?: boolean };
 type GroupLite = { project: ProjectLite; sessions: SessionLite[] };
 export type Level = "agents" | "projects" | "sessions";
 

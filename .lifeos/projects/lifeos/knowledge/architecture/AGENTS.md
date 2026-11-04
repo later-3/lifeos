@@ -4,9 +4,9 @@
 
 | 文档 | 内容 |
 |---|---|
-| `agent.md` | Agent 的结构与配置 |
+| `agent.md` | Agent 的结构与配置（§4 会话：`SessionRow` 行对象字段与来源、四态唯一实现、`/tasks` 一次分组） |
 | `agent-memory.md` | 记忆体系 |
-| `conversation.md` | 会话与回合 |
+| `conversation.md` | 会话与回合（§13b `row` 补丁事件：发送规则、为什么合并成最后一次状态） |
 | `directory-structure.md` | 家目录结构 |
 | `foundation.md` | 技术底座（含 §11 出站 HTTP 与代理：为什么必须装 undici dispatcher、`NODE_USE_ENV_PROXY` 为什么不够） |
 | `identifiers.md` | 实体 id 规则（url 类 ASCII / fs 类可读名；不再静默生成随机 id） |

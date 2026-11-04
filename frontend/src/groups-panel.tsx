@@ -225,7 +225,9 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
             （MDN CSS/width：applies to all elements but non-replaced inline elements），
             包装器是 block+width:auto 时就一起塌成 0×0 —— 未读点、运行点、失败点全部看不见。
             合并前这个点是 flex item 所以正常，hover 包装器把它变成了 block 子元素。
-            上游 pi-web 同构：`app/sidebar.css:357` `.session-tree-meta{display:flex}`。 */}
+            上游 pi-web 同构：`app/sidebar.css:357` `.session-tree-meta{display:flex}`。
+            （Task 0005 的 worktree 从 0004 修复前的 commit 分出，两边都改到这里；
+            本任务已把同一处修复移植进分支 —— 合并后此处为单一事实，注释只留这一份。） */}
         <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{status}</span>
         <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><IconHistory size={14} /></IconButton>

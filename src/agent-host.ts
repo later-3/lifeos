@@ -17,6 +17,8 @@ import { resolveHome } from "./home.ts";
 import { createAgentTools } from "./agent-tools.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
+import { phaseOfStreamEvent, rowPatches } from "./row-patch.ts";
+import { displayTitleOf } from "./row-activity.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { envRefsOf, envRefState, isCommandConfigValue } from "./env-refs.ts";
 import { reloadEnvFromShellConfigs } from "./env-reload.ts";
@@ -220,53 +222,6 @@ function projectOfSessionDir(dir: string): string {
 }
 
 /** 会话物理落在所属 project 的 sessions/ 下（协议 §12.1 结构即事实；默认 workspace）。 */
-/**
- * 按 Task 列出会话（Task 0015 · T14）：回答"这个 Task 下有哪些对话"。
- *
- * 实现是**全扫**（不建索引）：与 `listSessions` 同口径——单 Agent×项目的会话是几十级，
- * 一次扫描 <10ms；建索引反而要维护第二份事实（协议：结构即事实）。
- *
- * 判定：读会话文件里最后一条 `lifeos_active_task` 的 taskId；相等即属于该 Task。
- * 没有 Task 指针的老会话 → 不算（它们没有可回查的事实，不猜）。
- */
-export async function sessionsOfTask(
-  agentId: string,
-  projectId: string,
-  taskId: string,
-): Promise<Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }>> {
-  const dir = sessionDir(agentId, projectId);
-  const files = await readdir(dir).catch(() => [] as string[]);
-  const out: Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }> = [];
-  for (const file of files) {
-    if (!file.endsWith(".jsonl")) continue;
-    const path = join(dir, file);
-    const text = await readFile(path, "utf8").catch(() => "");
-    let sessionId: string | undefined;
-    let title: string | undefined;
-    let activeTask: string | undefined;
-    for (const line of text.split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        const entry = JSON.parse(line) as { type?: string; id?: string; name?: unknown; customType?: string; data?: { taskId?: unknown } };
-        if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
-        if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") title = entry.name;
-        if (entry.type === "custom" && entry.customType === ACTIVE_TASK_ENTRY && typeof entry.data?.taskId === "string") {
-          activeTask = entry.data.taskId;
-        }
-      } catch { /* 坏行跳过 */ }
-    }
-    if (sessionId === undefined || activeTask !== taskId) continue;
-    const info = await stat(path).catch(() => undefined);
-    out.push({
-      sessionId,
-      ...(title !== undefined ? { title } : {}),
-      updatedAt: (info?.mtime ?? new Date(0)).toISOString(),
-      running: isRunning(agentId, sessionId),
-    });
-  }
-  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-}
-
 export function sessionDir(agentId: string, projectId = "workspace"): string {
   return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
 }
@@ -331,13 +286,40 @@ export async function createSession(agentId: string, cwd: string, projectIdInput
   return sessionId;
 }
 
-/** 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。 */
-export function pendingSessions(agentId: string): Array<{ sessionId: string; projectId: string; at: string; taskId?: string; name?: string }> {
+/**
+ * 待落盘会话清单（供列表合并；含展示名，改名在未落盘阶段也不丢）。
+ *
+ * 任务 0005：**同时给出内存里的消息角色计数**。为什么需要：
+ * 会话文件还没落盘时，若只给名字，行对象里的 `counts` 只能是 0 ——
+ * 而标题明明已经有了（首条消息已发出），用户看到的就是"有标题、0 条消息"的自相矛盾
+ * （2026-11-03 在开发实例实测到）。这里用与落盘后**同一个** `messagesOf()` 取数，不另写一套。
+ */
+export function pendingSessions(
+  agentId: string,
+): Array<{ sessionId: string; projectId: string; at: string; taskId?: string; name?: string; counts?: { user: number; assistant: number; toolResult: number; system: number } }> {
   const state = stateOf(agentId);
   return [...state.pending.entries()].map(([sessionId, meta]) => {
-    const name = state.sessions.get(sessionId)?.session.sessionManager.getSessionName();
-    return { sessionId, ...meta, ...(name !== undefined && name !== "" ? { name } : {}) };
+    const session = state.sessions.get(sessionId);
+    const name = session?.session.sessionManager.getSessionName();
+    const counts = session === undefined ? undefined : countsOfMessages(session);
+    return {
+      sessionId, ...meta,
+      ...(name !== undefined && name !== "" ? { name } : {}),
+      ...(counts !== undefined ? { counts } : {}),
+    };
   });
+}
+
+/** 内存会话的消息角色计数（与落盘扫描同一口径：只数 message 条目，按 role 归类）。 */
+function countsOfMessages(state: SessionState): { user: number; assistant: number; toolResult: number; system: number } {
+  const counts = { user: 0, assistant: 0, toolResult: 0, system: 0 };
+  for (const message of messagesOf(state)) {
+    if (message.role === "user") counts.user += 1;
+    else if (message.role === "assistant") counts.assistant += 1;
+    else if (message.role === "toolResult") counts.toolResult += 1;
+    else if (message.role === "system") counts.system += 1;
+  }
+  return counts;
 }
 
 /** 内存态会话的 cwd（刚创建还没落盘时是唯一来源）。 */
@@ -437,10 +419,23 @@ export function turnSnapshotAll(): Array<TurnRecord & { agentId: string }> {
  * 回合结束的服务端事实（任务 0007 P2）：完成即记未读；若此刻有人正在看这个会话，同时记为已读。
  * 被用户打断（aborted）的回合不算"完成"——pi-web 旧版同样不对打断的回合发完成通知（rpc-manager.ts:510）。
  */
+/**
+ * 标记已读 —— **两处调用必须走这一个函数**（`recordCompletion` 与 `server.ts` 的 focus 端点）。
+ *
+ * 为什么不各自调 `sessionViewsOf().markViewed()`：标已读有两个后果，必须一起发生
+ *   ① 服务端未读事实变化（`session-views.json`）；
+ *   ② 前端行的 `activity.unread` 消失、聚合层的"待查看"数减一。
+ * 只做①不做②，行上的绿点会一直留到下次全量重取列表 —— 这是 Task 0005 实测到的缺口。
+ */
+export function markSessionViewed(agentId: string, sessionId: string, at: string, projectId: string | undefined): void {
+  sessionViewsOf().markViewed(agentId, sessionId, at);
+  rowPatches().pushNow(agentId, sessionId, projectId, { unread: null });
+}
+
 function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined): void {
   const at = new Date().toISOString();
   if (!aborted) sessionViewsOf().markCompleted(agentId, sessionId, at, projectId);
-  if (isFocusedVisible(agentId, sessionId)) sessionViewsOf().markViewed(agentId, sessionId, at);
+  if (isFocusedVisible(agentId, sessionId)) markSessionViewed(agentId, sessionId, at, projectId);
 }
 
 /** 用户主动打断的会话键（runTurn 结束时取走；不打断的回合不会留下记录）。 */
@@ -538,10 +533,26 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   startTurn(agentId, sessionId, turnId);
   publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "running" });
   void log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId, agentId, projectId: projectIdForLog });
-  markRunning(agentId, { sessionId, projectId: projectIdForLog, startedAt: new Date().toISOString() });
+  const startedAtIso = new Date().toISOString();
+  markRunning(agentId, { sessionId, projectId: projectIdForLog, startedAt: startedAtIso });
+  // 一开跑就推一条（`phase: "waiting"` = 等模型），让列表立刻显示"在跑 + 计时开始"，
+  // 而不是等第一个 thinking/text 事件才亮（那之前有网络往返的空白期）。
+  rowPatches().pushRunning(agentId, sessionId, projectIdForLog, { since: startedAtIso, phase: "waiting" });
   const unsubscribe = target.session.subscribe((event: unknown) => {
     const mapped = toStreamEvent(event);
-    if (mapped !== undefined) publish(agentId, { sessionId, ...mapped });
+    if (mapped !== undefined) {
+      publish(agentId, { sessionId, ...mapped });
+      // 列表的动态信息（任务 0005）：只推"状态切换"，正文 delta/thinking 增量不推。
+      // 节流与去重都在 rowPatches() 里（每会话 ≥1000ms 至多一条 + 只在 phase/tool 变化时发）。
+      const phase = phaseOfStreamEvent(mapped);
+      if (phase !== undefined) {
+        rowPatches().pushRunning(agentId, sessionId, projectIdForLog, {
+          since: startedAtIso,
+          ...(phase.phase !== undefined ? { phase: phase.phase } : {}),
+          ...(phase.tool !== undefined ? { tool: phase.tool } : {}),
+        });
+      }
+    }
   });
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
@@ -579,6 +590,11 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "done");
     void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "done" });
+    // 列表行补丁（任务 0005）：终态立即发、不节流 —— 用户最需要立刻看到"完了"
+    rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
+      ...(aborted ? {} : { unread: { since: new Date().toISOString() } }),
+      lastActivityAt: new Date().toISOString(),
+    });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
   } catch (error) {
     abortRequested.delete(requestKey);
@@ -591,7 +607,14 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
-    publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind: classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown", turnId });
+    const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
+    // 列表行补丁：失败态 + 原文（用户裁决不脱敏）+ 未读
+    rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
+      unread: { since: new Date().toISOString() },
+      failure: { kind, detail: message, at: new Date().toISOString() },
+      lastActivityAt: new Date().toISOString(),
+    });
+    publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message, kind, turnId });
   } finally {
     unsubscribe();
     clearRunning(agentId, sessionId);
@@ -997,6 +1020,13 @@ export async function setSessionTask(agentId: string, sessionId: string, taskId:
   if (!tasks.some((task) => task.id === taskId)) return { ok: false, reason: "task_not_found" };
   state.session.sessionManager.appendCustomEntry(ACTIVE_TASK_ENTRY, { taskId, at: new Date().toISOString() });
   state.taskId = taskId;
+  // 切 Task → 推一行补丁（同理不 broadcast 让所有人重取整个列表）
+  const task = tasks.find((item) => item.id === taskId);
+  if (task !== undefined) {
+    rowPatches().pushNow(agentId, sessionId, projectId, {
+      task: { id: task.id, title: task.title, status: task.status, type: task.type },
+    });
+  }
   return { ok: true, taskId };
 }
 
@@ -1100,11 +1130,28 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
 /** 重命名会话：写 Pi 的 `session_info` 展示名（列表标题优先用它，否则回退首句）。 */
 export async function renameSession(agentId: string, sessionId: string, name: string, cwd: string): Promise<boolean> {
   const loaded = stateOf(agentId).sessions.get(sessionId);
-  if (loaded !== undefined) { loaded.session.sessionManager.appendSessionInfo(name); return true; }
+  if (loaded !== undefined) {
+    loaded.session.sessionManager.appendSessionInfo(name);
+    pushTitlePatch(agentId, sessionId, projectOfSessionDir(loaded.session.sessionManager.getSessionDir()), name);
+    return true;
+  }
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return false;
   SessionManager.open(found.path, found.dir, cwd).appendSessionInfo(name);
+  pushTitlePatch(agentId, sessionId, projectOfSessionDir(found.dir), name);
   return true;
+}
+
+/**
+ * 标题变了 → 推一行补丁（任务 0005 · 用户要求"不许刷新才更新"）。
+ *
+ * 为什么不 broadcast `agents_changed`：那会让**所有**客户端重取**所有**项目的整个列表
+ * （实测 1+N 次请求、每次全扫 JSONL）。标题是一个字段的变化，就只推那个字段。
+ */
+function pushTitlePatch(agentId: string, sessionId: string, projectId: string | undefined, raw: string): void {
+  rowPatches().pushNow(agentId, sessionId, projectId, {
+    title: { raw, display: displayTitleOf(raw) },
+  });
 }
 
 type TextBlock = { type: "text"; text: string };

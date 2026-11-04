@@ -27,7 +27,13 @@ test("T70b 首条消息发出后、回合结束前，会话列表里已经有标
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "帮我规划下周的设备巡检" }),
     });
     const after = await (await fetch(`${base}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
-    assert.equal(after.items.find((i) => i.sessionId === sid)?.title, "帮我规划下周的设备巡检", "发出即生效");
+    // 任务 0005：行对象的 `title` 是 `{raw, display}`。
+    //  - raw = 落盘原话（首条用户消息，未去引导语）
+    //  - display = 同源派生（`shortTitleOf` 去引导语 + 限长）
+    // 这条同时证明两件事：①发出即生效（不等回合结束）②display 用的是既有规则，不是后端另写一份。
+    const row = after.items.find((i) => i.sessionId === sid);
+    assert.equal(row.title.raw, "帮我规划下周的设备巡检", "raw 是落盘原话");
+    assert.equal(row.title.display, "规划下周的设备巡检", "display 去掉引导语「帮我」（规则来自 src/session-title.ts）");
   } finally {
     server.close();
   }

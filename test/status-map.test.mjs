@@ -1,82 +1,99 @@
-// T61–T63：状态映射（任务 0008）——会话 → 项目 → Agent 的运行与未读派生；查看即消；数量按会话计。
+// 状态聚合：会话 → 项目 → 助手 的三个数量（运行中 / 已完成待查看 / 失败）。
+//
+// 2026-11-03 重写（Task 0005）：旧版断言 `Status = {running: boolean, unread: number}`，
+// 输入是两个 Set（running/unread）。新版只吃会话四态 —— 这样聚合与行上的点同源，
+// 不可能出现"行上有点、数字没涨"。
+//
+// 断言里带 `failure: 0` 的字段是必需的：`deepEqual` 会连"有没有这个键"一起比，
+// 少写一个键测试就会红 —— 这正是我们想要的（防止以后又把维度静默丢掉）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deriveStatus } from "../frontend/src/status-map.ts";
 
-const facts = {
-  sessions: {
-    A1: { agentId: "a", projectId: "p1" },
-    A2: { agentId: "a", projectId: "p1" },
-    A3: { agentId: "a", projectId: "p2" },
-    B1: { agentId: "b", projectId: "p9" },
-  },
-  running: ["A2"],
-  unread: ["A1", "A3", "B1"],
-};
+/** 造一个会话：只关心四态，其余字段用最小形状。 */
+const s = (state, agentId = "a", projectId) => ({
+  meta: { agentId, ...(projectId !== undefined ? { projectId } : {}) },
+  activity: { state },
+});
+
 const P = (agentId, projectId) => `${agentId}\u0000${projectId}`;
 
-test("T61 聚合：会话 → 项目 → Agent；运行向上'或'，未读数量向上'求和'（按会话个数计）", async () => {
-  const focus = { agentId: "a", sessionId: "A1", visible: true };   // 正在看 A1
-  const s = deriveStatus(facts, focus);
-  assert.equal(s.sessions.A2.running, true);
-  assert.equal(s.sessions.A2.unread, false, "运行中且不在 unread 输入里 → 不计未读");
-  assert.equal(s.sessions.A1.unread, false, "焦点会话（页面可见）不计未读");
-  assert.equal(s.sessions.A3.unread, true);
-  assert.deepEqual(s.projects[P("a", "p1")], { running: true, unread: 0 }, "p1：A2 在跑，A1 已看");
-  assert.deepEqual(s.projects[P("a", "p2")], { running: false, unread: 1 });
-  assert.deepEqual(s.projects[P("b", "p9")], { running: false, unread: 1 });
-  assert.deepEqual(s.agents.a, { running: true, unread: 1 }, "Agent a：运行中 + 1 个未读（A3）");
-  assert.deepEqual(s.agents.b, { running: false, unread: 1 });
+// A2 在跑；A1/A3/B1 待查看；A4 失败。A1 与 A2 同在 p1，A3 在 p2，B1 在 p9。
+const facts = {
+  sessions: {
+    A1: s("unread", "a", "p1"),
+    A2: s("running", "a", "p1"),
+    A3: s("unread", "a", "p2"),
+    A4: s("failure", "a", "p2"),
+    B1: s("unread", "b", "p9"),
+    C1: s("idle", "a", "p1"),
+  },
+};
+
+test("T61 聚合：三个数量各自求和；零值字段存在但不渲染（由组件决定）", async () => {
+  const r = deriveStatus(facts, { visible: false });
+  assert.deepEqual(r.projects[P("a", "p1")], { running: 1, unread: 1, failure: 0 }, "p1：A2 在跑 + A1 待查看 + C1 空闲");
+  assert.deepEqual(r.projects[P("a", "p2")], { running: 0, unread: 1, failure: 1 }, "p2：A3 待查看 + A4 失败");
+  assert.deepEqual(r.projects[P("b", "p9")], { running: 0, unread: 1, failure: 0 });
+  // 助手层**累加会话数**（不是项目数）：a 有 1 跑 + 2 待查看 + 1 失败
+  assert.deepEqual(r.agents.a, { running: 1, unread: 2, failure: 1 });
+  assert.deepEqual(r.agents.b, { running: 0, unread: 1, failure: 0 });
 });
 
-test("T62 隐藏页签时焦点会话不算已读（回到页面可见后才清）", async () => {
-  const s = deriveStatus(facts, { agentId: "a", sessionId: "A1", visible: false });
-  assert.equal(s.sessions.A1.unread, true);
-  assert.deepEqual(s.projects[P("a", "p1")], { running: true, unread: 1 });
-  assert.equal(s.agents.a.unread, 2, "A1 + A3");
+test("T61b 助手层是会话数、不是项目数 —— 旧语义会得到 2，新语义得到 2 个会话（同数不同义，用 p2 单会话验证）", async () => {
+  // 只留一个项目、两个未读会话：旧语义（项目数）= 1，新语义（会话数）= 2
+  const only = { sessions: { X: s("unread", "a", "p1"), Y: s("unread", "a", "p1") } };
+  const r = deriveStatus(only, { visible: false });
+  assert.equal(r.agents.a.unread, 2, "两个会话都在同一项目里 → 助手显示 2（旧实现会显示 1）");
+  assert.equal(r.projects[P("a", "p1")].unread, 2);
 });
 
-test("T63 查看即消：未读输入移除该会话 → 所有上层数量同步减一（派生，不另写）", async () => {
-  const viewed = { ...facts, unread: ["A3", "B1"] };
-  const s = deriveStatus(viewed, { agentId: "a", sessionId: "A1", visible: true });
-  assert.equal(s.sessions.A1.unread, false);
-  assert.equal(s.agents.a.unread, 1);
-  assert.equal(s.projects[P("a", "p1")].unread, 0);
+test("T62 焦点会话（页面可见）不计未读；页面隐藏时仍计", async () => {
+  const visible = deriveStatus(facts, { agentId: "a", sessionId: "A1", visible: true });
+  assert.equal(visible.sessions.A1.unread, false, "正在看 → 不算未读");
+  assert.equal(visible.projects[P("a", "p1")].unread, 0);
+  assert.equal(visible.agents.a.unread, 1, "只剩 A3");
+
+  const hidden = deriveStatus(facts, { agentId: "a", sessionId: "A1", visible: false });
+  assert.equal(hidden.sessions.A1.unread, true, "页签隐藏不算看过");
+  assert.equal(hidden.agents.a.unread, 2);
 });
 
-test("T64 没有项目信息的会话只计入 Agent 层，不产生项目键（不得臆造项目）", async () => {
-  const s = deriveStatus({ sessions: { X: { agentId: "a" } }, running: [], unread: ["X"] }, { visible: false });
-  assert.equal(s.agents.a.unread, 1);
-  assert.deepEqual(Object.keys(s.projects), []);
+test("T63 查看即消：activity 变 idle → 三层数字同步减一（聚合是纯派生，不另存）", async () => {
+  const viewed = { ...facts, sessions: { ...facts.sessions, A1: s("idle", "a", "p1") } };
+  const r = deriveStatus(viewed, { visible: true });
+  assert.equal(r.agents.a.unread, 1);
+  assert.equal(r.projects[P("a", "p1")].unread, 0);
+  assert.equal(r.projects[P("a", "p1")].running, 1, "A2 仍在跑，不受影响");
 });
 
-// T67–T69：层级计数（任务 0009）——Agent 的数字 = 需要查看的 Project 个数；Project 的数字 = 未查看的会话个数。
-const P2 = (agentId, projectId) => `${agentId}\u0000${projectId}`;
-test("T67 你的例子：Agent 有两个 Project；P1 有 3 个未看会话，看了 1 个 → P1 数字 3→2、绿点仍在，Agent 数字不变（仍有两个 Project 未看完）", async () => {
-  const sessions = {
-    x1: { agentId: "a", projectId: "P1" }, x2: { agentId: "a", projectId: "P1" }, x3: { agentId: "a", projectId: "P1" },
-    y1: { agentId: "a", projectId: "P2" },
-  };
-  const before = deriveStatus({ sessions, running: [], unread: ["x1", "x2", "x3", "y1"] }, { visible: false });
-  assert.equal(before.projects[P2("a", "P1")].unread, 3);
-  assert.equal(before.projects[P2("a", "P2")].unread, 1);
-  assert.equal(before.agents.a.unread, 2, "Agent 数字 = 需要查看的 Project 个数（P1、P2 两个）");
-  // 看了 x1（查看 = 从未读输入移除）
-  const after = deriveStatus({ sessions, running: [], unread: ["x2", "x3", "y1"] }, { visible: false });
-  assert.equal(after.projects[P2("a", "P1")].unread, 2, "P1 数字 3→2");
-  assert.equal(after.projects[P2("a", "P1")].unread > 0, true, "P1 绿点仍在");
-  assert.equal(after.agents.a.unread, 2, "Agent 数字不变：P1 仍需查看");
+test("T64 没有项目归属的会话只进助手层，不臆造项目键", async () => {
+  const r = deriveStatus({ sessions: { X: s("unread", "a") } }, { visible: false });
+  assert.equal(r.agents.a.unread, 1);
+  assert.deepEqual(Object.keys(r.projects), [], "不得凭空造项目");
 });
 
-test("T68 Project 看完全部会话 → Project 绿点消失；Agent 数字随之减少（只有这时 Agent 才少一个）", async () => {
-  const sessions = { x1: { agentId: "a", projectId: "P1" }, x2: { agentId: "a", projectId: "P1" }, y1: { agentId: "a", projectId: "P2" } };
-  const s = deriveStatus({ sessions, running: [], unread: ["y1"] }, { visible: false });
-  assert.equal(s.projects[P2("a", "P1")].unread, 0, "P1 已看完：数字为 0（绿点消失）");
-  assert.equal(s.agents.a.unread, 1, "Agent 只剩 P2 需要查看");
+test("T65 失败与待查看互斥（四态互斥的直接后果）：一个会话只计一次", async () => {
+  const r = deriveStatus({ sessions: { X: s("failure", "a", "p1") } }, { visible: false });
+  assert.deepEqual(r.agents.a, { running: 0, unread: 0, failure: 1 }, "失败不重复计为待查看");
+  assert.deepEqual(r.projects[P("a", "p1")], { running: 0, unread: 0, failure: 1 });
 });
 
-test("T69 没有 projectId 的未读会话：Agent 层按一个未归属的 Project 计，不产生 Project 键", async () => {
-  const s = deriveStatus({ sessions: { z1: { agentId: "a" }, z2: { agentId: "a" } }, running: [], unread: ["z1", "z2"] }, { visible: false });
-  assert.equal(s.agents.a.unread, 1, "两个未归属会话 = 一个未归属 Project");
-  assert.deepEqual(Object.keys(s.projects), []);
+test("T66 运行中的会话在同一次聚合里也计入 running，且不因焦点被吞掉", async () => {
+  const r = deriveStatus({ sessions: { X: s("running", "a", "p1") } }, { agentId: "a", sessionId: "X", visible: true });
+  assert.equal(r.projects[P("a", "p1")].running, 1, "正在看的会话在跑，数字照样是 1");
+  assert.equal(r.agents.a.running, 1);
+});
+
+test("T67 空列表：三层都是空对象，不产生幽灵键", async () => {
+  const r = deriveStatus({ sessions: {} }, { visible: true });
+  assert.deepEqual(r.projects, {});
+  assert.deepEqual(r.agents, {});
+  assert.deepEqual(r.sessions, {});
+});
+
+test("T68 数量可以超过 99（聚合层不做上限，显示层才写 99+）", async () => {
+  const many = { sessions: Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`S${i}`, s("unread", "a", "p1")])) };
+  const r = deriveStatus(many, { visible: false });
+  assert.equal(r.agents.a.unread, 120, "聚合层给真值，截断是显示层的事");
 });
