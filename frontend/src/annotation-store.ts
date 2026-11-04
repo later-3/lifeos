@@ -25,6 +25,8 @@ export type AnnotationStore = {
   annotations: readonly Annotation[];
   /** 按消息+块取（渲染时用）。返回稳定顺序：按 start 升序。 */
   ofBlock: (messageId: string, blockIndex: number) => readonly Annotation[];
+  /** 这条消息上的全部批注（不分块）。MarkBar 挂在消息底部，按 messageId 聚合。 */
+  ofMessage: (messageId: string) => readonly Annotation[];
   /**
    * 新增一条；返回它的 id。
    * `author` 现在固定是当前用户（双向标注是待办 C4）。不传就留空 id —— 调用方应传真实 id。
@@ -74,25 +76,41 @@ const nextId = (): string => `a${++seq}`;
 
 export function useAnnotations(): AnnotationStore {
   const [annotations, setAnnotations] = useState<readonly Annotation[]>([]);
-  // ofBlock 需要稳定引用（避免每次渲染都新建 Map 造成子组件重渲染）
-  const cacheRef = useRef<{ source: readonly Annotation[]; map: Map<string, Annotation[]> } | null>(null);
+  // ofBlock/ofMessage 共用同一份缓存（避免每次渲染都新建 Map 造成子组件重渲染）
+  const cacheRef = useRef<{
+    source: readonly Annotation[];
+    byBlock: Map<string, Annotation[]>;
+    byMessage: Map<string, Annotation[]>;
+  } | null>(null);
 
   const ofBlock = useCallback((messageId: string, blockIndex: number) => {
     const cache = cacheRef.current;
     if (cache === null || cache.source !== annotations) {
-      const map = new Map<string, Annotation[]>();
+      const byBlock = new Map<string, Annotation[]>();
+      const byMessage = new Map<string, Annotation[]>();
       for (const anno of annotations) {
         const key = `${anno.messageId}\u0000${anno.blockIndex}`;
-        const list = map.get(key);
-        if (list === undefined) map.set(key, [anno]);
+        const list = byBlock.get(key);
+        if (list === undefined) byBlock.set(key, [anno]);
         else list.push(anno);
+        const mlist = byMessage.get(anno.messageId);
+        if (mlist === undefined) byMessage.set(anno.messageId, [anno]);
+        else mlist.push(anno);
       }
-      for (const list of map.values()) list.sort((a, b) => a.start - b.start);
-      cacheRef.current = { source: annotations, map };
+      for (const list of byBlock.values()) list.sort((a, b) => a.start - b.start);
+      for (const list of byMessage.values()) list.sort((a, b) => a.start - b.start);
+      cacheRef.current = { source: annotations, byBlock, byMessage };
     }
     const fresh = cacheRef.current;
-    return fresh === null ? [] : (fresh.map.get(`${messageId}\u0000${blockIndex}`) ?? []);
+    return fresh === null ? [] : (fresh.byBlock.get(`${messageId}\u0000${blockIndex}`) ?? []);
   }, [annotations]);
+
+  const ofMessage = useCallback((messageId: string) => {
+    const cache = cacheRef.current;
+    if (cache === null || cache.source !== annotations) ofBlock("", 0);   // 触发建缓存
+    const fresh = cacheRef.current;
+    return fresh === null ? [] : (fresh.byMessage.get(messageId) ?? []);
+  }, [annotations, ofBlock]);
 
   const add = useCallback((anchor: AnnotationDraftAnchor, marks: readonly string[], note: string, author?: AnnotationAuthor) => {
     const id = nextId();
@@ -175,7 +193,7 @@ export function useAnnotations(): AnnotationStore {
   }, [patch]);
 
   return useMemo(
-    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open }),
-    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open],
+    () => ({ annotations, ofBlock, ofMessage, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open }),
+    [annotations, ofBlock, ofMessage, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open],
   );
 }

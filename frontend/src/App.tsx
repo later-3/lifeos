@@ -11,7 +11,6 @@ import {
 import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
 import type { Annotation, AnnotationAuthor } from "./annotations";
-import { AnnotationPanel } from "./annotation-panel";
 import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
@@ -488,12 +487,17 @@ export default function App() {
   const pendingSendIdRef = useRef<string | undefined>(undefined);
 
   /** 批注面板折叠态（默认展开）。 */
-  const [annoPanelFolded, setAnnoPanelFolded] = useState(false);
 
   /**
    * 批注列表（表格用）：按"消息顺序 + 段内偏移"排序。
    * 用 messages 的 id 序列当消息顺序，避免按数组下标排（下标会随重渲染变）。
    */
+  /** 消息 id 顺序（MarkBar 与发送共用同一套排序，保证"看到的=发出去的"）。 */
+  const messageOrderForAnnos = useMemo(
+    () => messages.map((m) => m.id).filter((id): id is string => id !== undefined),
+    [messages],
+  );
+
   const annoOrdered = useMemo(() => {
     const order = messages.map((m) => m.id).filter((id): id is string => id !== undefined);
     const rank = (id: string): number => { const at = order.indexOf(id); return at < 0 ? Number.MAX_SAFE_INTEGER : at; };
@@ -2703,10 +2707,33 @@ export default function App() {
 
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
+
+                  /**
+                   * MarkBar 的数据（Task 0008 · P2）：这条消息自己的批注。
+                   *
+                   * **只挂到 assistant 消息上**（批注只标 Agent 最终回复，D7）。
+                   * peer 会话不显示（没有操作意义）。
+                   * 注意 `anno.ofMessage` 内部有缓存，按 messageId 查是 O(1)。
+                   */
+                  const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
+                    ? {
+                        annotations: anno.ofMessage(message.id),
+                        messageOrder: messageOrderForAnnos,
+                        onRowClick: onAnnoRowClick,
+                        pinnedOf: annoPinnedOf,
+                        onRemove: annoActions.remove,
+                        onRemoveAll: () => {
+                          // 与旧"清空全部"同一条纪律：走持久化 remove，不能只改内存
+                          for (const a of anno.ofMessage(message.id as string)) annoActions.remove(a.id);
+                        },
+                      }
+                    : undefined;
+
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
                       annotationActions={isPeerSession ? undefined : annoActions}
+                      {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
                         panelWasOpenBeforePeer.current = panelOpen;
@@ -2790,27 +2817,6 @@ export default function App() {
                 void collectImages(files);
               }}
               className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
-              {/* 批注面板（Task 0003 · P4）：放在输入框上方，与输入框互不污染。
-                  peer 会话不显示（由对端驱动，不能往里发消息，见 server.ts:564-570）。 */}
-              {!isPeerSession && anno.annotations.length > 0 && (
-                <div className="border-b border-line p-2">
-                  <AnnotationPanel
-                    annotations={annoOrdered}
-                    messageOrder={messages.map((m) => m.id).filter((id): id is string => id !== undefined)}
-                    folded={annoPanelFolded}
-                    onToggleFold={() => setAnnoPanelFolded((v) => !v)}
-                    onRowClick={onAnnoRowClick}
-                    pinnedOf={annoPinnedOf}
-                    onRemove={annoActions.remove}
-                    onClearAll={() => {
-                      // 必须走 annoActions.remove（会落盘），不能直接调 anno.remove（只改内存）。
-                      // 2026-11-04 用户追问"删除都测了吗"时发现：清空全部原本调的是内存版，
-                      // 刷新后批注全回来了。单条删除走的是持久化版，所以那条没暴露。
-                      for (const a of anno.annotations) annoActions.remove(a.id);
-                    }}
-                  />
-                </div>
-              )}
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden rounded-t-panel border-b border-line bg-sunken p-1">
                   {/* 草稿态：一句说明放在面板顶部，下面各行只留命令名（不逐行重复“发送后可用”） */}

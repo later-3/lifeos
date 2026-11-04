@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
 import { ProcessBar } from "./process-bar";
+import { MarkBar } from "./mark-bar";
 import type { ProcessStats } from "./process-stats";
 import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
@@ -125,7 +126,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, markBar }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -165,6 +166,15 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
   annotationActions?: AnnotationActions;
+  /** MarkBar 的数据与动作（Task 0008 · P2）：undefined = 不渲染（无批注/peer 会话）。 */
+  markBar?: {
+    annotations: readonly Annotation[];
+    messageOrder: readonly string[];
+    onRowClick: (id: string) => void;
+    pinnedOf: (id: string) => boolean;
+    onRemove: (id: string) => void;
+    onRemoveAll: () => void;
+  } | undefined;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -246,6 +256,13 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
         </>
       ) : (
         blocks.map((block, index) => renderBlock(block, index, "t"))
+      )}
+      {/* MarkBar（Task 0008 · P2）：挂在**被批注的那条消息**底部（用户定案：
+          "标注信息 bar 是放到被批注的那个信息上的"）。无批注时 MarkBar 自身返回 null。 */}
+      {role === "assistant" && messageId !== undefined && markBar !== undefined && (
+        <MarkBar annotations={markBar.annotations} messageOrder={markBar.messageOrder}
+          messageId={messageId} onRowClick={markBar.onRowClick} pinnedOf={markBar.pinnedOf}
+          onRemove={markBar.onRemove} onRemoveAll={markBar.onRemoveAll} />
       )}
       {(failure !== undefined || error !== undefined) && (
         <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
