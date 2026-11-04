@@ -74,6 +74,8 @@ const rows = await page.evaluate(() => [...document.querySelectorAll('[data-test
 check("行包含 序号/原文/话/语气/发送信息/删除 六列", rows.every((cells) => cells.length === 6), JSON.stringify(rows[0]));
 check("原文列在", rows[0][1] === "「加粗的重点」", rows[0][1]);
 check("用户的话在", rows[0][2] === "第一句话", rows[0][2]);
+// 没写话就留空：不能补「（没写话）」这类占位文字（用户 2026-11-04："你不要画蛇添足"）
+check("没写话时该列为空（不补占位文字）", rows[1][2] === "", JSON.stringify(rows[1][2]));
 check("语气列在", rows[0][3] === "批评", rows[0][3]);
 
 // 3) 发送列内容 == annotationLine 的输出（与真正发出去的同源）

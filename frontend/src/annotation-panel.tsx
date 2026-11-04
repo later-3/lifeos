@@ -158,11 +158,9 @@ export function AnnotationPanel({
                       <td className="px-2.5 py-1.5 text-ink-700">
                         <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
                       </td>
-                      <td className="px-2.5 py-1.5">
-                        {anno.note === ""
-                          ? <span className="italic text-ink-500">（没写话）</span>
-                          : <span className="whitespace-pre-wrap text-ink-900">{anno.note}</span>}
-                      </td>
+                      {/* 没写话就留空（用户 2026-11-04："你不要画蛇添足"）。
+                          空单元格本身就是"没写"，不需要再补一句说明。 */}
+                      <td className="whitespace-pre-wrap px-2.5 py-1.5 text-ink-900">{anno.note}</td>
                       <td className="px-2.5 py-1.5">
                         <span className="flex flex-wrap gap-1">
                           {anno.marks.map((id) => {
