@@ -184,10 +184,6 @@ const nums = (badges) => {
     return el !== null && getComputedStyle(el).animationName !== "none";
   }));
   check("2 会话行有呼吸点", p.rowDots.some((d) => d.title === "生成中" && d.visible));
-    projects: document.querySelectorAll("[data-project-id]").length,
-    sessions: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length,
-    panelText: document.querySelector('[data-testid="groups-panel"]')?.innerText.slice(0, 60),
-  })));
   await app.close();
 }
 
