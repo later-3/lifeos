@@ -12,7 +12,7 @@ import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
 import type { Annotation, AnnotationAuthor } from "./annotations";
 import { AnnotationPanel } from "./annotation-panel";
-import { annotationsMessage } from "./annotation-message";
+import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -1760,6 +1760,16 @@ export default function App() {
       const annosText = annotationsMessage(annoOrdered, {
         order: messages.map((m) => m.id).filter((id): id is string => id !== undefined),
       });
+      // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
+      // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
+      if (annosText === "") {
+        if (raw !== "") {
+          sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
+          historyIndexRef.current = -1;
+          void sendText(raw);
+        }
+        return;
+      }
       const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
       if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
       historyIndexRef.current = -1;
@@ -2301,6 +2311,10 @@ export default function App() {
                     onRowClick={onAnnoRowClick}
                     pinnedOf={annoPinnedOf}
                     onRemove={annoActions.remove}
+                    onClearAll={() => {
+                      // 清空全部：与"删除一条"走同一条路径（数据 + 高亮 + 面板一起消失）
+                      for (const a of anno.annotations) anno.remove(a.id);
+                    }}
                   />
                 </div>
               )}
@@ -2442,7 +2456,7 @@ export default function App() {
                       <IconPlayerStopIcon />
                     </ComposerButton>
                   ) : (
-                    <ComposerButton label="发送" disabled={(input.trim() === "" && anno.annotations.length === 0) || selectedProjectId === undefined}
+                    <ComposerButton label="发送" disabled={(input.trim() === "" && !hasSendableAnnotation(anno.annotations)) || selectedProjectId === undefined}
                       onClick={() => void send()}>
                       <IconArrowUpIcon />
                     </ComposerButton>

@@ -149,3 +149,34 @@ test("槽位：已摆定的框不因别人拖动而重排（模拟真实流程�
   assert.deepEqual(slots.get("B"), bFixed, "拖 A 后 B 的位置必须不动");
   assert.equal(slots.get("B").top, bFixed.top);
 });
+
+// ---- 视口边缘翻转（P6 补，2026-11-03）----
+test("视口翻转：文字在屏幕底部时，框翻到上方（不再跑出屏幕）", () => {
+  const size = { width: 300, height: 120 };
+  // 容器很高（1000），但窗口只有 800 高；文字在 y=700 处
+  const sel = [rect(300, 700, 100, 20)];
+  const hostRect = rect(0, 0, 800, 1000);
+  const below = popupPosition(sel, hostRect, 1000, size);   // 不传视口：旧行为
+  const withView = popupPosition(sel, hostRect, 1000, size, { dx: 0, dy: 0 }, [],
+    { top: 0, bottom: 800 });
+  assert.equal(below.top, 728, "旧行为：只看容器高度，认为下方放得下");
+  assert.ok(withView.top < 700, `新行为：应翻到文字上方，实际 top=${withView.top}`);
+  assert.ok(withView.top + size.height <= 700, "框不会压住被批注的文字");
+});
+
+test("视口翻转：文字在中部时仍放下方（不无谓翻转）", () => {
+  const size = { width: 300, height: 120 };
+  const sel = [rect(300, 200, 100, 20)];
+  const pos = popupPosition(sel, rect(0, 0, 800, 1000), 1000, size, { dx: 0, dy: 0 }, [],
+    { top: 0, bottom: 800 });
+  assert.equal(pos.top, 228, "下方放得下就放下方");
+});
+
+test("视口翻转：上下都放不下时，贴着可见区（不跑出屏幕）", () => {
+  const size = { width: 300, height: 300 };            // 框比可见区一半还高
+  const sel = [rect(300, 400, 100, 20)];
+  const pos = popupPosition(sel, rect(0, 0, 800, 1000), 1000, size, { dx: 0, dy: 0 }, [],
+    { top: 0, bottom: 500 });
+  assert.ok(pos.top >= 0, "不跑到负坐标");
+  assert.ok(pos.top <= 500 - 8, `不跑出可见区，实际 top=${pos.top}`);
+});

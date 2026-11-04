@@ -22,6 +22,7 @@ export function popupBasePosition(
   hostRect: DOMRect,
   hostHeight: number,
   size: { width: number; height: number },
+  viewport?: { top: number; bottom: number },
 ): { left: number; top: number } {
   if (rects.length === 0) return { left: 8, top: 8 };
   const left = Math.min(...rects.map((r) => r.left));
@@ -32,9 +33,24 @@ export function popupBasePosition(
   const GAP = 8;
   const MARGIN = 8;
 
+  // 可见区域用**窗口坐标**。不传时退化为容器自身范围，行为与改造前一致（单测不受影响）。
+  const viewTop = viewport?.top ?? hostRect.top;
+  const viewBottom = viewport?.bottom ?? hostRect.top + hostHeight;
+
   let x = (left + right) / 2 - size.width / 2 - hostRect.left;
-  let y = bottom - hostRect.top + GAP;
-  if (y + size.height > hostHeight) y = Math.max(0, top - hostRect.top - size.height - GAP);
+
+  // 默认在文字下方；下方**在可见区域里**放不下就翻到上方（P6 补）。
+  // 早期只跟"容器高度"比：长消息里容器很高永远"放得下"，框实际跑到屏幕外。
+  const below = bottom + GAP;                       // 下方方案的卡片上边（窗口坐标）
+  const above = top - GAP - size.height;            // 上方方案的卡片上边
+  const fitsBelow = below + size.height <= viewBottom - MARGIN;
+  const fitsAbove = above >= viewTop + MARGIN;
+  let yClient: number;
+  if (fitsBelow) yClient = below;
+  else if (fitsAbove) yClient = above;
+  else yClient = Math.max(viewTop + MARGIN, below); // 两边都放不下：贴着可见下沿
+
+  const y = yClient - hostRect.top;
   x = Math.max(MARGIN, Math.min(hostRect.width - size.width - MARGIN, x));
   return { left: Math.round(x), top: Math.round(Math.max(0, y)) };
 }
@@ -84,12 +100,13 @@ export function popupPosition(
   size: { width: number; height: number },
   offset: { dx: number; dy: number; moved?: boolean } = { dx: 0, dy: 0 },
   occupied: readonly OccupiedBox[] = [],
+  viewport?: { top: number; bottom: number },
 ): { left: number; top: number } {
   if (rects.length === 0) return { left: 8, top: 8 };
 
   // 基准永远是**默认位置**（与未拖动时同一个公式），拖动只在它上面加偏移。
   // 这样"刚开始拖的那一像素"不会因为换公式而跳。
-  const base = popupBasePosition(rects, hostRect, hostHeight, size);
+  const base = popupBasePosition(rects, hostRect, hostHeight, size, viewport);
 
   if (offset.moved === true || offset.dx !== 0 || offset.dy !== 0) {
     // 拖过的框：不再参与避让（用户摆哪儿就是哪儿）

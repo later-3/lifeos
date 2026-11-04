@@ -137,6 +137,14 @@
   @keyframes arc-spin {
     to { transform: rotate(360deg); }
   }
+
+  /* 批注面板展开（Task 0003 · P6）：只做"淡入 + 轻微下移"，不做高度动画——
+     高度取决于行数，写成固定值会在行数变化时跳。 */
+  --animate-anno-panel: anno-panel-in 150ms ease-out;
+  @keyframes anno-panel-in {
+    from { opacity: 0; transform: translateY(-2px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }
 
 /*

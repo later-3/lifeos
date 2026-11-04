@@ -32,10 +32,12 @@ export type AnnotationPanelProps = {
   pinnedOf: (id: string) => boolean;
   /** 删除一条批注（高亮一起消失）。 */
   onRemove: (id: string) => void;
+  /** 清空全部批注（含高亮、面板）。demo 顶栏有这个入口，真实实现 P6 补上。 */
+  onClearAll: () => void;
 };
 
 export function AnnotationPanel({
-  annotations, messageOrdinal, folded, onToggleFold, onRowClick, pinnedOf, onRemove,
+  annotations, messageOrdinal, folded, onToggleFold, onRowClick, pinnedOf, onRemove, onClearAll,
 }: AnnotationPanelProps) {
   const count = annotations.length;
 
@@ -62,15 +64,30 @@ export function AnnotationPanel({
         onClick={onToggleFold}
         className="flex w-full items-center gap-2 bg-sunken px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
       >
-        <span className="text-micro text-ink-500" aria-hidden="true">{folded ? "▶" : "▼"}</span>
+        <span className={`text-micro text-ink-500 transition-transform duration-150 ${folded ? "" : "rotate-90"}`}
+          aria-hidden="true">▶</span>
         <span>批注转化成的消息</span>
         <span data-testid="annotation-panel-count"
           className="rounded-full bg-hover px-1.5 py-px text-micro tabular-nums text-ink-700">{count}</span>
-        <span className="ml-auto text-micro font-normal text-ink-500">单击一行跳到原文并钉住</span>
       </button>
+      {count > 0 && (
+        <div className="flex items-center justify-end border-t border-line bg-sunken px-3 py-1">
+          <button type="button" data-testid="annotation-clear-all" onClick={onClearAll}
+            className="inline-flex min-h-7 items-center rounded-control px-1.5 text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11">
+            清空全部批注
+          </button>
+        </div>
+      )}
 
+      {/*
+        折叠过渡（P6 补，2026-11-03）：箭头旋转 150ms + 内容区收起时淡出。
+        用 grid-template-rows 0fr↔1fr 做高度过渡，不需要知道内容高度；
+        `motion-reduce` 下关掉，尊重系统的"减少动态效果"。
+      */}
       {!folded && (
-        <div id="annotation-panel-rows" data-testid="annotation-panel-rows" className="overflow-auto" style={{ maxHeight: "var(--container-anno-panel)" }}>
+        <div id="annotation-panel-rows" data-testid="annotation-panel-rows"
+          className="overflow-auto motion-safe:animate-anno-panel"
+          style={{ maxHeight: "var(--container-anno-panel)" }}>
           {count === 0 ? (
             <p data-testid="annotation-panel-empty" className="px-3 py-3.5 text-center text-meta text-ink-500">
               还没有批注。在正文里拖选一段文字试试。

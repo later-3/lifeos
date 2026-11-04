@@ -1,32 +1,55 @@
 /**
- * 批注 → 发给 Agent 的消息文本（Task 0003 · P4）。
+ * 批注 → 发给 Agent 的消息文本（Task 0003 · P4，2026-11-03 用户第二次改格式）。
  *
- * 转换规则（用户 2026-11-03 定，**不润色、不加客套**）：
- *     「被批注的原文」 -> 用户写的话 （语气）
+ * **格式（用户 2026-11-03 定稿）**：
  *
- * 多语气用 `、` 连接，包在中文括号里；多个批注按消息顺序 + 段内偏移排成多行，
- * **合成一条消息**（不是多条）。
+ *     1、你说的：「147 条」
+ *       -> 这个数怎么来的 （我是批评的语气！）
+ *     2、你说的：「数据1」（我是待办的语气！）
  *
- * 为什么合成一条（而不是 demo 里的"N 条批注 = N 条消息"）：
+ * 四条细则都是用户逐条裁决的：
+ *   - 序号在最前，用**中文顿号**「1、」；
+ *   - 「你说的：」——第二人称称呼 Agent（不是"你说过的"）；
+ *   - **没写话就不出箭头**（没话时箭头没有存在意义，且 `-> ` 后面会空一格很难看）；
+ *   - 引号保持 `「」`。原文里若本来带 `「」` 会嵌套，用户明确接受：
+ *     "用户自己在选择文字的时候，用户自己避开就可以了，哪怕不避开也没啥问题"。
+ *
+ * **只有语气类标记会出现在括号里**（用户 2026-11-03 纠正）：
+ * 标记分两类——语气（疑问/批评/鼓励/同意）发给 Agent；功能（存档/待办）
+ * 是用户自己的分类，**不发**。一条批注可以同时有两者，但括号里只取语气。
+ *
+ * **只有功能、没有语气的批注整条不进消息**——它没有要对 Agent 说的话。
+ * 这意味着 N 条批注可能产出少于 N 行；序号按**实际发出的行**重排，保持连续。
+ *
+ * 多条批注按消息顺序 + 段内偏移排成多行，**合成一条消息**（不是多条）：
  *   真实实现里每次发送 POST 都走 `runTurn()` → `session.prompt()`，
- *   是**一次真实模型调用**。N 条批注发 N 次 = N 次调用，慢且贵；
- *   而且批注本质是"对同一段回复的一批意见"，一次回应更自然。
+ *   是**一次真实模型调用**。N 条批注发 N 次 = N 次调用，慢且贵。
  *
  * 纪律：**绝不出现颜色值、markId、CSS 变量名**——用户看到的颜色是我们内部的表示，
  * Agent 只需要"用户对哪句话有什么看法"（D10）。
  */
 
 import type { Annotation } from "./annotations.ts";
-import { labelsOf } from "./marks.ts";
+import { sayOf, toneIdsOf } from "./marks.ts";
 
-/** 一条批注 → 一行文本。 */
-export function annotationLine(anno: Annotation, labels: (ids: readonly string[]) => string = labelsOf): string {
-  const tone = labels(anno.marks);
+/**
+ * 一条批注 → 一行文本。
+ *
+ * @param ordinal 这条批注是第几条（1 起）。序号按**实际发出的行**排，
+ *                所以调用方要先滤掉"只有功能标记"的批注。
+ * @returns 没有语气标记时返回 `null`（这条不该发出去）。
+ */
+export function annotationLine(
+  anno: Annotation,
+  ordinal: number,
+  say: (ids: readonly string[]) => string = sayOf,
+): string | null {
+  if (toneIdsOf(anno.marks).length === 0) return null;   // 只有功能标记 → 不发
+  const words = say(anno.marks);
   const note = anno.note.trim();
-  // 箭头前后各一个空格；没写话时箭头后直接是括号
-  return note === ""
-    ? `「${anno.quote}」 -> （${tone}）`
-    : `「${anno.quote}」 -> ${note} （${tone}）`;
+  const head = `${ordinal}、你说的：「${anno.quote}」`;
+  // 没写话就不出箭头（用户 2026-11-03）
+  return note === "" ? `${head}（${words}）` : `${head}\n  -> ${note} （${words}）`;
 }
 
 /**
@@ -37,9 +60,9 @@ export function annotationLine(anno: Annotation, labels: (ids: readonly string[]
  */
 export function annotationsMessage(
   annos: readonly Annotation[],
-  options: { labels?: (ids: readonly string[]) => string; order?: readonly string[] } = {},
+  options: { say?: (ids: readonly string[]) => string; order?: readonly string[] } = {},
 ): string {
-  const labels = options.labels ?? labelsOf;
+  const say = options.say ?? sayOf;
   const order = options.order;
   const rank = (id: string): number => {
     if (order === undefined) return 0;
@@ -52,5 +75,15 @@ export function annotationsMessage(
     if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
     return a.start - b.start;
   });
-  return sorted.map((anno) => annotationLine(anno, labels)).join("\n");
+  const lines: string[] = [];
+  for (const anno of sorted) {
+    const line = annotationLine(anno, lines.length + 1, say);
+    if (line !== null) lines.push(line);   // 只有功能标记的批注整条跳过，序号因此保持连续
+  }
+  return lines.join("\n");
+}
+
+/** 有没有至少一条"该发给 Agent"的批注（只有功能标记的不算）。 */
+export function hasSendableAnnotation(annos: readonly Annotation[]): boolean {
+  return annos.some((anno) => toneIdsOf(anno.marks).length > 0);
 }

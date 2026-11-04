@@ -6,10 +6,40 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MARKS, MARK_ID_PATTERN, markById, toneColorVar, toneSoftVar, labelsOf } from "../frontend/src/marks.ts";
+import { MARKS, MARK_ID_PATTERN, markById, toneColorVar, toneSoftVar, labelsOf, toneIdsOf, sayOf } from "../frontend/src/marks.ts";
 
-test("标记表有 5 个，顺序固定：疑问/批评/鼓励/存档/待办", () => {
-  assert.deepEqual(MARKS.map((m) => m.label), ["疑问", "批评", "鼓励", "存档", "待办"]);
+test("标记表顺序固定：4 个语气 + 2 个功能", () => {
+  assert.deepEqual(MARKS.map((m) => m.label), ["疑问", "批评", "鼓励", "同意", "存档", "待办"]);
+});
+
+test("分类：语气发给 Agent，功能不发（用户 2026-11-03）", () => {
+  assert.deepEqual(MARKS.filter((m) => m.kind === "tone").map((m) => m.id), ["query", "critic", "praise", "agree"]);
+  assert.deepEqual(MARKS.filter((m) => m.kind === "feature").map((m) => m.id), ["archive", "todo"]);
+});
+
+test("语气类都必须有措辞；功能类不需要", () => {
+  for (const mark of MARKS) {
+    if (mark.kind === "tone") assert.ok((mark.say ?? "").length > 0, `语气 ${mark.id} 缺 say`);
+    else assert.equal(mark.say, undefined, `功能 ${mark.id} 不该有 say（不发给 Agent）`);
+  }
+});
+
+test("措辞不套死模板：「同意」是「我同意！」不是「我是同意的语气」", () => {
+  assert.equal(markById("critic")?.say, "我是批评的语气！");
+  assert.equal(markById("agree")?.say, "我同意！");
+});
+
+test("sayOf 只取语气、用「、」连接；只有功能时返回空串", () => {
+  assert.equal(sayOf(["critic"]), "我是批评的语气！");
+  assert.equal(sayOf(["critic", "agree"]), "我是批评的语气！、我同意！");
+  assert.equal(sayOf(["critic", "todo"]), "我是批评的语气！", "功能类不进括号");
+  assert.equal(sayOf(["todo"]), "", "只有功能 → 空串");
+  assert.equal(sayOf([]), "");
+});
+
+test("toneIdsOf 只留语气", () => {
+  assert.deepEqual(toneIdsOf(["critic", "todo", "agree"]), ["critic", "agree"]);
+  assert.deepEqual(toneIdsOf(["archive", "todo"]), []);
 });
 
 test("每个 id 都符合白名单（否则拼进 ::highlight 选择器就是注入口）", () => {

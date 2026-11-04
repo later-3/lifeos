@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Annotation } from "./annotations.ts";
-import { MARKS, markById } from "./marks.ts";
+import { MARKS, markById, type MarkSpec } from "./marks.ts";
 import { IconButton } from "./design/ui";
 import { popupPosition, type OccupiedBox } from "./annotation-position";
 
@@ -55,29 +55,43 @@ function MarkButtons({ selected, onToggle, testId }: {
   onToggle: (id: string) => void;
   testId?: string;
 }) {
+  /**
+   * 两组分开显示（用户 2026-11-03）：语气发给 Agent，功能只留给自己。
+   * 放在一起用户就分不清"哪些会发给它"。中间一条细竖线，不加标题文字（框很窄）。
+   */
+  const tones = MARKS.filter((mark) => mark.kind === "tone");
+  const features = MARKS.filter((mark) => mark.kind === "feature");
+  const button = (mark: MarkSpec) => {
+    const on = selected.includes(mark.id);
+    return (
+      <button
+        key={mark.id}
+        type="button"
+        data-mark={mark.id}
+        data-kind={mark.kind}
+        aria-pressed={on}
+        onClick={() => onToggle(mark.id)}
+        className={`rounded-control border px-2 py-0.5 text-micro transition-colors ${
+          on ? "border-transparent font-semibold" : "border-line bg-surface text-ink-700 hover:border-ink-300"
+        }`}
+        style={on ? {
+          background: `var(--color-anno-${mark.tone}-soft)`,
+          color: `var(--color-anno-${mark.tone})`,
+        } : undefined}
+      >
+        {mark.label}
+      </button>
+    );
+  };
   return (
-    <div className="mb-2 flex flex-wrap gap-1" data-testid={testId}>
-      {MARKS.map((mark) => {
-        const on = selected.includes(mark.id);
-        return (
-          <button
-            key={mark.id}
-            type="button"
-            data-mark={mark.id}
-            aria-pressed={on}
-            onClick={() => onToggle(mark.id)}
-            className={`rounded-control border px-2 py-0.5 text-micro transition-colors ${
-              on ? "border-transparent font-semibold" : "border-line bg-surface text-ink-700 hover:border-ink-300"
-            }`}
-            style={on ? {
-              background: `var(--color-anno-${mark.tone}-soft)`,
-              color: `var(--color-anno-${mark.tone})`,
-            } : undefined}
-          >
-            {mark.label}
-          </button>
-        );
-      })}
+    <div className="mb-2 flex flex-wrap items-center gap-1" data-testid={testId}>
+      {tones.map(button)}
+      {features.length > 0 && (
+        <>
+          <span aria-hidden="true" className="mx-0.5 h-3.5 w-px bg-line" />
+          {features.map(button)}
+        </>
+      )}
     </div>
   );
 }
@@ -146,7 +160,12 @@ function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStar
     if (base === undefined) {
       // 第一次摆：读此刻已摆定的其他槽位，算一个不与它们相撞的位置，然后固定下来
       const occupied: OccupiedBox[] = [...(slots?.values() ?? [])].map((o) => ({ ...o }));
-      const pos = popupPosition(rects, hostRect, hostRect.height, size, { dx: 0, dy: 0 }, occupied);
+      // 传真实视口：框跑到屏幕外时翻到文字上方（P6 补）。
+      // 这里用 window.innerHeight 而不是某个滚动容器的高度——用户看的是屏幕，不是容器。
+      const pos = popupPosition(
+        rects, hostRect, hostRect.height, size, { dx: 0, dy: 0 }, occupied,
+        { top: 0, bottom: window.innerHeight },
+      );
       base = { left: pos.left, top: pos.top, width: size.width, height: size.height };
       onSlot?.(base);
     }
