@@ -807,9 +807,16 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     // 观测记账（Task 0012 · P3）：成功发出去的 body 字节 = 上限的下界。只在"更大"时写盘。
     await recordPayloadObservation(target, "ok");
     const aborted = abortRequested.delete(requestKey);
+    // **prompt() 正常返回 ≠ 回复成功**（2026-11-04 实测）：模型不可用时 Pi 不抛异常，
+    // 而是把结果写进会话文件（`stopReason: "error"`）。只看"没抛异常"会把它记成 done，
+    // 于是行上显示红点（文件说失败）、数字却进了"已完成"（事件说成功）—— 两边对不上。
+    // 所以这里回头看一眼最后一条 assistant 的真实终态。
+    const settled = await outcomeOfSessionFile(agentId, sessionId).catch(() => undefined);
+    const failedKind = settled?.outcome?.state === "error" ? settled.outcome.failureKind : undefined;
+    const failedDetail = settled?.outcome?.state === "error" ? settled.outcome.failureDetail : undefined;
     // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
-    finishTurn(agentId, sessionId, turnId, "done");
-    recordCompletion(agentId, sessionId, aborted, projectIdForLog);
+    finishTurn(agentId, sessionId, turnId, failedKind !== undefined ? "error" : "done");
+    recordCompletion(agentId, sessionId, aborted, projectIdForLog, failedKind, failedDetail);
     // 与其他 Agent 的对话：对方跑完了 → 回流给发起方（T7）。永不抛、不影响下面的收尾。
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "done");
     void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
@@ -817,9 +824,16 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     // 列表行补丁（任务 0005）：终态立即发、不节流 —— 用户最需要立刻看到"完了"
     rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
       ...(aborted ? {} : { unread: { since: new Date().toISOString() } }),
+      // 回合"正常返回"但回复本身失败（模型不可用等）→ 补丁要带 failure，
+      // 否则前端只能把它当 unreadDone，数字与行上的红点对不上。
+      ...(failedKind !== undefined ? { failure: { kind: failedKind, detail: failedDetail ?? "", at: new Date().toISOString() } } : {}),
       lastActivityAt: new Date().toISOString(),
     });
-    publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
+    if (failedKind !== undefined) {
+      publish(agentId, { sessionId, projectId: projectIdForLog, type: "error", message: failedDetail ?? "", kind: failedKind, turnId });
+    } else {
+      publish(agentId, { sessionId, projectId: projectIdForLog, type: "done", turnId, aborted });
+    }
   } catch (error) {
     abortRequested.delete(requestKey);
     const message = error instanceof Error ? error.message : String(error);
@@ -1326,7 +1340,7 @@ function imageSizesOf(messages: readonly unknown[]): number[] {
  * 找不到（文件删了 / 没有 assistant 消息）→ undefined，不编造。
  */
 async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise<
-  { outcome?: TurnOutcome; lastFailureAt?: string; lastFailureKind?: string } | undefined
+  { outcome?: TurnOutcome; lastFailureAt?: string; lastFailureKind?: FailureKind } | undefined
 > {
   const found = await findSessionFile(agentId, sessionId);
   if (found === undefined) return undefined;
@@ -1336,7 +1350,7 @@ async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise
   // 失败要**独立**记最后一次：会话可能失败多次后成功，只留"最后一条 assistant"会把失败全丢掉。
   // （用户实测：某会话 08:32/09:19/09:34 失败、09:39 成功 → 界面上看不到任何失败。）
   let lastFailureAt: string | undefined;
-  let lastFailureKind: string | undefined;
+  let lastFailureKind: FailureKind | undefined;
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     try {

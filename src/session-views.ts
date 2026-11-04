@@ -10,6 +10,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { writeTextAtomic } from "./atomic-file.ts";
+import type { FailureKind } from "./failure.ts";
 
 /**
  * 会话的**最近一次终态**（Task 0005 · P8-1）。
@@ -23,7 +24,7 @@ import { writeTextAtomic } from "./atomic-file.ts";
  * `lastState` 描述"那一次是怎么结束的"。
  */
 export type TurnState = "done" | "error";
-export type TurnOutcome = { state: TurnState; failureKind?: string; failureDetail?: string };
+export type TurnOutcome = { state: TurnState; failureKind?: FailureKind; failureDetail?: string };
 
 export type UnreadItem = {
   agentId: string;

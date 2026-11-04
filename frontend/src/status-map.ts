@@ -138,14 +138,6 @@ export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedSta
    * 而 completed/failed 是**历史终态**，快照里的索引值就是准的，用行去覆盖反而会漏
    * （前端手上只有当前项目的会话，别的项目一条都没有 —— 覆盖式实现实测会让 6 变 1）。
    */
-  const currentAgentId = focus.agentId;
-  const runningOf = (predicate: (meta: StatusMeta) => boolean): number => {
-    let count = 0;
-    for (const row of Object.values(facts.sessions)) {
-      if (row !== undefined && row.activity.state === "running" && predicate(row.meta)) count += 1;
-    }
-    return count;
-  };
   for (const [sessionId, row] of Object.entries(facts.sessions)) {
     if (row === undefined) continue;
     const { meta, activity } = row;
@@ -157,17 +149,11 @@ export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedSta
     };
   }
 
-  // 用会话行的运行态替换服务端的运行数（同一 Agent 内，按 Agent / 按项目各自重算）
-  if (currentAgentId !== undefined && Object.keys(facts.sessions).length > 0) {
-    const agentStatus = agents[currentAgentId];
-    if (agentStatus !== undefined) {
-      agentStatus.running = runningOf((meta) => meta.agentId === currentAgentId);
-    }
-    for (const key of Object.keys(projects)) {
-      if (!key.startsWith(`${currentAgentId}\u0000`)) continue;
-      const projectId = key.split("\u0000")[1];
-      projects[key]!.running = runningOf((meta) => meta.agentId === currentAgentId && meta.projectId === projectId);
-    }
-  }
+  // 注意：**不再用会话行去"替换"聚合的 running**（2026-11-04 删）。
+  // 状态机模型下，`running` 的真相在 `sessionSlots`（补丁直接改它，且覆盖所有 Agent）；
+  // 而会话行的 `activity.state` 只在"当前 Agent 的行"上更新，用它去覆盖聚合会：
+  //   ① 把别的 Agent 的运行数抹成 0；
+  //   ② 行上的 state 滞后于补丁时，数字会停在旧值（实测：结束后仍显示 running=1）。
+  // 现在聚合只来自 `aggregate`（由 sessionSlots 数出来），会话行只负责"这一行显示什么点"。
   return { sessions, projects, agents };
 }

@@ -169,7 +169,8 @@ type StreamSnapshot = {
   // 两者都是**跨 Agent** 的全量事实（服务端 `globalSnapshot()`）：左侧助手列要靠它们显示数字，
   // 不能只依赖"当前选中 Agent 的会话列表"。`projectId` 服务端一直有，此前类型漏写。
   running: Array<{ agentId: string; sessionId: string; projectId?: string; turnId?: string; startedAt: string }>;
-  unread: Array<{ agentId: string; sessionId: string; projectId?: string; completedAt: string }>;
+  /** 未读事实：`state` 区分"完成待看"与"失败待看"（后端 `unread()` 提供）。 */
+  unread: Array<{ agentId: string; sessionId: string; projectId?: string; completedAt: string; state?: "done" | "error" }>;
   /**
    * 跨 Agent 的数量聚合（服务端 `aggregateStatus()` 算好，Task 0005 · P8-3）。
    * 左侧助手列与项目行直接吃它 —— 前端不再自己判断四态（那会重写 `running > failure > unread` 的优先级）。
@@ -536,7 +537,18 @@ export default function App() {
   const unreadRef = useRef(new Map<string, boolean>());
   /** 每会话当前计进了哪一格（查看时才知道该减 unreadDone 还是 unreadError）。 */
   const unreadSlotRef = useRef(new Map<string, "unreadDone" | "unreadError">());
-  const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>>([]);
+  /**
+   * **所有 Agent 的逐会话状态**（唯一事实源，2026-11-04 重写）。
+   *
+   * 用户的原话：「这不就是个状态机吗」—— 对。此前用"每 Agent 每项目三个计数器"（+1/-1），
+   * 那个模型天生会错：重复补丁重复加、别的 Agent 的补丁被过滤、漏一条就永久错位，
+   * 每条路径（查看/删除/重连）都要记得对称地减。
+   * 现在只存"这条会话现在是什么状态"，数字由 deriveStatus **数出来**，永不漂移。
+   *
+   * 三态互斥（与后端 aggregateSlotOf 一致）：running / unreadDone / unreadError；
+   * 不在表里 = 不计数（已看过、或从未结束）。
+   */
+  const [sessionSlots, setSessionSlots] = useState<Map<string, { agentId: string; projectId?: string; slot: "running" | "unreadDone" | "unreadError" }>>(() => new Map());
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
@@ -1177,8 +1189,23 @@ export default function App() {
     connectionRef.current = snapshot.connectionId;
     baselineRef.current = snapshot.seq;
     setRunFacts((f) => applySnapshotFacts(f, { running: snapshot.running, unread: snapshot.unread }, Date.now()));
-    setAgentAggregate(snapshot.aggregate ?? []);
-    (window as unknown as { __agg?: unknown }).__agg = { got: snapshot.aggregate, keys: Object.keys(snapshot) };
+    // 快照 = 服务端全量事实：用它**重建**逐会话状态（不是累加）。
+    // 每条 running 里的会话 → running；每条 unread 里的会话 → 按服务端给的 state 分格。
+    // 这同时修掉了"切换 Agent 后别的 Agent 数字停住"—— 快照里本来就带所有 Agent。
+    setSessionSlots(() => {
+      const next = new Map<string, { agentId: string; projectId?: string; slot: "running" | "unreadDone" | "unreadError" }>();
+      for (const r of snapshot.running ?? []) {
+        if (r.sessionId === undefined || r.agentId === undefined) continue;
+        next.set(r.sessionId, { agentId: r.agentId, ...(r.projectId !== undefined ? { projectId: r.projectId } : {}), slot: "running" });
+      }
+      for (const u of snapshot.unread ?? []) {
+        if (u.sessionId === undefined || u.agentId === undefined) continue;
+        if (next.has(u.sessionId)) continue;   // 在跑的优先（互斥）
+        const slot = (u as { state?: string }).state === "error" ? "unreadError" as const : "unreadDone" as const;
+        next.set(u.sessionId, { agentId: u.agentId, ...(u.projectId !== undefined ? { projectId: u.projectId } : {}), slot });
+      }
+      return next;
+    });
     lastEventAtRef.current = Date.now();
     const aid = ctx.current.agentId;
     const cur = current.current;
@@ -1222,40 +1249,54 @@ export default function App() {
    * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
    */
   /**
-   * 局部改聚合里某一格（Task 0005）：`delta` 为 +1/-1。
+   * 记一条会话的状态（唯一事实源）。`slot` 为 `undefined` = 这条不再计数。
    *
-   * 为什么需要它：助手行/项目行的数字来自**服务端聚合**，而聚合只在 SSE 快照里下发。
-   * 会话开跑、结束、删除都只发 `row` 补丁、不重发快照 —— 不在前端局部改的话，
-   * 数字会一直停在快照那一刻（用户实测："一个 session 正在回复，但正在跑的统计不出现"）。
-   *
-   * 前提：不影响其它格；某个分组三个数都归零时移除（与服务端"零值不占位"一致）。
+   * 为什么是"设值"而不是"加一"：加一要求每条路径都对称地减（查看、删除、重连、
+   * 别的 Agent 的补丁…），漏一条就永久错位；设值只关心"这条现在是什么状态"，
+   * 同一个补丁收到十次也不会算十次。
    */
-  function bumpAggregate(agentId: string, projectId: string | undefined, slot: "running" | "unreadDone" | "unreadError", delta: 1 | -1): void {
-    setAgentAggregate((previous) => {
-      // 匹配顺序（宁可少建一条，也不要建错）：
-      //   ① 完全匹配 agentId + projectId；
-      //   ② 补丁没带 projectId 时，取该 Agent 唯一那条（服务端可能把某些会话归在无项目组）；
-      //   ③ 都不匹配且是 +1 → 新建一条（新会话第一次开跑时服务端聚合里还没有它）。
-      //
-      // 为什么不能简单地"projectId 不匹配就新建"：服务端的聚合条目**可能没有 projectId**
-      // （会话未落盘、或旧记录没回填到项目）。那样前端会为同一个 Agent 建出两条，
-      // 助手行把它们加起来虽然数字对，但项目行会漏 —— 实测踩过。
-      let index = previous.findIndex((entry) => entry.agentId === agentId && entry.projectId === projectId);
-      if (index === -1 && (projectId === undefined || previous.filter((entry) => entry.agentId === agentId).length === 1)) {
-        index = previous.findIndex((entry) => entry.agentId === agentId);
+  function setSlot(sessionId: string, agentId: string, projectId: string | undefined, slot: "running" | "unreadDone" | "unreadError" | undefined): void {
+    setSessionSlots((previous) => {
+      const current = previous.get(sessionId);
+      if (slot === undefined) {
+        if (current === undefined) return previous;
+        const next = new Map(previous);
+        next.delete(sessionId);
+        return next;
       }
-      if (index === -1) {
-        if (delta === -1) return previous;
-        return [...previous, { agentId, ...(projectId !== undefined ? { projectId } : {}), running: 0, unreadDone: 0, unreadError: 0, [slot]: 1 }];
-      }
-      const next = previous.map((entry, i) => i === index ? { ...entry, [slot]: Math.max(0, entry[slot] + delta) } : entry);
-      return next.filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0);
+      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === projectId) return previous;
+      const next = new Map(previous);
+      next.set(sessionId, { agentId, ...(projectId !== undefined ? { projectId } : {}), slot });
+      return next;
     });
+  }
+
+  /**
+   * 从一条补丁更新"这条会话现在是什么状态"（状态机的**唯一入口**）。
+   *
+   * 所有 Agent 的补丁都走这里 —— 别的 Agent 的行不在当前列表里，但它的数字必须在。
+   * 数字由 deriveStatus 数出来，所以这里只描述状态，不做加减。
+   */
+  function applySlotFromPatch(sessionId: string, agentId: string, projectId: string | undefined, patch: RowPatchPayload): void {
+    if (patch.removed === true) {
+      setSlot(sessionId, agentId, projectId, undefined);
+    } else if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
+      // 终态：带 failure 就是失败待看，否则完成待看
+      setSlot(sessionId, agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone");
+    } else if ("unread" in patch && patch.unread === null) {
+      // 用户点开 / 已读 → 清 0
+      setSlot(sessionId, agentId, projectId, undefined);
+    } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
+      setSlot(sessionId, agentId, projectId, "running");
+    } else if ("running" in patch && patch.running === null) {
+      setSlot(sessionId, agentId, projectId, undefined);
+    }
   }
 
   function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined, projectId?: string): void {
     if (patch === undefined || patch === null) return;
-    if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
+    // 不再提前返回（2026-11-04）：别的 Agent 的行不在当前列表里，但它的**数字**必须在。
+    // 用户实测：「我给 frontend agent 下发了 session，切回当前会话后那边没有呼吸的 1」。
     // 删除：把这一行移出列表（别的标签页删了它，这边要跟着消失）。
     // 只删这一行，不重取整个列表 —— 与其它补丁一致。
     if (patch.removed === true) {
@@ -1266,8 +1307,14 @@ export default function App() {
       // 数字也要减：助手行/项目行的徽标来自服务端聚合，删除补丁不会触发重发快照，
       // 不在这里减的话，行消失了但数字还在（用户实测：「删了一个未读，数量没有减少」）。
       // `was` 由服务端判定（与 aggregateStatus 共用 aggregateSlotOf），前端不自己推算。
-      const was = patch.was;
-      if (was !== undefined) bumpAggregate(agentId, projectId, was, -1);
+      // 删了 → 这条不再有状态（数字由数出来，自然少一）
+      setSlot(sessionId, agentId, projectId, undefined);
+      return;
+    }
+    // 只有当前 Agent 的行在列表里：别的 Agent 的补丁跳过列表更新，
+    // 但**状态更新不受影响**（它在函数末尾，所有 Agent 都执行）。
+    if (agentId !== ctx.current.agentId) {
+      applySlotFromPatch(sessionId, agentId, projectId, patch);
       return;
     }
     setGroups((previous) => {
@@ -1306,48 +1353,11 @@ export default function App() {
       return touched ? next : previous;
     });
 
-    // 运行态变化也要驱动聚合（Task 0005 · 2026-11-04 修）：
-    // 会话开跑/结束时服务端**只发 row 补丁、不重发快照**，所以聚合数字停在快照那一刻。
-    // 用户实测："一个 session 正在回复，但项目列和 agent 那边都没有正在跑的数字"。
-    //
-    // 只在**状态真的翻转**时改（undefined → 有值 / 有值 → undefined）：
-    // 节流窗口内会重复收到同一个 `running` 补丁，按"有值就 +1"会越加越多。
-    if ("running" in patch) {
-      const wasRunning = runningRef.current.get(sessionId) === true;
-      const nowRunning = patch.running !== null && patch.running !== undefined;
-      if (wasRunning !== nowRunning) {
-        runningRef.current.set(sessionId, nowRunning);
-        bumpAggregate(agentId, projectId, "running", nowRunning ? 1 : -1);
-      }
-    }
-    // **查看**（unread: null）：把对应的未读数字减掉。
-    // 用户实测：「coder 下面已完成的那个 1，始终不消失」——
-    // 服务端 markSessionViewed() 会发 {unread: null} 补丁，但前端只清了行的 activity，
-    // 没动 agentAggregate，所以徽标上的数字一直留着。
-    if (patch.unread === null) {
-      const known = unreadSlotRef.current.get(sessionId);
-      if (known !== undefined) {
-        unreadSlotRef.current.delete(sessionId);
-        bumpAggregate(agentId, projectId, known, -1);
-      }
-    }
+    // 状态机：所有 Agent 都更新（不受是否当前 Agent 影响 —— 用户实测的那个 bug）
+    applySlotFromPatch(sessionId, agentId, projectId, patch);
 
-    // 终态补丁（done/error）带 unread：这一格 +1。与 running 一样只在翻转时改。
-    // 注意服务端 `pushTerminal` 会在同一条补丁里带 `running: null` + `unread`，
-    // 所以上面的 running 减一与这里的 unread 加一会一起发生 —— 这正是要的结果。
-    if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
-      const key = `${sessionId}:unread`;
-      if (unreadRef.current.get(key) !== true) {
-        unreadRef.current.set(key, true);
-        // 服务端已经在快照里算过这条的话，不能再加一次 —— 但快照之后才发生的事件
-        // 一定还没被算过（聚合是快照那一刻的切片），所以这里 +1 是对的。
-        // 归哪一格由服务端的 `was`/终态补丁的 failure 决定：有 failure 就是 unreadError。
-        const slot = patch.failure !== undefined && patch.failure !== null ? "unreadError" as const : "unreadDone" as const;
-        unreadSlotRef.current.set(sessionId, slot);
-        bumpAggregate(agentId, projectId, slot, 1);
-      }
-    }
   }
+
 
   function runStreamAction(action: RouteAction, payload: AgentEvent): void {
     switch (action.kind) {
@@ -2279,14 +2289,28 @@ export default function App() {
    * 违背本任务"不为展示重复取数"；而 SSE 已经把跨 Agent 的事实推过来了，零请求。
    */
   /**
-   * 聚合输入（Task 0005 · P8-3）：
-   *   ① `agentAggregate`：服务端算好的**跨 Agent** 数量（助手列能显示所有 Agent 的数字，靠它）；
-   *   ② `groups`：当前打开 Agent 的会话行（用于把数字细到会话级、并扣掉正在看的那条未读）。
+  /**
+   * 聚合输入 = **逐会话状态数出来的**（2026-11-04 状态机重写）。
    *
-   * 四态判定**不在这里**：服务端用 `rowActivityOf()` 算，`deriveStatus` 只做减法。
-   * 曾经在这里手写过一份 `stateOf()`（running > failure > unread > idle）——
-   * 那是同一个规则的第二份实现，正是本任务要消灭的东西（C163）。
+   * `sessionSlots` 是唯一事实源：每条会话在 running / unreadDone / unreadError 里最多占一格，
+   * 不占 = 不计数。这里只是把它按 Agent × 项目数一数 —— 没有计数器，所以不会漂移。
+   *
+   * 快照到达时用它重建（服务端是全量事实）；`row` 补丁到达时用 setSlot 改单条。
+   * 两条路径写的是**同一份数据的不同部分**，不会互相覆盖。
    */
+  const agentAggregate = (() => {
+    const buckets = new Map<string, { agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>();
+    for (const { agentId: aid, projectId: pid, slot } of sessionSlots.values()) {
+      const key = `${aid}\u0000${pid ?? ""}`;
+      let entry = buckets.get(key);
+      if (entry === undefined) {
+        entry = { agentId: aid, ...(pid !== undefined ? { projectId: pid } : {}), running: 0, unreadDone: 0, unreadError: 0 };
+        buckets.set(key, entry);
+      }
+      entry[slot] += 1;
+    }
+    return [...buckets.values()];
+  })();
   const statusFacts: StatusFacts = {
     aggregate: agentAggregate,
     sessions: Object.fromEntries(
@@ -2296,6 +2320,7 @@ export default function App() {
       ])),
     ),
   };
+
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
     <>

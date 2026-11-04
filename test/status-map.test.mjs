@@ -58,14 +58,16 @@ test("T65 焦点会话的未读被扣掉（行上看不到绿点，数字也要�
   assert.equal(r.sessions.A2.unread, true);
 });
 
-test("T66 运行态用会话行替换服务端数（跑不跑是此刻的事实）", async () => {
+test("T66 聚合只来自 aggregate，不被会话行覆盖（状态机模型）", async () => {
+  // 2026-11-04 改：running 的真相在 sessionSlots（补丁直接改它、覆盖所有 Agent）。
+  // 用会话行去覆盖会 ① 把别的 Agent 的 running 抹成 0 ② 行滞后时数字停在旧值（实测过）。
   const r = deriveStatus({
-    aggregate: [agg("alpha", "p1", 2, 5, 1)],
+    aggregate: [agg("alpha", "p1", 2, 5, 1), agg("beta", "p9", 3, 0, 0)],
     sessions: { A1: s("running", "alpha", "p1") },
   }, { agentId: "alpha", visible: false });
-  assert.equal(r.agents.alpha.running, 1, "运行数取行（更新）");
-  assert.equal(r.agents.alpha.unreadDone, 5, "未读完成数保持服务端值");
-  assert.equal(r.agents.alpha.unreadError, 1, "未读失败数保持服务端值");
+  assert.equal(r.agents.alpha.running, 2, "alpha 的运行数来自聚合（2），不被 1 条会话行覆盖");
+  assert.equal(r.agents.beta.running, 3, "别的 Agent 的运行数不能被抹成 0");
+  assert.equal(r.agents.alpha.unreadDone, 5, "未读数同样只信聚合");
 });
 
 test("T67 **未读数不能被会话行覆盖**（修掉的真实 bug：6 会变成 1）", async () => {
