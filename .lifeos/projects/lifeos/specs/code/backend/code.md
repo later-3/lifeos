@@ -101,3 +101,16 @@
   4. 界面显示模型必须取**实际运行模型**（`sessionMeta().model`），不得显示配置值来"代表"实际。
 - 依据：2026-11-03 C162（用户选 amr-link，实际请求打到 DeepSeek 官方并 402；`adoptAgentDefault` 只在 `decision === "follow"` 时调 `setModel`，而该判定比较的是两个**记录值**，两者相同时判 `keep`，**没有任何代码检查 `session.model`**）。实测数据：`checkAuth` 0.008ms/次；Pi 的 `setModel()` 内部用的正是 `checkAuth`（`agent-session.ts:2508`）；`hasConfiguredAuth` 在写 `process.env` 后仍为 `false`。
 - 机器检查：`test/model-follow.test.mjs`（2 条回归锁定"keep ≠ 实际模型正确"）、`test/env-refs.test.mjs`（变量名解析与三种病穷举）、`test/env-reload.test.mjs`（只补缺失项、需 shell 求值的整行跳过）、`test/failure.test.mjs`（`No API key` → `model_not_configured` 而非 `auth`）、`frontend/test/ui-contract.mjs`（"未覆盖但实际被换掉 → 头部显示实际"）。
+
+## 2.x 给已有数据加字段时，必须同时写迁移（必须）
+
+- 场景：往一个**已有落盘数据**的结构里加字段（本项目：`session-views.json` 加 `lastState`），
+  而这个字段被新的读取路径依赖。
+- 规则：**必须**在同一批改动里提供回填 —— 启动时扫一次旧记录、用已有事实推断、写回、之后不再扫。
+  回填**必须**只处理缺失值的记录，**必须不**覆盖已有值。
+  推断不出来时**必须**保持缺失，**必须不**编一个默认值（宁可少一个数字，也不撒谎）。
+- 为什么：只加字段不迁移，等于让**所有存量用户**看到空数据，而且不会自愈 ——
+  要等每条记录各自被重新写入才会恢复。本项目实测：59 条有 `completedAt` 的记录
+  因缺 `lastState` 全部不计，用户编译启动后看到的是「助手列表一个数字都没有」。
+- 检查方式：拿一份真实的家目录副本（不是空目录）启动一次，看新增功能的界面是否有数据。
+  **只用空家目录测试等于没测迁移。**

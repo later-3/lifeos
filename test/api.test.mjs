@@ -966,6 +966,11 @@ test("会话列表的失败态：最后一条 assistant 以 error 结束才带 f
       message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "fetch failed: ECONNREFUSED" },
     });
     await writeFile(path, `${original.trimEnd()}\n${errored}\n`, "utf8");
+    // 2026-11-04 用户裁决：**失败也看已读** —— 一次结束 = 一条未读，两种结果规则相同。
+    // 直接改文件不会产生"未读"事实，所以这里显式补一条（真实链路里 recordCompletion 会做）。
+    const { sessionViewsOf } = await import("../src/session-views.ts");
+    await sessionViewsOf().load();
+    sessionViewsOf().markCompleted("lifeosagent", sid, new Date().toISOString(), "workspace", { state: "error", failureKind: "network" });
     const after = await (await fetch(`${base}/api/agents/lifeosagent/sessions`)).json();
     const item = after.items.find((entry) => entry.sessionId === sid);
     assert.ok(item !== undefined);

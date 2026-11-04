@@ -90,17 +90,32 @@ type UsageSummary = { input: number; output: number; cacheRead: number; cacheWri
  *
  * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）；`99+` 规则见 `design-language.md:217`。
  */
-function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "completed" | "failed"; unit: "会话" }) {
+/**
+ * 状态徽标（助手行与项目行共用）：**三个数字，全部看已读**（用户 2026-11-04 定稿）。
+ *
+ * 未读只有一种概念：一次回合结束了、用户还没看过。它有两个结果 ——
+ * 正常结束（绿）与异常结束（红），**规则完全相同：看过就消失，不持久记录**。
+ * 所以徽标回答「有几件事要你看」，与**会话行的点永远同步**：点进去了，点和数字一起减。
+ *
+ * ## 为什么"正在跑"要和"已完成"用不同底色
+ *
+ * 两个都是绿色会混淆。区分靠**色系深浅 + 动效**，不靠新增色相：
+ *   · 正在跑 → 实心 `success` 底 + 白字 + 呼吸（最抢眼：它是活的）
+ *   · 已完成 → `success-soft` 底 + `success` 字（安静：它只是等你点一下）
+ *   · 异常   → `danger-soft` 底 + `danger` 字
+ * 零值不渲染（pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
+ */
+function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unreadDone" | "unreadError"; unit: "会话" }) {
   if (count <= 0) return null;
   const text = count > 99 ? "99+" : String(count);
   const label = kind === "running"
     ? `${count} 个${unit}正在工作`
-    : kind === "completed"
-      ? `${count} 个${unit}已完成`
-      : `${count} 个${unit}异常结束`;
+    : kind === "unreadDone"
+      ? `${count} 个${unit}已完成待查看`
+      : `${count} 个${unit}失败待查看`;
   const tone = kind === "running"
-    ? "bg-success-soft text-success animate-pulse"
-    : kind === "completed"
+    ? "bg-success text-white animate-pulse"
+    : kind === "unreadDone"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
   return (
@@ -112,18 +127,17 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "c
   );
 }
 
-function StatusMarks({ status, unit }: { status: { running: number; completed: number; failed: number } | undefined; unit: "会话" }) {
+function StatusMarks({ status, unit }: { status: { running: number; unreadDone: number; unreadError: number } | undefined; unit: "会话" }) {
   if (status === undefined) return null;
-  if (status.running === 0 && status.completed === 0 && status.failed === 0) return null;   // 零值不渲染
+  if (status.running === 0 && status.unreadDone === 0 && status.unreadError === 0) return null;   // 零值不渲染
   return (
     <span className="flex shrink-0 items-center gap-1" data-shot-mask="status-marks">
       <CountBadge count={status.running} kind="running" unit={unit} />
-      <CountBadge count={status.completed} kind="completed" unit={unit} />
-      <CountBadge count={status.failed} kind="failed" unit={unit} />
+      <CountBadge count={status.unreadDone} kind="unreadDone" unit={unit} />
+      <CountBadge count={status.unreadError} kind="unreadError" unit={unit} />
     </span>
   );
 }
-
 
 /** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
 const STREAM_EVENT_NAMES = [
@@ -157,7 +171,7 @@ type StreamSnapshot = {
    * 跨 Agent 的数量聚合（服务端 `aggregateStatus()` 算好，Task 0005 · P8-3）。
    * 左侧助手列与项目行直接吃它 —— 前端不再自己判断四态（那会重写 `running > failure > unread` 的优先级）。
    */
-  aggregate?: Array<{ agentId: string; projectId?: string; running: number; completed: number; failed: number }>;
+  aggregate?: Array<{ agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>;
 };
 
 /** 落盘前去掉纯展示态（ui）：展开/钉住/拖动偏移是"当下正在看"的状态，不存。 */
@@ -512,7 +526,7 @@ export default function App() {
   /** 每秒 +1：只为让"运行耗时"重算（不触发任何请求、不改数据）。 */
   const [elapsedTick, setElapsedTick] = useState(0);
   /** 服务端给的跨 Agent 聚合（P8-3）；未收到快照前为空，此时只靠当前 Agent 的行。 */
-  const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; completed: number; failed: number }>>([]);
+  const [agentAggregate, setAgentAggregate] = useState<Array<{ agentId: string; projectId?: string; running: number; unreadDone: number; unreadError: number }>>([]);
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
