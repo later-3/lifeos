@@ -68,3 +68,24 @@ test("T73 row 事件遵守基线：快照之前的重放一律丢弃", async () 
   const stale = { seq: 5, agentId: "A", sessionId: "s1", type: "row", patch: { running: null } };
   assert.deepEqual(routeEvent(stale, focusA, 5).map((a) => a.kind), ["drop"]);
 });
+
+// —— T74–T75 删除补丁必须带 projectId 与 was（Task 0005 · P8 补）——
+// 背景：客户端收到 removed 只删了行，助手行的数字没减（用户实测「删了一个未读，数量没有减少」）。
+// 根因是补丁没告诉客户端"该减哪一格、在哪个分组"。
+test("T74 removed 补丁把 projectId 与 was 一路带到执行侧", async () => {
+  const ev = {
+    seq: 40, agentId: "A", sessionId: "s1", projectId: "p1", type: "row",
+    patch: { removed: true, was: "unreadDone" },
+  };
+  const actions = routeEvent(ev, focusA, 0);
+  assert.deepEqual(actions.map((a) => a.kind), ["row"]);
+  assert.equal(actions[0].projectId, "p1", "客户端要靠它定位该减哪个分组的数字");
+  assert.deepEqual(actions[0].patch, { removed: true, was: "unreadDone" });
+});
+
+test("T75 没有 projectId 的补丁也要能路由（不能因为缺字段就丢掉整条）", async () => {
+  const ev = { seq: 41, agentId: "A", sessionId: "s1", type: "row", patch: { removed: true } };
+  const actions = routeEvent(ev, focusA, 0);
+  assert.deepEqual(actions.map((a) => a.kind), ["row"]);
+  assert.equal(actions[0].projectId, undefined);
+});

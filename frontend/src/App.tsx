@@ -202,6 +202,8 @@ type SessionItem = SessionRowData;
 type RowPatchPayload = {
   /** 会话已被删除：把这一行移出列表（Task 0005 · P8 补）。 */
   removed?: true;
+  /** 删除前它在聚合里占哪一格；据此把助手行/项目行的数字减一。 */
+  was?: "running" | "unreadDone" | "unreadError";
   running?: { since: string; phase?: RowPhase; tool?: string } | null;
   unread?: { since: string } | null;
   failure?: { kind: RowFailureKind; detail: string; at?: string } | null;
@@ -1211,7 +1213,7 @@ export default function App() {
    *
    * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
    */
-  function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined): void {
+  function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined, projectId?: string): void {
     if (patch === undefined || patch === null) return;
     if (agentId !== ctx.current.agentId) return;   // 别的 Agent 的行不在当前列表里
     // 删除：把这一行移出列表（别的标签页删了它，这边要跟着消失）。
@@ -1221,6 +1223,18 @@ export default function App() {
         if (!group.sessions.some((item) => item.sessionId === sessionId)) return group;
         return { ...group, sessions: group.sessions.filter((item) => item.sessionId !== sessionId) };
       }));
+      // 数字也要减：助手行/项目行的徽标来自服务端聚合，删除补丁不会触发重发快照，
+      // 不在这里减的话，行消失了但数字还在（用户实测：「删了一个未读，数量没有减少」）。
+      // `was` 由服务端判定（与 aggregateStatus 共用 aggregateSlotOf），前端不自己推算。
+      const was = patch.was;
+      if (was !== undefined) {
+        setAgentAggregate((previous) => previous.map((entry) => {
+          if (entry.agentId !== agentId) return entry;
+          if (projectId !== undefined && entry.projectId !== projectId) return entry;
+          const next = { ...entry, [was]: Math.max(0, entry[was] - 1) };
+          return next;
+        }).filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0));
+      }
       return;
     }
     setGroups((previous) => {
@@ -1307,7 +1321,7 @@ export default function App() {
         return;
       }
       case "row":
-        applyRowPatch(action.agentId, action.sessionId, action.patch as RowPatchPayload);
+        applyRowPatch(action.agentId, action.sessionId, action.patch as RowPatchPayload, action.projectId);
         return;
       case "agents-changed":
         void onAgentsChanged();
