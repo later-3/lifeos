@@ -15,6 +15,8 @@ export type RouteEvent = {
   type: string;
   agentId?: string | undefined;
   sessionId?: string | undefined;
+  /** 行补丁带它：删除时客户端要靠它定位该减哪个分组的数字。 */
+  projectId?: string | undefined;
   turnId?: string | undefined;
   state?: string | undefined;
   aborted?: boolean | undefined;
@@ -31,7 +33,7 @@ export type RouteAction =
   | { kind: "completion"; agentId: string; sessionId: string; outcome: "done" | "error" }
   | { kind: "agents-changed" }
   /** 一行的局部补丁（任务 0005）：只更新那一行，**不重取列表**。 */
-  | { kind: "row"; agentId: string; sessionId: string; patch: unknown };
+  | { kind: "row"; agentId: string; sessionId: string; projectId?: string; patch: unknown };
 
 const TERMINAL = new Set(["done", "error"]);
 
@@ -44,7 +46,11 @@ export function routeEvent(event: RouteEvent, focus: RouteFocus, baseline: numbe
     const agentId = event.agentId ?? "";
     const sessionId = event.sessionId ?? "";
     if (sessionId === "") return [{ kind: "drop", reason: "stale" }];
-    return [{ kind: "row", agentId, sessionId, patch: (event as { patch?: unknown }).patch }];
+    return [{
+      kind: "row", agentId, sessionId,
+      ...(event.projectId !== undefined ? { projectId: event.projectId } : {}),
+      patch: (event as { patch?: unknown }).patch,
+    }];
   }
 
   const agentId = event.agentId ?? "";

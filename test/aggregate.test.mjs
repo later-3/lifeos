@@ -112,3 +112,40 @@ test("T88 在跑的会话只算 running，不重复计入未读（四态互斥�
   assert.equal(one.running, 0, "没有真实回合 → 0");
   assert.equal(one.unreadDone, 1);
 });
+
+// —— T89 aggregateSlotOf：删除时"该减哪一格"必须与 aggregateStatus 同一套规则 ——
+test("T89 aggregateSlotOf 与 aggregateStatus 对同一条会话的判断一致（未读完成 / 未读失败 / 都不算）", async () => {
+  const { aggregateSlotOf } = await import("../src/agent-host.ts");
+  const views = sessionViewsOf();
+
+  views.markCompleted("slot-a", "d1", at, "p1", { state: "done" });
+  views.markCompleted("slot-a", "e1", at, "p1", { state: "error", failureKind: "auth" });
+  assert.equal(aggregateSlotOf("slot-a", "d1"), "unreadDone");
+  assert.equal(aggregateSlotOf("slot-a", "e1"), "unreadError");
+
+  // 看过之后 → 不再占任何一格（与聚合一致：groups 里这个 Agent 会消失）
+  views.markViewed("slot-a", "d1", at);
+  assert.equal(aggregateSlotOf("slot-a", "d1"), undefined, "已看过 → 删除它不需要减任何数字");
+  assert.equal(of("slot-a").unreadDone, 0, "聚合也不计它");
+
+  // 不存在的会话
+  assert.equal(aggregateSlotOf("slot-a", "nope"), undefined);
+});
+
+test("T89b 每条会话的 slot 汇总起来，必须等于 aggregateStatus 的数字（同一规则的两个入口）", async () => {
+  const { aggregateSlotOf } = await import("../src/agent-host.ts");
+  const views = sessionViewsOf();
+  const A = "slot-sum";
+  const ids = ["a1", "a2", "a3", "a4"];
+  views.markCompleted(A, "a1", at, "p1", { state: "done" });
+  views.markCompleted(A, "a2", at, "p1", { state: "done" });
+  views.markCompleted(A, "a3", at, "p1", { state: "error", failureKind: "auth" });
+  views.markCompleted(A, "a4", at, "p1", { state: "error", failureKind: "timeout" });
+  views.markViewed(A, "a4", at);   // 看掉一条
+
+  const slots = ids.map((id) => aggregateSlotOf(A, id));
+  const counted = { unreadDone: slots.filter((s) => s === "unreadDone").length, unreadError: slots.filter((s) => s === "unreadError").length };
+  const agg = of(A);
+  assert.deepEqual(counted, { unreadDone: agg.unreadDone, unreadError: agg.unreadError }, "逐条判定与聚合总数必须一致");
+  assert.deepEqual(counted, { unreadDone: 2, unreadError: 1 });
+});

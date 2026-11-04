@@ -54,6 +54,8 @@ export type RowPatch = {
    * 标签页 B 的助手列数字会一直是旧的，直到它自己刷新或重连。
    */
   removed?: true;
+  /** 删除时，这条会话**删除前**在聚合里占哪一格；客户端据此把对应数字减一（Task 0005）。 */
+  was?: "running" | "unreadDone" | "unreadError";
   /** Task 变化（切 Task、建 Task 即进入）。 */
   task?: { id: string; title: string; status: string; type: string } | null;
 };

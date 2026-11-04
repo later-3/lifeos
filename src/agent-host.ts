@@ -126,6 +126,28 @@ export type AgentProjectCount = {
  * （早期版本把两者拆开——数字不看已读、点看已读——用户反问"你会话红点取消，
  *  那我去哪儿找失败的？"那句话是对的：同一件事不能给两套规则。）
  */
+/** 终态 → 聚合里的哪一格。`done`/`error` 之外（缺失）→ undefined，交给调用方决定不计。 */
+function slotOf(lastState: "done" | "error" | undefined): "unreadDone" | "unreadError" | undefined {
+  if (lastState === "done") return "unreadDone";
+  if (lastState === "error") return "unreadError";
+  return undefined;
+}
+
+/**
+ * 一条会话**此刻**在聚合里占哪一格（Task 0005 · P8 补）。
+ *
+ * 删除时要告诉客户端"该减掉哪一格" —— 而这个判断必须与 `aggregateStatus()` **完全一致**，
+ * 否则删完之后数字会对不上（删了一个未读，客户端减错格或没减）。
+ * 所以两者共用同一套规则：在跑 > 未读（看是否已读）> 不计。
+ */
+export function aggregateSlotOf(agentId: string, sessionId: string): "running" | "unreadDone" | "unreadError" | undefined {
+  if (isRunning(agentId, sessionId)) return "running";
+  const key = `${agentId}\u0000${sessionId}`;
+  if (!sessionViewsOf().unread().some((item) => `${item.agentId}\u0000${item.sessionId}` === key)) return undefined;
+  const outcome = sessionViewsOf().outcomeOf(agentId, sessionId);
+  return slotOf(outcome?.state);
+}
+
 export function aggregateStatus(): AgentProjectCount[] {
   const buckets = new Map<string, AgentProjectCount>();
   const bucketOf = (agentId: string, projectId: string | undefined): AgentProjectCount => {
@@ -145,17 +167,15 @@ export function aggregateStatus(): AgentProjectCount[] {
     bucketOf(entry.agentId, entry.projectId).running += 1;
   }
 
-  // ②③ 未读终态：**只看没看过的**（unread() 已按 completedAt > viewedAt 判好）。
-  // 两种结果的规则完全一样 —— 看过就不计，与是不是失败无关。
+  // ②③ 未读终态：**只看没看过的**。两种结果的规则完全一样 —— 看过就不计。
   const unreadKeys = new Set(sessionViewsOf().unread().map((item) => `${item.agentId}\u0000${item.sessionId}`));
   for (const item of sessionViewsOf().states()) {
     const key = `${item.agentId}\u0000${item.sessionId}`;
     if (runningKeys.has(key)) continue;        // 在跑的不重复计（四态互斥）
     if (!unreadKeys.has(key)) continue;        // 已看过 → 不计（这就是"看过就消失"）
-    const bucket = bucketOf(item.agentId, item.projectId);
-    if (item.lastState === "error") bucket.unreadError += 1;
-    else if (item.lastState === "done") bucket.unreadDone += 1;
-    // 没有 lastState 的老记录不计：不知道它怎么结束的，就不编一个
+    const slot = slotOf(item.lastState);
+    if (slot === undefined) continue;          // 没有 lastState 的老记录不计：不知道它怎么结束的，就不编一个
+    bucketOf(item.agentId, item.projectId)[slot] += 1;
   }
   return [...buckets.values()].filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0);
 }
@@ -1364,13 +1384,17 @@ export async function deleteSession(agentId: string, sessionId: string): Promise
       }
     })
     .catch(() => undefined);
+  // **先取状态再清索引**：删完之后这些事实就没了，客户端要靠它把助手行的数字减掉。
+  // 判定与 `aggregateStatus()` 共用同一个 `aggregateSlotOf()` —— 两边说两套话就会对不上。
+  const slot = aggregateSlotOf(agentId, sessionId);
+  const projectId = found !== undefined ? projectOfSessionDir(found.dir) : undefined;
   sessionViewsOf().forget(agentId, sessionId);   // 已删会话不得留下未读点
   state.sessions.delete(sessionId);
   state.pending.delete(sessionId);
   // 通知其他连接把这一行移除（Task 0005 · P8 补）：不通知的话，别的标签页的助手列数字
   // 会一直停在旧值，直到它自己刷新。与 renameSession / setSessionTask 走同一条补丁通道。
-  // projectId 从被删文件所在目录推导（文件此刻已删，所以用删之前拿到的 `found`）。
-  rowPatches().pushNow(agentId, sessionId, found !== undefined ? projectOfSessionDir(found.dir) : undefined, { removed: true });
+  // 带上 `was`：客户端据此把助手行/项目行的对应数字减一（否则行没了数字还在）。
+  rowPatches().pushNow(agentId, sessionId, projectId, { removed: true, ...(slot !== undefined ? { was: slot } : {}) });
   return "deleted";
 }
 
