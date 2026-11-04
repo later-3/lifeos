@@ -11,8 +11,26 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { writeTextAtomic } from "./atomic-file.ts";
 
+/**
+ * 会话的**最近一次终态**（Task 0005 · P8-1）。
+ *
+ * 为什么记在这里（而不是每次去扫会话文件）：聚合"每个 Agent 有几个失败会话"时，
+ * 唯一没有索引的事实就是 failure —— 实测扫 69 个文件 156ms、经 sessionRowsOf 全链路 532ms。
+ * 而终态在回合结束时**本来就已算出**（`agent-host.ts` 的 `classifyFailure`），
+ * 顺手写进这条已有记录，失败查询就从"扫全盘"变成"读索引"（实测 0.3ms）。
+ *
+ * 与 `completedAt` 的关系：两者由同一次 `markCompleted` 写入，同生同灭；
+ * `lastState` 描述"那一次是怎么结束的"。
+ */
+export type TurnState = "done" | "error";
+export type TurnOutcome = { state: TurnState; failureKind?: string };
+
 export type UnreadItem = { agentId: string; sessionId: string; projectId?: string; completedAt: string };
-type Entry = { completedAt?: string; viewedAt?: string; projectId?: string };
+
+/** 聚合用的状态条目：比 UnreadItem 多带终态（不看已读，只看"有没有事发生"）。 */
+export type StateItem = UnreadItem & { lastState?: TurnState; failureKind?: string };
+
+type Entry = { completedAt?: string; viewedAt?: string; projectId?: string; lastState?: TurnState; failureKind?: string };
 
 export type SessionViewsOptions = {
   now: () => number;
@@ -57,6 +75,11 @@ export function createSessionViews(options: SessionViewsOptions) {
           ...(projectId !== undefined ? { projectId } : {}),
           ...(entry.completedAt !== undefined ? { completedAt: maxIso(current.completedAt, entry.completedAt) } : current.completedAt !== undefined ? { completedAt: current.completedAt } : {}),
           ...(entry.viewedAt !== undefined ? { viewedAt: maxIso(current.viewedAt, entry.viewedAt) } : current.viewedAt !== undefined ? { viewedAt: current.viewedAt } : {}),
+          // 终态随记录一起恢复；取**较晚**那次（与 completedAt 同一判定）
+          ...(entry.lastState !== undefined && (entry.completedAt === undefined || current.completedAt === undefined || Date.parse(entry.completedAt) >= Date.parse(current.completedAt))
+            ? { lastState: entry.lastState, ...(entry.failureKind !== undefined ? { failureKind: entry.failureKind } : {}) }
+            : current.lastState !== undefined ? { lastState: current.lastState } : {}),
+          ...(current.lastState !== undefined && entry.lastState === undefined ? { lastState: current.lastState } : {}),
         });
       }
     },
@@ -101,11 +124,56 @@ export function createSessionViews(options: SessionViewsOptions) {
       viewWrittenAt.delete(key);
       persistNow();
     },
-    markCompleted(agentId: string, sessionId: string, at: string, projectId?: string): void {
+    /**
+     * 记一次终态。
+     *
+     * `outcome` 决定 `lastState` / `failureKind`（Task 0005 · P8-1）：
+     * 它们是聚合层回答"这个 Agent 有几个失败会话"的**唯一索引**，不写就得回扫会话文件。
+     * 只在**这次确实更新了 completedAt** 时才写终态——旧终态不能被更早的补写覆盖。
+     */
+    markCompleted(agentId: string, sessionId: string, at: string, projectId?: string, outcome?: TurnOutcome): void {
       const entry = entryOf(agentId, sessionId);
+      const previous = entry.completedAt;
       entry.completedAt = maxIso(entry.completedAt, at);
       if (projectId !== undefined && projectId !== "") entry.projectId = projectId;
+      // 只有"这次比之前更晚"才更新终态：否则一条更早的补写会把最近一次失败/完成覆盖掉
+      const isLatest = previous === undefined || Date.parse(at) >= Date.parse(previous);
+      if (outcome !== undefined && isLatest) {
+        entry.lastState = outcome.state;
+        if (outcome.state === "error" && outcome.failureKind !== undefined) entry.failureKind = outcome.failureKind;
+        else delete entry.failureKind;
+      }
       persistNow();
+    },
+
+    /**
+     * 全量状态条目（**不看已读**）：聚合层用它数"每个 Agent 有几个在跑/待查看/失败"。
+     *
+     * 与 `unread()` 的区别：`unread()` 只给"还没看"的；这里给所有有过终态的会话，
+     * 因为助手列要的是"这个 Agent 有什么动静"，与"用户看没看"无关（看没看由前端按 viewedAt 判）。
+     */
+    states(): StateItem[] {
+      const out: StateItem[] = [];
+      for (const [key, entry] of state) {
+        if (entry.completedAt === undefined) continue;
+        const [agentId, sessionId] = key.split("\u0000");
+        out.push({
+          agentId: agentId ?? "", sessionId: sessionId ?? "",
+          ...(entry.projectId !== undefined ? { projectId: entry.projectId } : {}),
+          completedAt: entry.completedAt,
+          ...(entry.lastState !== undefined ? { lastState: entry.lastState } : {}),
+          ...(entry.failureKind !== undefined ? { failureKind: entry.failureKind } : {}),
+          // viewedAt 不在这里暴露：本方法回答"发生了什么"，不回答"看没看"
+        });
+      }
+      return out;
+    },
+
+    /** 某会话的最近终态（前端补丁与测试用）。 */
+    outcomeOf(agentId: string, sessionId: string): { state: TurnState; failureKind?: string } | undefined {
+      const entry = state.get(keyOf(agentId, sessionId));
+      if (entry?.lastState === undefined) return undefined;
+      return { state: entry.lastState, ...(entry.failureKind !== undefined ? { failureKind: entry.failureKind } : {}) };
     },
     markViewed(agentId: string, sessionId: string, at: string): void {
       const entry = entryOf(agentId, sessionId);

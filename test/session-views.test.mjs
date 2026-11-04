@@ -100,3 +100,69 @@ test("T65 未读记录带 projectId（状态映射的项目层需要它）；旧
   await restarted.load();
   assert.equal(restarted.unread().find((x) => x.sessionId === "s2").projectId, "p7", "回填结果落盘");
 });
+
+// —— T43–T46 终态索引（Task 0005 · P8-1）——
+// 目的：让"这个 Agent 有几个失败会话"变成一次索引读，而不是扫全部会话文件。
+// 反例背景：改之前 failure 只能由 sessionRowsOf 扫 JSONL 得到，实测 69 个文件 156ms、
+// 全链路 532ms —— 放进快照/聚合就是每 2.5 秒一次全扫。
+test("T43 markCompleted 带终态：done/error 都能读回，且状态条目与未读是同一份记录", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("A", "s1", h.at(0), "p1", { state: "done" });
+  h.views.markCompleted("A", "s2", h.at(1000), "p1", { state: "error", failureKind: "auth" });
+
+  assert.deepEqual(h.views.outcomeOf("A", "s1"), { state: "done" });
+  assert.deepEqual(h.views.outcomeOf("A", "s2"), { state: "error", failureKind: "auth" });
+  assert.equal(h.views.outcomeOf("A", "nope"), undefined, "没有记录 → undefined，不编一个默认终态");
+
+  const states = h.views.states();
+  assert.deepEqual(states.map((s) => [s.sessionId, s.lastState, s.projectId]), [["s1", "done", "p1"], ["s2", "error", "p1"]]);
+});
+
+test("T43b states() 不看已读：用户看过之后，聚合仍要知道这条会话是怎么结束的", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("A", "s1", h.at(0), "p1", { state: "error", failureKind: "timeout" });
+  h.views.markViewed("A", "s1", h.at(5000));
+  assert.equal(h.views.unread().length, 0, "看过了 → 不再未读");
+  assert.equal(h.views.states().length, 1, "但状态条目还在（聚合要数失败数，与看没看无关）");
+  assert.equal(h.views.states()[0].lastState, "error");
+});
+
+test("T44 更早的补写不覆盖最近终态（completedAt 取较晚者，终态跟着它走）", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("A", "s1", h.at(10_000), "p1", { state: "error", failureKind: "server" });
+  // 迟到的旧终态：时间更早 → completedAt 不变，终态也不能被改成 done
+  h.views.markCompleted("A", "s1", h.at(1_000), "p1", { state: "done" });
+  assert.equal(h.views.outcomeOf("A", "s1").state, "error", "最近一次是 error，晚到的更早记录不能改写它");
+  assert.equal(h.views.outcomeOf("A", "s1").failureKind, "server");
+  // 真正更晚的一次：这次要生效，且 failureKind 必须被清掉（不能留着上次的）
+  h.views.markCompleted("A", "s1", h.at(20_000), "p1", { state: "done" });
+  assert.deepEqual(h.views.outcomeOf("A", "s1"), { state: "done" }, "失败之后成功了 → 不该还带着旧 failureKind");
+});
+
+test("T45 重启后终态仍在（落盘 + load 恢复），且与 completedAt 同源判定", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("B", "s9", h.at(0), "p2", { state: "error", failureKind: "rate_limit" });
+  await h.views.flush();
+
+  const restarted = createSessionViews({
+    now: () => Date.parse("2026-10-25T09:00:00Z"),
+    load: async () => h.store.text,
+    persist: async () => {},
+    throttleMs: 5000,
+  });
+  await restarted.load();
+  assert.deepEqual(restarted.outcomeOf("B", "s9"), { state: "error", failureKind: "rate_limit" });
+  assert.equal(restarted.states()[0].projectId, "p2", "项目归属也一起恢复（聚合按项目分组要用）");
+});
+
+test("T46 不传 outcome 时保持原行为（旧调用点不需要改），且不会凭空造终态", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("A", "s1", h.at(0));   // 只有完成事实，没有终态
+  assert.equal(h.views.outcomeOf("A", "s1"), undefined, "没给终态就不能编一个");
+  assert.equal(h.views.unread().length, 1, "未读行为与改之前一致");
+});
