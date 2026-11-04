@@ -333,6 +333,96 @@ export async function projectIdOfSession(agentId: string, sessionId: string): Pr
   return found === undefined ? undefined : projectOfSessionDir(found.dir);
 }
 
+
+/* ============================================================
+   批注（Task 0003 · P5）
+   ------------------------------------------------------------
+   存储：会话 custom entry（第 5 种，与 lifeos_active_task / lifeos_model_override /
+   lifeos_thinking_override / lifeos_peer 同族），`appendCustomEntry` 追加写。
+
+   为什么是"事件流"而不是"快照"：与 Pi 自己的落盘方式一致（只落变化）；
+   追加写不破坏已有条目（`peer.ts` 注释写明这一点）。
+
+   为什么 ui（展开/钉住/拖动偏移）不落盘：那是"当下正在看"的状态，
+   刷新后按默认（展开、未钉住、默认位置）摆更干净。存了反而会"框漂在奇怪的位置"。
+   ============================================================ */
+
+export const ANNOTATION_ENTRY = "lifeos_annotation";
+
+/** 一条批注（服务端视角：只关心落盘的字段，ui 是纯前端展示态）。 */
+export type StoredAnnotation = {
+  id: string;
+  author: { kind: "user" | "agent"; id: string };
+  messageId: string;
+  blockIndex: number;
+  start: number;
+  end: number;
+  quote: string;
+  marks: string[];
+  note: string;
+};
+
+export type AnnotationOp = "add" | "update" | "remove";
+
+/** 读会话里的批注：按顺序重放 op，得到当前集合。
+ *  坏条目（字段缺失/类型不对）**跳过**，不拖垮整个会话——批注丢失可接受，会话读不出来不可接受。 */
+export function annotationsOf(manager: ReturnType<typeof SessionManager.open>): StoredAnnotation[] {
+  const byId = new Map<string, StoredAnnotation>();
+  const order: string[] = [];
+  for (const entry of manager.getBranch()) {
+    if (entry?.type !== "custom" || entry.customType !== ANNOTATION_ENTRY) continue;
+    const data = entry.data as { op?: unknown; annotation?: unknown } | undefined;
+    const op = data?.op;
+    const raw = data?.annotation as Record<string, unknown> | undefined;
+    if (raw === undefined || typeof raw.id !== "string" || raw.id === "") continue;
+    if (op === "remove") {
+      if (byId.delete(raw.id)) order.splice(order.indexOf(raw.id), 1);
+      continue;
+    }
+    if (op !== "add" && op !== "update") continue;
+    const anno = toStoredAnnotation(raw);
+    if (anno === undefined) continue;
+    if (!byId.has(anno.id)) order.push(anno.id);
+    byId.set(anno.id, anno);
+  }
+  return order.flatMap((id) => { const a = byId.get(id); return a === undefined ? [] : [a]; });
+}
+
+/** 校验并归一化一条批注；不合法返回 undefined（调用方跳过）。 */
+export function toStoredAnnotation(raw: Record<string, unknown>): StoredAnnotation | undefined {
+  const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const id = str(raw.id);
+  const messageId = str(raw.messageId);
+  const blockIndex = num(raw.blockIndex);
+  const start = num(raw.start);
+  const end = num(raw.end);
+  const quote = str(raw.quote);
+  const note = str(raw.note);
+  if (id === undefined || id === "" || messageId === undefined || messageId === "") return undefined;
+  if (blockIndex === undefined || blockIndex < 0) return undefined;
+  if (start === undefined || end === undefined || start < 0 || end <= start) return undefined;
+  if (quote === undefined || note === undefined) return undefined;
+  const marksRaw = raw.marks;
+  const marks = Array.isArray(marksRaw) ? marksRaw.filter((m): m is string => typeof m === "string" && m !== "") : [];
+  if (marks.length === 0) return undefined;
+
+  const authorRaw = raw.author as { kind?: unknown; id?: unknown } | undefined;
+  const kind = authorRaw?.kind === "agent" ? "agent" : "user";
+  const authorId = typeof authorRaw?.id === "string" ? authorRaw.id : "";
+
+  return { id, author: { kind, id: authorId }, messageId, blockIndex, start, end, quote, marks, note };
+}
+
+/** 把一条批注变更写进会话（追加，不改写历史）。 */
+export function appendAnnotation(
+  manager: ReturnType<typeof SessionManager.open>,
+  op: AnnotationOp,
+  annotation: StoredAnnotation,
+): void {
+  manager.appendCustomEntry(ANNOTATION_ENTRY, { op, annotation, at: new Date().toISOString() });
+}
+
 /** 会话里最后一次选中的 Task（自定义条目；旧会话没有 → undefined）。 */
 export function activeTaskOf(manager: ReturnType<typeof SessionManager.open>): string | undefined {
   const branch = manager.getBranch();
@@ -1195,17 +1285,30 @@ export function messagesOf(state: SessionState) {
      * 于是出现"提示条说可以点重新发送、按钮不出现"。不做任何判断，只搬运。
      */
     stopReason?: string;
+    /** ★ 消息身份（Task 0003 · P1）：session entry 的 id。
+     *  批注要挂到"哪条消息"上，没有稳定 id 就只能挂 index，而 index 会随重渲染/切换漂移。
+     *  实测：一个 entry 恰好对应一条消息（398 条消息 0 个多产出），entry.id 全局唯一。 */
+    id: string;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
   const projection = state.session.sessionManager.buildSessionProjection();
-  const items = projection.entries.flatMap((entry) => {
+  const items = projection.entries.flatMap((entry, entryIndex) => {
     const raw = (entry.sourceEntry as { timestamp?: unknown }).timestamp;
     const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
     const at = Number.isNaN(parsed) ? undefined : parsed;
-    return entry.messages.map((message) => ({ message, at }));
+    // 消息身份取 entry 的 id（消息体内没有 id，实测 398 条消息的 message 都没有 id 字段）。
+    // 兜底：理论上不该为空；真为空时给一个稳定占位并记 warn，绝不输出 undefined
+    //（否则前端拿不到批注挂载点，且 JSON 里该字段会被整个丢掉）。
+    const rawId = (entry.sourceEntry as { id?: unknown }).id;
+    let id = typeof rawId === "string" && rawId !== "" ? rawId : "";
+    if (id === "") {
+      id = `entry-${entryIndex}`;
+      void log.warn("agent-host", "messagesOf", "session entry 缺少 id，已降级为占位", { details: { entryIndex } });
+    }
+    return entry.messages.map((message) => ({ message, at, id }));
   });
-  for (const { message, at } of items) {
+  for (const { message, at, id } of items) {
     if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
@@ -1219,7 +1322,7 @@ export function messagesOf(state: SessionState) {
       }
       // D7：引用化后用户消息里只有引用行 —— 显示时按附件目录还原（老会话已有图块则原样，见 imageBlocksOfRefs）
       for (const refBlock of imageBlocksOfRefs(message)) blocks.push(refBlock);
-      out.push({ role: "user", text, blocks, ...(at !== undefined ? { at } : {}) });
+      out.push({ role: "user", text, blocks, id, ...(at !== undefined ? { at } : {}) });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
@@ -1241,7 +1344,7 @@ export function messagesOf(state: SessionState) {
       const output = typeof raw.usage?.output === "number" ? raw.usage.output : 0;
       const tokens = input + output > 0 ? input + output : undefined;
       out.push({
-        role: "assistant", text, blocks,
+        role: "assistant", text, blocks, id,
         ...(at !== undefined ? { at } : {}),
         ...(kind !== undefined ? { failure: kind } : {}),
         ...(errorText !== undefined ? { error: errorText } : {}),

@@ -12,7 +12,8 @@ import { sessionRowsOf, sessionsByTask } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
-  abortRetryOf, abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
+  abortRetryOf, abortSession, annotationsOf, appendAnnotation, toStoredAnnotation,
+  applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed,
 } from "./agent-host.ts";
@@ -401,6 +402,52 @@ app.use(async (c, next) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     return c.json({ sessionId: await createSession(agent.id, resolveHome(), agent.defaultProjectId ?? "workspace") });
+  });
+
+  /**
+   * 批注读取（Task 0003 · P5）。
+   * 批注存在会话的 custom entry 里（`lifeos_annotation`），不在 messages 投影里，
+   * 所以要单独一个端点——前端 `loadMessages` 之后拉一次。
+   */
+  app.get("/api/agents/:id/sessions/:sessionId/annotations", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const sessionId = c.req.param("sessionId");
+    const state = await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId));
+    if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    return c.json({ annotations: annotationsOf(state.session.sessionManager) });
+  });
+
+  /**
+   * 批注写入（Task 0003 · P5）：边标边存，与发消息解耦。
+   * 为什么不用"随消息一起存"：用户可能标完先不发；那种批注不应该丢。
+   */
+  app.post("/api/agents/:id/sessions/:sessionId/annotations", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const body = await c.req.json().catch(() => undefined) as { op?: unknown; annotation?: unknown } | undefined;
+    const op = body?.op;
+    if (op !== "add" && op !== "update" && op !== "remove") {
+      const error = problem("invalid_request", "op 必须是 add / update / remove", 400); return c.json(error.body, error.status);
+    }
+    const raw = body?.annotation as Record<string, unknown> | undefined;
+    if (raw === undefined || typeof raw.id !== "string" || raw.id === "") {
+      const error = problem("invalid_request", "annotation.id 必须是非空字符串", 400); return c.json(error.body, error.status);
+    }
+    // remove 只需要 id；add/update 要完整字段
+    const stored = op === "remove"
+      ? { id: raw.id } as never
+      : toStoredAnnotation(raw);
+    if (stored === undefined) {
+      const error = problem("invalid_request", "annotation 字段不完整（需要 messageId/blockIndex/start/end/quote/marks）", 400);
+      return c.json(error.body, error.status);
+    }
+    const sessionId = c.req.param("sessionId");
+    const state = await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId));
+    if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    // peer 会话由对端驱动：这里允许写批注（不涉及发消息），但前端目前已禁用。
+    appendAnnotation(state.session.sessionManager, op, stored);
+    return c.json({ ok: true });
   });
 
   app.get("/api/agents/:id/sessions/:sessionId", async (c) => {

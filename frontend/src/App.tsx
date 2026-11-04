@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
@@ -9,6 +9,11 @@ import {
   CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
 } from "./attachments";
 import { useFold } from "./design/fold";
+import { useAnnotations } from "./annotation-store";
+import type { Annotation, AnnotationAuthor } from "./annotations";
+import { AnnotationPanel } from "./annotation-panel";
+import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
+import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
@@ -139,6 +144,12 @@ type StreamSnapshot = {
   unread: Array<{ agentId: string; sessionId: string; projectId?: string; completedAt: string }>;
 };
 
+/** 落盘前去掉纯展示态（ui）：展开/钉住/拖动偏移是"当下正在看"的状态，不存。 */
+function stripUi(anno: Annotation): Omit<Annotation, "ui"> {
+  const { ui: _ui, ...rest } = anno;
+  return rest;
+}
+
 type SessionMeta = {
   model: { provider: string; id: string } | null; thinkingLevel: string; running?: boolean; modelOverridden?: boolean;
   activeTaskId?: string | null; usage?: UsageSummary; context?: { percent: number | null; window: number } | null;
@@ -169,6 +180,9 @@ type RowPatchPayload = {
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
+  /** ★ 消息身份（Task 0003 · P1）：后端 messagesOf 透出的 session entry id。
+   *  历史消息必有；客户端刚推送的流式消息还没有（下一轮 loadMessages 才补上）。 */
+  id?: string;
   /** 这一段的生成耗时（ms）与 token（input+output）：过程条统计用（2026-11-02） */
   durationMs?: number; tokens?: number;
   /**
@@ -330,6 +344,129 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
+  /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
+  const anno = useAnnotations();
+  /**
+   * 批注落盘（Task 0003 · P5）：边标边存，与发消息解耦。
+   * 失败只提示不回滚——批注在本机已可见，丢掉它的代价比"存不上"更大；
+   * 下次改动会再写一次（事件流最后一条生效）。
+   */
+  /** toast 在下面才 useToast()，这里用 ref 转发，避免 TDZ（定义顺序问题）。 */
+  const toastRef = useRef<((text: string, tone?: "success" | "error") => void) | undefined>(undefined);
+
+  const persistAnnotation = useCallback((
+    op: "add" | "update" | "remove",
+    payload: Annotation | { id: string },
+    targetSessionId: string | undefined,
+  ) => {
+    const aid = agent?.id;
+    if (aid === undefined || targetSessionId === undefined) return;
+    void fetch(`/api/agents/${aid}/sessions/${targetSessionId}/annotations`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      // ui 是纯展示态，不落盘（见 phases/P5 的"哪些字段落盘"）
+      body: JSON.stringify({ op, annotation: op === "remove" ? payload : stripUi(payload as Annotation) }),
+    }).then((r) => { if (!r.ok) toastRef.current?.("批注保存失败（本机仍可见，下次改动会重试）", "error"); })
+      .catch(() => { toastRef.current?.("批注保存失败（网络错误）", "error"); });
+  }, [agent?.id]);
+
+  /** 传给消息体的批注操作（用 useMemo 稳定引用，否则每条消息每帧都重建）。 */
+  /**
+   * 批注作者：当前用户。id 来自 `/api/profile`（`users/<id>/user.json`，实测 `xu-later`）。
+   * 拿不到时退回 "user"——宁可 id 不精确，也不要让 `author` 为空字符串。
+   */
+  const annoAuthor = useMemo<AnnotationAuthor>(
+    () => ({ kind: "user", id: profile?.id ?? "user" }),
+    [profile?.id],
+  );
+  const annoActions = useMemo(() => ({
+    add: (anchor: Parameters<typeof anno.add>[0], marks: Parameters<typeof anno.add>[1], note: Parameters<typeof anno.add>[2]) => {
+      const id = anno.add(anchor, marks, note, annoAuthor);
+      persistAnnotation("add", {
+        id, author: annoAuthor, messageId: anchor.messageId, blockIndex: anchor.blockIndex,
+        start: anchor.start, end: anchor.end, quote: anchor.quote, marks: [...marks], note,
+        ui: { mode: "open", pinned: false, dx: 0, dy: 0 },
+      }, sessionId);
+      return id;
+    },
+    setMarks: (id: string, marks: readonly string[]) => {
+      anno.setMarks(id, marks);
+      const next = anno.annotations.find((a) => a.id === id);
+      if (next !== undefined) persistAnnotation("update", { ...next, marks: [...marks] }, sessionId);
+    },
+    setNote: (id: string, note: string) => {
+      anno.setNote(id, note);
+      const next = anno.annotations.find((a) => a.id === id);
+      if (next !== undefined) persistAnnotation("update", { ...next, note }, sessionId);
+    },
+    togglePinned: anno.togglePinned, setOffset: anno.setOffset,
+    remove: (id: string) => {
+      anno.remove(id);
+      persistAnnotation("remove", { id }, sessionId);
+    },
+    open: anno.open,
+  }), [anno, annoAuthor, persistAnnotation, sessionId]);
+
+  /**
+   * 发送失败时要恢复的批注快照。
+   * 为什么需要：点发送时批注会被 clear()，而 sendText 的 fail 路径会把文字回填到输入框——
+   * 如果不同时恢复批注，用户就丢了刚写的一批批注（实测会丢）。
+   */
+  const pendingAnnoRestore = useRef<readonly Annotation[] | undefined>(undefined);
+
+  /** 批注面板折叠态（默认展开）。 */
+  const [annoPanelFolded, setAnnoPanelFolded] = useState(false);
+
+  /**
+   * 批注列表（表格用）：按"消息顺序 + 段内偏移"排序。
+   * 用 messages 的 id 序列当消息顺序，避免按数组下标排（下标会随重渲染变）。
+   */
+  const annoOrdered = useMemo(() => {
+    const order = messages.map((m) => m.id).filter((id): id is string => id !== undefined);
+    const rank = (id: string): number => { const at = order.indexOf(id); return at < 0 ? Number.MAX_SAFE_INTEGER : at; };
+    return [...anno.annotations].sort((a, b) => {
+      const byMessage = rank(a.messageId) - rank(b.messageId);
+      if (byMessage !== 0) return byMessage;
+      if (a.blockIndex !== b.blockIndex) return a.blockIndex - b.blockIndex;
+      return a.start - b.start;
+    });
+  }, [anno.annotations, messages]);
+
+  
+  /**
+   * 定位：滚到被批注文字处，并展开那条批注的框。
+   * 用 DOM 查询 + scrollIntoView；展开通过 store 的 open()（渲染层会按 id 打开）。
+   */
+  /**
+   * 单击批注列表的一行 = **定位 + 钉住**；再点一次 = 取消钉住。
+   * （用户 2026-11-03："不用展示那个定位，单击那一行就是定位，就是盯住，
+   *   再次单击就是取消钉住。"）
+   *
+   * 取消钉住时**不滚到原文**——用户是在"收起来"，再把他拉过去没有道理；
+   * 也不清偏移（位置是用户摆的，与钉住无关）。
+   */
+  const onAnnoRowClick = useCallback((id: string) => {
+    const target = anno.annotations.find((a) => a.id === id);
+    if (target === undefined) return;
+    const wasPinned = target.ui.pinned;
+    anno.togglePinned(id);
+    if (wasPinned) return;                 // 取消钉住：到此为止
+    anno.open(id);
+    // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
+    window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
+    window.requestAnimationFrame(() => {
+      const host = document.querySelector(
+        `[data-message-id="${target.messageId}"] [data-testid="message-text"][data-block-index="${target.blockIndex}"]`,
+      );
+      if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }, [anno]);
+
+  /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
+  const annoPinnedOf = useCallback(
+    (id: string) => anno.annotations.find((a) => a.id === id)?.ui.pinned === true,
+    [anno.annotations],
+  );
+
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
@@ -387,6 +524,7 @@ export default function App() {
   const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
+  toastRef.current = toast;
   const [loaded, setLoaded] = useState(false);
   const [showNav, setShowNav] = useFold("agents");
   /*
@@ -426,6 +564,12 @@ export default function App() {
   const ctx = useRef<{ agentId?: string }>({});
   const selectedProjectRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedProjectRef.current = selectedProjectId; }, [selectedProjectId]);
+
+  // 批注高亮样式表：标记表驱动，运行时生成（加标记不改代码）。
+  // 只建一次；标记表变动时重跑即可。
+  useEffect(() => { rebuildHighlightStyles(); }, []);
+
+
   // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
   const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
   const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
@@ -693,6 +837,18 @@ export default function App() {
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+    // 批注存在会话 custom entry 里，不在 messages 投影中 → 单独拉一次（Task 0003 · P5）
+    void fetch(`/api/agents/${id}/sessions/${sid}/annotations`)
+      .then((r) => (r.ok ? r.json() : undefined))
+      .then((payload: { annotations?: Annotation[] } | undefined) => {
+        if (payload?.annotations === undefined) return;
+        // 服务端只存数据字段，ui 用默认值补齐（展开、未钉住、默认位置）
+        anno.replaceAll(payload.annotations.map((a) => ({
+          ...a,
+          ui: { mode: "open" as const, pinned: false, dx: 0, dy: 0 },
+        })));
+      })
+      .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
     if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
       const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
@@ -1520,12 +1676,19 @@ export default function App() {
     const fail = (message: string) => {
       setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
       setInput(text);                   // 失败回填草稿
+      // 批注也要回填：否则"发送失败"等于把用户刚写的一批批注也弄丢了
+      const snapshot = pendingAnnoRestore.current;
+      if (snapshot !== undefined) { anno.restore(snapshot); pendingAnnoRestore.current = undefined; }
       if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
       busyRef.current = false;
       busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
       turnMetricsPendingRef.current = false;
+      // 失败后重新拉一次消息：让"消息列表 / 批注渲染层"回到服务端事实。
+      // 不这么做的话，上面那次乐观插入 + 回滚会让批注渲染层重建在 DOM 尚未稳定时发生，
+      // 高亮不会重画（实测：批注数据回来了，但文字上没有颜色）。
+      if (sid !== undefined) void loadMessages(agent.id, sid);
     };
     try {
       const response = await fetch(`/api/agents/${agent.id}/sessions/${sid}/messages`, {
@@ -1796,12 +1959,45 @@ export default function App() {
   }, []);
   function send() {
     const raw = input.trim();
+    // 斜杠命令优先：有命令就走命令，不掺批注（命令是会话动作，不是对话内容）
     if (raw.startsWith("/")) { void runSlash(raw); return; }
+
+    // 有批注 → 批注与输入合成**一条**消息（用户 2026-11-03 定：一次发送 = 一次模型调用）
+    if (anno.annotations.length > 0) {
+      const annosText = annotationsMessage(annoOrdered, {
+        order: messages.map((m) => m.id).filter((id): id is string => id !== undefined),
+      });
+      // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
+      // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
+      if (annosText === "") {
+        if (raw !== "") {
+          sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
+          historyIndexRef.current = -1;
+          void sendText(raw);
+        }
+        return;
+      }
+      const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
+      if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
+      historyIndexRef.current = -1;
+      pendingAnnoRestore.current = [...anno.annotations];   // 失败时恢复用
+      anno.clear();
+      void sendText(merged);
+      return;
+    }
+
     if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
     void sendText(raw);
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
+  /**
+   * 当前会话是不是"与其他 Agent 的对话"。
+   * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
+   * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
+   */
+  const isPeerSession = sessionId !== undefined
+    && currentGroup?.sessions.some((item) => item.sessionId === sessionId && item.peer !== undefined) === true;
   // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
 
@@ -2318,7 +2514,9 @@ export default function App() {
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
                   return (
-                    <MessageView key={index} role={message.role} blocks={renderBlocks} busy={message.streaming === true}
+                    <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
+                      annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
+                      annotationActions={isPeerSession ? undefined : annoActions}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
                         panelWasOpenBeforePeer.current = panelOpen;
@@ -2402,6 +2600,27 @@ export default function App() {
                 void collectImages(files);
               }}
               className="relative flex flex-col rounded-panel bg-surface ring-1 ring-line focus-within:ring-accent">
+              {/* 批注面板（Task 0003 · P4）：放在输入框上方，与输入框互不污染。
+                  peer 会话不显示（由对端驱动，不能往里发消息，见 server.ts:564-570）。 */}
+              {!isPeerSession && anno.annotations.length > 0 && (
+                <div className="border-b border-line p-2">
+                  <AnnotationPanel
+                    annotations={annoOrdered}
+                    messageOrder={messages.map((m) => m.id).filter((id): id is string => id !== undefined)}
+                    folded={annoPanelFolded}
+                    onToggleFold={() => setAnnoPanelFolded((v) => !v)}
+                    onRowClick={onAnnoRowClick}
+                    pinnedOf={annoPinnedOf}
+                    onRemove={annoActions.remove}
+                    onClearAll={() => {
+                      // 必须走 annoActions.remove（会落盘），不能直接调 anno.remove（只改内存）。
+                      // 2026-11-04 用户追问"删除都测了吗"时发现：清空全部原本调的是内存版，
+                      // 刷新后批注全回来了。单条删除走的是持久化版，所以那条没暴露。
+                      for (const a of anno.annotations) annoActions.remove(a.id);
+                    }}
+                  />
+                </div>
+              )}
               {palette !== undefined && (
                 <div aria-label="斜杠命令" className="max-h-56 overflow-y-auto overflow-hidden rounded-t-panel border-b border-line bg-sunken p-1">
                   {/* 草稿态：一句说明放在面板顶部，下面各行只留命令名（不逐行重复“发送后可用”） */}
@@ -2540,7 +2759,7 @@ export default function App() {
                       <IconPlayerStopIcon />
                     </ComposerButton>
                   ) : (
-                    <ComposerButton label="发送" disabled={input.trim() === "" || selectedProjectId === undefined}
+                    <ComposerButton label="发送" disabled={(input.trim() === "" && !hasSendableAnnotation(anno.annotations)) || selectedProjectId === undefined}
                       onClick={() => void send()}>
                       <IconArrowUpIcon />
                     </ComposerButton>

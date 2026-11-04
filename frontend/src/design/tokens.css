@@ -28,6 +28,33 @@
   --color-success-soft: #ecfdf3;
 
   /*
+   * 批注色（Task 0003 · P2）：用户对 Agent 回复做批注的**五种语气**。
+   *
+   * 与上面那组语义色（accent/danger/success）**命名隔离**：
+   * 语义色是"界面自己的状态"，批注色是"用户标的语气"，两套不能混用——
+   * 否则用户分不清"这句是系统标红"还是"我标红表示反对"（02-design D1 用词纪律）。
+   * 色值取自 demo（tools/anno-demo/index.html）并已由用户核对。
+   *
+   * ⚠️ Tailwind v4 只输出**被 utility 引用过**的 theme 变量。
+   * 这些颜色是在 JS 里用 `var(--color-anno-<tone>)` 拼出来的（见 marks.ts），
+   * 不会被扫描到 —— 所以必须在 CSS 里显式引用一次，否则变量不会进入 :root。
+   * 下面的 `#anno-var-pins` 就是干这个的，别删。
+   */
+  --color-anno-query: #b8860b;
+  --color-anno-query-soft: #fff6d6;
+  --color-anno-critic: #c53030;
+  --color-anno-critic-soft: #ffe8e8;
+  /* 2026-11-03 修：原 #2f855a 压在 --color-anno-praise-soft (#e2f6ea) 上只有 4.02:1，
+     不足 WCAG AA 的 4.5。fixture 里从没渲染过"鼓励"chip，所以门禁一直没抓到。
+     调深到 5.69:1（白底 6.42:1），色相不变。 */
+  --color-anno-praise: #2b6a4d;
+  --color-anno-praise-soft: #e2f6ea;
+  --color-anno-archive: #4c51bf;
+  --color-anno-archive-soft: #e8eaff;
+  --color-anno-todo: #805ad5;
+  --color-anno-todo-soft: #f2e9ff;
+
+  /*
    * 导航层（Task 0015 · T15 面板合并，P-02）：项目分组 → 会话行的**括线**用它。
    * 为什么单独一档而不复用 --color-line：括线要"看得见但不抢戏"，
    * 与行的描边（--color-line）同色会被读成行的边框（design-language §5.1 连接线，ΔL* ≥ 9）。
@@ -64,10 +91,24 @@
   --text-title--line-height: 1.35;
 
   /* 圆角 4 档：内嵌(分段控件内部) / 控件 / 面板 / 气泡；另有 full(头像) */
+  /*
+   * 批注浮框的尺寸（Task 0003 · P2）。与 demo 一致：
+   * 宽 clamp(240px,26vw,320px)；窄屏最大 calc(100vw - 24px)；
+   * 圆角 12px；阴影两档（贴边 + 浮起）。
+   * 放在 tokens 里而不是组件里：页面层不允许出现任意值（lint:tokens 的规则）。
+   */
+  --container-anno-popup: clamp(240px, 26vw, 320px);
+  --container-anno-popup-max: calc(100vw - 24px);
+  /* 底部批注表格的最大高度（超出内部滚动）。与 demo 一致：min(30vh, 240px)。 */
+  --container-anno-panel: min(30vh, 240px);
+  --shadow-anno: 0 8px 28px rgba(31, 35, 40, .15), 0 1px 3px rgba(31, 35, 40, .07);
+  --shadow-anno-pinned: 0 12px 34px rgba(31, 35, 40, .2);
+
   --radius-inner: 4px;
   --radius-control: 6px;
   --radius-panel: 10px;
   --radius-bubble: 14px;
+  --radius-anno: 12px;
 
   /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
   --composer-max-height: 11rem;
@@ -96,6 +137,33 @@
   @keyframes arc-spin {
     to { transform: rotate(360deg); }
   }
+
+  /* 批注面板展开（Task 0003 · P6）：只做"淡入 + 轻微下移"，不做高度动画——
+     高度取决于行数，写成固定值会在行数变化时跳。 */
+  --animate-anno-panel: anno-panel-in 150ms ease-out;
+  @keyframes anno-panel-in {
+    from { opacity: 0; transform: translateY(-2px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/*
+ * 批注色变量锚点（Task 0003 · P2）：**不要删**。
+ * Tailwind v4 只把"被引用过"的 @theme 变量写进 :root，而这些变量名是在 JS 里拼出来的
+ * （marks.ts 的 toneColorVar / toneSoftVar），扫描不到。
+ * 显式引用一次即可让它们全部生效；本身不产生任何可见样式。
+ */
+#anno-var-pins {
+  --anno-pin-1: var(--color-anno-query);
+  --anno-pin-2: var(--color-anno-query-soft);
+  --anno-pin-3: var(--color-anno-critic);
+  --anno-pin-4: var(--color-anno-critic-soft);
+  --anno-pin-5: var(--color-anno-praise);
+  --anno-pin-6: var(--color-anno-praise-soft);
+  --anno-pin-7: var(--color-anno-archive);
+  --anno-pin-8: var(--color-anno-archive-soft);
+  --anno-pin-9: var(--color-anno-todo);
+  --anno-pin-10: var(--color-anno-todo-soft);
 }
 
 /* 手机安全区：composer/全屏 sheet 的底部至少 1rem，再叠加 home indicator。 */

@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
 import { ProcessBar } from "./process-bar";
@@ -9,6 +8,9 @@ import { argPreview, type Phase } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
 import { retryRemainingSeconds, turnStepText, type TurnStep } from "./working";
+import type { Annotation } from "./annotations";
+import { AnnotatedTextBlock, type AnnotationActions } from "./annotated-text-block";
+import { Markdown } from "./message-markdown";
 import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
@@ -54,15 +56,6 @@ export type Message = {
    */
   stopReason?: string;
 };
-
-function renderMarkdown(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { USE_PROFILES: { html: true } });
-}
-
-function Markdown({ text, inverse = false }: { text: string; inverse?: boolean }) {
-  const html = useMemo(() => renderMarkdown(text), [text]);
-  return <div className={`md-body${inverse ? " md-inverse" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
-}
 
 /** 秒表：整轮生成期间每秒 +1（只在工作指示行里用，卸载即停）。 */
 function useWorkingSeconds(active: boolean): number {
@@ -132,8 +125,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process }: {
-  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -166,6 +158,13 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
    * `textIndexes` = 哪几个块属于"最终正文"（其余块进过程区）。
    */
   process?: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] };
+  /** ★ 消息身份（Task 0003 · P1）：批注挂到"哪条消息"上靠它。
+   *  不传就不渲染属性（老数据/老会话兼容）。 */
+  messageId?: string;
+  /** ★ 取某块的批注（Task 0003 · P2）。不传 = 这条消息没有批注，行为与改造前完全一致。 */
+  annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
+  /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
+  annotationActions?: AnnotationActions;
 }) {
   const text = copyTextOf(blocks);
   const [hovered, setHovered] = useState(false);
@@ -200,7 +199,7 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
     const images = blocks.filter((block): block is Extract<Block, { type: "image" }> => block.type === "image");
     return (
       <div className={`flex flex-col gap-1 ${align === "end" ? "items-end" : "items-start"}`}
-        data-testid="message" data-role="user" {...hover}>
+        data-testid="message" data-role="user" data-message-id={messageId} {...hover}>
         {header}
         {text !== "" && (
           /* text-content：让气泡自己的字号与正文同行（`.md-body` 也是 --text-content）。
@@ -223,14 +222,17 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   // 过程折叠：分两组块——进过程区的、留在外面的最终正文
   const inside = (index: number): boolean =>
     process !== undefined && !process.textIndexes.includes(index);
+  const blockAnnotationsOf = (index: number): readonly Annotation[] =>
+    annotationsOfBlock === undefined ? [] : annotationsOfBlock(index);
   const renderBlock = (block: Block, index: number, keyScope: string) => (
-    <BlockView key={`${keyScope}-${index}`} block={block} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+    <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId}
+      blockAnnotations={blockAnnotationsOf(index)} blockActions={annotationActions} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
       live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
       forceOpen={failure !== undefined} />
   );
 
   return (
-    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-process={process === undefined ? undefined : "folded"} {...hover}>
+    <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-message-id={messageId} data-process={process === undefined ? undefined : "folded"} {...hover}>
       {header}
       {process !== undefined ? (
         <>
@@ -391,11 +393,36 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
   );
 }
 
-function BlockView({ block, live, forceOpen = false, onOpenPeer }: { block: Block; live: boolean; forceOpen?: boolean; onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void }) {
+/**
+ * 带批注的文本块（Task 0003 · P2）。
+ *
+ * 职责边界很窄：把 Markdown 渲染出来，然后
+ *  1. 按批注偏移**上色**（CSS Highlight API，不改 DOM）；
+ *  2. 鼠标移到高亮上 → 浮出批注框；移开 → 收起。
+ *
+ * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
+ * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
+ */
+function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions }: {
+  block: Block; live: boolean; forceOpen?: boolean;
+  onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
+  /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
+   *  批注要定位到"哪条消息的第几个 text 块"，只给 text 块（thinking/工具/图片不批）。 */
+  blockIndex?: number;
+  /** ★ 消息身份（Task 0003 · P1）：调试打印与后续批注挂载都用它。 */
+  messageId?: string;
+  /** ★ 本块的批注（Task 0003 · P2）：为空数组时行为与没有批注完全一致。 */
+  blockAnnotations?: readonly Annotation[];
+  /** ★ 批注操作（Task 0003 · P3）。 */
+  blockActions?: AnnotationActions;
+}) {
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
-    return <div data-testid="message-text"><Markdown text={block.text} /></div>;
+    return (
+      <AnnotatedTextBlock text={block.text} blockIndex={blockIndex} messageId={messageId}
+        annotations={blockAnnotations} actions={blockActions} busy={live} />
+    );
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
   return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
