@@ -80,3 +80,22 @@ export function buildHeaderSegments(input: HeaderStripInput): HeaderSegment[] {
 export function joinHeaderSegments(segments: readonly HeaderSegment[]): string {
   return segments.map((segment) => segment.text).join(" · ");
 }
+
+/**
+ * 当前会话是不是"与其他 Agent 的对话"（peer 会话）。
+ *
+ * 这类会话由对端 Agent 驱动，`POST /messages` 会 409，批注在里面**禁用**。
+ *
+ * **注意 peer 的类型是 `RowPeer | null`**（`src/session-rows.ts:53`），不是 `undefined`。
+ * 2026-11-04 的 bug：写成 `item.peer !== undefined`，而普通会话的 peer 是 `null`，
+ * `null !== undefined` 恒为 true → 所有会话都被判成 peer → 批注在全站被禁用，
+ * 表现是"拖选文字什么都不弹"，看起来像功能没上线。
+ * 所以这里用 `!= null`（null 与 undefined 都为假），并有单测锁住。
+ */
+export function isPeerSessionOf(
+  sessionId: string | undefined,
+  sessions: readonly { sessionId: string; peer?: unknown }[] | undefined,
+): boolean {
+  if (sessionId === undefined) return false;
+  return sessions?.some((item) => item.sessionId === sessionId && item.peer != null) === true;
+}

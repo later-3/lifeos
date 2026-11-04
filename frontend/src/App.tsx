@@ -47,7 +47,7 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import type { RowActivity, RowFailureKind, RowPhase } from "../../src/row-activity.ts";
 
@@ -1996,8 +1996,9 @@ export default function App() {
    * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
    * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
    */
-  const isPeerSession = sessionId !== undefined
-    && currentGroup?.sessions.some((item) => item.sessionId === sessionId && item.peer !== undefined) === true;
+  // 判断逻辑抽到 header-strip.ts 的 isPeerSessionOf（纯函数 + 单测），
+  // 因为它是"批注能不能用"的总开关，算错一次就是全站失效（2026-11-04 实际发生过）。
+  const isPeerSession = isPeerSessionOf(sessionId, currentGroup?.sessions);
   // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
   const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
 

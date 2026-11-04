@@ -12,7 +12,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // 必须用 fileURLToPath，不能用 `new URL(...).pathname`：后者保留百分号编码，
 // 中文目录名（Task 目录常是中文）会被编成 `%E9%87%8D…`，readdirSync 直接 ENOENT。

@@ -1504,8 +1504,6 @@ try {
   }
 }
 
-await browser.close();
-
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
 const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
@@ -1588,3 +1586,5 @@ const failed = results.filter((item) => !item.ok);
 for (const item of results) console.log(`${item.ok ? "✔" : "✖"} ${item.name}${item.detail === "" ? "" : `  → ${item.detail}`}`);
 console.log(`\n${results.length - failed.length}/${results.length} 通过${failed.length === 0 ? "" : `；${failed.length} 项失败`}`);
 if (failed.length > 0) process.exit(1);
+
+await browser.close();
