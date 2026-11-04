@@ -291,6 +291,25 @@ useLayoutEffect(() => {
 - **兜底判定看终态而非存在性**（2026-10-24 修订）：取最后一条 assistant 的 `stopReason`——`stop/length/error` → 完成；`aborted` → 中断（lost）；`pending/toolUse/deferred` → 未完成（lost）；老条目无字段保守按完成。`turn-verdict.ts` 已按此实现（T11-T13）。
 - 设计来源：C113/C114（参考 LibreChat PR#14220 "活 job"校验与确认事件、piweb per-session 事实模型）。
 
+## 13b 行补丁事件 `row`（2026-11-03，Task 0005）
+
+**它回答的问题**：列表里每一行的动态信息（在跑多久、到哪一步、用什么工具、是否已完成未读），
+怎么在不刷新页面、也不为一个字段全量重取列表的前提下更新。
+
+- **载荷是一行的局部补丁**，只带变了的字段：`{running?, unread?, failure?, lastActivityAt?, title?, task?}`；
+  `null` 表示"清掉这一项"（终态发 `running: null`，标已读发 `unread: null`）。
+- **三条发送规则**（唯一实现在 `src/row-patch.ts`）：
+  1. **只在值变化时发** —— `phase` / `tool` 没变就直接丢（一次思考里的几百个 `thinking_delta` 只算一次）；
+  2. **每会话 ≥1000ms 至多一条**，窗口内的变化**合并成尾随发送且发最后一次**（简单 debounce 会丢最后状态，列表卡在中间态比不推更糟）；
+  3. **终态不节流，立即发** —— `done` / `error` 带 `running:null` + `unread` + `failure`（原文）+ `lastActivityAt`。
+- **秒数不走网络**：服务端只给 `since`，前端每秒本地重算（`elapsedTick`，只在真有会话在跑时启动）。
+- **前端不因此重取列表**：`event-router` 把 `row` 路由成独立的行补丁动作，**不产生 `refresh-groups`**；
+  且**不做焦点过滤** —— 列表里每个会话的运行态都要更新，不只当前打开那条。
+- **写操作也走它**：`renameSession`（标题）、`setSessionTask`（Task 名）、`markSessionViewed`（清未读）
+  推精确补丁，不再 broadcast 让所有客户端重取整个列表。
+- **为什么补丁要合并而不是排队**：一条补丁 260B，一次全量刷新 5,999B + 60ms；实测一个完整回合只产生
+  **2 条** row 事件（开始 + 终态）。
+
 ## 14 SSE 投递语义与损失恢复
 
 - SSE 断流是一等场景（休眠/代理/网络），**事件允许丢**，但对账必须能补：重连＝快照（seq/since）+ `GET …/turns/last` 的组合，不依赖"一条不丢"；

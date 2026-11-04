@@ -55,6 +55,45 @@
 | 安装记录（install receipt）的**文件名** | Homebrew `INSTALL_RECEIPT.json` | **只借用词** `install-receipt.json` | 不借它的机制（Cellar 布局、formula 概念） |
 | 依赖/内容锁定概念 | npm `package-lock.json`（Pi 自己也在用：`~/.pi/agent/npm/`） | "锁定 + 漂移检测"的想法（我们记录 sha256 判断用户是否改过） | 不引入 npm 依赖树语义 |
 
+## 2b. 参考项目的分级与"到底读过没"（2026-11-03 补，Task 0005）
+
+> 起因（用户 2026-11-03）：「参考顶级项目，不是说要一模一样的代码，而是别人的实现是怎么样的，
+> 是好还是不好，我们心里有数」。所以除"借什么"之外，必须写清 **定位**（拿来干什么）
+> 与 **核实程度**（读过没、读到哪一行）。
+
+### 分级
+
+| 级 | 定位 | 怎么用 | 本项目成员 |
+|---|---|---|---|
+| **A** | 同形态全栈 + 质量高 | **读源码**，逐文件逐行对照 | pi-web、DeepSeek Harness、open-design |
+| **B** | 前端架构/规模化标杆 | 只借前端组织方式与交互，不参考其后端 | Mattermost、Rocket.Chat |
+| **C** | 产品决策与取舍参考 | **只看决策与文档，不看实现** | Zulip（jQuery + Django，实现不可移植） |
+
+### 核实的粒度（每条都标"读到哪"）
+
+| 参考 | 版本 | 本次核实到 | 结论 |
+|---|---|---|---|
+| **pi-web** | `upstream/main f130910`（2026-11-04） | `lib/project-groups.ts:41-59`（`getProjectActivity` 逐会话自增）、`components/SessionSidebar.tsx:2009-2035`（零值不渲染 / 运行=转动图标+数字 / 未读=圆点+数字 / `aria-label` 带数量） | **读了源码**；聚合形状与视觉形态都直接借 |
+| **Mattermost** | `8b2fb37`（2026-10-27） | `server/public/model/channel_member.go:31-40`（`ChannelUnread` 是服务端模型）、`webapp/.../selectors/entities/channels.ts:386`（前端只做减法） | **读了源码**；印证"未读权威在服务端" |
+| **Zulip** | `3e9bc1e`（2026-10-27） | `docs/subsystems/unread_messages.md:3-9`（原文：前端数未读需下载无限消息 → 服务端下发未读事实） | **读了文档**；只借决策不借实现 |
+| **Rocket.Chat** | `034260e`（2026-10-27） | `packages/core-typings/src/IRoom.ts:56`（`unread?: number` 房间字段）、`client/components/RoomListItem/RoomListItem.stories.tsx:55-57`（`role=status` + `aria-label="3 unread"`） | **读了源码**；借徽标断言方式 |
+| **DeepSeek Harness** | `ac6806c`（2026-08-25） | `apps/web` 下只有 `main.ts` + `tests/`；全仓 grep `unread` 零命中 | **核了但没有参考价值**：它是**单会话** harness，没有会话列表/未读/聚合。**如实记录，不硬凑** |
+
+### 已移出（不是"暂时不用"，是不达标或不匹配）
+
+| 项目 | 移出理由（事实） |
+|---|---|
+| **Open WebUI** | Svelte + JS 为主；**全仓 1 个测试文件**（59 行）、后端 0 个 pytest、无 TS 严格模式 → 质量不达标。仅保留一条产品观察（emoji 图标） |
+| **vercel/ai-chatbot** | 181 文件 / 5 测试，官方示例非生产 → 只作 composer 版式单点观察 |
+| **chatwoot** | Vue + JS 前端、Ruby/Rails 后端，语言与框架差异过大 |
+| **livecodes** | 无独立后端，不满足"前后端契约"参考需求 |
+
+### 聚合层状态标记（2026-11-03 新增场景行）
+
+| 场景 | 参照点 | 借什么 | 不借什么 |
+|---|---|---|---|
+| **列表聚合层的数量**（项目行/助手行显示"几个在跑、几个待查看、几个失败"） | **pi-web** `lib/project-groups.ts:41-59`：`getProjectActivity()` 返回 `Map<key, {running: number, unread: number}>`，逐会话 `entry.running++` / `entry.unread++`；渲染在 `components/SessionSidebar.tsx:2009-2035`（`running === 0 && unread === 0` → null；运行=旋转 SVG + 数字；未读=6px 圆点 + 数字；`aria-label` 带数量）。**Mattermost** `channel_member.go:31-40` + `channels.ts:386`：未读计数是**服务端模型**，前端只做减法。**Zulip** `unread_messages.md:3-9`：原文说明前端数未读不可行。**Rocket.Chat** `IRoom.unread?: number` + 测试按 `aria-label` 断言 | **数量聚合的形状**（两个 number）；**零值不渲染**；**运行=动+数字**的视觉形态；**未读权威在服务端**这一原则；徽标用 `role=status` + `aria-label` 断言 | **不借** pi-web 的"传两个 Set"入参（我们已有四态 `row-activity.ts`，聚合直接数四态，不必再拆一遍）；**不借**旋转 SVG（我们用 `animate-pulse` 整块呼吸，用户裁决）；**不借** Mattermost 的 Go 实现与 selector 分层（我们规模不需要 reselect 级抽象）。**注意**：三家的聚合层**都没有 failure 维度**（grep `failureCount|errorCount|failedCount` 零命中）→ 我们的"失败数"是**自研**，语义自己定义 |
+
 ## 3. 明确不参照
 
 - **泛泛的"行业惯例"**：不写具体项目与文件的，不作为依据；
