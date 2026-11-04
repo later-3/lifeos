@@ -91,6 +91,26 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 - **必须** 首次在新 worktree 里装独立家目录，不复制用户真实会话（C117）。
 - **应该** 把 worktree / home / 端口写进当前 Task 的 `log.md`，便于交接。
 
+### 7.1b 当前目录是权限边界（必须）
+
+> 补充 §7.1：光"知道主 worktree 不能动"不够，要防的是**肌肉记忆在错误目录执行**。
+
+- **必须** 任何破坏性命令之前先 `pwd` 并肉眼确认前缀：
+  `~/.lifeos/agents/<agent>/projects/<project>/tasks/<NNNN>-*/evidence/`。
+  不是这个前缀 → 停手，不执行。
+- **必须** 把下面的命令当作"只在开发 worktree 可用"的白名单：
+  `rm -rf node_modules`、`rm -rf pi`、`git checkout -- pi`、`pnpm install`。
+  它们的作用是"提交前清掉自己建的软链"——**主 worktree 里这些都不是软链，是用户的资产**。
+- **必须** 不 `cd` 进主 worktree 做排查。查它用 `git -C /Users/xulater/Code/lifeos <只读命令>`，
+  查文件用绝对路径 `ls /Users/xulater/Code/lifeos/node_modules/...`。
+  **不切换当前目录**，就不会把危险命令留在主 worktree 的历史里。
+- **应该** 开发 worktree 路径含全角括号与中文，终端提示符看不全 —— 正因如此，**不能靠"我应该在 worktree"的直觉**，
+  只能靠 `pwd` 的显式确认。
+
+**依据**：C166（2026-11-04，Task 0005）—— 在开发 worktree 里执行了几十次的
+`rm -f node_modules frontend/node_modules`，某次在 `cd` 到主 worktree 排查后原样重放，
+删掉了用户的依赖。主实例当时仍在内存里运行，**一旦重启就会起不来**；是在继续排查时才发现的。
+
 **命令与步骤见** `projects/lifeos/tools/dev-port/AGENTS.md`（按需读，不常驻）；端口事实以 `knowledge/architecture/foundation.md` 为准。
 
 ### 7.3 交付与切换（必须走流程）
