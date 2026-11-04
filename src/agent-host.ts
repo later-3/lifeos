@@ -205,53 +205,6 @@ function projectOfSessionDir(dir: string): string {
 }
 
 /** 会话物理落在所属 project 的 sessions/ 下（协议 §12.1 结构即事实；默认 workspace）。 */
-/**
- * 按 Task 列出会话（Task 0015 · T14）：回答"这个 Task 下有哪些对话"。
- *
- * 实现是**全扫**（不建索引）：与 `listSessions` 同口径——单 Agent×项目的会话是几十级，
- * 一次扫描 <10ms；建索引反而要维护第二份事实（协议：结构即事实）。
- *
- * 判定：读会话文件里最后一条 `lifeos_active_task` 的 taskId；相等即属于该 Task。
- * 没有 Task 指针的老会话 → 不算（它们没有可回查的事实，不猜）。
- */
-export async function sessionsOfTask(
-  agentId: string,
-  projectId: string,
-  taskId: string,
-): Promise<Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }>> {
-  const dir = sessionDir(agentId, projectId);
-  const files = await readdir(dir).catch(() => [] as string[]);
-  const out: Array<{ sessionId: string; title?: string; updatedAt: string; running: boolean }> = [];
-  for (const file of files) {
-    if (!file.endsWith(".jsonl")) continue;
-    const path = join(dir, file);
-    const text = await readFile(path, "utf8").catch(() => "");
-    let sessionId: string | undefined;
-    let title: string | undefined;
-    let activeTask: string | undefined;
-    for (const line of text.split("\n")) {
-      if (line.trim() === "") continue;
-      try {
-        const entry = JSON.parse(line) as { type?: string; id?: string; name?: unknown; customType?: string; data?: { taskId?: unknown } };
-        if (entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
-        if (entry.type === "session_info" && typeof entry.name === "string" && entry.name.trim() !== "") title = entry.name;
-        if (entry.type === "custom" && entry.customType === ACTIVE_TASK_ENTRY && typeof entry.data?.taskId === "string") {
-          activeTask = entry.data.taskId;
-        }
-      } catch { /* 坏行跳过 */ }
-    }
-    if (sessionId === undefined || activeTask !== taskId) continue;
-    const info = await stat(path).catch(() => undefined);
-    out.push({
-      sessionId,
-      ...(title !== undefined ? { title } : {}),
-      updatedAt: (info?.mtime ?? new Date(0)).toISOString(),
-      running: isRunning(agentId, sessionId),
-    });
-  }
-  return out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-}
-
 export function sessionDir(agentId: string, projectId = "workspace"): string {
   return join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
 }

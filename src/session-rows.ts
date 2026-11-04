@@ -218,11 +218,51 @@ export type SessionRowsOptions = { now?: number; defaultSessionId?: string };
  * - 项目名/图标 = `projects/<id>/project.json`
  * - 对端 = `agents/<id>/agent.json`
  */
-export async function sessionRowsOf(agentId: string, projectId: string, options: SessionRowsOptions = {}): Promise<SessionRow[]> {
-  const now = options.now ?? Date.now();
+/**
+ * 扫一个项目的所有会话文件（**一遍 IO**）。
+ *
+ * 为什么单独提出来（Task 0005 · P6）：`/tasks` 原来对每个 Task 各调一次
+ * `sessionsOfTask()`，N 个 Task 就是 N 遍全扫（实测 26 个会话 × 4 个 Task）。
+ * 现在两处共用这一遍扫描 —— 与 `sessionRowsOf` 同源，就不会出现
+ * "列表里算的和 /tasks 里算的不一样"。
+ */
+async function scanProject(agentId: string, projectId: string): Promise<ScannedSession[]> {
   const dir = join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
   const names = await readdir(dir).catch(() => [] as string[]);
+  const scanned: ScannedSession[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const result = await scanSessionFile(join(dir, name));
+    if (result !== undefined) scanned.push(result);
+  }
+  // 未落盘的会话（Pi 延迟写文件）：字段与落盘会话**同源同形**——现状只给 title/updatedAt/messages，
+  // 导致刚建的新会话在 Task 列是空的（01 §3 第 7 条）。
+  const fileIds = new Set(scanned.map((item) => item.sessionId));
+  for (const pending of pendingSessions(agentId)) {
+    if (pending.projectId !== projectId || fileIds.has(pending.sessionId)) continue;
+    if (pending.name === undefined || pending.name === "") continue;   // 草稿不进列表
+    // 计数取内存会话的真实角色分布（与落盘后同一口径）。
+    // 注意一个**真实但正确**的情形：模型不可用时，`prompt` 立刻失败，内存会话里没有消息条目，
+    // 而标题已经写进 sessionManager 的名字 —— 于是出现"有标题、counts 全 0"。
+    // 这不是缺失语义错误：当时的真实事实就是"还没有成功发出任何消息条目"。
+    // （2026-11-03 在开发实例实测到；落盘后 counts 会由文件扫描给出真实值。）
+    const pendingCounts = pending.counts;
+    scanned.push({
+      sessionId: pending.sessionId,
+      rawTitle: pending.name,
+      counts: pendingCounts !== undefined
+        ? { ...pendingCounts, total: pendingCounts.user + pendingCounts.assistant + pendingCounts.toolResult + pendingCounts.system }
+        : emptyCounts(),
+      createdAt: pending.at,
+      fileModifiedAt: pending.at,
+      ...(pending.taskId !== undefined ? { activeTaskId: pending.taskId } : {}),
+    });
+  }
+  return scanned;
+}
 
+export async function sessionRowsOf(agentId: string, projectId: string, options: SessionRowsOptions = {}): Promise<SessionRow[]> {
+  const now = options.now ?? Date.now();
   const project = await projectOf(projectId);
   const tasks = await taskIndexOf(agentId, projectId);
   const running = new Map(runningOf(agentId).map((entry) => [entry.sessionId, entry] as const));
@@ -231,12 +271,7 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   );
   const peerCache = new Map<string, RowPeer>();
 
-  const scanned: ScannedSession[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
-    const result = await scanSessionFile(join(dir, name));
-    if (result !== undefined) scanned.push(result);
-  }
+  const scanned = await scanProject(agentId, projectId);
 
   // 未落盘的会话（Pi 延迟写文件）：字段与落盘会话**同源同形**——现状只给 title/updatedAt/messages，
   // 导致刚建的新会话在 Task 列是空的（01 §3 第 7 条）。
@@ -294,4 +329,35 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   }
   // 排序：最近活动在前（键 = `lastActivityAt`，**不是 mtime**）
   return rows.sort((a, b) => (a.time.lastActivityAt < b.time.lastActivityAt ? 1 : -1));
+}
+
+/**
+ * 每个 Task 下有哪些会话（**一遍扫描**，取代 N×全扫）。
+ *
+ * 形状对齐 `sessionsOfTask()` 的返回，因为 `/tasks` 端点就是给它消费的；
+ * 但排序键改用 `lastActivityAt`（不是 mtime）—— 与列表同口径，
+ * 否则"Task 里的会话顺序"和"列表里的顺序"会不一致。
+ */
+export async function sessionsByTask(
+  agentId: string,
+  projectId: string,
+): Promise<Map<string, Array<{ sessionId: string; title?: string; lastActivityAt: string; running: boolean }>>> {
+  const scanned = await scanProject(agentId, projectId);
+  const runningSet = new Set(runningOf(agentId).map((entry) => entry.sessionId));
+  const grouped = new Map<string, Array<{ sessionId: string; title?: string; lastActivityAt: string; running: boolean }>>();
+  for (const item of scanned) {
+    if (item.activeTaskId === undefined) continue;
+    const list = grouped.get(item.activeTaskId) ?? [];
+    list.push({
+      sessionId: item.sessionId,
+      ...(item.rawTitle !== "" ? { title: item.rawTitle } : {}),
+      lastActivityAt: item.lastMessageAt ?? item.createdAt ?? item.fileModifiedAt,
+      running: runningSet.has(item.sessionId),
+    });
+    grouped.set(item.activeTaskId, list);
+  }
+  for (const list of grouped.values()) {
+    list.sort((a, b) => (a.lastActivityAt < b.lastActivityAt ? 1 : -1));
+  }
+  return grouped;
 }

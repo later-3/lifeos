@@ -8,13 +8,13 @@ import { createBoundedSink } from "./bounded-sink.ts";
 import { MAX_WATCHING, setFocusOf, subscribeBus } from "./events.ts";
 import { peerMarkerOf } from "./peer.ts";
 import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining } from "./session-runtime.ts";
-import { sessionRowsOf } from "./session-rows.ts";
+import { sessionRowsOf, sessionsByTask } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
   abortSession, applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
-  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, sessionsOfTask, markSessionViewed,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -226,15 +226,40 @@ app.use(async (c, next) => {
     return c.json(agent);
   });
 
+  // 四个端点（/sessions ×2、/rows ×2）只差"哪个项目"，其余一律同一份组装：
+  // SessionRow 是**一个形状一处实现**（Task 0005 的核心目标），HTTP 层不得各拼一次。
+  const rowsOf = (agent: { id: string; defaultSessionId?: string | undefined }, projectId: string) =>
+    sessionRowsOf(agent.id, projectId, {
+      ...(agent.defaultSessionId !== undefined ? { defaultSessionId: agent.defaultSessionId } : {}),
+    });
+
   // 会话列表（默认项目）：与 `/projects/:pid/sessions` **同一个实现**（`sessionRowsOf`），
   // 不再两份各拼一次（现状已漂移出 `peer` 一处字符串一处对象，见任务 0005 · 01 §3 第 1 条）。
   app.get("/api/agents/:id/sessions", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const items = await sessionRowsOf(agent.id, agent.defaultProjectId ?? "workspace", {
-      ...(agent.defaultSessionId !== undefined ? { defaultSessionId: agent.defaultSessionId } : {}),
-    });
-    return c.json({ items });
+    return c.json({ items: await rowsOf(agent, agent.defaultProjectId ?? "workspace") });
+  });
+
+  // 行对象端点（Task 0005 · P6）：`/rows` 是 `SessionRow` 语义上的正式入口。
+  //
+  // 为什么不直接改名 `/sessions`：那个名字暗示"会话列表"，而返回的是**行对象**
+  // （带 Task 名、项目图标、四态、计数分项）。名字与内容不符会让后来人误读接口。
+  // 旧端点保留（前端与外部调用还在用），两者**同一个实现**，不各拼一份。
+  app.get("/api/agents/:id/rows", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    return c.json({ items: await rowsOf(agent, agent.defaultProjectId ?? "workspace") });
+  });
+
+  app.get("/api/agents/:id/projects/:pid/rows", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const pid = c.req.param("pid");
+    if (await resolveProject(agent, pid) === undefined) {
+      const error = problem("project_not_found", "找不到这个 project（未注册或未绑定）", 404); return c.json(error.body, error.status);
+    }
+    return c.json({ items: await rowsOf(agent, pid) });
   });
 
   // project 列表 = 内置 workspace + boundProjectIds 解析（§5.6 定稿：绑定清单才是权威；
@@ -255,10 +280,7 @@ app.use(async (c, next) => {
     }
     // 与 `/api/agents/:id/sessions` **同一个实现**：一次组装出完整的 SessionRow
     // （标题/项目/Task 名/对端/计数/时间/四态），不再由 HTTP 层各自拼。
-    const items = await sessionRowsOf(agent.id, pid, {
-      ...(agent.defaultSessionId !== undefined ? { defaultSessionId: agent.defaultSessionId } : {}),
-    });
-    return c.json({ items });
+    return c.json({ items: await rowsOf(agent, pid) });
   });
 
   // 会话历史：原始条目只读直出（事实源=会话 JSONL；不投影、不改写；分页）
@@ -339,12 +361,13 @@ app.use(async (c, next) => {
     const project = await resolveProject(agent, c.req.param("pid"));
     if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
     // 每个 Task 带上"它下面有哪些会话"（Task 0015 · T14）——界面与 Agent 都能回答
-    // "这个 Task 聊了哪些对话"。全扫不建索引：项目内会话是几十级（与 listSessions 同口径）。
+    // "这个 Task 聊了哪些对话"。
+    //
+    // Task 0005 · P6：原来是**每个 Task 各全扫一遍会话目录**（N 个 Task = N × 26 个文件）。
+    // 现在一次扫描按 taskId 分组（`sessionsByTask`），与列表行对象同源。
     const items = await listTasks({ agentId: agent.id, projectId: project.id });
-    const withSessions = await Promise.all(items.map(async (task) => ({
-      ...task,
-      sessions: await sessionsOfTask(agent.id, project.id, task.id).catch(() => []),
-    })));
+    const grouped = await sessionsByTask(agent.id, project.id);
+    const withSessions = items.map((task) => ({ ...task, sessions: grouped.get(task.id) ?? [] }));
     return c.json({ items: withSessions });
   });
 

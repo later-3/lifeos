@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHome } from "../src/home.ts";
 import { rowActivityOf, displayTitleOf } from "../src/row-activity.ts";
-import { sessionRowsOf } from "../src/session-rows.ts";
+import { sessionRowsOf, sessionsByTask } from "../src/session-rows.ts";
 import { ensureSharedLayer } from "../src/project-skeleton.ts";
 
 /** 造一个会话文件（按 Pi 的真实条目形状：session 头 + 各类条目）。 */
@@ -359,4 +359,39 @@ test("T10 项目名：manifest.name 优先于目录 basename（worktree 绑定�
   const [row] = await sessionRowsOf("lifeosagent", "proj-worktree-demo");
   assert.equal(row.project.name, "真实的项目名", "name = project.json 的 name");
   assert.notEqual(row.project.name, "worktree", "不是 path 末段");
+});
+
+// —— T20 批量分组（P6）：一遍扫描给出"每个 Task 下有哪些会话"，取代 N×全扫 ——
+test("T20 sessionsByTask：一次扫描按 taskId 分组，结果与逐 Task 全扫一致", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-rows-"));
+  await installHome(process.cwd(), home);
+  process.env.LIFEOS_HOME = home;
+  const dir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+  await mkdir(dir, { recursive: true });
+
+  const taskEntry = (id) => ({ type: "custom", timestamp: "2026-11-01T00:00:30.000Z", customType: "lifeos_active_task", data: { taskId: id } });
+  // 三个会话：分属两个 Task，外加一个没有 Task 的（不该进任何分组）
+  await writeFile(join(dir, "a.jsonl"), sessionLines({ id: "s-a", entries: [taskEntry("0001"), userEntry("2026-11-01T00:01:00.000Z")] }), "utf8");
+  await writeFile(join(dir, "b.jsonl"), sessionLines({ id: "s-b", entries: [taskEntry("0001"), userEntry("2026-11-01T00:02:00.000Z")] }), "utf8");
+  await writeFile(join(dir, "c.jsonl"), sessionLines({ id: "s-c", entries: [taskEntry("0002"), userEntry("2026-11-01T00:03:00.000Z")] }), "utf8");
+  await writeFile(join(dir, "d.jsonl"), sessionLines({ id: "s-d", entries: [userEntry("2026-11-01T00:04:00.000Z")] }), "utf8");
+
+  const grouped = await sessionsByTask("lifeosagent", "workspace");
+  assert.equal(grouped.get("0001").length, 2, "0001 下两个会话");
+  assert.equal(grouped.get("0002").length, 1);
+  assert.equal(grouped.has(undefined), false, "没有 Task 指针的会话不进任何分组");
+  // 排序：最近活动在前（与列表同口径，不是 mtime）
+  assert.deepEqual(grouped.get("0001").map((x) => x.sessionId), ["s-b", "s-a"], "s-b 更晚 → 排前面");
+  // 与 sessionRowsOf 的 task 字段一致：分组与行对象同源，两边不可能说法不同。
+  // 0001 是 installHome 装的默认 Task（存在 → 能解析出标题）；0002 没有目录
+  // → 行对象给 `null`（**缺失语义**：指针指向不存在的 Task，不编一个 title），
+  // 但**分组仍按指针**把它归到 0002 下 —— 这两件事必须分开，否则要么丢会话、要么造假标题。
+  const rows = await sessionRowsOf("lifeosagent", "workspace");
+  const byId = new Map(rows.map((r) => [r.sessionId, r]));
+  for (const item of grouped.get("0001")) {
+    assert.equal(byId.get(item.sessionId).task?.id, "0001");
+    assert.equal(byId.get(item.sessionId).task?.title, "默认", "0001 存在 → 标题可用");
+  }
+  assert.equal(byId.get("s-c").task, null, "0002 目录不存在 → 行对象不编标题");
+  assert.equal(grouped.get("0002").length, 1, "但分组照指针走，不因为解析不到就把会话丢掉");
 });
