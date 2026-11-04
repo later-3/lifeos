@@ -45,6 +45,13 @@ export type AnnotationStore = {
   /** 全部清空。 */
   clear: () => void;
   /**
+   * 把一批批注标成"已被某一次发送消费"（= 已发送，不再重发）。
+   *
+   * **只加标记，不删数据**：MarkBar 要常驻、高亮要保留、历史要能查。
+   * 传入的 id 里若有不存在的（已被删），静默跳过。
+   */
+  markConsumed: (ids: readonly string[], sendId: string) => void;
+  /**
    * 整批恢复（发送失败时用）。
    * 发送成功后批注会被 `clear()` 掉；如果发送失败，用户不该丢掉那些批注——
    * 这里把当时的快照放回去（含 id/ui，顺序不变）。
@@ -147,6 +154,14 @@ export function useAnnotations(): AnnotationStore {
 
   const clear = useCallback(() => { setAnnotations([]); }, []);
 
+  const markConsumed = useCallback((ids: readonly string[], sendId: string) => {
+    if (ids.length === 0 || sendId === "") return;
+    const target = new Set(ids);
+    setAnnotations((list) => list.map((anno) => (
+      target.has(anno.id) && anno.consumedBy === undefined ? { ...anno, consumedBy: sendId } : anno
+    )));
+  }, []);
+
   const restore = useCallback((snapshot: readonly Annotation[]) => {
     setAnnotations([...snapshot]);
   }, []);
@@ -160,7 +175,7 @@ export function useAnnotations(): AnnotationStore {
   }, [patch]);
 
   return useMemo(
-    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, replaceAll, open }),
-    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, restore, replaceAll, open],
+    () => ({ annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open }),
+    [annotations, ofBlock, add, setMarks, setNote, setMode, togglePinned, setOffset, remove, clear, markConsumed, restore, replaceAll, open],
   );
 }

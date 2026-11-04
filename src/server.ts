@@ -12,7 +12,7 @@ import { sessionRowsOf, sessionsByTask } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
 import {
-  abortRetryOf, abortSession, annotationsOf, appendAnnotation, toStoredAnnotation,
+  abortRetryOf, abortSession, annotationsOf, appendAnnotation, consumeAnnotations, toStoredAnnotation,
   applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
   applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed,
@@ -425,16 +425,35 @@ app.use(async (c, next) => {
   app.post("/api/agents/:id/sessions/:sessionId/annotations", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
-    const body = await c.req.json().catch(() => undefined) as { op?: unknown; annotation?: unknown } | undefined;
+    const body = await c.req.json().catch(() => undefined) as {
+      op?: unknown; annotation?: unknown; ids?: unknown; consumedBy?: unknown;
+    } | undefined;
     const op = body?.op;
-    if (op !== "add" && op !== "update" && op !== "remove") {
-      const error = problem("invalid_request", "op 必须是 add / update / remove", 400); return c.json(error.body, error.status);
+    if (op !== "add" && op !== "update" && op !== "remove" && op !== "consume") {
+      const error = problem("invalid_request", "op 必须是 add / update / remove / consume", 400); return c.json(error.body, error.status);
+    }
+
+    // consume：一批 pending 批注被某一轮消费（发送成功）。**一次落盘**，见 agent-host 的说明。
+    if (op === "consume") {
+      const ids = body?.ids;
+      const consumedBy = body?.consumedBy;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || id === "")) {
+        const error = problem("invalid_request", "consume 需要非空的 ids（字符串数组）", 400); return c.json(error.body, error.status);
+      }
+      if (typeof consumedBy !== "string" || consumedBy === "") {
+        const error = problem("invalid_request", "consume 需要 consumedBy（该轮用户消息 id）", 400); return c.json(error.body, error.status);
+      }
+      const sessionId = c.req.param("sessionId");
+      const state = await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId));
+      if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+      consumeAnnotations(state.session.sessionManager, ids as string[], consumedBy);
+      return c.json({ ok: true, consumed: ids.length });
     }
     const raw = body?.annotation as Record<string, unknown> | undefined;
     if (raw === undefined || typeof raw.id !== "string" || raw.id === "") {
       const error = problem("invalid_request", "annotation.id 必须是非空字符串", 400); return c.json(error.body, error.status);
     }
-    // remove 只需要 id；add/update 要完整字段
+    // remove 只需要 id；add/update 要完整字段（consume 已在上面单独返回）
     const stored = op === "remove"
       ? { id: raw.id } as never
       : toStoredAnnotation(raw);

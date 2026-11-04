@@ -470,7 +470,13 @@ export async function projectIdOfSession(agentId: string, sessionId: string): Pr
 
 export const ANNOTATION_ENTRY = "lifeos_annotation";
 
-/** 一条批注（服务端视角：只关心落盘的字段，ui 是纯前端展示态）。 */
+/**
+ * 一条批注（服务端视角：只关心落盘的字段，ui 是纯前端展示态）。
+ *
+ * **生命周期**（2026-11-04 用户定案）：`pending` → 发送成功 → `consumed`。
+ * 状态**跟着记录走、不跟内容走**——用户重新编辑会产生一条**新记录**，
+ * 即使文字与旧记录一模一样，它也是 `pending`，必须能再发。
+ */
 export type StoredAnnotation = {
   id: string;
   author: { kind: "user" | "agent"; id: string };
@@ -481,9 +487,24 @@ export type StoredAnnotation = {
   quote: string;
   marks: string[];
   note: string;
+  /**
+   * 已被哪一轮消费（= 该轮**用户消息**的 messageId）。`undefined` = 待发送。
+   *
+   * 为什么锚在"用户消息"而不是 `turnId`：`turnId` 只活在内存账本里
+   * （`turnLedger`，每会话一条、后端重启即丢），历史消息上根本没有它。
+   * 用户消息 id 已落盘、全局唯一、永不变，且"一轮"本来就按用户消息切分（`turn-group.ts`）。
+   */
+  consumedBy?: string;
+  /**
+   * 被哪条新记录取代（新版本的 id）。`undefined` = 它是最新版本。
+   *
+   * 编辑已发送的批注 = **产生一条新记录**，旧记录留在这里做历史——
+   * 已发出的消息不能改，必须留得下"Agent 当初收到的是什么"。
+   */
+  supersededBy?: string;
 };
 
-export type AnnotationOp = "add" | "update" | "remove";
+export type AnnotationOp = "add" | "update" | "remove" | "consume";
 
 /** 读会话里的批注：按顺序重放 op，得到当前集合。
  *  坏条目（字段缺失/类型不对）**跳过**，不拖垮整个会话——批注丢失可接受，会话读不出来不可接受。 */
@@ -492,8 +513,28 @@ export function annotationsOf(manager: ReturnType<typeof SessionManager.open>): 
   const order: string[] = [];
   for (const entry of manager.getBranch()) {
     if (entry?.type !== "custom" || entry.customType !== ANNOTATION_ENTRY) continue;
-    const data = entry.data as { op?: unknown; annotation?: unknown } | undefined;
+    // 三种事件形状：add/update/remove 带 `annotation`；consume 带 `ids` + `consumedBy`
+    const data = entry.data as { op?: unknown; annotation?: unknown; ids?: unknown; consumedBy?: unknown } | undefined;
     const op = data?.op;
+
+    // 批量消费：一条事件把 N 条 pending 标成已发送。
+    // **必须在 `annotation` 的校验之前**——consume 事件只带 `ids`，没有 `annotation`，
+    // 走下面那个守卫会被当成坏条目直接跳过（这条分支就是这样被自己测出来的）。
+    // 为什么批量而不是 N 条 update：标记总是一批一起发生（一次发送带走的全部批注），
+    // N 条 update 会产生 N 次写盘 + N 个 HTTP 请求，且中途失败会留下"半发送"的坏状态。
+    if (op === "consume") {
+      const ids = data?.ids;
+      const by = data?.consumedBy;
+      if (!Array.isArray(ids) || typeof by !== "string" || by === "") continue;
+      for (const each of ids) {
+        if (typeof each !== "string") continue;
+        const current = byId.get(each);
+        if (current === undefined) continue;             // 已被删掉的 id：忽略（不拖垮整批）
+        byId.set(each, { ...current, consumedBy: by });
+      }
+      continue;
+    }
+
     const raw = data?.annotation as Record<string, unknown> | undefined;
     if (raw === undefined || typeof raw.id !== "string" || raw.id === "") continue;
     if (op === "remove") {
@@ -532,7 +573,15 @@ export function toStoredAnnotation(raw: Record<string, unknown>): StoredAnnotati
   const kind = authorRaw?.kind === "agent" ? "agent" : "user";
   const authorId = typeof authorRaw?.id === "string" ? authorRaw.id : "";
 
-  return { id, author: { kind, id: authorId }, messageId, blockIndex, start, end, quote, marks, note };
+  // 生命周期字段：空串/非字符串一律视为"没有"（不能污染 state）
+  const consumedBy = str(raw.consumedBy);
+  const supersededBy = str(raw.supersededBy);
+
+  return {
+    id, author: { kind, id: authorId }, messageId, blockIndex, start, end, quote, marks, note,
+    ...(consumedBy !== undefined && consumedBy !== "" ? { consumedBy } : {}),
+    ...(supersededBy !== undefined && supersededBy !== "" ? { supersededBy } : {}),
+  };
 }
 
 /** 把一条批注变更写进会话（追加，不改写历史）。 */
@@ -542,6 +591,30 @@ export function appendAnnotation(
   annotation: StoredAnnotation,
 ): void {
   manager.appendCustomEntry(ANNOTATION_ENTRY, { op, annotation, at: new Date().toISOString() });
+}
+
+/**
+ * 把一批批注标记为"已被某一轮消费"——**一次落盘**。
+ *
+ * @param ids      要标记的批注 id（不存在的会被重放时忽略）
+ * @param consumedBy 消费它们的**用户消息 id**
+ *
+ * 为什么单开一个函数而不是复用 appendAnnotation：
+ * `appendAnnotation` 收的是完整 `StoredAnnotation`，而打标记只需要 id。
+ * 让调用方先把 N 条完整对象读出来再逐条回写，既多一次读、又允许多字段被意外覆盖。
+ */
+export function consumeAnnotations(
+  manager: ReturnType<typeof SessionManager.open>,
+  ids: readonly string[],
+  consumedBy: string,
+): void {
+  if (ids.length === 0) return;
+  manager.appendCustomEntry(ANNOTATION_ENTRY, {
+    op: "consume",
+    ids: [...ids],
+    consumedBy,
+    at: new Date().toISOString(),
+  });
 }
 
 /** 会话里最后一次选中的 Task（自定义条目；旧会话没有 → undefined）。 */

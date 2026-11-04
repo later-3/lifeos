@@ -183,6 +183,15 @@ export type Annotation = {
   marks: string[];
   /** 用户写的话，可为空串。 */
   note: string;
+  /**
+   * 已被哪一轮消费（= 该轮用户消息 id）。`undefined` = 待发送。
+   *
+   * **状态跟记录走、不跟内容走**：用户重新编辑会产生一条**新记录**，
+   * 即使文字与旧记录一模一样，它也是待发送、必须能再发（用户 2026-11-04 定）。
+   */
+  consumedBy?: string;
+  /** 被哪条新记录取代。`undefined` = 它是最新版本（旧版本留作历史）。 */
+  supersededBy?: string;
   /** 只影响展示，不影响定位。 */
   ui: {
     /** open=框展开 / hidden=框收起（收起不删数据）。 */

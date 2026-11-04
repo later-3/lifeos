@@ -406,6 +406,28 @@ export default function App() {
       .catch(() => { toastRef.current?.("批注保存失败（网络错误）", "error"); });
   }, [agent?.id]);
 
+  /**
+   * 把一批批注标成"已发送"并落盘（**一次请求**，不是 N 次）。
+   *
+   * 为什么单开一个而不是循环调 `persistAnnotation("update")`：
+   * 标记总是一批一起发生（这次发送带走的全部批注）。N 次 update 会写 N 次盘、
+   * 发 N 个请求，中途失败还会留下"一半已标、一半没标"的坏状态——
+   * 那正好会造成"下一轮把剩下的一半又发一遍"，也就是我们要修的那个 bug。
+   */
+  const persistConsume = useCallback((
+    ids: readonly string[],
+    sendId: string,
+    targetSessionId: string | undefined,
+  ) => {
+    const aid = agent?.id;
+    if (aid === undefined || targetSessionId === undefined || ids.length === 0) return;
+    void fetch(`/api/agents/${aid}/sessions/${targetSessionId}/annotations`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op: "consume", ids: [...ids], consumedBy: sendId }),
+    }).then((r) => { if (!r.ok) toastRef.current?.("批注已发送，但状态没存住（刷新后可能重复发送）", "error"); })
+      .catch(() => { toastRef.current?.("批注已发送，但状态没存住（网络错误）", "error"); });
+  }, [agent?.id]);
+
   /** 传给消息体的批注操作（用 useMemo 稳定引用，否则每条消息每帧都重建）。 */
   /**
    * 批注作者：当前用户。id 来自 `/api/profile`（`users/<id>/user.json`，实测 `xu-later`）。
@@ -449,6 +471,21 @@ export default function App() {
    * 如果不同时恢复批注，用户就丢了刚写的一批批注（实测会丢）。
    */
   const pendingAnnoRestore = useRef<readonly Annotation[] | undefined>(undefined);
+  /**
+   * 本次发送带走的批注 id（发送成功后要打 consumedBy）。
+   * 与 `pendingAnnoRestore` 配套：失败用前者回滚内容，成功用这个标状态。
+   */
+  const pendingConsumeRef = useRef<readonly string[] | undefined>(undefined);
+  /**
+   * 本次发送的一次性标识，作为 `consumedBy` 的值。
+   *
+   * **为什么不用"用户消息 id"**：后端 `runTurn()` 是 `Promise<void>`，不返回新建消息的 id
+   * （`src/agent-host.ts:818`），要拿到得改它。而 `consumedBy` 的全部用途只有两处——
+   * ① 判断这条批注是不是 pending（非空即已发）；② 面板显示"已发送"。
+   * **没有任何地方需要拿它反查那条消息**。所以用一个客户端生成的一次性 id 足够，
+   * 语义也更直白："这批发给了哪一次发送动作"。
+   */
+  const pendingSendIdRef = useRef<string | undefined>(undefined);
 
   /** 批注面板折叠态（默认展开）。 */
   const [annoPanelFolded, setAnnoPanelFolded] = useState(false);
@@ -1851,6 +1888,23 @@ export default function App() {
       } else {
         setTurnStep(2);   // 2/4：后端受理（202）
         window.setTimeout(() => { if (busyRef.current) setTurnStep(3); }, 250);   // 3/4：模型处理（含等待/思考/工具/输出）
+
+        /**
+         * **受理成功**才给批注打"已消费"（用户 2026-11-04 定案）。
+         *
+         * 为什么在受理后而不是回合跑完之后：`consumedBy` 的语义是"这一批已经随这条用户消息发出去了"。
+         * 后端一旦 202，消息就进了模型上下文；回合后续失败也不该重发这批批注
+         * （重发等于让 Agent 收到两遍同样的意见）。
+         */
+        const consumed = pendingConsumeRef.current;
+        const sendId = pendingSendIdRef.current;
+        pendingConsumeRef.current = undefined;
+        pendingSendIdRef.current = undefined;
+        pendingAnnoRestore.current = undefined;   // 已发出，不需要回滚快照了
+        if (consumed !== undefined && consumed.length > 0 && sendId !== undefined) {
+          anno.markConsumed(consumed, sendId);
+          persistConsume(consumed, sendId, sid);
+        }
       }
     } catch {
       fail("[出错] 网络错误");
@@ -2096,9 +2150,19 @@ export default function App() {
     // 斜杠命令优先：有命令就走命令，不掺批注（命令是会话动作，不是对话内容）
     if (raw.startsWith("/")) { void runSlash(raw); return; }
 
-    // 有批注 → 批注与输入合成**一条**消息（用户 2026-11-03 定：一次发送 = 一次模型调用）
-    if (anno.annotations.length > 0) {
-      const annosText = annotationsMessage(annoOrdered, {
+    /**
+     * 只发**待发送**的批注（用户 2026-11-04 定案）。
+     *
+     * `consumedBy` 有值 = 这条记录已经完成生命周期，**永不重发**；
+     * `supersededBy` 有值 = 它被新版本取代了，只显示最新那条。
+     *
+     * **状态跟记录走、不跟内容走**：用户重新编辑产生的是新记录，
+     * 即使文字和旧记录一模一样，它也是 pending，必须能再发。
+     * 所以这里只判 id/状态，**不做任何内容比对**。
+     */
+    const pendingAnnos = annoOrdered.filter((a) => a.consumedBy === undefined && a.supersededBy === undefined);
+    if (pendingAnnos.length > 0) {
+      const annosText = annotationsMessage(pendingAnnos, {
         order: messages.map((m) => m.id).filter((id): id is string => id !== undefined),
       });
       // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
@@ -2114,8 +2178,11 @@ export default function App() {
       const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
       if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
       historyIndexRef.current = -1;
-      pendingAnnoRestore.current = [...anno.annotations];   // 失败时恢复用
-      anno.clear();
+      // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
+      pendingAnnoRestore.current = [...anno.annotations];
+      pendingConsumeRef.current = pendingAnnos.map((a) => a.id);
+      pendingSendIdRef.current = `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      // 不再 die 掉全部批注：它们要保留（MarkBar 常驻），只是下面打上"已消费"
       void sendText(merged);
       return;
     }
