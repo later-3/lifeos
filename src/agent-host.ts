@@ -27,7 +27,7 @@ import type { ModelRef } from "./model-follow-types.ts";
 // 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
-import { sessionViewsOf, sessionViewsReady } from "./session-views.ts";
+import { sessionViewsOf, sessionViewsReady, type TurnOutcome } from "./session-views.ts";
 import { notifyPeerTurnFinished } from "./peer-completion.ts";
 import { titleFromFirstMessage } from "./session-title.ts";
 import { clearRunning, isRunning, markRunning, runningAll, runningOf, type RunSnapshot } from "./session-runtime.ts";
@@ -1187,6 +1187,46 @@ function imageSizesOf(messages: readonly unknown[]): number[] {
   return sizes;
 }
 
+/**
+ * 从会话文件推断"最近一次回合是怎么结束的"（Task 0005 · P8 迁移用）。
+ *
+ * 读最后一条 assistant 的 `stopReason` / `errorMessage`，交给 `classifyFailure`
+ * —— 与实时路径（`runTurn` 的 catch、`sessionRowsOf` 的 failure 判定）**同一个分类器**，
+ * 不另写一套规则。
+ *
+ * 找不到（文件删了 / 没有 assistant 消息）→ undefined，不编造。
+ */
+async function outcomeOfSessionFile(agentId: string, sessionId: string): Promise<TurnOutcome | undefined> {
+  const found = await findSessionFile(agentId, sessionId);
+  if (found === undefined) return undefined;
+  const text = await readFile(found.path, "utf8").catch(() => undefined);
+  if (text === undefined) return undefined;
+  let last: { stopReason?: string; errorMessage?: string; hasContent: boolean } | undefined;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const entry = JSON.parse(line) as { type?: string; message?: { role?: string; stopReason?: unknown; errorMessage?: unknown; content?: unknown } };
+      if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
+      const raw = entry.message;
+      const content = Array.isArray(raw.content) ? raw.content : [];
+      const hasContent = content.some((block) => {
+        const b = block as { type?: string; text?: string };
+        return b.type === "text" ? (b.text ?? "").trim() !== "" : true;
+      });
+      last = {
+        ...(typeof raw.stopReason === "string" ? { stopReason: raw.stopReason } : {}),
+        ...(typeof raw.errorMessage === "string" && raw.errorMessage.trim() !== "" ? { errorMessage: raw.errorMessage.trim() } : {}),
+        hasContent,
+      };
+    } catch { /* 坏行跳过 */ }
+  }
+  if (last === undefined) return undefined;
+  const kind = classifyFailure(last);
+  // 被用户打断（aborted）不算"完成"，也不算"异常结束"：实时路径同样不给它记终态。
+  if (kind === "aborted") return undefined;
+  return kind === undefined ? { state: "done" } : { state: "error", failureKind: kind };
+}
+
 /** 每个家目录只清理一次孤儿未读（启动后第一次建立事件流前）。 */
 const viewsPruned = new Set<string>();
 export async function pruneSessionViewsOnce(): Promise<void> {
@@ -1196,6 +1236,9 @@ export async function pruneSessionViewsOnce(): Promise<void> {
   await sessionViewsReady();
   // 旧记录回填项目（状态映射的项目层需要），回填不到的再按孤儿清理
   await sessionViewsOf().backfill((agentId, sessionId) => projectIdOfSession(agentId, sessionId)).catch(() => undefined);
+  // 旧记录回填终态（本轮新增字段）：不迁移的话，用户打开界面看到全 0
+  const filled = await sessionViewsOf().backfillOutcomes((agentId, sessionId) => outcomeOfSessionFile(agentId, sessionId)).catch(() => 0);
+  if (filled > 0) void log.info("agent-host", "pruneSessionViewsOnce", "回填旧记录的终态", { details: { filled } });
   await sessionViewsOf().prune((agentId, sessionId) => sessionExists(agentId, sessionId)).catch(() => undefined);
 }
 

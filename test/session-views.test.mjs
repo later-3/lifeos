@@ -166,3 +166,46 @@ test("T46 不传 outcome 时保持原行为（旧调用点不需要改），且�
   assert.equal(h.views.outcomeOf("A", "s1"), undefined, "没给终态就不能编一个");
   assert.equal(h.views.unread().length, 1, "未读行为与改之前一致");
 });
+
+// —— T47–T49 终态回填（Task 0005 · P8 迁移）——
+// 背景：`lastState` 是本轮新字段。已有记录只有 completedAt → 不迁移的话界面全 0，
+// 而且这个 0 会持续到每条会话重新跑一遍。用户实测就是这么发现的。
+test("T47 backfillOutcomes 只补缺失的，已有终态的一律不动", async () => {
+  const h = harness();
+  await h.views.load();
+  // 旧记录：只有 completedAt
+  h.views.markCompleted("A", "old-1", h.at(0), "p1");
+  // 新记录：已有终态
+  h.views.markCompleted("A", "new-1", h.at(1000), "p1", { state: "error", failureKind: "auth" });
+
+  const filled = await h.views.backfillOutcomes(async (_a, sid) => (sid === "old-1" ? { state: "done" } : { state: "done" }));
+  assert.equal(filled, 1, "只补了 old-1 一条（new-1 已经是新记录，不该被改）");
+  assert.deepEqual(h.views.outcomeOf("A", "old-1"), { state: "done" });
+  assert.deepEqual(h.views.outcomeOf("A", "new-1"), { state: "error", failureKind: "auth" }, "已有时终态不能被回填覆盖");
+});
+
+test("T48 推断不出来就保持缺失，不编造（宁可少一个数字，也不撒谎）", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("A", "gone", h.at(0), "p1");   // 文件已删，resolve 返回 undefined
+  const filled = await h.views.backfillOutcomes(async () => undefined);
+  assert.equal(filled, 0);
+  assert.equal(h.views.outcomeOf("A", "gone"), undefined, "推断不出来就不给终态");
+});
+
+test("T49 回填结果落盘：重启后不用再扫一遍文件", async () => {
+  const h = harness();
+  await h.views.load();
+  h.views.markCompleted("B", "s1", h.at(0), "p2");
+  await h.views.backfillOutcomes(async () => ({ state: "error", failureKind: "timeout" }));
+  await h.views.flush();
+
+  const restarted = createSessionViews({
+    now: () => Date.parse("2026-10-25T09:00:00Z"),
+    load: async () => h.store.text,
+    persist: async () => {},
+    throttleMs: 5000,
+  });
+  await restarted.load();
+  assert.deepEqual(restarted.outcomeOf("B", "s1"), { state: "error", failureKind: "timeout" });
+});
