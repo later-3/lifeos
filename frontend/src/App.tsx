@@ -49,7 +49,7 @@ import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
-import type { RowActivity, RowFailureKind, RowPhase } from "../../src/row-activity.ts";
+import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -1206,6 +1206,24 @@ export default function App() {
       }
       return next;
     });
+    // **行的点也要跟着快照走**（2026-11-04）：`sessionSlots` 重建了聚合，
+    // 但 `groups` 里那一行的 `activity.state` 还是旧的 —— 重连后会出现
+    // "徽标说有 1 条未读、行上却没有绿点"（或反过来）的不一致。
+    // 用与后端**同一个** `rowActivityOf` 重建行的四态，保证行与徽标说同一套话。
+    setGroups((previous) => previous.map((group) => ({
+      ...group,
+      sessions: group.sessions.map((item) => {
+        const runningEntry = (snapshot.running ?? []).find((r) => r.sessionId === item.sessionId);
+        const unreadEntry = (snapshot.unread ?? []).find((u) => u.sessionId === item.sessionId);
+        if (runningEntry === undefined && unreadEntry === undefined && item.activity.state === "idle") return item;
+        const next = rowActivityOf({
+          ...(runningEntry !== undefined ? { runningSince: runningEntry.startedAt } : {}),
+          ...(unreadEntry !== undefined ? { unreadSince: unreadEntry.completedAt } : {}),
+          now: Date.now(),
+        });
+        return next.state === item.activity.state && item.activity.state === "idle" ? item : { ...item, activity: next };
+      }),
+    })));
     lastEventAtRef.current = Date.now();
     const aid = ctx.current.agentId;
     const cur = current.current;
