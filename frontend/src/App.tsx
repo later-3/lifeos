@@ -44,7 +44,7 @@ import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
-import type { RowFailureKind, RowPhase } from "../../src/row-activity.ts";
+import type { RowActivity, RowFailureKind, RowPhase } from "../../src/row-activity.ts";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -133,8 +133,10 @@ const STREAM_WATCHDOG_MS = 5_000;
 type StreamSnapshot = {
   connectionId: string;
   seq: number;
-  running: Array<{ agentId: string; sessionId: string; turnId?: string; startedAt: string }>;
-  unread: Array<{ agentId: string; sessionId: string; completedAt: string }>;
+  // 两者都是**跨 Agent** 的全量事实（服务端 `globalSnapshot()`）：左侧助手列要靠它们显示数字，
+  // 不能只依赖"当前选中 Agent 的会话列表"。`projectId` 服务端一直有，此前类型漏写。
+  running: Array<{ agentId: string; sessionId: string; projectId?: string; turnId?: string; startedAt: string }>;
+  unread: Array<{ agentId: string; sessionId: string; projectId?: string; completedAt: string }>;
 };
 
 type SessionMeta = {
@@ -1930,16 +1932,51 @@ export default function App() {
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
   // 状态映射（任务 0008）：会话 → 项目 → Agent 的运行与未读全部由同一份会话事实派生
-  // 聚合只吃 **会话行的 activity**（Task 0005）：单一来源，行上的点和这里的数字不可能对不上。
-  // 归属取自 groups（列表就是归属的权威：项目 → 会话）；没有行的会话不参与聚合。
-  const statusFacts: StatusFacts = {
-    sessions: Object.fromEntries(
-      groups.flatMap((group) => group.sessions.map((item) => [
-        item.sessionId,
-        { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity },
-      ])),
-    ),
-  };
+  /**
+   * 聚合的输入 = **全部 Agent 的会话四态**（Task 0005 · 2026-11-04 修）。
+   *
+   * 此前只喂 `groups`（当前选中 Agent 的会话）→ 左侧助手列里没点进去的 Agent 永远没数字，
+   * 表现为"切到哪个 Agent 才有数字"，助手列失去"一眼看出谁有动静"的用途。
+   *
+   * 三个来源合并（优先级从低到高，后面的覆盖前面的）：
+   *   ① `runFacts` 的跨 Agent 事实：SSE 快照的 `running`/`unread` + `turn`/`error` 事件
+   *      → 覆盖**所有** Agent（这是助手列能显示数字的关键）；
+   *   ② 当前 Agent 的 `groups`：带完整 `activity`（服务端四态，含 failure 的 detail）
+   *      → 覆盖 ①，因为同一会话这里的信息更全。
+   *
+   * 为什么不给每个 Agent 各打一次 `/sessions`：13 个 Agent × 全扫 JSONL，
+   * 违背本任务"不为展示重复取数"；而 SSE 已经把跨 Agent 的事实推过来了，零请求。
+   */
+  const statusFacts: StatusFacts = (() => {
+    const sessions: StatusFacts["sessions"] = {};
+    const stateOf = (sid: string): RowActivity["state"] | undefined => {
+      if (runFacts.snapRunning.includes(sid)) return "running";
+      if (runFacts.lastTurn[sid]?.state === "running") return "running";
+      if (runFacts.lastTurn[sid]?.state === "error") return "failure";
+      if (runFacts.unread[sid] === true) return "unread";
+      return undefined;
+    };
+    const activityOf = (state: RowActivity["state"]): RowActivity =>
+      state === "failure"
+        // detail 不在跨 Agent 事件里（只有 error 事件的 message 有，但那属于焦点路径）。
+        // 助手列只数个数，不显示原因 → 这里给占位 detail，**不编造分类**。
+        ? { state: "failure", failure: { kind: "unknown", detail: "" } }
+        : { state };
+    // ① 跨 Agent 事实（来源：SSE 快照 + 回合事件）
+    for (const [sid, meta] of Object.entries(runFacts.meta)) {
+      if (meta === undefined) continue;
+      const state = stateOf(sid);
+      if (state === undefined) continue;
+      sessions[sid] = { meta: { agentId: meta.agentId, ...(meta.projectId !== undefined ? { projectId: meta.projectId } : {}) }, activity: activityOf(state) };
+    }
+    // ② 当前 Agent 的完整行（覆盖 ①，信息更全）
+    for (const group of groups) {
+      for (const item of group.sessions) {
+        sessions[item.sessionId] = { meta: { agentId: agent?.id ?? "", projectId: group.project.id }, activity: item.activity };
+      }
+    }
+    return { sessions };
+  })();
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
     <>

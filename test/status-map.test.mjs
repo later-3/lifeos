@@ -97,3 +97,44 @@ test("T68 数量可以超过 99（聚合层不做上限，显示层才写 99+）
   const r = deriveStatus(many, { visible: false });
   assert.equal(r.agents.a.unread, 120, "聚合层给真值，截断是显示层的事");
 });
+
+// —— T69 跨 Agent（2026-11-04 修的真实 bug）——
+// 现象：只把"当前选中 Agent 的会话列表"喂给聚合 → 左侧助手列里没点进去的 Agent 永远没数字，
+// 表现是"切到哪个 Agent 才有数字"，助手列失去"一眼看出谁有动静"的用途。
+// 修法：调用方合并 SSE 的跨 Agent 事实（快照 running/unread + turn/error 事件）+ 当前 Agent 的完整行。
+// 聚合本身不变（它一直只是"数四态"），测的是"喂进来的东西能不能覆盖所有 Agent"。
+test("T69 多个 Agent 的状态同时聚合：每个 Agent 各自拿到自己的数", async () => {
+  const r = deriveStatus({
+    sessions: {
+      A1: s("unread", "alpha", "p1"),
+      A2: s("unread", "alpha", "p1"),
+      A3: s("running", "alpha", "p1"),
+      B1: s("failure", "beta", "p9"),
+      C1: s("running", "gamma", "p2"),
+      C2: s("unread", "gamma", "p2"),
+      C3: s("unread", "gamma", "p2"),
+      C4: s("unread", "gamma", "p2"),
+    },
+  }, { visible: false });
+  // 关键：三个 Agent **同时**有数字，不依赖"当前选中哪个"
+  assert.deepEqual(r.agents.alpha, { running: 1, unread: 2, failure: 0 });
+  assert.deepEqual(r.agents.beta, { running: 0, unread: 0, failure: 1 });
+  assert.deepEqual(r.agents.gamma, { running: 1, unread: 3, failure: 0 });
+  // 项目层也跟着分开
+  assert.deepEqual(r.projects[P("alpha", "p1")], { running: 1, unread: 2, failure: 0 });
+  assert.deepEqual(r.projects[P("beta", "p9")], { running: 0, unread: 0, failure: 1 });
+  assert.deepEqual(r.projects[P("gamma", "p2")], { running: 1, unread: 3, failure: 0 });
+});
+
+test("T69b 焦点不影响其他 Agent 的数字（焦点只在自己那条会话上起作用）", async () => {
+  const facts = {
+    sessions: {
+      A1: s("unread", "alpha", "p1"),
+      B1: s("unread", "beta", "p9"),
+    },
+  };
+  // 正在看 alpha/A1：alpha 的未读清掉，beta 的不受影响
+  const r = deriveStatus(facts, { agentId: "alpha", sessionId: "A1", visible: true });
+  assert.equal(r.agents.alpha.unread, 0, "正在看的会话不算未读");
+  assert.equal(r.agents.beta.unread, 1, "别的 Agent 的未读该留着 —— 否则助手列骗人");
+});

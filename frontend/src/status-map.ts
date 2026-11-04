@@ -31,14 +31,25 @@ import type { RowActivity } from "../../src/row-activity.ts";
 export type StatusMeta = { agentId: string; projectId?: string | undefined };
 
 /**
- * 聚合的输入：**只吃会话行的 activity**。
+ * 聚合的输入：**只吃会话的四态**（`activity.state`）。
  *
  * 为什么不再传 `running: string[]` / `unread: string[]` 两个 Set（pi-web 的做法）：
  * 那样调用方要先自己把 activity 拆成两个集合，等于在聚合之外又理解了一遍四态。
  * 直接吃四态，聚合就退化成"数数"——零决策，不可能和行上的点不一致。
+ *
+ * ## 为什么输入是"全部 Agent 的会话"而不是"当前 Agent 的会话"（2026-11-04 修）
+ *
+ * 左侧助手列要给**每个** Agent 显示数字。此前调用方只喂了当前选中 Agent 的 `groups`，
+ * 于是没点进去的 Agent 永远没有数字 —— 实际现象是"切到哪个 Agent 才有数字"，
+ * 助手列失去"一眼看出谁有动静"的用途。
+ * 现在调用方把三个来源合起来喂（见 App 里的 `statusFacts`）：
+ *   ① 当前 Agent 的会话列表（有完整 activity）
+ *   ② SSE 快照的跨 Agent `running` / `unread`（服务端全量事实）
+ *   ③ SSE `error` 事件（跨 Agent 的失败，事件里带 projectId）
+ * 聚合本身不关心来源，只数四态 —— 所以它不需要改，改的是"喂什么"。
  */
 export type StatusFacts = {
-  /** 会话归属 + 该会话当前的四态。缺归属的会话不参与聚合（不臆造项目）。 */
+  /** 全部 Agent 的会话：归属 + 该会话当前的四态。缺归属的会话不参与聚合（不臆造项目）。 */
   sessions: Record<string, { meta: StatusMeta; activity: RowActivity } | undefined>;
 };
 
