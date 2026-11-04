@@ -15,6 +15,7 @@
 import type { Annotation } from "./annotations.ts";
 import { useMemo } from "react";
 import { annotationLine } from "./annotation-message.ts";
+import { markById } from "./marks.ts";
 
 export type AnnotationPanelProps = {
   /** 全部批注（已由调用方排好序：消息顺序 + 段内偏移）。 */
@@ -65,12 +66,12 @@ export function AnnotationPanel({
       return a.start - b.start;
     });
     let sent = 0;
-    return sorted.map((anno) => {
+    return sorted.map((anno, index) => {
       const line = annotationLine(anno, sent + 1);
-      // 只有功能标记：不占用发送序号（它不进消息），但仍要显示以便删除
-      if (line === null) return { anno, line: null, sendable: false };
+      // 只有功能标记：不占**发送**序号（它不进消息），序号列给它的位置号方便数数。
+      if (line === null) return { anno, line: null, sendable: false, ordinal: index + 1 };
       sent += 1;
-      return { anno, line, sendable: true };
+      return { anno, line, sendable: true, ordinal: sent };
     });
   }, [annotations, messageOrder]);
 
@@ -88,29 +89,34 @@ export function AnnotationPanel({
       <p data-testid="annotation-announcer" data-no-clip-check aria-live="polite" className="sr-only">
         {count === 0 ? "还没有批注" : `共有 ${count} 条批注`}
       </p>
-      {/* 标题栏：点击折叠 */}
-      <button
-        type="button"
-        data-testid="annotation-panel-toggle"
-        aria-expanded={!folded}
-        aria-controls="annotation-panel-rows"
-        onClick={onToggleFold}
-        className="flex w-full items-center gap-2 bg-sunken px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
-      >
-        <span className={`text-micro text-ink-500 transition-transform duration-150 ${folded ? "" : "rotate-90"}`}
-          aria-hidden="true">▶</span>
-        <span>批注转化成的消息</span>
-        <span data-testid="annotation-panel-count"
-          className="rounded-full bg-hover px-1.5 py-px text-micro tabular-nums text-ink-700">{count}</span>
-      </button>
-      {count > 0 && (
-        <div className="flex items-center justify-end border-t border-line bg-sunken px-3 py-1">
-          <button type="button" data-testid="annotation-clear-all" onClick={onClearAll}
-            className="inline-flex min-h-7 items-center rounded-control px-1.5 text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11">
-            清空全部批注
-          </button>
-        </div>
-      )}
+      {/*
+        功能行 = 标题行（用户 2026-11-04："清空全部批注为什么要单独占一行呢？
+        放到批注转换信息那一行"）。
+
+        注意结构：**不能把「清空全部」按钮嵌在折叠按钮里**——button 套 button 是非法 HTML，
+        而且点一下会同时触发折叠。所以这里是一个容器，里面并排两个 button：
+        左边那个用 flex-1 铺满剩余宽度（点标题/空白都能折叠），右边是清空。
+      */}
+      <div className="flex items-stretch bg-sunken">
+        <button
+          type="button"
+          data-testid="annotation-panel-toggle"
+          aria-expanded={!folded}
+          aria-controls="annotation-panel-rows"
+          onClick={onToggleFold}
+          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
+        >
+          <span className={`text-micro text-ink-500 transition-transform duration-150 ${folded ? "" : "rotate-90"}`}
+            aria-hidden="true">▶</span>
+          <span>批注</span>
+          <span data-testid="annotation-panel-count"
+            className="rounded-full bg-hover px-1.5 py-px text-micro tabular-nums text-ink-700">{count}</span>
+        </button>
+        <button type="button" data-testid="annotation-clear-all" onClick={onClearAll}
+          className="inline-flex shrink-0 items-center rounded-control px-2 text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11">
+          清空全部批注
+        </button>
+      </div>
 
       {/*
         折叠过渡（P6 补，2026-11-03）：箭头旋转 150ms + 内容区收起时淡出。
@@ -123,11 +129,15 @@ export function AnnotationPanel({
           style={{ maxHeight: "var(--container-anno-panel)" }}>
             <table className="w-full border-collapse text-meta">
               <caption data-no-clip-check className="sr-only">
-                批注列表：每条显示它会发送成什么样，单击一行可跳到原文并钉住
+                批注列表：每条包含被批注的原文、你写的话、标签，以及它会发送成什么样；单击一行可跳到原文并钉住
               </caption>
               <thead>
                 <tr className="text-micro uppercase tracking-wide text-ink-500">
-                  <th className="px-2.5 py-1.5 text-left font-semibold">发送时的样子</th>
+                  <th className="w-8 px-2.5 py-1.5 text-left font-semibold" />
+                  <th className="px-2.5 py-1.5 text-left font-semibold">被批注的原文</th>
+                  <th className="px-2.5 py-1.5 text-left font-semibold">用户的话</th>
+                  <th className="w-28 px-2.5 py-1.5 text-left font-semibold">语气</th>
+                  <th className="px-2.5 py-1.5 text-left font-semibold">发送的信息</th>
                   <th className="w-10 px-1 py-1.5" />
                 </tr>
               </thead>
@@ -144,18 +154,43 @@ export function AnnotationPanel({
                       className={`cursor-pointer border-t border-line align-top hover:bg-hover ${
                         pinned ? "bg-accent-soft" : ""
                       }`}>
+                      <td className="px-2.5 py-1.5 tabular-nums text-ink-500">{row.ordinal}.</td>
+                      <td className="px-2.5 py-1.5 text-ink-700">
+                        <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
+                      </td>
                       <td className="px-2.5 py-1.5">
-                        {row.line === null ? (
-                          // 只有功能标记：不发给 Agent，但用户要看得见、删得掉
-                          <span className="flex flex-wrap items-baseline gap-1.5">
-                            <span className="line-clamp-2 border-l-2 border-line pl-1.5 text-ink-700">「{anno.quote}」</span>
-                            <span className="text-micro text-ink-500">仅分类，不发送</span>
-                          </span>
-                        ) : (
-                          <span data-testid="annotation-line" className="block whitespace-pre-wrap font-mono text-micro leading-relaxed text-ink-900">
-                            {row.line}
-                          </span>
-                        )}
+                        {anno.note === ""
+                          ? <span className="italic text-ink-500">（没写话）</span>
+                          : <span className="whitespace-pre-wrap text-ink-900">{anno.note}</span>}
+                      </td>
+                      <td className="px-2.5 py-1.5">
+                        <span className="flex flex-wrap gap-1">
+                          {anno.marks.map((id) => {
+                            const mark = markById(id);
+                            if (mark === undefined) return null;
+                            return (
+                              <span key={id} data-mark={id}
+                                aria-label={`标签：${mark.label}`}
+                                className="rounded-full px-1.5 py-px text-micro font-semibold"
+                                style={{
+                                  background: `var(--color-anno-${mark.tone}-soft)`,
+                                  color: `var(--color-anno-${mark.tone})`,
+                                }}>
+                                {mark.label}
+                              </span>
+                            );
+                          })}
+                        </span>
+                      </td>
+                      <td className="px-2.5 py-1.5">
+                        {row.line === null
+                          ? <span className="text-micro text-ink-500">仅分类，不发送</span>
+                          : (
+                            <span data-testid="annotation-line"
+                              className="block whitespace-pre-wrap font-mono text-micro leading-relaxed text-ink-900">
+                              {row.line}
+                            </span>
+                          )}
                       </td>
                       <td className="px-1 py-1.5 text-right">
                         <button type="button" data-testid="annotation-remove" data-anno={anno.id}

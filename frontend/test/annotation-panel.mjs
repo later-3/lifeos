@@ -62,17 +62,41 @@ await api.add({ id: "t2", author: { kind: "user", id: "u" }, messageId: "seed-as
 
 await open();
 
-// 1) 表格展示的是"发送时的样子"，不是原始字段
-const lines = await page.evaluate(() => [...document.querySelectorAll('[data-testid="annotation-line"]')]
-  .map((el) => el.textContent.replace(/\s+/g, " ").trim()));
-check("表格显示转换后的消息文本", lines.length === 1 && lines[0] === "1、你说的：「加粗的重点」 -> 第一句话 （我是批评的语气！）",
-  JSON.stringify(lines));
+// 1) 表头 6 列：保留基础信息 + 新增「发送的信息」
+const headers = await page.evaluate(() => [...document.querySelectorAll('[data-testid="annotation-panel-rows"] thead th')]
+  .map((th) => th.textContent.trim()).filter((t) => t !== ""));
+check("表头保留基础列并新增发送列",
+  JSON.stringify(headers) === JSON.stringify(["被批注的原文", "用户的话", "语气", "发送的信息"]), JSON.stringify(headers));
 
-// 2) 只有功能标记的行：标明不发送、且不占发送序号
-const notSendable = await page.evaluate(() => [...document.querySelectorAll('[data-sendable="false"]')]
-  .map((r) => r.innerText.replace(/\s+/g, " ").trim()));
-check("只有功能标记的行标明「不发送」", notSendable.length === 1 && notSendable[0].includes("仅分类，不发送"), JSON.stringify(notSendable));
-check("不发送的行不占发送序号", !notSendable[0].startsWith("2、"), notSendable[0]);
+// 2) 数据行：基础信息都在（不是只留发送信息）
+const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid="annotation-row"]')]
+  .map((r) => [...r.querySelectorAll("td")].map((td) => td.innerText.replace(/\s+/g, " ").trim())));
+check("行包含 序号/原文/话/语气/发送信息/删除 六列", rows.every((cells) => cells.length === 6), JSON.stringify(rows[0]));
+check("原文列在", rows[0][1] === "「加粗的重点」", rows[0][1]);
+check("用户的话在", rows[0][2] === "第一句话", rows[0][2]);
+check("语气列在", rows[0][3] === "批评", rows[0][3]);
+
+// 3) 发送列内容 == annotationLine 的输出（与真正发出去的同源）
+check("发送列显示转换后的完整一行",
+  rows[0][4] === "1、你说的：「加粗的重点」 -> 第一句话 （我是批评的语气！）", rows[0][4]);
+
+// 4) 只有功能标记的行：标明不发送
+check("只有功能标记的行标明「仅分类，不发送」",
+  rows[1].some((c) => c.includes("仅分类，不发送")), JSON.stringify(rows[1]));
+
+// 5) 标题行：功能行与标题同一行，清空按钮不嵌在折叠按钮里
+const head = await page.evaluate(() => {
+  const t = document.querySelector('[data-testid="annotation-panel-toggle"]');
+  const c = document.querySelector('[data-testid="annotation-clear-all"]');
+  return {
+    title: t?.innerText.replace(/\s+/g, " ").trim(),
+    sameRow: t !== null && c !== null && t.parentElement === c.parentElement,
+    nested: t !== null && c !== null && t.contains(c),
+  };
+});
+check("标题是「批注 N」", /^▶?\s*批注\s*2$/.test(head.title.replace("▼", "▶")), head.title);
+check("清空按钮与标题同一行", head.sameRow);
+check("清空按钮不嵌在折叠按钮内（button 套 button 非法）", head.nested === false);
 
 // 3) 不再显示「第 N 条回复」（用户 2026-11-03 要求去掉）
 check("没有「第 N 条回复」", !(await page.evaluate(() => document.body.innerText.includes("条回复"))));
