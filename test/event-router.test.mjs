@@ -89,3 +89,30 @@ test("T75 没有 projectId 的补丁也要能路由（不能因为缺字段就�
   assert.deepEqual(actions.map((a) => a.kind), ["row"]);
   assert.equal(actions[0].projectId, undefined);
 });
+
+// —— T76–T77 运行/终态补丁要能驱动聚合（Task 0005 · 2026-11-04 用户实测）——
+// 背景：会话开跑时服务端**只发 row 补丁、不重发快照** → 前端 agentAggregate 不更新
+// → 用户看到"一个 session 正在回复，但正在跑的数字不出现"。
+// 组件层逻辑在 App.tsx（bumpAggregate），这里保证**补丁本身带够信息**：
+//   · 开跑/结束：patch.running 有值 / null
+//   · 终态：patch.unread 有值 + 失败时 patch.failure 有值（决定进 unreadDone 还是 unreadError）
+test("T76 开跑补丁带 running；结束补丁带 running:null + unread", async () => {
+  const start = { seq: 50, agentId: "A", sessionId: "s1", projectId: "p1", type: "row", patch: { running: { since: "T0", phase: "waiting" } } };
+  const a1 = routeEvent(start, focusA, 0);
+  assert.equal(a1[0].patch.running.phase, "waiting", "开跑必须带 running（前端据此 +1）");
+
+  const done = { seq: 51, agentId: "A", sessionId: "s1", projectId: "p1", type: "row", patch: { running: null, unread: { since: "T9" } } };
+  const a2 = routeEvent(done, focusA, 0);
+  assert.equal(a2[0].patch.running, null, "结束必须发 running:null（前端据此 -1）");
+  assert.ok(a2[0].patch.unread !== undefined, "并同时带 unread（前端据此给 unreadDone +1）");
+});
+
+test("T77 失败终态补丁必须带 failure —— 前端靠它区分「失败待看」还是「完成待看」", async () => {
+  const failed = {
+    seq: 52, agentId: "A", sessionId: "s1", projectId: "p1", type: "row",
+    patch: { running: null, unread: { since: "T9" }, failure: { kind: "auth", detail: "401" }, lastActivityAt: "T9" },
+  };
+  const actions = routeEvent(failed, focusA, 0);
+  assert.equal(actions[0].patch.failure.kind, "auth", "失败补丁必须带 failure；不带就会被当成 unreadDone");
+  assert.ok(actions[0].patch.unread !== undefined);
+});
