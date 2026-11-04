@@ -62,7 +62,7 @@ export type StatusFacts = {
    * —— C163 那个反例。服务端调同一个函数算完再发数，是唯一一处实现。
    * 本模块只做**减法**（把焦点会话的未读扣掉），不重做四态判定。
    */
-  aggregate?: Array<{ agentId: string; projectId?: string | undefined; running: number; completed: number; failed: number }>;
+  aggregate?: Array<{ agentId: string; projectId?: string | undefined; running: number; unreadDone: number; unreadError: number }>;
 };
 
 export type StatusFocus = { agentId?: string | undefined; sessionId?: string | undefined; visible: boolean };
@@ -85,10 +85,10 @@ export type StatusFocus = { agentId?: string | undefined; sessionId?: string | u
 export type Status = {
   /** 正在跑（呼吸数字）。 */
   running: number;
-  /** 最近一次正常结束的会话数（固定绿底数字）。 */
-  completed: number;
-  /** 最近一次异常结束的会话数（固定红底数字）。 */
-  failed: number;
+  /** 正常结束**且还没看过**的会话数（固定绿底数字）。 */
+  unreadDone: number;
+  /** 异常结束**且还没看过**的会话数（固定红底数字）。 */
+  unreadError: number;
 };
 
 export type DerivedStatus = {
@@ -105,7 +105,7 @@ export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedSta
   const projects: Record<string, Status> = {};
   const agents: Record<string, Status> = {};
 
-  const empty = (): Status => ({ running: 0, completed: 0, failed: 0 });
+  const empty = (): Status => ({ running: 0, unreadDone: 0, unreadError: 0 });
   const bucketOf = (bucket: Record<string, Status>, key: string): Status => {
     const entry = bucket[key] ?? empty();
     bucket[key] = entry;
@@ -121,13 +121,13 @@ export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedSta
   for (const entry of facts.aggregate ?? []) {
     const agentStatus = bucketOf(agents, entry.agentId);
     agentStatus.running += entry.running;
-    agentStatus.completed += entry.completed;
-    agentStatus.failed += entry.failed;
+    agentStatus.unreadDone += entry.unreadDone;
+    agentStatus.unreadError += entry.unreadError;
     if (entry.projectId !== undefined) {
       const projectStatus = bucketOf(projects, projectKey(entry.agentId, entry.projectId));
       projectStatus.running += entry.running;
-      projectStatus.completed += entry.completed;
-      projectStatus.failed += entry.failed;
+      projectStatus.unreadDone += entry.unreadDone;
+      projectStatus.unreadError += entry.unreadError;
     }
   }
 

@@ -111,17 +111,28 @@ export type AgentProjectCount = {
   agentId: string;
   projectId?: string;
   running: number;
-  completed: number;
-  failed: number;
+  unreadDone: number;
+  unreadError: number;
 };
 
+/**
+ * 一个 Agent × 项目的三个数量（用户 2026-11-04 最终裁决）。
+ *
+ * **未读只有一种概念**：一次回合结束了、用户还没看过。它有两个结果 ——
+ * 正常结束（绿）与异常结束（红）。两者规则**完全相同**：看过就消失，不持久记录。
+ *
+ * 所以徽标回答的是「**有几件事要你看**」，不是「历史发生过几次」。
+ * 会话行的点与这里的数字**永远同步**：点进去了，点和数字一起减。
+ * （早期版本把两者拆开——数字不看已读、点看已读——用户反问"你会话红点取消，
+ *  那我去哪儿找失败的？"那句话是对的：同一件事不能给两套规则。）
+ */
 export function aggregateStatus(): AgentProjectCount[] {
   const buckets = new Map<string, AgentProjectCount>();
   const bucketOf = (agentId: string, projectId: string | undefined): AgentProjectCount => {
     const key = `${agentId}\u0000${projectId ?? ""}`;
     let entry = buckets.get(key);
     if (entry === undefined) {
-      entry = { agentId, ...(projectId !== undefined && projectId !== "" ? { projectId } : {}), running: 0, completed: 0, failed: 0 };
+      entry = { agentId, ...(projectId !== undefined && projectId !== "" ? { projectId } : {}), running: 0, unreadDone: 0, unreadError: 0 };
       buckets.set(key, entry);
     }
     return entry;
@@ -134,16 +145,19 @@ export function aggregateStatus(): AgentProjectCount[] {
     bucketOf(entry.agentId, entry.projectId).running += 1;
   }
 
-  // ②③ 终态：session-views 索引里的 lastState（**不看 viewedAt**）
-  // 同一条会话在跑的时候只算 running —— 四态互斥，不重复计。
+  // ②③ 未读终态：**只看没看过的**（unread() 已按 completedAt > viewedAt 判好）。
+  // 两种结果的规则完全一样 —— 看过就不计，与是不是失败无关。
+  const unreadKeys = new Set(sessionViewsOf().unread().map((item) => `${item.agentId}\u0000${item.sessionId}`));
   for (const item of sessionViewsOf().states()) {
-    if (runningKeys.has(`${item.agentId}\u0000${item.sessionId}`)) continue;
+    const key = `${item.agentId}\u0000${item.sessionId}`;
+    if (runningKeys.has(key)) continue;        // 在跑的不重复计（四态互斥）
+    if (!unreadKeys.has(key)) continue;        // 已看过 → 不计（这就是"看过就消失"）
     const bucket = bucketOf(item.agentId, item.projectId);
-    if (item.lastState === "error") bucket.failed += 1;
-    else if (item.lastState === "done") bucket.completed += 1;
+    if (item.lastState === "error") bucket.unreadError += 1;
+    else if (item.lastState === "done") bucket.unreadDone += 1;
     // 没有 lastState 的老记录不计：不知道它怎么结束的，就不编一个
   }
-  return [...buckets.values()].filter((entry) => entry.running + entry.completed + entry.failed > 0);
+  return [...buckets.values()].filter((entry) => entry.running + entry.unreadDone + entry.unreadError > 0);
 }
 
 export function globalSnapshot(): {

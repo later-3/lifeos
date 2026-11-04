@@ -6,15 +6,25 @@
 // 所以这个文件由**前后端共用**——因此它必须零依赖（不能 import node:fs 之类，
 // 否则会被打进前端 bundle）。前端已有先例：`frontend/src/App.tsx` 直接 import `src/session-title.ts`。
 //
-// 优先级（任务 0005 · 用户 2026-11-03 拍板）：
+// 优先级（任务 0005；2026-11-04 用户重定）：
 //   running > failure > unread > idle
 // 在跑的会话先报"在跑"；失败比未读更需要处理。
+//
+// **失败也看已读**（2026-11-04 用户裁决）：一次回合结束 = 一条未读，
+// 未读只有两种 —— 正常结束（绿点）与异常结束（红点），两者都是**看过就消失**。
+// 所以 `failure` 与 `unread` 共用同一个"已读窗口"：`unreadSince` 为空（= 已看过）时，
+// 失败不再显示。不持久记录：看过后就是没有了，不会因为刷新页面又冒出来。
 import { shortTitleOf } from "./session-title.ts";
 import type { FailureKind } from "./failure.ts";
 //
-// 优先级（任务 0005 · 用户 2026-11-03 拍板）：
+// 优先级（任务 0005；2026-11-04 用户重定）：
 //   running > failure > unread > idle
 // 在跑的会话先报"在跑"；失败比未读更需要处理。
+//
+// **失败也看已读**（2026-11-04 用户裁决）：一次回合结束 = 一条未读，
+// 未读只有两种 —— 正常结束（绿点）与异常结束（红点），两者都是**看过就消失**。
+// 所以 `failure` 与 `unread` 共用同一个"已读窗口"：`unreadSince` 为空（= 已看过）时，
+// 失败不再显示。不持久记录：看过后就是没有了，不会因为刷新页面又冒出来。
 
 export type RowPhase = "waiting" | "thinking" | "tool" | "text";
 
@@ -63,8 +73,11 @@ export function rowActivityOf(input: ActivityInput): RowActivity {
       },
     };
   }
-  if (input.failure !== undefined) return { state: "failure", failure: input.failure };
-  if (input.unreadSince !== undefined && input.unreadSince !== "") return { state: "unread", unread: { since: input.unreadSince } };
+  // "这次结束还没被看过" —— 失败与正常完成共用这个窗口（用户 2026-11-04 裁决）。
+  const unseen = input.unreadSince !== undefined && input.unreadSince !== "";
+  // 失败也看已读：看过了就不再显示红点（与绿点同一规则，不持久记录）
+  if (input.failure !== undefined && unseen) return { state: "failure", failure: input.failure };
+  if (unseen) return { state: "unread", unread: { since: input.unreadSince! } };
   return { state: "idle" };
 }
 

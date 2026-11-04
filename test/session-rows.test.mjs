@@ -61,11 +61,12 @@ test("T1 rowActivityOf 穷举：四态互斥，优先级 running > failure > unr
 
   assert.equal(rowActivityOf({ now }).state, "idle", "都没有 → idle");
   assert.equal(rowActivityOf({ unreadSince: unread, now }).state, "unread");
-  assert.equal(rowActivityOf({ failure, now }).state, "failure");
-  assert.equal(rowActivityOf({ failure, unreadSince: unread, now }).state, "failure", "失败优先于未读");
+  // 失败**也看已读**（用户 2026-11-04 裁决）：一次结束 = 一条未读，正常/异常都"看过就消失"。
+  // 所以只有 failure 而没有 unreadSince（= 已看过）时，不该再显示红点。
+  assert.equal(rowActivityOf({ failure, now }).state, "idle", "失败但已看过 → 不显示（与绿点同一规则）");
+  assert.equal(rowActivityOf({ failure, unreadSince: unread, now }).state, "failure", "失败且未看 → 红点，优先于绿点");
   assert.equal(rowActivityOf({ runningSince: running, now }).state, "running");
   assert.equal(rowActivityOf({ runningSince: running, unreadSince: unread, now }).state, "running", "在跑优先于未读");
-  assert.equal(rowActivityOf({ runningSince: running, failure, now }).state, "running", "在跑优先于失败");
   assert.equal(rowActivityOf({ runningSince: running, failure, unreadSince: unread, now }).state, "running", "三者都有 → 在跑");
 });
 
@@ -260,14 +261,20 @@ test("T6 failure.detail = 落盘原文（不脱敏、不截断）", async () => 
       }),
     },
   ]);
+  // 失败也看已读（用户 2026-11-04 裁决）：必须先有"这次结束还没看过"的事实才显示红点，
+  // 所以这里补一条未读记录 —— 这正是真实链路里 recordCompletion 做的事。
+  const { sessionViewsOf } = await import("../src/session-views.ts");
+  sessionViewsOf().markCompleted("lifeosagent", "sess-fail", "2026-11-01T00:02:00.000Z", projectId, { state: "error", failureKind: "network" });
+
   const rows = await sessionRowsOf("lifeosagent", projectId);
-  assert.equal(rows[0].activity.state, "failure");
-  assert.equal(rows[0].activity.failure && rows[0].activity.failure.detail, detail, "原文完整给出，不截断不脱敏");
+  const row = rows.find((r) => r.sessionId === "sess-fail");
+  assert.equal(row.activity.state, "failure");
+  assert.equal(row.activity.failure && row.activity.failure.detail, detail, "原文完整给出，不截断不脱敏");
   // 分类归 `network` 而不是 `server`：这条报文**同时**含 5xx 与 "Connection error"，
   // 而 `classifyFailure()` 里 NETWORK 排在 SERVER 之前（为对齐 Pi 的可重试语义，
   // Task 0007 特意把 `connection error` 加进 NETWORK —— `src/failure.ts:44`）。
   // 本测试只关心"原文完整、不脱敏、不截断"；分类优先级归 `failure.ts` 自己管，不在这里另立规则。
-  assert.equal(rows[0].activity.failure && rows[0].activity.failure.kind, "network", "含 Connection error → network（NETWORK 先于 SERVER）");
+  assert.equal(row.activity.failure && row.activity.failure.kind, "network", "含 Connection error → network（NETWORK 先于 SERVER）");
 });
 
 test("T6b 历史失败不算当前状态：之后成功的 assistant 或用户新消息会清掉红点", async () => {
