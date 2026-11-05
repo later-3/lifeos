@@ -1088,28 +1088,114 @@ if (emptyTarget === null) {
 }
 await freshPage.close();
 
-// 输入历史 ↑/↓（chat.md §3.5；拦截 202，不打真实模型）
-await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/, (route) => route.fulfill({
-  status: 202, contentType: "application/json", body: JSON.stringify({ accepted: true }),
-}));
-await chatComposer.fill("history-probe");
-await chatComposer.press("Enter");
-await page.waitForTimeout(350);
-await chatComposer.fill("");
-await page.waitForTimeout(120);
-await chatComposer.press("ArrowUp");
-await page.waitForTimeout(120);
-const historyValue = await chatComposer.inputValue();
-await chatComposer.fill("");
-await page.waitForTimeout(120);
-await chatComposer.press("ArrowDown");
-await page.waitForTimeout(120);
-const historyCleared = await chatComposer.inputValue();
-check("空输入 ↑ 取回输入历史", historyValue === "history-probe", `value=${historyValue}`);
-check("空输入 ↓ 返回空输入", historyCleared === "", `value=${historyCleared}`);
-await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/);
-await page.reload({ waitUntil: "networkidle" });
-await page.waitForTimeout(300);
+// 输入历史 ↑/↓（chat.md §3.5 · Task 0012）
+//
+// **为什么这组断言必须覆盖"两个会话"**：改前的断言只发一条消息、按一次 ↑，
+// 于是"方向反 / 只能走一步 / 跨会话串 / 索引不复位"四个缺陷全部测不出来（门禁全绿、用户全中）。
+// 现在按用户可验证的行为断言，且**用真实点击会话行切会话**（不是直接改 URL，那会绕过切换路径）：
+//   T-UI1 空输入连按 ↑：最近 → 更早 → 最早（方向 + 可连按）；
+//   T-UI2 连按 ↓：逐条回来，最后回到空输入；
+//   T-UI3 切到另一个会话再按 ↑：拿到**那个会话自己的**历史，绝不串；
+//   T-UI4 切回第一个会话：仍是它自己的历史（切换不丢、不复用上一次的位置）。
+//
+// 夹具：往会话列表与两个会话的详情接口注入 mock（不建真会话 → 清理只要 unroute，零持久副作用；
+// testing 规 2.11）。历史是从会话消息派生的，所以 mock 的 messages 就是它的输入。
+{
+  const HIST_A = "fixture-0000-7000-8000-00000000000a";
+  const HIST_B = "fixture-0000-7000-8000-00000000000b";
+  const historyAgent = new URL(page.url()).searchParams.get("agent") ?? "lifeosagent";
+  const rowOf = (sid, name, at) => ({
+    sessionId: sid,
+    title: { raw: name, display: name },
+    project: { id: "workspace", name: "workspace" },
+    task: null, peer: null,
+    counts: { user: 3, assistant: 3, toolResult: 0, system: 0, total: 6 },
+    time: { createdAt: at, firstMessageAt: at, lastMessageAt: at, lastActivityAt: at, fileModifiedAt: at },
+    activity: { state: "idle" },
+    isDefault: false,
+  });
+  const detailOf = (sid, texts) => {
+    const messages = [];
+    for (const text of texts) {
+      messages.push({ role: "user", text, blocks: [{ type: "text", text }], id: `fixture-u-${sid}-${text}` });
+      messages.push({ role: "assistant", text: "ok", blocks: [{ type: "text", text: "ok" }], id: `fixture-a-${sid}-${text}` });
+    }
+    return { sessionId: sid, messages, meta: { thinkingLevel: "off", running: false, context: null } };
+  };
+
+  await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    const items = body.items ?? [];
+    // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
+    if (!items.some((item) => item.sessionId === HIST_A)) {
+      items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
+      items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
+    }
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+  });
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
+    const sid = new URL(route.request().url()).pathname.split("/").pop();
+    if (sid === HIST_A) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailOf(sid, ["第一条历史", "第二条历史", "第三条历史"])) });
+    if (sid === HIST_B) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailOf(sid, ["另一个会话的话"])) });
+    return route.fallback();
+  });
+
+  const openFixture = async (sid) => {
+    await page.locator(`[data-testid="${sid}"]`).first().click();
+    await page.waitForTimeout(700);
+    await chatComposer.click();
+  };
+  const pressUp = async () => { await chatComposer.press("ArrowUp"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
+  const pressDown = async () => { await chatComposer.press("ArrowDown"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
+
+  await page.goto(`${APP_URL}/?agent=${historyAgent}&project=workspace`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const fixtureVisible = await page.locator(`[data-testid="${HIST_A}"]`).count() > 0;
+  check("输入历史夹具：两个会话行已渲染", fixtureVisible, `A=${fixtureVisible}`);
+
+  if (fixtureVisible) {
+    // —— 会话 A ——
+    await openFixture(HIST_A);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const a1 = await pressUp();
+    const a2 = await pressUp();
+    const a3 = await pressUp();
+    check("输入历史：空输入 ↑ 先取最近一条", a1 === "第三条历史", `value=${a1}`);
+    check("输入历史：继续按 ↑ 走向更早（不是只能走一步）", a2 === "第二条历史" && a3 === "第一条历史", `${a2} → ${a3}`);
+
+    // T-UI2 ↓ 逐条回来，最后清空
+    const d1 = await pressDown();
+    const d2 = await pressDown();
+    const d3 = await pressDown();
+    check("输入历史：↓ 逐条走回更新的消息", d1 === "第二条历史" && d2 === "第三条历史", `${d1} → ${d2}`);
+    check("输入历史：↓ 走到底回到空输入", d3 === "", `value=${d3}`);
+
+    // —— 切到会话 B：历史必须是 B 自己的 ——
+    await chatComposer.fill("");
+    await openFixture(HIST_B);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const b1 = await pressUp();
+    check("输入历史：切会话后只取本会话的历史（不串）", b1 === "另一个会话的话", `value=${b1}`);
+    const b2 = await pressUp();
+    check("输入历史：会话 B 只有一条，再按 ↑ 停住（不回落到会话 A）", b2 === "另一个会话的话", `value=${b2}`);
+
+    // —— 切回 A：仍是 A 自己的历史 ——
+    await chatComposer.fill("");
+    await openFixture(HIST_A);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const backA = await pressUp();
+    check("输入历史：切回原会话仍是它自己的历史", backA === "第三条历史", `value=${backA}`);
+  }
+
+  await page.unroute(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
+  await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(400);
+}
 
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
