@@ -253,11 +253,13 @@
  * 第一版写成 opacity 1↔.55 + scale(.72)，实测两个问题：
  *   ① 药丸整体变淡 → 数字在动画低谷时看不清（用户选它就是要数字一直清楚）；
  *   ② scale(.72) 幅度太大，16px 的徽标缩到 11px，像在抖动。
- * 现在 scale 1↔.88，数字始终实心；缩放幅度刚好能被余光察觉、又不至于晃眼。
+ * scale 1↔.88（2026-11-05 首版）：数字清楚，但用户实测「不明显，整个呼吸的感觉不够」。
+ * 现调到 1↔.80（2026-11-05 二版）：16px 缩到 12.8px，缩放 3.2px——
+ * 比首版的 1.9px 明显一档，仍不至于"抖"；数字低谷时还有 12.8px，不糊。
  */
 @keyframes badge-dot {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(.88); }
+  50%      { transform: scale(.80); }
 }
 @utility animate-halo {
   animation: badge-halo 1.8s ease-out infinite;
