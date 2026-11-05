@@ -95,7 +95,7 @@ const rows = await page.evaluate(() => [...document.querySelectorAll('[data-test
   consumed: r.dataset.consumed, text: r.innerText.replace(/\s+/g, " ").trim().slice(0, 60),
 })));
 check("展开后 2 行", rows.length === 2, JSON.stringify(rows));
-check("已发送的行带「已发送」标记", rows.some((r) => r.consumed === "true" && r.text.includes("已发送")), JSON.stringify(rows));
+check("已发送的行带「已发」标记（6 列后标记在序号格）", rows.some((r) => r.consumed === "true" && r.text.includes("已发")), JSON.stringify(rows));
 check("待发送的行显示发送文本", rows.some((r) => r.consumed === "false" && r.text.includes("我是批评的语气！")), JSON.stringify(rows));
 
 // 5) 删除单条：行消失 + 落盘

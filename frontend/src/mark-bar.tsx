@@ -63,6 +63,8 @@ export function MarkBar({
 
   const consumed = rows.filter((a) => a.consumedBy !== undefined).length;
   const pendingCount = rows.length - consumed;
+  // 序号计数器（map 里递增）：与发送同一规则——只有可发送的行占号（annotation-message.ts 同源）
+  let sentOrdinal = 0;
 
   return (
     <section
@@ -101,25 +103,47 @@ export function MarkBar({
           <table className="w-full border-collapse text-meta">
             <thead>
               <tr className="text-micro uppercase tracking-wide text-ink-500">
-                <th className="px-2.5 py-1.5 text-left font-semibold">发送时的样子</th>
+                {/* 6 列（用户 2026-11-05 定：与原 annotation-panel 同一表格，不合并成一句）：
+                    序号 | 被批注的原文 | 用户的话 | 语气 | 发送的信息 | ✕ */}
+                <th className="w-8 px-2.5 py-1.5 text-left font-semibold">#</th>
+                <th className="px-2.5 py-1.5 text-left font-semibold">被批注的原文</th>
+                <th className="px-2.5 py-1.5 text-left font-semibold">用户的话</th>
+                <th className="w-20 px-1.5 py-1.5 text-left font-semibold">语气</th>
+                <th className="px-2.5 py-1.5 text-left font-semibold">发送的信息</th>
                 <th className="w-10 px-1 py-1.5" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((anno) => {
+              {rows.map((anno, index) => {
                 const pinned = pinnedOf(anno.id);
-                const line = annotationLine(anno, 1);
+                // 序号按**实际发送顺序**：只有功能标记的行不占号（它不进消息）。
+                // 旧缺陷：annotationLine(anno, 1) 硬编码，每行都是「1、」。
+                const sendable = annotationLine(anno, 1) !== null;
+                sentOrdinal = sendable ? sentOrdinal + 1 : sentOrdinal;
+                const ordinal = sendable ? sentOrdinal : index + 1;
+                const line = annotationLine(anno, ordinal);
                 return (
                   <tr key={anno.id} data-testid="mark-row" data-anno={anno.id}
                     data-pinned={pinned ? "true" : "false"}
                     data-consumed={anno.consumedBy !== undefined ? "true" : "false"}
+                    data-sendable={sendable ? "true" : "false"}
                     onClick={() => onRowClick(anno.id)}
                     className={`cursor-pointer border-t border-line align-top hover:bg-hover ${pinned ? "bg-accent-soft" : ""}`}>
-                    <td className="px-2.5 py-1.5">
+                    <td className="px-2.5 py-1.5 tabular-nums text-ink-500">
                       {/* 已发送的小标记（用户 2026-11-04：让用户知道它不会再进消息） */}
-                      {anno.consumedBy !== undefined && (
-                        <span className="mr-1.5 inline-block rounded-full bg-hover px-1.5 py-px align-middle text-micro text-ink-500">已发送</span>
-                      )}
+                      {anno.consumedBy !== undefined
+                        ? <span className="block rounded-full bg-hover px-1 py-px text-center text-micro text-ink-500">已发</span>
+                        : `${ordinal}.`}
+                    </td>
+                    <td className="px-2.5 py-1.5 text-ink-700">
+                      <span className="line-clamp-2 border-l-2 border-line pl-1.5">「{anno.quote}」</span>
+                    </td>
+                    {/* 没写话就留空（用户 2026-11-04：“你不要画蛇添足”）。空单元格本身就是"没写"。 */}
+                    <td className="whitespace-pre-wrap px-2.5 py-1.5 text-ink-900">{anno.note}</td>
+                    <td className="px-1.5 py-1.5">
+                      <MarkTags marks={anno.marks} />
+                    </td>
+                    <td className="px-2.5 py-1.5">
                       {line === null ? (
                         <span className="text-micro text-ink-500">仅分类，不发送</span>
                       ) : (
