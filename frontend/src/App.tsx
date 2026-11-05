@@ -12,6 +12,7 @@ import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
 import type { Annotation, AnnotationAuthor } from "./annotations";
 import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
+import { groupAnnotationsByReply } from "./anno-groups";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -472,20 +473,14 @@ export default function App() {
    */
   const pendingAnnoRestore = useRef<readonly Annotation[] | undefined>(undefined);
   /**
-   * 本次发送带走的批注 id（发送成功后要打 consumedBy）。
-   * 与 `pendingAnnoRestore` 配套：失败用前者回滚内容，成功用这个标状态。
-   */
-  const pendingConsumeRef = useRef<readonly string[] | undefined>(undefined);
-  /**
-   * 本次发送的一次性标识，作为 `consumedBy` 的值。
+   * 等待打标记的批注 id：发送受理成功后记下，等 `loadMessages` 拉回**带 id 的用户消息**
+   * 再用它的 id 作 `consumedBy`。
    *
-   * **为什么不用"用户消息 id"**：后端 `runTurn()` 是 `Promise<void>`，不返回新建消息的 id
-   * （`src/agent-host.ts:818`），要拿到得改它。而 `consumedBy` 的全部用途只有两处——
-   * ① 判断这条批注是不是 pending（非空即已发）；② 面板显示"已发送"。
-   * **没有任何地方需要拿它反查那条消息**。所以用一个客户端生成的一次性 id 足够，
-   * 语义也更直白："这批发给了哪一次发送动作"。
+   * 为什么不能用一次性随机 id：consumedBy 还承担**归属**——已发送的批注要显示在
+   * "它被发送的那一轮"的 MarkBar 里（用户 2026-11-04 规则 2）。随机 id 无法反查轮次，
+   * 只有落盘的用户消息 id 能。
    */
-  const pendingSendIdRef = useRef<string | undefined>(undefined);
+  const pendingConsumeIdsRef = useRef<readonly string[] | undefined>(undefined);
 
   /** 批注面板折叠态（默认展开）。 */
 
@@ -934,6 +929,25 @@ export default function App() {
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+
+    /**
+     * 批注生命周期（Task 0008）：发送受理成功后挂起的批注，在这里补打 `consumedBy`。
+     *
+     * 锚点 = **这条用户消息的真实 id**：现在消息已从服务端拉回、带着落盘的 entry id。
+     * 为什么等到这里：乐观插入的那条 user 消息没有 id（App 不知道后端生成的 id），
+     * 而锚点必须落盘、可反查轮次（已发送的批注要显示在"被发送那一轮"的 MarkBar）。
+     */
+    const waitingIds = pendingConsumeIdsRef.current;
+    if (waitingIds !== undefined && waitingIds.length > 0) {
+      const lastUser = [...(data.messages ?? [])].reverse().find((m) => m.role === "user" && m.id !== undefined);
+      pendingConsumeIdsRef.current = undefined;
+      if (lastUser?.id !== undefined) {
+        anno.markConsumed(waitingIds, lastUser.id);
+        persistConsume(waitingIds, lastUser.id, sid);
+      }
+      // 找不到 user 消息（异常）：保持挂起，下次 loadMessages 再试——不丢、也不会误标到别轮
+    }
+
     // 批注存在会话 custom entry 里，不在 messages 投影中 → 单独拉一次（Task 0003 · P5）
     void fetch(`/api/agents/${id}/sessions/${sid}/annotations`)
       .then((r) => (r.ok ? r.json() : undefined))
@@ -1928,15 +1942,9 @@ export default function App() {
          * 后端一旦 202，消息就进了模型上下文；回合后续失败也不该重发这批批注
          * （重发等于让 Agent 收到两遍同样的意见）。
          */
-        const consumed = pendingConsumeRef.current;
-        const sendId = pendingSendIdRef.current;
-        pendingConsumeRef.current = undefined;
-        pendingSendIdRef.current = undefined;
-        pendingAnnoRestore.current = undefined;   // 已发出，不需要回滚快照了
-        if (consumed !== undefined && consumed.length > 0 && sendId !== undefined) {
-          anno.markConsumed(consumed, sendId);
-          persistConsume(consumed, sendId, sid);
-        }
+        // consume 推迟到 loadMessages 之后：consumedBy 需要**这条用户消息的真实 id**，
+        // 而 id 只有在服务端落盘、前端重新拉取后才知道（乐观插入的那条没有 id）。
+        // 推迟期间：批注既不清空也不标记（失败仍会带上，符合用户规则 3）。
       }
     } catch {
       fail("[出错] 网络错误");
@@ -2212,8 +2220,7 @@ export default function App() {
       historyIndexRef.current = -1;
       // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
       pendingAnnoRestore.current = [...anno.annotations];
-      pendingConsumeRef.current = pendingAnnos.map((a) => a.id);
-      pendingSendIdRef.current = `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingConsumeIdsRef.current = pendingAnnos.map((a) => a.id);
       // 不再 die 掉全部批注：它们要保留（MarkBar 常驻），只是下面打上"已消费"
       void sendText(merged);
       return;
@@ -2694,7 +2701,49 @@ export default function App() {
                   if (span.userIndex >= 0) spanByIndex.set(span.userIndex, span);
                   for (const reply of span.replyIndexes) spanByIndex.set(reply, span);
                 }
+
                 const folded = new Set<number>();   // 已被上面某一轮的过程条收进去的回复下标
+                /**
+                 * 批注按**轮**分组（Task 0008 · P2 修订，用户 2026-11-04 规则）：
+                 *
+                 *  - **未发送**（pending）→ 全部显示在【最新一轮】Agent 回复的 MarkBar 下，
+                 *    不管它标的是哪一轮的文字——它们语义上属于"下一次要发出的消息"；
+                 *  - **已发送**（consumedBy = 该轮用户消息 id）→ 显示在**被发送那一轮**的 MarkBar，
+                 *    历史不动。
+                 *
+                 *  这样每条 Agent 回复下面最多一个 MarkBar；一个对话里多个轮次各有各的。
+                 */
+                const latestReplyId = (() => {
+                  const last = spans[spans.length - 1];
+                  if (last === undefined) return undefined;
+                  const replies = last.replyIndexes.map((i) => messages[i]).filter((m): m is Message => m !== undefined && m.role === "assistant" && m.id !== undefined);
+                  return replies[replies.length - 1]?.id;    // 最新轮最后一条回复（占位回复也算）
+                })();
+                // 各轮"MarkBar 挂点"：轮末回复若被过程条折叠，改挂**该轮第一条可见回复**。
+                //
+                // 为什么是第一条：过程条挂在轮的第一条回复上，同轮其余回复全部被收进去不渲染
+                //（见渲染循环里的 `folded.add`——它在循环里才执行，这里必须**独立复算同一规则**，
+                //  否则 MarkBar 会挂到一条不渲染的消息上跟着消失，2026-11-04 实测）。
+                // 折叠条件与循环里一致：`process.stats.tools > 0 || thinking > 0` 且该轮不是首条。
+                const visibleLastReplyByUserMessageId = new Map<string, string>();
+                for (const span of spans) {
+                  if (span.userIndex < 0) continue;
+                  const user = messages[span.userIndex];
+                  if (user?.id === undefined) continue;
+                  const replyMsgs = span.replyIndexes.map((i) => messages[i]).filter((m): m is Message => m !== undefined);
+                  if (replyMsgs.length === 0) continue;
+                  const hasProcess = (m: Message): boolean => {
+                    const blocks = m.blocks ?? [];
+                    return blocks.some((b) => b.type === "toolCall" || b.type === "thinking");
+                  };
+                  // 首条回复永远可见（过程条宿主）；只有当"轮内存在其他可见回复"时轮末才算可见。
+                  // 规则：若轮内任何一条非首条回复**没有**过程块（单独渲染的最终正文），轮末可见；
+                  //      否则（全部折叠）可见轮末 = 首条回复。
+                  const anchorable = replyMsgs.some((m, i) => i > 0 && !hasProcess(m));
+                  const anchor = anchorable ? replyMsgs[replyMsgs.length - 1] : replyMsgs[0];
+                  if (anchor.id !== undefined) visibleLastReplyByUserMessageId.set(user.id, anchor.id);
+                }
+                const annoGroups = groupAnnotationsByReply(anno.annotations, messages, latestReplyId, visibleLastReplyByUserMessageId);
                 return messages.map((message, index) => {
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
@@ -2752,24 +2801,25 @@ export default function App() {
                   const renderBlocks = mergedBlocks ?? message.blocks;
 
                   /**
-                   * MarkBar 的数据（Task 0008 · P2）：这条消息自己的批注。
-                   *
-                   * **只挂到 assistant 消息上**（批注只标 Agent 最终回复，D7）。
-                   * peer 会话不显示（没有操作意义）。
-                   * 注意 `anno.ofMessage` 内部有缓存，按 messageId 查是 O(1)。
+                   * MarkBar 的数据（Task 0008 · P2 修订）：按**轮**分组后挂在本回复下的批注。
+                   * - pending 全部挂在最新一轮（不管标在哪个轮次的文字上）；
+                   * - consumed 挂在被发送那一轮；
+                   * 分组逻辑见 `anno-groups.ts`（纯函数 + 单测）。
                    */
                   const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
-                    ? {
-                        annotations: anno.ofMessage(message.id),
-                        messageOrder: messageOrderForAnnos,
-                        onRowClick: onAnnoRowClick,
-                        pinnedOf: annoPinnedOf,
-                        onRemove: annoActions.remove,
-                        onRemoveAll: () => {
-                          // 与旧"清空全部"同一条纪律：走持久化 remove，不能只改内存
-                          for (const a of anno.ofMessage(message.id as string)) annoActions.remove(a.id);
-                        },
-                      }
+                    ? (() => {
+                        const list = annoGroups.get(message.id) ?? [];
+                        return list.length === 0 ? undefined : {
+                          annotations: list,
+                          messageOrder: messageOrderForAnnos,
+                          onRowClick: onAnnoRowClick,
+                          pinnedOf: annoPinnedOf,
+                          onRemove: annoActions.remove,
+                          onRemoveAll: () => {
+                            for (const a of list) annoActions.remove(a.id);
+                          },
+                        };
+                      })()
                     : undefined;
 
                   return (
