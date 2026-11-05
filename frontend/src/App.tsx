@@ -24,6 +24,8 @@ import {
 } from "./display-prefs";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
 import { processOpenOf } from "./response-fold";
+import { SessionBar } from "./session-bar";
+import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
@@ -629,11 +631,10 @@ export default function App() {
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
-  const [turnMetrics, setTurnMetrics] = useState<{ output: number; ttftSeconds: number; tokPerSecond: number }>();
+
   const turnStartedAtRef = useRef(0);
-  const turnFirstTokenAtRef = useRef(0);
-  const turnUsageStartRef = useRef<UsageSummary | undefined>(undefined);
-  const turnMetricsPendingRef = useRef(false);
+
+
   const [meta, setMeta] = useState<SessionMeta | undefined>();
   // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
@@ -990,14 +991,6 @@ export default function App() {
       })
       .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
-    if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
-      const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
-      const started = turnFirstTokenAtRef.current === 0 ? turnStartedAtRef.current : turnFirstTokenAtRef.current;
-      const seconds = Math.max(0.1, (Date.now() - started) / 1000);
-      const ttft = turnFirstTokenAtRef.current === 0 ? 0 : Math.max(0, (turnFirstTokenAtRef.current - turnStartedAtRef.current) / 1000);
-      turnMetricsPendingRef.current = false;
-      setTurnMetrics({ output, ttftSeconds: ttft, tokPerSecond: output / seconds });
-    }
     return data;
   }
 
@@ -1084,8 +1077,6 @@ export default function App() {
    *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
   function resetChatState() {
     setHistory(undefined);
-    setTurnMetrics(undefined);
-    turnMetricsPendingRef.current = false;
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -1530,7 +1521,6 @@ export default function App() {
   /** 细节事件（delta/thinking/tool_* …）：焦点会话的消息管道（一条助手消息里的块有序，交给 stream-blocks 归并）。 */
   function applyStreamMessage(payload: AgentEvent): void {
     lastEventAtRef.current = Date.now();
-    if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
     const tailIsStreaming = streaming.current;
     if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
     const next = applyStreamEvent(streamRef.current, payload as never);
@@ -1846,11 +1836,6 @@ export default function App() {
     if (!busyRef.current) {
       setTurnStep(1);
       turnStartedAtRef.current = Date.now();
-      turnFirstTokenAtRef.current = 0;
-      // 新会话没有 meta：从 0 起算；已有会话从当前累计起算。
-      turnUsageStartRef.current = meta?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
-      turnMetricsPendingRef.current = true;
-      setTurnMetrics(undefined);
     }   // 1/4：用户发送（steer 不新起一轮，不改步骤）
     // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
     // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
@@ -1930,7 +1915,6 @@ export default function App() {
       busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
-      turnMetricsPendingRef.current = false;
       // 失败后重新拉一次消息：让"消息列表 / 批注渲染层"回到服务端事实。
       // 不这么做的话，上面那次乐观插入 + 回滚会让批注渲染层重建在 DOM 尚未稳定时发生，
       // 高亮不会重画（实测：批注数据回来了，但文字上没有颜色）。
@@ -2641,6 +2625,18 @@ export default function App() {
    */
   const renderStatus = outcomeNotice ?? turnStatus;
   /**
+   * 会话累计事实（Task 0008 · P3 修订）：轮次/工具调用/生成耗时/token/平均速度。
+   *
+   * 口径与来源写在 `session-totals.ts` 的文档注释里（那边有单测锁住）。
+   * 这里只在 messages / meta 变化时重算——它是随消息增长的线性统计，别放进每次渲染里裸跑。
+   */
+  const sessionTotals = useMemo(
+    () => sessionTotalsOf(messages, meta?.usage !== undefined
+      ? { input: meta.usage.input, output: meta.usage.output, totalTokens: meta.usage.totalTokens }
+      : undefined),
+    [messages, meta?.usage],
+  );
+  /**
    * 头部显示的模型 = **实际运行模型**（Task 0017）。
    *
    * 旧规则（2026-10-22）是：用过 `/model` → 显示覆盖模型；没用过 → 显示 Agent 的有效默认。
@@ -2843,11 +2839,12 @@ export default function App() {
                    * 分组逻辑见 `anno-groups.ts`（纯函数 + 单测）。
                    */
                   /**
-                   * ResponseBar 的数据（Task 0008 · P3）。
+                   * ResponseBar 的数据（Task 0008 · P3 修订）。
                    *
-                   * 指标（usage/context/payload/metrics）来自会话 meta —— **整会话一份**，
-                   * 显示在最新回复的 bar 上（旧 TurnStatusBar 也是这个口径）；
-                   * 进行中状态（waiting/live）只给**正在流式的那条**。
+                   * 只说**这一轮**：过程统计 + 进行中状态 + 回合结论文案。
+                   * 会话累计指标（轮次/工具/耗时/token/平均速度/上下文/请求体）归输入框上方的
+                   * `SessionBar`（用户 2026-11-05："turnstat bar 把一些信息换为累计的信息"），
+                   * 不再挂在回复上——两处都显示同一份数字就是重复。
                    */
                   const isThisStreaming = message.streaming === true;
                   /**
@@ -2866,14 +2863,6 @@ export default function App() {
                         ...(messageLive ? { step: turnStep, ...(phase !== undefined ? { phase } : {}), ...(activeTool !== undefined ? { activeTool } : {}), ...(retry !== undefined ? { retry } : {}) } : {}),
                         // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
                         ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
-                        // 会话级指标：只挂**最后一条** assistant 消息（避免每条都重复显示同一份）
-                        ...(index === lastAssistantIndex ? {
-                          ...(turnMetrics !== undefined ? { metrics: turnMetrics } : {}),
-                          ...(meta?.usage !== undefined ? { usage: meta.usage } : {}),
-                          ...(meta?.context !== undefined ? { context: meta.context } : {}),
-                          ...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {}),
-                          ...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {}),
-                        } : {}),
                         // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
                         processOpen: processOpenOf(responsePref, messageLive),
                         onToggleProcess: () => toggleResponseProcess(),
@@ -2936,18 +2925,17 @@ export default function App() {
 
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {/* composer dock（Task 0008 · P3 修订）：回合事实已挪进各回复的 ResponseBar（指标不重复），
-                dock 只剩输入工具槽（添加图片）。手机上仍回 composer 底行。 */}
-            {!isMobile && (
-              <div data-testid="composer-dock" className="flex min-h-7 items-center justify-end gap-3 px-1 pb-1">
-                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
-                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                    data-testid="attach-image" className="shrink-0">
-                    <IconPhoto size={16} />
-                  </IconButton>
-                </div>
-              </div>
-            )}
+            {/* SessionBar（Task 0008 · P3 修订）：输入框上方的**会话累计**事实条 + 添加图片。
+                用户 2026-11-05："turnstat bar 把一些信息换为累计的信息……图片那个可以融入到
+                turnstatusbar 了，或不叫 turnstatusbar？换一个名字" → 改名 SessionBar，图片并进来。
+                手机上仍回 composer 底行（那里已有添加图片）。 */}
+            <div data-testid="composer-dock" className={`${isMobile ? "hidden" : ""} px-1 pb-1`}>
+              <SessionBar totals={sessionTotals}
+                {...(meta?.context !== undefined ? { context: meta.context } : {})}
+                {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})}
+                {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                onAttachImage={() => fileInputRef.current?.click()} />
+            </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (

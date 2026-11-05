@@ -220,30 +220,27 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   return (
     <div className="flex flex-col gap-2" data-testid="message" data-role="assistant" data-message-kind="assistant" data-message-id={messageId} data-process={process === undefined ? undefined : "folded"} {...hover}>
       {header}
+      {/* ResponseBar（Task 0008 · P3 修订）：在正文**上方**，与主线的过程条同位置
+          （用户 2026-11-05："response bar 是在正式回复上面的，就跟我们当前的主线的页面一样"）。
+          过程展开区在 bar **内部**——所以工具/思考跑起来时 bar 自己的位置不动（不被冲掉）。
+          占位消息（刚发送、还没有任何块）也渲染：与头像同时出现，等待态呼吸。 */}
+      {responseBar !== undefined && (
+        <ResponseBar
+          {...(process?.stats !== undefined ? { stats: process.stats } : {})}
+          live={process?.live ?? false}
+          {...(busy && blocks.length === 0 ? { waiting: true } : {})}
+          {...responseBar}
+        >
+          {process !== undefined
+            ? blocks.map((block, index) => inside(index) ? renderBlock(block, index, "p") : null)
+            : null}
+        </ResponseBar>
+      )}
       {process !== undefined ? (
-        <>
-          {/* 最终正文：留在外面，一眼可读（多段时按原顺序拼接展示） */}
-          {blocks.map((block, index) => inside(index) ? null : renderBlock(block, index, "t"))}
-          {/* ResponseBar（Task 0008 · P3）：正文**下方**、固定不被过程块冲掉。
-              过程展开区在 bar 内部（live 时展开）。占位消息（无 process 数据）也渲染——
-              与头像同时出现（用户定案）。 */}
-          <ResponseBar
-            {...(process.stats !== undefined ? { stats: process.stats } : {})}
-            live={process.live}
-            {...(responseBar ?? {})}
-          >
-            {blocks.map((block, index) => inside(index) ? renderBlock(block, index, "p") : null)}
-          </ResponseBar>
-        </>
+        /* 最终正文与"中间过渡语"：留在过程条外面，一眼可读（多段时按原顺序拼接展示） */
+        blocks.map((block, index) => inside(index) ? null : renderBlock(block, index, "t"))
       ) : (
-        <>
-          {blocks.map((block, index) => renderBlock(block, index, "t"))}
-          {/* 无过程数据的回复（纯聊天）也显示 ResponseBar：会话指标挂在最后一条上；
-              占位消息（刚发送、还没有任何块）→ waiting 呼吸态。 */}
-          {responseBar !== undefined && (
-            <ResponseBar {...(busy && (blocks.length === 0) ? { waiting: true } : {})} {...responseBar} />
-          )}
-        </>
+        blocks.map((block, index) => renderBlock(block, index, "t"))
       )}
       {/* MarkBar（Task 0008 · P2）：挂在**被批注的那条消息**底部（用户定案：
           "标注信息 bar 是放到被批注的那个信息上的"）。无批注时 MarkBar 自身返回 null。 */}
