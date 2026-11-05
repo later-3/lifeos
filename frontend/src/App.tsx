@@ -47,7 +47,7 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 
@@ -2232,15 +2232,33 @@ export default function App() {
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   /**
+   * 当前打开的会话：**跨项目扁平查找**，不是从「选中项目」的分组里找。
+   *
+   * 为什么（Task 0011 的根因）：`selectedProjectId` 与 `sessionId` 是两份独立状态 ——
+   * 点另一个项目的会话行、或点另一个项目的分组头，两者就会不一致；从选中项目的分组里
+   * `find` 当前会话必然落空，头部大字标题于是变成空、回落产品名「Life OS」。
+   * 会话自带项目归属（session ∈ Agent × Project），查它不需要先知道"当前项目"。
+   */
+  const currentSessionItem = findSessionRow(groups, sessionId);
+  /**
    * 当前会话是不是"与其他 Agent 的对话"。
    * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
    * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
    */
   // 判断逻辑抽到 header-strip.ts 的 isPeerSessionOf（纯函数 + 单测），
   // 因为它是"批注能不能用"的总开关，算错一次就是全站失效（2026-11-04 实际发生过）。
-  const isPeerSession = isPeerSessionOf(sessionId, currentGroup?.sessions);
-  // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
-  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
+  //
+  // 用**跨项目找出来的那一条**判断：拿「选中项目」的分组判断，跨项目时会漏成"普通会话" → 批注开关错（Task 0011）。
+  const isPeerSession = isPeerSessionOf(sessionId, currentSessionItem === undefined ? [] : [currentSessionItem]);
+  /**
+   * 头部大字标题（`header h1`）：**只来自会话自己**，与列表同一份派生（Task 0011）。
+   *
+   * 改前的写法是 `sessionTitle !== "" ? sessionTitle : "Life OS"` —— 产品名兜底。
+   * 产品名不是这条会话的任何信息：一旦出现，就说明"选中项目 ≠ 会话所属项目"，
+   * 用户看到的却是一个像标题的假名字。规则已抽进 `headerTitleOf()`（纯函数，单测锁住）。
+   */
+  const sessionTitle = currentSessionItem?.title.display ?? "";
+  const headerTitle = headerTitleOf({ sessionId, displayTitle: sessionTitle });
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
   const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
@@ -2320,10 +2338,7 @@ export default function App() {
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
   const isIdFallback = (item?: SessionItem) => (item?.title.raw ?? "").trim() === "";
-  /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
-  const currentSessionItem = sessionId === undefined
-    ? undefined
-    : groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sessionId);
+  /** 当前打开的会话：上面 `findSessionRow(groups, sessionId)` 已算好（跨项目查找，唯一一处）。 */
 
   /**
    * 会话列表里的"我"这一方（Task 0015 · T17）：用户本人。
@@ -2645,7 +2660,7 @@ export default function App() {
           ))}
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
-            <h1 className="truncate text-body font-semibold text-ink-900">{loaded && sessionId === undefined ? "新会话" : sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
+            <h1 className="truncate text-body font-semibold text-ink-900">{headerTitle}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
