@@ -28,6 +28,20 @@
   --color-success-soft: #ecfdf3;
 
   /*
+   * 「正在跑」的语义色（Task 0005 · 徽标改版，用户 2026-11-05 裁决 P1 蓝）。
+   *
+   * 为什么不是 success 绿：在跑 与 完成待看 都用绿 → 两个 14px 色块 ΔRGB = 0，
+   * 只有"在不在呼吸"能区分。关掉动画（prefers-reduced-motion）或只是扫一眼时完全分不出。
+   * 换成蓝色后 ΔRGB：run↔done 152、run↔err 248 —— 三个状态两两都远。
+   *
+   * 为什么是蓝而不是橙/灰：橙与 danger 红 ΔRGB 只有 32（14px 上分不出）；
+   * 灰不表达"进行中"。蓝是全行业「进行中」的默认色（进度条、加载）。
+   * 对比度（同色深字 on 薄底）：6.0:1，WCAG AA 正文达标。
+   */
+  --color-running: #1d4ed8;
+  --color-running-soft: #eef2ff;
+
+  /*
    * 批注色（Task 0003 · P2）：用户对 Agent 回复做批注的**五种语气**。
    *
    * 与上面那组语义色（accent/danger/success）**命名隔离**：
@@ -204,11 +218,58 @@
    * 所以这里换一种**不依赖动画**的区分：运行态改画成**空心圈**（描边），未读仍是实心点。
    * 形状差异比动画更可靠：静止画面下也读得出"谁在跑、谁有新东西"。
    */
-  .animate-pulse[data-state-dot="running"] {
+  .animate-pulse[data-state-dot="running"],
+  .animate-badge-dot[data-state-dot="running"],
+  .animate-halo[data-state-dot="running"] {
     animation: none;
     background-color: transparent;
-    box-shadow: inset 0 0 0 2px var(--color-success);
+    box-shadow: inset 0 0 0 2px var(--color-running);
   }
+}
+
+/*
+ * 状态徽标的「呼吸」动画（Task 0005 · 徽标改版）。
+ *
+ * 为什么不直接用 Tailwind 的 animate-pulse：它的做法是**整体透明度**在 1↔.5 之间来回，
+ * 一个实心色块整体变淡 = 整个页面在闪，很吵。徽标要表达的是"它在动"，
+ * 用**向外扩散的光环**（halo）比明暗闪烁安静得多，也不会让数字短暂变淡看不清。
+ *
+ * 只有 running 态呼吸；完成/失败都是静止的（它们不会自己变，不需要吸引注意力）。
+ */
+@keyframes badge-halo {
+  /* 光环颜色跟着徽标自己的字色走（`--badge-halo` 由组件按状态注入）。
+     写死绿色会出事：在跑的徽标如果不是绿色（例如改成蓝色），绿色光环会像"别的元素在闪"。 */
+  0%   { box-shadow: 0 0 0 0 var(--badge-halo, rgba(6, 118, 71, .45)); }
+  70%  { box-shadow: 0 0 0 5px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes badge-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .5; }
+}
+/*
+ * 「圆点缩放」呼吸：**只缩放，不变淡**。
+ *
+ * 第一版写成 opacity 1↔.55 + scale(.72)，实测两个问题：
+ *   ① 药丸整体变淡 → 数字在动画低谷时看不清（用户选它就是要数字一直清楚）；
+ *   ② scale(.72) 幅度太大，16px 的徽标缩到 11px，像在抖动。
+ * 现在 scale 1↔.88，数字始终实心；缩放幅度刚好能被余光察觉、又不至于晃眼。
+ */
+@keyframes badge-dot {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(.88); }
+}
+@utility animate-halo {
+  animation: badge-halo 1.8s ease-out infinite;
+}
+@utility animate-badge-soft {
+  animation: badge-soft 1.8s ease-in-out infinite;
+}
+@utility animate-badge-dot {
+  animation: badge-dot 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-halo, .animate-badge-dot, .animate-badge-soft { animation: none; }
 }
 
 /*

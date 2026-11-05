@@ -97,13 +97,27 @@ type UsageSummary = { input: number; output: number; cacheRead: number; cacheWri
  * 正常结束（绿）与异常结束（红），**规则完全相同：看过就消失，不持久记录**。
  * 所以徽标回答「有几件事要你看」，与**会话行的点永远同步**：点进去了，点和数字一起减。
  *
- * ## 为什么"正在跑"要和"已完成"用不同底色
+ * ## 样式（用户 2026-11-05 选定：P1 配色 + 薄底药丸 + 圆点缩放呼吸）
  *
- * 两个都是绿色会混淆。区分靠**色系深浅 + 动效**，不靠新增色相：
- *   · 正在跑 → 实心 `success` 底 + 白字 + 呼吸（最抢眼：它是活的）
- *   · 已完成 → `success-soft` 底 + `success` 字（安静：它只是等你点一下）
- *   · 异常   → `danger-soft` 底 + `danger` 字
- * 零值不渲染（pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
+ * 三种状态**三个色相**，全部「薄底 + 同色深字」：
+ *   · 正在跑 → `running` 蓝（#1d4ed8 / #eef2ff）← 换了色相，理由见下
+ *   · 已完成 → `success` 绿（#067647 / #ecfdf3）
+ *   · 失败   → `danger` 红（#b42318 / #fef3f2）
+ *
+ * 为什么换掉"实心绿 + 白字"（用户两次指出）：
+ *   ① 结构不协调 —— 另外两个是彩色字，只有它是白字，并排看"白 1"和"绿 3"不像一套东西；
+ *   ② 颜色撞车 —— 在跑与完成都是绿，实测两个 14px 色块 ΔRGB = **0**，
+ *      只靠"在不在呼吸"区分；关掉动画（prefers-reduced-motion）就彻底分不出。
+ *   换蓝后 ΔRGB：run↔done 152、run↔err 248、done↔err 198 —— 两两都远。
+ *   全套对比度 ≥5.4:1（WCAG AA 正文达标）。
+ *
+ * 为什么是蓝而不是橙/灰：橙与 danger 红 ΔRGB 只有 32（13px 上几乎一样）；
+ * 灰不表达"进行中"。蓝是全行业「进行中」的默认色（进度条 / 加载）。
+ *
+ * 呼吸：**圆点缩放**（`animate-badge-dot`），不是整体明暗 —— 实心色块整体变淡会让人
+ * 以为数字要消失了；只让圆点缩放，数字始终清晰。光环（halo）留给未来的角标形态。
+ *
+ * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
  */
 function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unreadDone" | "unreadError"; unit: "会话" }) {
   if (count <= 0) return null;
@@ -113,17 +127,18 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     : kind === "unreadDone"
       ? `${count} 个${unit}已完成待查看`
       : `${count} 个${unit}失败待查看`;
+  // 薄底 + 同色深字（三态结构一致）；只有"在跑"加圆点缩放的呼吸。
   const tone = kind === "running"
-    ? "bg-success text-white animate-pulse"
+    ? "bg-running-soft text-running animate-badge-dot"
     : kind === "unreadDone"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
   return (
     // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
-    // 尺寸：单数字用正方形（14×14），双数字靠 px-1 自然撑开 —— 之前 min-w-4(16px) + px-1.5(12px)
-    // 让一个字符的水滴宽到 19px，视觉上像一块色块，用户反馈"绿色底太宽，很丑"。
-    // 现在用更紧的 min-w-3.5 + px-1；>9 时宽度自然增长，不需要另设规则。
-    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
+    // 尺寸：16×16（h-4 min-w-4 px-1）。14px 时字几乎顶满色块（用户："像色块"），
+    // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
+    // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
+    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -2560,7 +2575,7 @@ export default function App() {
                                 </>
                               }
                               status={runNow
-                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-running animate-badge-dot" data-state-dot="running" title="生成中" />
                                 : failure !== undefined
                                   // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
