@@ -48,6 +48,7 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 
@@ -558,8 +559,15 @@ export default function App() {
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
   const lostCheckRef = useRef(false);    // 判丢检查互斥（异步查 running 时不要重入）
-  const sentHistoryRef = useRef<string[]>([]);   // 输入历史（↑/↓ 浏览，本进程内）
-  const historyIndexRef = useRef(-1);
+  /**
+   * 输入历史（↑/↓ 浏览）的游标 —— Task 0012。
+   *
+   * 历史**不在这里存**：它由当前会话的消息派生（`inputHistoryOf(messages)`，见下面 `inputHistory`）。
+   * 这里只存"浏览到第几条"，并且**带上它属于哪个作用域**（会话或草稿键）：
+   * 作用域一变（切会话/切 Agent/发首条消息从草稿变会话），游标自动作废，
+   * 不依赖 React effect 的执行时机去"记得清"（那正是老实现漏清的原因）。
+   */
+  const historyCursorRef = useRef<HistoryCursor>(NO_HISTORY_CURSOR);
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
   // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
   const sendTextRef = useRef<(raw: string) => void>(() => {});
@@ -749,6 +757,18 @@ export default function App() {
     setInputState(text);
     writeDraftFor(draftKey, text);
   }
+
+  /**
+   * 本会话的输入历史（最近一条在前）—— Task 0012。
+   *
+   * **派生，不自记**：事实源是服务端会话消息（`messages` 由 `GET …/sessions/:id` 或流事件重建），
+   * 所以切会话天然隔离、刷新也不丢，不需要"发送时往一个数组里塞"这条第二事实源。
+   * 为什么不用 localStorage：Pi TUI 是在打开会话时用该会话消息 `populateHistory` 重置，
+   * pi-web 直接派生（`ChatWindow.tsx:822-833`）；三家都不额外持久化一份发送流水（见 01-background 行业参考）。
+   */
+  const inputHistory = useMemo(() => inputHistoryOf(messages), [messages]);
+  /** 历史的作用域：有会话 = 会话 id；草稿 = agent/项目。切作用域即换历史（游标随 scope 作废）。 */
+  const historyScope = draftKey ?? "";
 
   // 只在"贴底"时跟随；流式期间直接设 scrollTop（smooth 会追不上 delta，产生抖动）。
   useLayoutEffect(() => {
@@ -2208,16 +2228,10 @@ export default function App() {
       // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
       // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
       if (annosText === "") {
-        if (raw !== "") {
-          sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-          historyIndexRef.current = -1;
-          void sendText(raw);
-        }
+        if (raw !== "") void sendText(raw);
         return;
       }
       const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
-      if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-      historyIndexRef.current = -1;
       // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
       pendingAnnoRestore.current = [...anno.annotations];
       pendingConsumeIdsRef.current = pendingAnnos.map((a) => a.id);
@@ -2226,7 +2240,6 @@ export default function App() {
       return;
     }
 
-    if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
     void sendText(raw);
   }
 
@@ -2969,6 +2982,10 @@ export default function App() {
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
+                  // 用户一打字就退出历史浏览（Pi TUI 里每个编辑动作都调 exitHistoryBrowsing）。
+                  // 只认 textarea 的 change（只有用户输入会触发它，程序 setInput 不会），
+                  // 不用"文字是否等于历史某条"去猜（规范 2.1：禁止靠值比较猜语义）。
+                  historyCursorRef.current = NO_HISTORY_CURSOR;
                   setInput(next);
                   if (next.startsWith("/") && !next.includes(" ") && !next.includes("\n")) {
                     const items = COMMANDS.filter((item) => item.key.startsWith(next.trim()));
@@ -3009,15 +3026,26 @@ export default function App() {
                     }
                     if (event.key === "Escape") { event.preventDefault(); setPalette(undefined); return; }
                   }
-                  // 输入历史：空输入时 ↑/↓ 浏览（对齐 Pi CLI 的 historyPrevious/Next）
-                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && input === "" && sentHistoryRef.current.length > 0) {
-                    event.preventDefault();
-                    // ↑ 走向更早历史（索引 +1），↓ 走回更新/清空（索引 -1）。
-                    const delta = event.key === "ArrowUp" ? 1 : -1;
-                    const next = Math.max(-1, Math.min(sentHistoryRef.current.length - 1, historyIndexRef.current + delta));
-                    historyIndexRef.current = next;
-                    setInput(next === -1 ? "" : sentHistoryRef.current[next] ?? "");
-                    return;
+                  // 输入历史：↑/↓ 浏览**本会话**发过的消息（chat.md §3.5）——Task 0012。
+                  // 规则全在纯函数里（frontend/src/input-history.ts，逐条契约见 test/input-history.test.mjs）：
+                  //   · 历史从当前会话消息派生，切会话即换（不再有"整页一份、切换忘了清"的问题）；
+                  //   · ↑ = 更旧、↓ = 更新，方向与"最近一条在前"的数组同向（Pi TUI editor.ts:456-486）；
+                  //   · 已在浏览时输入框非空也继续走（`input === ""` 只是**进入**浏览的条件，
+                  //     老实现把它当成每一次按键的前提，于是第一下之后再也按不动）。
+                  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                    const step = historyNavigate({
+                      cursor: historyCursorRef.current,
+                      scope: historyScope,
+                      history: inputHistory,
+                      direction: event.key === "ArrowUp" ? "older" : "newer",
+                      inputEmpty: input === "",
+                    });
+                    if (step !== undefined) {
+                      event.preventDefault();
+                      historyCursorRef.current = step.cursor;
+                      setInput(step.text);
+                      return;
+                    }
                   }
                   if (event.key !== "Enter" || event.shiftKey) return;
                   const native = event.nativeEvent;
