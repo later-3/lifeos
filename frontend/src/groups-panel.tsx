@@ -219,7 +219,7 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
           <span className="min-w-0 truncate">{meta}</span>
         </span>
       </span>
-      <span className="relative flex w-16 shrink-0 items-center justify-end">
+      <span className="relative flex w-16 shrink-0 items-center justify-end group/slot">
         {/* 状态槽的包装器**必须是 flex 容器**（Task 0004 / C161）：
             里面的点/时间是空 inline 元素，`w-1.5 h-1.5` 对 non-replaced inline 不生效
             （MDN CSS/width：applies to all elements but non-replaced inline elements），
@@ -228,8 +228,13 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
             上游 pi-web 同构：`app/sidebar.css:357` `.session-tree-meta{display:flex}`。
             （Task 0005 的 worktree 从 0004 修复前的 commit 分出，两边都改到这里；
             本任务已把同一处修复移植进分支 —— 合并后此处为单一事实，注释只留这一份。） */}
-        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0">{status}</span>
-        <span className="absolute right-0 flex items-center opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+        {/* 可见性谓词（Task 0005，与 action-bar revealActions 同一语义的 CSS 形式）：
+            hover(行) ∨ 键盘 focus-visible 在动作钮上 ∨ (无悬停设备 ∧ 行 focus-within)。
+            此前无条件的 `group-focus-within/session` 让点击行后动作区钉死常显（用户报告的缺陷）；
+            现在键盘路径收窄为 `:has(:focus-visible)`（鼠标点击行不匹配 focus-visible，实测），
+            focus-within 只保留在 `@media (hover: none)` 下给触屏当“点行显现”入口。 */}
+        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
+        <span className="absolute right-0 flex items-center opacity-0 pointer-events-none transition-opacity group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><IconHistory size={14} /></IconButton>
           <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><IconPencil size={14} /></IconButton>
           <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><IconTrash size={14} /></IconButton>
