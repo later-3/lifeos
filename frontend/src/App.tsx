@@ -50,6 +50,7 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 
@@ -644,6 +645,16 @@ export default function App() {
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
   /** 项目默认 Task 缓存（key = taskTitleKey(agent, project, "default")）：无会话时头部显示它 */
   const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
+  /**
+   * 已经**请求过**任务清单的 key（Task 0008 修复）。
+   *
+   * 守卫不能用"缓存里有值"：清单里没有该 taskId（task.md 缺字段、项目搬过）或项目
+   * 连默认 Task 都没有时，缓存永远补不上 → effect 每次渲染都重发一次。
+   * 实测：`{"items":[]}` 的应答让页面 **3 秒发了 2664 次** /tasks。
+   * 规则与单测见 `frontend/src/task-title-cache.ts` / `test/task-title-cache.test.mjs`。
+   */
+  const requestedTaskTitles = useRef<Set<string>>(new Set());
+  const requestedDefaultTasks = useRef<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
@@ -2275,17 +2286,17 @@ export default function App() {
     const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
     const key = taskTitleKey(aid, pid, taskId);
     if (taskTitles[key] !== undefined) return;
+    if (!shouldRequest(requestedTaskTitles.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
+        // 200 就算请求过（哪怕清单里没有这个 key）：这正是"永远补不上"的那个 key。
         if (cancelled || data?.items === undefined) return;
-        setTaskTitles((previous) => ({
-          ...previous,
-          ...Object.fromEntries(data.items!.map((task) => [taskTitleKey(aid, pid, task.id), task.title])),
-        }));
+        requestedTaskTitles.current.add(key);
+        setTaskTitles((previous) => mergeTaskTitles(previous, (id) => taskTitleKey(aid, pid, id), data.items!));
       })
-      .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
+      .catch(() => { /* 失败可见性：task 段回退为只显示 ID；没记 attempted，依赖变化时会重试 */ });
     return () => { cancelled = true; };
   }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId, taskTitles]);
 
@@ -2297,16 +2308,19 @@ export default function App() {
     if (aid === undefined || pid === undefined || sessionId !== undefined) return;
     const key = taskTitleKey(aid, pid, "default");
     if (projectDefaultTasks[key] !== undefined) return;
+    if (!shouldRequest(requestedDefaultTasks.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
         if (cancelled || data?.items === undefined) return;
+        // 200 就算请求过：项目还没有默认 Task 时缓存也补不上，不记就是死循环。
+        requestedDefaultTasks.current.add(key);
         const fallback = data.items.find((task) => task.isDefault === true);
         if (fallback === undefined) return;   // 项目还没有默认 Task：该段缺席，不编造
         setProjectDefaultTasks((previous) => ({ ...previous, [key]: { id: fallback.id, title: fallback.title } }));
       })
-      .catch(() => { /* 失败可见性：该段缺席即可，不打断 */ });
+      .catch(() => { /* 失败可见性：该段缺席即可；没有默认 Task 时也不重发 */ });
     return () => { cancelled = true; };
   }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 

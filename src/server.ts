@@ -28,6 +28,7 @@ import { listTasks } from "./tasks.ts";
 import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
+import { cacheControlOf, looksLikeFile, REVALIDATE_CACHE } from "./static.ts";
 import { randomUUID } from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { declaredImageSupport, MAX_SESSION_IMAGE_BYTES, validateImages } from "./image-input.ts";
@@ -987,8 +988,24 @@ app.use(async (c, next) => {
     return c.json(result);
   });
 
-  app.use("/*", serveStatic({ root: "./frontend/dist" }));
-  app.get("/*", serveStatic({ path: "./frontend/dist/index.html" }));
+  // 静态产物（Task 0008）：
+  // 1) 缓存分级 —— 带 hash 的 `/assets/*` 永久缓存；`index.html` / `sw.js` 一律回源校验。
+  //    这两条算错的后果是**页面永久白屏**，且浏览器不给任何提示（见 src/static.ts 顶部）。
+  // 2) 缺失的文件 404，不回退 index.html —— 否则旧 hash 的产物请求会拿回一份 HTML，
+  //    浏览器按 module script 加载失败，`#root` 永远空（实测记录在 src/static.ts）。
+  const distOptions = {
+    root: "./frontend/dist",
+    onFound: (path: string, c: Context) => {
+      c.header("Cache-Control", cacheControlOf(c.req.path));
+    },
+  };
+  app.use("/*", serveStatic(distOptions));
+  // 页面回退只给**看起来不是文件**的路径（前端状态全在 query 里，没有路径路由）。
+  app.get("/*", async (c, next) => {
+    if (looksLikeFile(c.req.path)) return next();
+    c.header("Cache-Control", REVALIDATE_CACHE);
+    return serveStatic({ path: "./frontend/dist/index.html" })(c, next);
+  });
 
   return app;
 }
