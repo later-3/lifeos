@@ -23,6 +23,7 @@ import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
+import { processOpenOf } from "./response-fold";
 import { groupIntoSpans } from "./turn-group";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
@@ -35,7 +36,6 @@ import {
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
-import { TurnStatusBar } from "./turn-status";
 import { MobileNav, type Level } from "./mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
@@ -237,6 +237,18 @@ type AgentEvent = { seq: number; agentId?: string; sessionId?: string } & (Strea
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
+/**
+ * ResponseBar 过程区折叠态，**按 session 持久**（Task 0008 · P3，用户定案：
+ * "只要折叠了就一直折叠……不要一会儿开一会儿关"）。
+ * 值："open" | "folded"；没写过 = undefined（默认：生成中展开、完成后折叠）。
+ */
+const RESPONSE_PREF_PREFIX = "lifeos.response.";
+
+/** 读 ResponseBar 的 per-session 折叠偏好。 */
+function readResponsePref(sessionId: string | undefined): "open" | "folded" | undefined {
+  if (sessionId === undefined) return undefined;
+  try { const v = localStorage.getItem(`${RESPONSE_PREF_PREFIX}${sessionId}`); return v === "open" || v === "folded" ? v : undefined; } catch { return undefined; }
+}
 const lastSessionKey = (agentId: string) => `lifeos.lastSession.${agentId}`;
 
 function readLast(key: string): string | undefined {
@@ -534,6 +546,23 @@ export default function App() {
       if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   }, [anno]);
+
+  /**
+   * ResponseBar 过程区的 per-session 展开态（用户手动点过的才记；没记过的用默认规则）。
+   * `undefined` = 该 session 用户从未点过。
+   */
+  const [responsePrefs, setResponsePrefs] = useState<Record<string, "open" | "folded">>(() => ({}));
+  const toggleResponseProcess = useCallback(() => {
+    if (sessionId === undefined) return;
+    // 当前实际展开态 = state ?? localStorage（刷新后 state 为空）?? 默认（生成中展开）
+    const isLive = busyRef.current && busySessionRef.current === sessionId;
+    const current = responsePrefs[sessionId] ?? readResponsePref(sessionId) ?? (isLive ? "open" : "folded");
+    const next = current === "open" ? "folded" : "open";
+    // 副作用放在 updater **外面**：updater 必须是纯函数（StrictMode 会双调用，
+    // 写在里面会写两次盘，实测得到与界面相反的值）
+    try { localStorage.setItem(`${RESPONSE_PREF_PREFIX}${sessionId}`, next); } catch { /* 忽略 */ }
+    setResponsePrefs((prev) => ({ ...prev, [sessionId]: next }));
+  }, [sessionId, responsePrefs]);
 
   /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
   const annoPinnedOf = useCallback(
@@ -2744,6 +2773,11 @@ export default function App() {
                   if (anchor.id !== undefined) visibleLastReplyByUserMessageId.set(user.id, anchor.id);
                 }
                 const annoGroups = groupAnnotationsByReply(anno.annotations, messages, latestReplyId, visibleLastReplyByUserMessageId);
+                // ResponseBar 的过程区展开态（本 session 用户点过则听用户的，否则按 live 定）
+                const responsePref = responsePrefs[sessionId ?? ""] ?? readResponsePref(sessionId);
+                // 会话级指标挂哪一条：最后一条 assistant（全列表唯一，避免重复）
+                let lastAssistantIndex = -1;
+                messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
                 return messages.map((message, index) => {
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
@@ -2758,6 +2792,8 @@ export default function App() {
                   let process: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] } | undefined;
                   let mergedBlocks: Block[] | undefined;
                   const isFirstReply = replies.length > 0 && replies[0] === index;
+                  /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
+                  const replyLive = replyMessages.some((m) => m.streaming === true);
                   if (!isUser && isFirstReply) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
                     const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
@@ -2766,7 +2802,7 @@ export default function App() {
                       ...(durationMs > 0 ? { durationMs } : {}),
                       ...(tokens > 0 ? { tokens } : {}),
                     });
-                    const live = replyMessages.some((m) => m.streaming === true);
+                    const live = replyLive;
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
                     const failed = replyMessages.some((m) => m.failure !== undefined || m.error !== undefined);
                     if (hasProcess(stats) && !failed) {
@@ -2806,6 +2842,44 @@ export default function App() {
                    * - consumed 挂在被发送那一轮；
                    * 分组逻辑见 `anno-groups.ts`（纯函数 + 单测）。
                    */
+                  /**
+                   * ResponseBar 的数据（Task 0008 · P3）。
+                   *
+                   * 指标（usage/context/payload/metrics）来自会话 meta —— **整会话一份**，
+                   * 显示在最新回复的 bar 上（旧 TurnStatusBar 也是这个口径）；
+                   * 进行中状态（waiting/live）只给**正在流式的那条**。
+                   */
+                  const isThisStreaming = message.streaming === true;
+                  /**
+                   * 这一轮是否还在跑（**轮级**，不是"这条消息在跑"）。
+                   *
+                   * 为什么分开：一轮可能有多个 assistant 段，过程块只挂在**第一段**上（`isFirstReply`），
+                   * 而流式标志常在后来的段上。用"这条在流式"判断，会让挂着过程的 bar 在生成期间
+                   * 一直是折叠的（实测：工具跑起来了，bar 还显示"查看过程"）。
+                   * 老 ProcessBar 用的就是轮级 live（`process.live`），这里保持一致。
+                   */
+                  const messageLive = isThisStreaming || replyLive;
+                  const messageResponseBar = message.role === "assistant"
+                    ? {
+                        // 进行中：轮在跑 → live；占位（无 blocks）→ waiting 呼吸
+                        ...(messageLive ? { live: true, waiting: (message.blocks?.length ?? 0) === 0 } : {}),
+                        ...(messageLive ? { step: turnStep, ...(phase !== undefined ? { phase } : {}), ...(activeTool !== undefined ? { activeTool } : {}), ...(retry !== undefined ? { retry } : {}) } : {}),
+                        // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
+                        ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
+                        // 会话级指标：只挂**最后一条** assistant 消息（避免每条都重复显示同一份）
+                        ...(index === lastAssistantIndex ? {
+                          ...(turnMetrics !== undefined ? { metrics: turnMetrics } : {}),
+                          ...(meta?.usage !== undefined ? { usage: meta.usage } : {}),
+                          ...(meta?.context !== undefined ? { context: meta.context } : {}),
+                          ...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {}),
+                          ...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {}),
+                        } : {}),
+                        // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
+                        processOpen: processOpenOf(responsePref, messageLive),
+                        onToggleProcess: () => toggleResponseProcess(),
+                      }
+                    : undefined;
+
                   const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
                     ? (() => {
                         const list = annoGroups.get(message.id) ?? [];
@@ -2826,6 +2900,7 @@ export default function App() {
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
                       annotationActions={isPeerSession ? undefined : annoActions}
+                      {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
@@ -2861,34 +2936,18 @@ export default function App() {
 
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
-                左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
-                手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
-            {/* composer dock：一行共享、不带壳（2026-10-26 用户反馈“框框丑”“——裸行才是低位状态条该有的样子）。
-                左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
-                手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
-            <div data-testid="composer-dock"
-              className={`${!(isMobile && !busy && renderStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
-              <div className="min-w-0 flex-1" data-testid="turn-status-bar">
-                <TurnStatusBar busy={busy} step={turnStep} phase={phase}
-                  {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
-                  {...(activeTool !== undefined ? { activeTool } : {})}
-                  {...(retry !== undefined ? { retry } : {})}
-                  {...(renderStatus !== undefined ? { status: renderStatus } : {})}
-                  {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
-                  {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-                  {...(meta?.context !== undefined ? { context: meta.context } : {})}
-                  {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})} />
-              </div>
-              {!isMobile && (
+            {/* composer dock（Task 0008 · P3 修订）：回合事实已挪进各回复的 ResponseBar（指标不重复），
+                dock 只剩输入工具槽（添加图片）。手机上仍回 composer 底行。 */}
+            {!isMobile && (
+              <div data-testid="composer-dock" className="flex min-h-7 items-center justify-end gap-3 px-1 pb-1">
                 <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
                   <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                     data-testid="attach-image" className="shrink-0">
                     <IconPhoto size={16} />
                   </IconButton>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (

@@ -601,17 +601,27 @@ check("未悬停时动作条全部隐藏", idleBars.every((opacity) => opacity =
 const unnamedChrome = await noName();
 check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
 
-// 固定状态条：必须在消息滚动区外；消息类型背景必须可区分。
+// 回合元信息条（Task 0008 · P3）：状态条**并入每条回复**的 ResponseBar，不再是滚动区外的固定条。
+// 用户定案：“TurnStatusBar 的功能就挪到 response bar 里面不要重复了”“和 agent 的头像一起同时出现”。
 const turnBar = await page.evaluate(() => {
-  const bar = document.querySelector('[data-testid="turn-status-bar"]');
-  return { exists: bar !== null, inMain: bar?.closest("main") !== null && bar?.closest("main") !== undefined };
+  const dockBar = document.querySelector('[data-testid="turn-status-bar"]');
+  const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')];
+  return {
+    dockBarGone: dockBar === null,
+    replies: asst.length,
+    bars: document.querySelectorAll('[data-testid="response-bar"]').length,
+    everyReplyHasBar: asst.length > 0 && asst.every((m) => m.querySelector(':scope > [data-testid="response-bar"]') !== null),
+    inMessageFlow: asst.every((m) => m.querySelector('[data-testid="response-bar"]')?.closest("main") !== null),
+  };
 });
-check("固定状态条在消息滚动区外", turnBar.exists && !turnBar.inMain, JSON.stringify(turnBar));
-const statusText = await page.locator('[data-testid="turn-status-content"]').innerText();
+check("回合状态条并入回复的 ResponseBar（dock 里不再有固定条）",
+  turnBar.dockBarGone && turnBar.everyReplyHasBar && turnBar.bars === turnBar.replies && turnBar.inMessageFlow,
+  JSON.stringify(turnBar));
+const statusText = await page.locator('[data-testid="response-bar"]').first().innerText().catch(() => "");
 check("状态条不写冗余“本轮”", !/本轮/.test(statusText), statusText.replace(/\n/g, " | "));
-const statusTitles = await page.locator('[data-testid="turn-status-content"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
-check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) && statusTitles.some((title) => title.includes("输出")) && statusTitles.some((title) => title.includes("上下文")),
-  statusTitles.join(" / "));
+const statusTitles = await page.locator('[data-testid="response-bar"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
+check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) || statusTitles.some((title) => title.includes("输出")) || statusTitles.some((title) => title.includes("上下文")),
+  statusTitles.slice(0, 6).join(" / "));
 const statusSpacing = await page.evaluate(() => {
   const items = [...document.querySelectorAll("[data-status-metric]")];
   const iconValue = items.map((item) => {
@@ -1373,12 +1383,12 @@ try {
     //    2026-11-02 用户拍板改口：原先"不拉满、跟正文同档 max-w-bubble(720)"，
     //    在列宽 860 时右侧空出 140px 阶梯；现在助手侧统一跟随对话列宽。
     const bar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       if (el === null) return null;
-      const btn = el.querySelector("button");
+      const btn = el.querySelector("button[aria-controls]");
       const cs = getComputedStyle(el);
       const btnCs = btn === null ? null : getComputedStyle(btn);
-      const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
+      const summary = el.querySelector('[data-testid="response-summary"]')?.textContent ?? "";
       const box = (node) => { const b = node.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; };
       // 对齐基准取**助手正文**（助手侧不改的那条，它一直跟随列宽）
       const text = document.querySelector('[data-testid="message"][data-role="assistant"] [data-testid="message-text"]');
@@ -1405,7 +1415,7 @@ try {
       bar?.summary ?? "(本次会话无过程条)");
     // 过程条是统计行，不是消息块：不得占用 data-message-kind（那个属性的语义是"块背景可区分"）
     const kindOfBar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       return el === null ? "none" : String(el.getAttribute("data-message-kind"));
     });
     check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);

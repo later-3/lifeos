@@ -2,13 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
-import { ProcessBar } from "./process-bar";
+import { WorkingRow } from "./working-row";
+import { ResponseBar } from "./response-bar";
 import { MarkBar } from "./mark-bar";
 import type { ProcessStats } from "./process-stats";
-import { argPreview, type Phase } from "./stream-blocks";
+import { argPreview } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
-import { retryRemainingSeconds, turnStepText, type TurnStep } from "./working";
 import type { Annotation } from "./annotations";
 import { AnnotatedTextBlock, type AnnotationActions } from "./annotated-text-block";
 import { Markdown } from "./message-markdown";
@@ -58,48 +58,6 @@ export type Message = {
   stopReason?: string;
 };
 
-/** 秒表：整轮生成期间每秒 +1（只在工作指示行里用，卸载即停）。 */
-function useWorkingSeconds(active: boolean): number {
-  const [seconds, setSeconds] = useState(0);
-  useEffect(() => {
-    if (!active) return;
-    const startedAt = Date.now();
-    const timer = setInterval(() => setSeconds(Math.round((Date.now() - startedAt) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return seconds;
-}
-
-const PHASE_LABEL: Record<Phase, string> = {
-  waiting: "等待模型响应…",
-  thinking: "思考中…",
-  tool: "正在执行工具…",
-  text: "输出中…",
-};
-
-/** 工作指示行：转圈 + 现在在干什么 + 已用秒数。 */
-export function WorkingRow({ step, phase, activeTool, retry }: {
-  step: TurnStep;
-  phase: Phase; activeTool?: string;
-  retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number };
-}) {
-  const total = useWorkingSeconds(true);
-  // 状态区分（2026-10-19）：请求刚发出 = 连接中；超过 3s 还没首个事件 = 等待模型响应
-  // 重试（2026-10-20）：倒计时逐秒减少（Pi CLI 的 RetryStatusIndicator 同款），不再是静态 "Ns"
-  const label = retry !== undefined
-    ? `模型调用失败，${retryRemainingSeconds(retry.delayMs, Date.now() - retry.startedAt)}s 后重试（${retry.attempt}/${retry.maxAttempts}）：${retry.message}`
-    : phase === "tool" && activeTool !== undefined && activeTool !== "" ? `正在执行 ${activeTool}…`
-    : phase === "waiting" && total < 3 ? "正在连接模型…" : PHASE_LABEL[phase];
-  return (
-    <div className={`flex flex-wrap items-center gap-2 py-0.5 text-meta ${retry !== undefined ? "text-danger" : "text-ink-500"}`}>
-      <Spinner size={14} className={retry !== undefined ? "text-danger" : "text-accent"} />
-      <span className="font-medium text-ink-700">{turnStepText(step)}</span>
-      {step === 3 && <span className="animate-pulse">{label}</span>}
-      <span className="tabular-nums text-micro text-ink-500" title="本轮耗时">{total}s</span>
-    </div>
-  );
-}
-
 /** 本条消息要注册进动作条的动作：功能只描述"做什么"，对齐/间距/可见性/反馈由容器决定。 */
 function actionsOf(text: string, onRetry: (() => void) | undefined): MessageAction[] {
   const actions: MessageAction[] = [];
@@ -126,7 +84,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, markBar }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, responseBar, markBar }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -166,6 +124,24 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
   annotationActions?: AnnotationActions;
+  /**
+   * ResponseBar 的数据（Task 0008 · P3）：undefined = 不渲染。
+   * waiting/live/指标由 App 按会话运行状态算好传入。
+   */
+  responseBar?: {
+    stats?: import("./process-stats").ProcessStats;
+    live?: boolean;
+    waiting?: boolean;
+    step?: import("./working").TurnStep;
+    phase?: import("./stream-blocks").Phase;
+    activeTool?: string;
+    status?: { text: string };
+    metrics?: { output: number; ttftSeconds: number; tokPerSecond: number };
+    usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
+    context?: { percent: number | null; window: number } | null;
+    payload?: { estimated: number; limit: number | null };
+    turnId?: string;
+  } | undefined;
   /** MarkBar 的数据与动作（Task 0008 · P2）：undefined = 不渲染（无批注/peer 会话）。 */
   markBar?: {
     annotations: readonly Annotation[];
@@ -246,16 +222,28 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
       {header}
       {process !== undefined ? (
         <>
-          {process.stats.tools > 0 || process.stats.thinking > 0 ? (
-            <ProcessBar stats={process.stats} live={process.live}>
-              {blocks.map((block, index) => inside(index) ? renderBlock(block, index, "p") : null)}
-            </ProcessBar>
-          ) : null}
           {/* 最终正文：留在外面，一眼可读（多段时按原顺序拼接展示） */}
           {blocks.map((block, index) => inside(index) ? null : renderBlock(block, index, "t"))}
+          {/* ResponseBar（Task 0008 · P3）：正文**下方**、固定不被过程块冲掉。
+              过程展开区在 bar 内部（live 时展开）。占位消息（无 process 数据）也渲染——
+              与头像同时出现（用户定案）。 */}
+          <ResponseBar
+            {...(process.stats !== undefined ? { stats: process.stats } : {})}
+            live={process.live}
+            {...(responseBar ?? {})}
+          >
+            {blocks.map((block, index) => inside(index) ? renderBlock(block, index, "p") : null)}
+          </ResponseBar>
         </>
       ) : (
-        blocks.map((block, index) => renderBlock(block, index, "t"))
+        <>
+          {blocks.map((block, index) => renderBlock(block, index, "t"))}
+          {/* 无过程数据的回复（纯聊天）也显示 ResponseBar：会话指标挂在最后一条上；
+              占位消息（刚发送、还没有任何块）→ waiting 呼吸态。 */}
+          {responseBar !== undefined && (
+            <ResponseBar {...(busy && (blocks.length === 0) ? { waiting: true } : {})} {...responseBar} />
+          )}
+        </>
       )}
       {/* MarkBar（Task 0008 · P2）：挂在**被批注的那条消息**底部（用户定案：
           "标注信息 bar 是放到被批注的那个信息上的"）。无批注时 MarkBar 自身返回 null。 */}
