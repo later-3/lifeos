@@ -457,6 +457,61 @@ if (before !== null) {
   check("hover 不改变行几何（无抖动）", false, "找不到会话行样本");
 }
 
+// 会话行动作区可见性（Task 0005）：悬停出现、移开消失、点击不钉死、隐藏不可误点、键盘可达。
+// 规范：code.md 2.4（opacity + pointer-events、键盘焦点强制可见）+ frontend-spec §5。
+const actionState = () => page.evaluate(() => {
+  const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
+  const btn = row === null ? null : row.querySelector('[aria-label="删除会话"]');
+  if (row === null || btn === null) return null;
+  const wrap = btn.parentElement;
+  const box = btn.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  return {
+    opacity: getComputedStyle(wrap).opacity,
+    pointer: getComputedStyle(wrap).pointerEvents,
+    hitIsAction: hit !== null && (hit === btn || btn.contains(hit)),
+  };
+});
+const sessionRow = page.locator('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])').first();
+if (await sessionRow.count() === 0) {
+  check("会话行动作区：默认隐藏且不可点", false, "找不到会话行样本");
+  check("会话行动作区：悬停出现", false, "找不到会话行样本");
+  check("会话行动作区：点击后移开鼠标即隐藏（不固定常显）", false, "找不到会话行样本");
+  check("会话行动作区：隐藏时不可误点", false, "找不到会话行样本");
+  check("会话行动作区：键盘 Tab 进入时可见", false, "找不到会话行样本");
+} else {
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(280);
+  const idle = await actionState();
+  check("会话行动作区：默认隐藏且不可点", idle?.opacity === "0" && idle?.pointer === "none", JSON.stringify(idle));
+
+  await sessionRow.hover();
+  await page.waitForTimeout(280);
+  const hovered = await actionState();
+  check("会话行动作区：悬停出现", hovered?.opacity === "1" && hovered?.pointer === "auto", JSON.stringify(hovered));
+
+  await sessionRow.click();          // 点击选中：动作区不许因此被钉住
+  await page.mouse.move(900, 500);   // 鼠标移到聊天区
+  await page.waitForTimeout(320);
+  const afterClick = await actionState();
+  check("会话行动作区：点击后移开鼠标即隐藏（不固定常显）", afterClick?.opacity === "0" && afterClick?.pointer === "none", JSON.stringify(afterClick));
+  check("会话行动作区：隐藏时不可误点", afterClick?.hitIsAction === false, `命中动作钮=${afterClick?.hitIsAction}`);
+
+  // 键盘：行获得焦点后 Tab 进入动作区（focus-visible）→ 必须显现（code.md 2.4）
+  await page.evaluate(() => {
+    document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])')?.focus();
+  });
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(280);
+  const kb = await page.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
+    const btn = row === null ? null : row.querySelector('[aria-label="会话历史"]');
+    return btn === null ? null : { opacity: getComputedStyle(btn.parentElement).opacity, focusVisible: btn.matches(":focus-visible") };
+  });
+  check("会话行动作区：键盘 Tab 进入时可见", kb?.focusVisible === true && kb?.opacity === "1", JSON.stringify(kb));
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
 // 模态：语义 + Esc + 焦点归位
 const avatarTrigger = page.locator('button[aria-label^="配置 "]').first();
 if (await avatarTrigger.count() > 0) {
@@ -1105,6 +1160,10 @@ const SHOTS = [
     while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
   }],
   ["history.png", 1600, async (shotPage) => {
+    // 动作区现在隐藏时不可点（Task 0005 pointer-events）：先悬停所在行让它显现，再点
+    const historyRow = shotPage.locator('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])').first();
+    await historyRow.hover();
+    await shotPage.waitForTimeout(200);
     await shotPage.locator('[aria-label="会话历史"]').first().click();
     await shotPage.waitForTimeout(600);
   }],
