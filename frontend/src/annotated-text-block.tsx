@@ -80,12 +80,6 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
   // 拖动中 / 框内 / 编辑中：都不许触发"移开就收起"
   const holdRef = useRef({ dragging: false, inBox: false, freeze: false });
   /**
-   * 外部要"打开并保持一会儿"（表格点「定位」时用）。
-   * 定位后鼠标还停在表格上，不在卡片里；不保护的话 220ms 后就被收掉了，
-   * 用户看到的是"点了定位，框闪一下就没了"。
-   */
-  const holdUntilRef = useRef(0);
-  /**
    * 已摆定的槽位：`anno.id → 相对容器的位置与尺寸`。
    *
    * 为什么需要它（用户 2026-11-03 报的 bug：拖 A，B 跟着跑）：
