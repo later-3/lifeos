@@ -234,10 +234,16 @@
    */
   .animate-pulse[data-state-dot="running"],
   .animate-badge-dot[data-state-dot="running"],
+  .animate-dot-breathe[data-state-dot="running"],
   .animate-halo[data-state-dot="running"] {
     animation: none;
     background-color: transparent;
     box-shadow: inset 0 0 0 2px var(--color-running);
+  }
+  /* 徽标：关掉呼吸后靠"实心底"与另两个区分（另两个是浅底） */
+  .animate-badge-breathe,
+  .animate-badge-dot {
+    animation: none;
   }
 }
 
@@ -250,13 +256,6 @@
  *
  * 只有 running 态呼吸；完成/失败都是静止的（它们不会自己变，不需要吸引注意力）。
  */
-@keyframes badge-halo {
-  /* 光环颜色跟着徽标自己的字色走（`--badge-halo` 由组件按状态注入）。
-     写死绿色会出事：在跑的徽标如果不是绿色（例如改成蓝色），绿色光环会像"别的元素在闪"。 */
-  0%   { box-shadow: 0 0 0 0 var(--badge-halo, rgba(6, 118, 71, .45)); }
-  70%  { box-shadow: 0 0 0 5px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
-}
 @keyframes badge-soft {
   0%, 100% { opacity: 1; }
   50%      { opacity: .5; }
@@ -271,18 +270,83 @@
  * 现调到 1↔.80（2026-11-05 二版）：16px 缩到 12.8px，缩放 3.2px——
  * 比首版的 1.9px 明显一档，仍不至于"抖"；数字低谷时还有 12.8px，不糊。
  */
+/*
+ * 「呼吸」动画（用户 2026-11-05 第三次调速：范围再大、更丝滑）。
+ *
+ * ## 为什么改成「放大 + 扩散环」，而不是原来的「缩小」
+ *
+ * 1. **缩小会把尺寸断言变成假红**：`getBoundingClientRect()` 返回的是**变换后**的视觉盒。
+ *    缩到 .70 时 16px 徽标只有 11.2px、6px 的点只有 4.2px —— 门禁要求 ≥12 / ≥6，
+ *    于是同一个页面在动画不同时刻会时红时绿（实测：`P1·1.4 每个点都有布局盒 → 生成中 4×4`）。
+ *    放大则**最小值就是基准尺寸**，任何时刻都不会低于门禁下限。
+ * 2. **6px 的点缩小根本看不见**：6 → 4.2px 只差 1.8px，被余光过滤（用户实测"感觉它就没呼吸"）。
+ *    放大 1.35 倍是 6 → 8.1px，差 2.1px 但方向相反 —— 点"鼓起来"比"瘪下去"更容易被注意到。
+ * 3. **扩散环才是真正抓住眼睛的部分**：`box-shadow` 不参与布局、不影响几何断言，
+ *    却能让"活着"的感觉一眼可见。Slack / iOS 的角标就是这么做的。
+ *
+ * 曲线 `cubic-bezier(.45, 0, .55, 1)`：近似正弦的对称缓动，两端不快不黏 ——
+ * 原来的 ease-in-out 中段变化太急，看起来是"顿一下"而不是"呼吸"。
+ * 周期 2.4s：人的静息呼吸≈4s/次，2.4s 既有节奏感又不至于等到发呆。
+ */
+@keyframes badge-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.12); }
+}
+@keyframes dot-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.35); }
+}
+/* 扩散环：从元素边缘向外推到 6px 并淡出。用 box-shadow 而非 transform → 不动布局。 */
+@keyframes badge-ring {
+  0%   { box-shadow: 0 0 0 0 var(--badge-ring, rgba(29, 78, 216, .45)); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@utility animate-badge-breathe {
+  animation: badge-breathe 2.4s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 2.4s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+@utility animate-dot-breathe {
+  animation: dot-breathe 2.4s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 2.4s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+
+@keyframes badge-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .5; }
+}
+/*
+ * 「圆点缩放」呼吸：**只缩放，不变淡**。
+ *
+ * 第一版写成 opacity 1↔.55 + scale(.72)，实测两个问题：
+ *   ① 药丸整体变淡 → 数字在动画低谷时看不清（用户选它就是要数字一直清楚）；
+ *   ② scale(.72) 幅度太大，16px 的徽标缩到 11px，像在抖动。
+ * scale 1↔.88（2026-11-05 首版）：数字清楚，但用户实测「不明显，整个呼吸的感觉不够」。
+ * 现调到 1↔.80（2026-11-05 二版）：16px 缩到 12.8px，缩放 3.2px——
+ * 比首版的 1.9px 明显一档，仍不至于"抖"；数字低谷时还有 12.8px，不糊。
+ */
+/*
+ * 「圆点缩放」呼吸（用户 2026-11-05 第三次调速）。
+ *
+ * 演进：.88（看不见）→ .80（还是"不够明显"）→ **.70 + 更慢更顺的曲线**。
+ *
+ * 幅度 .70：16px ↔ 11.2px，缩放 4.8px。再小（.6）16px 缩到 9.6px，数字开始糊、
+ * 药丸像在"跳"；.70 是"余光都能看见"和"不抖"之间的一档。
+ *
+ * 曲线换成 `cubic-bezier(.45, 0, .55, 1)`（近似正弦的对称缓动）：
+ * 原来 ease-in-out 的中段变化太急、两端太黏，看起来是"顿一下"而不是"呼吸"。
+ * 周期 2.4s（原来 1.5s）：人的静息呼吸≈4s/次，2.4s 逼近"活着"的节奏又不至于等到发呆。
+ *
+ * 为什么只缩不放：徽标在行内布局里，放大到 >1 会把同行内容推开（文字抖动）。
+ */
 @keyframes badge-dot {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(.80); }
-}
-@utility animate-halo {
-  animation: badge-halo 1.8s ease-out infinite;
+  50%      { transform: scale(.70); }
 }
 @utility animate-badge-soft {
   animation: badge-soft 1.8s ease-in-out infinite;
 }
-@utility animate-badge-dot {
-  animation: badge-dot 1.5s ease-in-out infinite;
+@utility animate-halo {
+  animation: badge-ring 1.8s ease-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .animate-halo, .animate-badge-dot, .animate-badge-soft { animation: none; }

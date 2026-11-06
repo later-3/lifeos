@@ -133,7 +133,7 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
       : `${count} 个${unit}失败待查看`;
   // 薄底 + 同色深字（三态结构一致）；只有"在跑"加圆点缩放的呼吸。
   const tone = kind === "running"
-    ? "bg-running-soft text-running animate-badge-dot"
+    ? "bg-running-soft text-running animate-badge-breathe"
     : kind === "unreadDone"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
@@ -142,7 +142,10 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     // 尺寸：16×16（h-4 min-w-4 px-1）。14px 时字几乎顶满色块（用户："像色块"），
     // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
     // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
+    //
+    // `--badge-ring`：扩散环的颜色跟着状态走（写死蓝色会让"失败"的红色徽标闪蓝光）。
     <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
+      style={kind === "running" ? { "--badge-ring": "rgba(29, 78, 216, .40)" } as React.CSSProperties : undefined}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -1407,9 +1410,38 @@ export default function App() {
         next.delete(sessionId);
         return next;
       }
-      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === projectId) return previous;
+      // **projectId 只增不减**（2026-11-05）：有些补丁不带 projectId（例如 focus 端点
+      // 历史上传的是 undefined），若直接覆盖，这条会话的数字会从"某个项目"掉进
+      // "该 Agent 的无项目桶"——项目行上的数字就消失了，用户看到"项目后面没有状态"。
+      const effective = projectId ?? current?.projectId;
+      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === effective) return previous;
       const next = new Map(previous);
-      next.set(sessionId, { agentId, ...(projectId !== undefined ? { projectId } : {}), slot });
+      next.set(sessionId, { agentId, ...(effective !== undefined ? { projectId: effective } : {}), slot });
+      return next;
+    });
+  }
+
+  /**
+   * **只清"未读"，不动"在跑"**（2026-11-05 修，用户实测的 bug）。
+   *
+   * 症状（用户截图）：一个正在跑的会话，行上蓝点在呼吸，但项目行/助手行**没有数字**。
+   *
+   * 根因：点开一个正在跑的会话会触发 focus → 服务端 `markSessionViewed()` →
+   * 推 `{ unread: null }`；这里原来一律 `setSlot(..., undefined)`，
+   * 把这条会话的槽位**整个删掉** —— 包括它正在跑的 running 态。
+   * 于是"行上有蓝点（applyRowPatch 只删 unread、running 没动），上级没有数字"。
+   *
+   * `{ unread: null }` 的语义只能是"这条不再有未读"，不是"这条不再有任何状态"。
+   * 在跑的会话本来就没有未读可清，收到这种补丁应当**什么都不做**。
+   */
+  function clearUnreadSlot(sessionId: string, agentId: string): void {
+    setSessionSlots((previous) => {
+      const current = previous.get(sessionId);
+      if (current === undefined) return previous;
+      if (current.slot === "running") return previous;   // 在跑的不受"已读"影响
+      void agentId;
+      const next = new Map(previous);
+      next.delete(sessionId);
       return next;
     });
   }
@@ -1427,8 +1459,8 @@ export default function App() {
       // 终态：带 failure 就是失败待看，否则完成待看
       setSlot(sessionId, agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone");
     } else if ("unread" in patch && patch.unread === null) {
-      // 用户点开 / 已读 → 清 0
-      setSlot(sessionId, agentId, projectId, undefined);
+      // 用户点开 / 已读 → **只清未读**，在跑的保持不动（见 clearUnreadSlot 注释）
+      clearUnreadSlot(sessionId, agentId);
     } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
       setSlot(sessionId, agentId, projectId, "running");
     } else if ("running" in patch && patch.running === null) {
@@ -2634,7 +2666,7 @@ export default function App() {
                                 </>
                               }
                               status={runNow
-                                ? <span className="h-1.5 w-1.5 rounded-full bg-running animate-badge-dot" data-state-dot="running" title="生成中" />
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-running animate-dot-breathe" data-state-dot="running" title="生成中" />
                                 : failure !== undefined
                                   // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />

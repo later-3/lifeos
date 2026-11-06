@@ -31,7 +31,9 @@
     "test:mobile": "node frontend/test/mobile-contract.mjs",
     "test:jump": "node frontend/test/jump-to-latest.mjs",
     "test:draft": "node frontend/test/new-session-draft.mjs",
-    "test:pwa": "node frontend/test/pwa-contract.mjs"
+    "test:pwa": "node frontend/test/pwa-contract.mjs",
+    "state": "node scripts/session-state.mjs",
+    "state:no-ui": "node scripts/session-state.mjs --no-ui"
   },
   "type": "module",
   "devDependencies": {

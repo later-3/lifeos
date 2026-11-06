@@ -1735,7 +1735,10 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     for (const scope of ["project", "agent"]) {
       const rows = read[scope];
       const label = scope === "project" ? "项目行" : "助手行";
-      for (const want of [{ kind: "running", text: "2" }, { kind: "unread", text: "3" }, { kind: "failure", text: "1" }]) {
+      // kind 名跟着实现走：2026-11-04 起是 `running / unreadDone / unreadError`
+      // （原来叫 unread / failure —— 那时"未读"还是一个总体，failure 也还没看已读）。
+      // 契约测试必须与实现同一套词，否则它测的是一个不存在的元素（假红）。
+      for (const want of [{ kind: "running", text: "2" }, { kind: "unreadDone", text: "3" }, { kind: "unreadError", text: "1" }]) {
         const got = rows.find((r) => r.kind === want.kind);
         check(`P1·1.5 聚合数量：${label}「${want.kind}」显示 ${want.text}`, got !== undefined && got.text === want.text,
           got === undefined ? "没有这个徽标" : `实际 ${got.text}`);
@@ -1746,7 +1749,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       }
       // 只有运行中那个在呼吸（用户裁决 A：整个徽标呼吸）
       const running = rows.find((r) => r.kind === "running");
-      const unread = rows.find((r) => r.kind === "unread");
+      const unread = rows.find((r) => r.kind === "unreadDone");
       check(`P1·1.5 聚合数量：${label}「运行中」在呼吸、「待查看」不呼吸`,
         running?.animated === true && unread?.animated === false,
         `running=${running?.animated} unread=${unread?.animated}`);
