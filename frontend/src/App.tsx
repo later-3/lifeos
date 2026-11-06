@@ -538,9 +538,13 @@ export default function App() {
     if (target === undefined) return;
     const wasPinned = target.ui.pinned;
     anno.togglePinned(id);
-    if (wasPinned) return;                 // 取消钉住：到此为止
+    if (wasPinned) {
+      // 取消钉住 = 收卡（Task 0008）：hover 收起已删，否则卡片永不退场。
+      window.dispatchEvent(new CustomEvent("lifeos:annotation-close", { detail: { id } }));
+      return;
+    }
     anno.open(id);
-    // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
+    // 打开并定位到原文（MarkBar 行点击是卡片唯一的打开入口，用户 2026-11-05 裁决）
     window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
     window.requestAnimationFrame(() => {
       const host = document.querySelector(

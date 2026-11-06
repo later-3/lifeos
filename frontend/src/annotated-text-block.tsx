@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  annotationsAt, buildIndex, paintAnnotations, quoteOf, toOffset, toRange,
+  buildIndex, paintAnnotations, quoteOf, toOffset, toRange,
   type Annotation, type BlockIndex,
 } from "./annotations";
 import { AnnotationCard, AnnotationDraft } from "./annotation-card";
@@ -115,7 +115,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     if (host === null) return;
     const index = buildIndex(host);
     indexRef.current = index;
-    paintAnnotations(index, annotations);
+    paintAnnotations(index, annotations, undefined, `${messageId ?? "anon"}:${blockIndex ?? "x"}`);
   });
 
   useEffect(() => () => { clearHideTimer(); }, []);
@@ -161,13 +161,21 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       if (id === undefined) return;
       const target = annotations.find((anno) => anno.id === id);
       if (target === undefined) return;
-      clearHideTimer();
-      holdUntilRef.current = Date.now() + 1500;
       setHostRect(hostRef.current?.getBoundingClientRect() ?? null);
       setOpenIds((list) => (list.includes(id) ? list : [...list, id]));
     };
+    // 取消钉住时同步收卡（Task 0008）：hover 收起已删，事件是唯一能从 App 层叫渲染层收卡的路。
+    const onClose = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (id === undefined) return;
+      setOpenIds((list) => list.filter((x) => x !== id));
+    };
     window.addEventListener("lifeos:annotation-locate", onLocate as EventListener);
-    return () => window.removeEventListener("lifeos:annotation-locate", onLocate as EventListener);
+    window.addEventListener("lifeos:annotation-close", onClose as EventListener);
+    return () => {
+      window.removeEventListener("lifeos:annotation-locate", onLocate as EventListener);
+      window.removeEventListener("lifeos:annotation-close", onClose as EventListener);
+    };
   }, [annotations]);
 
   const rectsFor = useCallback((start: number, end: number): readonly DOMRect[] => {
@@ -177,9 +185,13 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     return range === null ? [] : [...range.getClientRects()];
   }, []);
 
+  /**
+   * 收起未钉住的卡（拖动结束/离开卡时用）。
+   * Task 0008 修订：hover 打开已删，卡片的常态是"MarkBar 点开（已钉住）"或"刚提交的草稿"；
+   * 定时器收起只剩一个入口：从卡片标题栏按下但未拖动的那次点击（避免误按后框不退场）。
+   */
   const scheduleHide = useCallback(() => {
-    if (holdRef.current.dragging || holdRef.current.inBox || holdRef.current.freeze) return;
-    if (Date.now() < holdUntilRef.current) return;   // 定位后的保护期
+    if (holdRef.current.dragging || holdRef.current.freeze) return;
     clearHideTimer();
     hideTimer.current = window.setTimeout(() => {
       // 只收起**未钉住**的框；钉住的一个都不动（"钉"的唯一职责）
@@ -187,7 +199,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
         const anno = annotationsRef.current.find((a) => a.id === id);
         return anno?.ui.pinned === true;
       }));
-    }, 220);
+    }, 400);
   }, []);
 
   /**
@@ -196,47 +208,15 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
    * 为什么不用 mouseleave：拖动时鼠标会划出框，leave 会在拖动中途送到，
    * 结果是"拖一下就消失"（实测踩了三次）。move 事件带坐标，判断的是**当下**的事实。
    */
-  useEffect(() => {
-    if (openIds.length === 0 && draft === null) return;
-    const onDocMove = (event: MouseEvent) => {
-      const wrap = wrapRef.current;
-      if (wrap === null) return;
-      const target = event.target as HTMLElement | null;
-      const inCard = target?.closest("[data-testid='annotation-card']") !== null
-        || target?.closest("[data-testid='annotation-draft']") !== null;
-      if (inCard) { holdRef.current.inBox = true; clearHideTimer(); return; }
-      // 不在框里：如果正在拖或按住，保持；否则按常规收起
-      if (holdRef.current.dragging) return;
-      holdRef.current.inBox = false;
-      scheduleHide();
-    };
-    document.addEventListener("mousemove", onDocMove, true);
-    return () => document.removeEventListener("mousemove", onDocMove, true);
-  }, [openIds, draft, scheduleHide]);
-
-  /** 鼠标在高亮上：找出命中的批注并打开它。 */
-  const onMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    const index = indexRef.current;
-    const host = hostRef.current;
-    if (index === null || host === null || annotations.length === 0) return;
-    // 拖选中 / 框内：不响应
-    const selection = window.getSelection();
-    if (selection !== null && !selection.isCollapsed) return;
-    if ((event.target as HTMLElement).closest("[data-testid='annotation-card']") !== null) { clearHideTimer(); return; }
-
-    const hit = annotationsAt(index, annotations, { x: event.clientX, y: event.clientY });
-    if (hit.length === 0) { scheduleHide(); return; }
-    const top = [...hit].reverse().find((anno) => anno.ui.pinned) ?? hit[hit.length - 1];
-    if (top === undefined) return;
-    clearHideTimer();
-    setHostRect(host.getBoundingClientRect());
-    openOne(top.id);
-  }, [annotations, scheduleHide]);
-
   /**
    * 点框外取消 draft（2026-11-03 自检发现缺失）。
    * 规范里写明取消有三条路（Esc / ✕ / 点框外），之前只做了前两条。
    * 判定用 mousedown + 事件目标：落点既不在 draft 里、也不在正文里 → 取消。
+   *
+   * （Task 0008 修订：hover 打开卡片的行为已删——用户 2026-11-05 裁决
+   *  "只能是点击 mark bar 里面的条目时，展示它对应的标注信息"。
+   *  卡片的打开途径只剩：MarkBar 行点击（locate 事件，带钉住）、新建批注提交后。
+   *  收起途径：MarkBar 再点一次（取消钉住）或删除。不再有 220ms 定时器收起。）
    */
   useEffect(() => {
     if (draft === null) return;
@@ -303,8 +283,6 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       <div ref={hostRef} data-testid="message-text" data-block-index={blockIndex}
         data-anno-busy={busy ? "1" : undefined}
         title={busy && actions !== undefined ? "这一轮生成完成后才能批注" : undefined}
-        onMouseMove={annotations.length > 0 ? onMove : undefined}
-        onMouseLeave={annotations.length > 0 ? scheduleHide : undefined}
         onMouseUp={actions !== undefined ? onUp : undefined}>
         <Markdown text={text} />
       </div>

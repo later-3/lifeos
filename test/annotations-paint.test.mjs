@@ -44,6 +44,14 @@ if (found === undefined) {
   });
   after(async () => { await browser?.close(); });
 
+  // 每个 owner 的名字记在模块级 Map 里，会跨测试残留；每测前清 registry + owner 表
+  const resetRegistry = async () => {
+    await page.evaluate(() => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
+    });
+  };
+
   const MD = `<div id="root"><p>0123456789ABCDEFGHIJ</p></div>`;
 
   const mkAnno = (id, start, end, marks) => ({
@@ -63,7 +71,7 @@ if (found === undefined) {
         { id:"a2", messageId:"m1", blockIndex:0, start:6,  end:9,  quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} },
         { id:"a3", messageId:"m1", blockIndex:0, start:12, end:15, quote:"", marks:["query"],  note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} },
       ];
-      window.__M.paintAnnotations(index, annos);
+      window.__M.paintAnnotations(index, annos, undefined, "t");
       const out = {};
       for (const [name, hl] of CSS.highlights) {
         out[name] = hl.size;
@@ -71,35 +79,82 @@ if (found === undefined) {
       host.remove();
       return out;
     }, MD);
-    assert.deepEqual(r, { "anno-critic": 2, "anno-query": 1 }, "批评应装 2 个 Range，疑问 1 个");
+    assert.deepEqual(r, { "anno-critic--t": 2, "anno-query--t": 1 }, "批评应装 2 个 Range，疑问 1 个");
   });
 
   test("清空：没有批注的标记不留空 Highlight", async () => {
     const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
       const host = document.createElement("div");
       host.innerHTML = html;
       document.body.appendChild(host);
       const index = window.__M.buildIndex(host.querySelector("#root"));
       const annos = [{ id:"a1", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} }];
-      window.__M.paintAnnotations(index, annos);
+      window.__M.paintAnnotations(index, annos, undefined, "blk-a");
       const before = [...CSS.highlights.keys()];
-      window.__M.paintAnnotations(index, []);
+      window.__M.paintAnnotations(index, [], undefined, "blk-a");
       const after = [...CSS.highlights.keys()];
       host.remove();
       return { before, after };
     }, MD);
-    assert.deepEqual(r.before, ["anno-critic"]);
-    assert.deepEqual(r.after, [], "没有批注时所有 Highlight 必须被清掉（不能留空壳）");
+    assert.equal(r.before.length, 1, "paint 后应有本块的高亮（名字带 owner）");
+    assert.deepEqual(r.after, [], "本块没有批注时，自己画的高亮必须被清掉（不能留空壳）");
+  });
+
+  test("owner 隔离：块 B 的空 paint 不得擦掉块 A 的高亮（2026-11-05 事故回归）", async () => {
+    // 事故：registry 是全局单例，旧实现里"本块没有某标记 → delete 全同名"，
+    // 三个回复块顺序 paint，最后一块把第一块画的高亮全擦了。
+    // 用户看到的就是"高亮只在鼠标附近重渲染时闪现"。
+    const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      document.body.appendChild(host);
+      const index = window.__M.buildIndex(host.querySelector("#root"));
+      const anno = { id:"a1", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} };
+      window.__M.paintAnnotations(index, [anno], undefined, "blk-a1");   // a1 有批注
+      window.__M.paintAnnotations(index, [],      undefined, "blk-a2");   // a2 空
+      window.__M.paintAnnotations(index, [],      undefined, "blk-a3");   // a3 空
+      const afterEmpties = [...CSS.highlights.keys()];
+      window.__M.paintAnnotations(index, [anno], undefined, "blk-a1");   // a1 重画（重渲染）
+      const afterRepaint = [...CSS.highlights.keys()];
+      host.remove();
+      return { afterEmpties, afterRepaint };
+    }, MD);
+    assert.equal(r.afterEmpties.length, 1, "空块的 paint 不能动别人的高亮");
+    assert.equal(r.afterRepaint.length, 1, "重画后仍在");
+  });
+
+  test("owner 隔离：两个块同用 critic，互不覆盖（同名 Highlight 只能存一份）", async () => {
+    const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      document.body.appendChild(host);
+      const index = window.__M.buildIndex(host.querySelector("#root"));
+      const anno = { id:"a1", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} };
+      window.__M.paintAnnotations(index, [anno], undefined, "blk-x");
+      window.__M.paintAnnotations(index, [anno], undefined, "blk-y");
+      const keys = [...CSS.highlights.keys()].sort();
+      host.remove();
+      return keys;
+    }, MD);
+    assert.equal(r.length, 2, "两个 owner 各自一条名字（anno-critic--blk-x / --blk-y）");
   });
 
   test("越界批注被跳过，不抛异常", async () => {
     const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
       const host = document.createElement("div");
       host.innerHTML = html;
       document.body.appendChild(host);
       const index = window.__M.buildIndex(host.querySelector("#root"));
       const annos = [{ id:"bad", messageId:"m1", blockIndex:0, start:0, end:9999, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} }];
-      window.__M.paintAnnotations(index, annos);
+      window.__M.paintAnnotations(index, annos, undefined, "t");
       const keys = [...CSS.highlights.keys()];
       host.remove();
       return keys;
@@ -109,12 +164,14 @@ if (found === undefined) {
 
   test("非法 markId 被忽略（防选择器注入）", async () => {
     const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
       const host = document.createElement("div");
       host.innerHTML = html;
       document.body.appendChild(host);
       const index = window.__M.buildIndex(host.querySelector("#root"));
       const annos = [{ id:"x", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["bad){}"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} }];
-      window.__M.paintAnnotations(index, annos);
+      window.__M.paintAnnotations(index, annos, undefined, "t");
       const keys = [...CSS.highlights.keys()];
       host.remove();
       return keys;
@@ -163,7 +220,7 @@ if (found === undefined) {
         { id:"a1", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} },
         { id:"a2", messageId:"m1", blockIndex:0, start:6, end:9, quote:"", marks:["query"],  note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} },
       ];
-      window.__M.paintAnnotations(index, annos);
+      window.__M.paintAnnotations(index, annos, undefined, "t");
       const after = root.innerHTML;
       host.remove();
       return { same: before === after, before, after };
@@ -173,21 +230,23 @@ if (found === undefined) {
 
   test("重渲染后旧 Range 失效，重新 paint 能恢复", async () => {
     const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
       const wrap = document.createElement("div");
       wrap.innerHTML = html;
       document.body.appendChild(wrap);
       const root = wrap.querySelector("#root");
       const read = () => {
-        const hl = CSS.highlights.get("anno-critic");
+        const hl = CSS.highlights.get("anno-critic--t");
         return hl === undefined ? [] : [...hl].map(r => r.toString());
       };
       const annos = [{ id:"a1", messageId:"m1", blockIndex:0, start:0, end:4, quote:"", marks:["critic"], note:"", ui:{mode:"open",pinned:false,dx:0,dy:0} }];
-      window.__M.paintAnnotations(window.__M.buildIndex(root), annos);
+      window.__M.paintAnnotations(window.__M.buildIndex(root), annos, undefined, "t");
       const ok = read();
       // 模拟整块重渲染
       root.innerHTML = root.innerHTML;
       const stale = read();
-      window.__M.paintAnnotations(window.__M.buildIndex(root), annos);
+      window.__M.paintAnnotations(window.__M.buildIndex(root), annos, undefined, "t");
       const fresh = read();
       wrap.remove();
       return { ok, stale, fresh };
