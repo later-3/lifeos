@@ -4,18 +4,20 @@
  * 从 Message.tsx 拆出来（2026-11-03 自检）：它占 387 行，和消息渲染混在一个文件里
  * 已经成了巨型文件（检视规范把"巨型文件"列为质量缺口）。
  *
- * 职责三件：
+ * 职责四件：
  *  1. 按偏移**上色**（CSS Highlight API，不改 DOM）；
- *  2. 鼠标移到高亮上 → 浮出批注卡片（可编辑）；移开 → 收起；
- *  3. 拖选文字 → 浮出 draft 编辑框。
+ *  2. 拖选文字 → 浮出 draft 编辑框；
+ *  3. **点高亮的文字 → 展开对应批注框**（Task 0008：用户 2026-11-05
+ *     "单击高亮的标注文字，也应该出现标注框"——hover 不再弹卡，但点击要）；
+ *  4. 多个批注框可同时展开，各拖各的。
  *
  * 无批注且无 actions 时行为与改造前完全一致。上色每次渲染后都要重跑
  *（整块重渲染会让旧 Range 失效，P1 实测）。
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
-  buildIndex, paintAnnotations, quoteOf, toOffset, toRange,
+  annotationsAt, buildIndex, paintAnnotations, quoteOf, toOffset, toRange,
   type Annotation, type BlockIndex,
 } from "./annotations";
 import { AnnotationCard, AnnotationDraft } from "./annotation-card";
@@ -54,8 +56,8 @@ export type AnnotationActions = {
  *
  * 三件事：
  *  1. 按偏移**上色**（CSS Highlight API，不改 DOM）；
- *  2. 鼠标移到高亮上 → 浮出批注框（可编辑）；移开 → 收起；
- *  3. 拖选文字 → 浮出 draft 编辑框。
+ *  2. 拖选文字 → 浮出 draft 编辑框；点高亮文字 → 打开已有批注框；
+ *  3. 多个框同时展开、各拖各的。
  *
  * **无批注且无 actions 时行为与改造前完全一致**（不加节点、不挂监听）。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
@@ -226,16 +228,45 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [draft]);
 
-  /** 拖选 → 浮出 draft。 */
-  const onUp = useCallback(() => {
-    // 流式期不建批注：文字还在变，锚点会漂（用户同意：等这一轮完成再标）
-    if (busy) return;
+  /**
+   * 拖选 → 浮出 draft；单击高亮文字 → 打开对应批注框。
+   *
+   * Task 0008（用户 2026-11-05）：“单击高亮的标注文字，也应该出现标注框的”。
+   * 于是同一个 mouseup 要分两件事：
+   *  - **有选区**（really 拖了）→ 建新批注（draft）；
+   *  - **无选区**（单击）→ 几何命中高亮文字 → 打开那条批注框（可多条重叠）。
+   * hover 不参与，所以不会出现“鼠标一靠近就弹”。
+   */
+  const onUp = useCallback((event: ReactMouseEvent) => {
     if (actions === undefined || messageId === undefined || blockIndex === undefined) return;
     const host = hostRef.current;
     const index = indexRef.current;
     if (host === null || index === null) return;
+
     const selection = window.getSelection();
-    if (selection === null || selection.isCollapsed || selection.rangeCount === 0) return;
+    const hasSelection = selection !== null && !selection.isCollapsed && selection.rangeCount > 0;
+
+    // ① 单击高亮文字 → 展开/收起对应批注框（不新建）。流式期也允许看已有批注。
+    if (!hasSelection) {
+      const hits = annotationsAt(index, annotationsRef.current, { x: event.clientX, y: event.clientY });
+      if (hits.length === 0) return;
+      setHostRect(host.getBoundingClientRect());
+      const hitIds = hits.map((a) => a.id);
+      const allOpen = hitIds.every((id) => openIdsRef.current.includes(id));
+      // 与 MarkBar 行点击同一套语义：打开 = 钉住常显，再点一次 = 收起。
+      // 钉住是这里唯一能让卡片"点了不动、移开不消失"的机制（hover 收起已删）。
+      for (const anno of hits) {
+        if (anno.ui.pinned === !allOpen) continue;
+        actions.togglePinned(anno.id);
+      }
+      setOpenIds((list) => (allOpen
+        ? list.filter((id) => !hitIds.includes(id))
+        : [...list, ...hitIds.filter((id) => !list.includes(id))]));
+      return;
+    }
+
+    // ② 拖选 → 新建批注。流式期不建（文字还在变，锚点会漂）
+    if (busy) return;
     const range = selection.getRangeAt(0);
     if (!host.contains(range.commonAncestorContainer)) return;
 
