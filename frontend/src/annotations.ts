@@ -216,6 +216,17 @@ export type Annotation = {
  *  「加一个标记 = 加一行数据」要求 CSS 里**不预写任何标记名**。
  *  `replaceSync` 可以整表替换，新增标记时只要重跑一次 `rebuildHighlightStyles()`。 */
 let highlightSheet: CSSStyleSheet | null = null;
+/** 已经写入样式表的 registry 名字 → 它的 css 规则（名字按 owner 隔离后是动态的，规则跟着补）。 */
+const highlightRules = new Map<string, string>();
+
+/** 补一条 `::highlight(name)` 规则（已存在则跳过）。颜色仍走 token 变量。 */
+function ensureHighlightRule(name: string, markId: string): void {
+  if (highlightRules.has(name)) return;
+  const mark = MARKS.find((m) => m.id === markId);
+  if (mark === undefined) return;   // 白名单外：不生成规则（与 MARK_ID_PATTERN 同一防线）
+  highlightRules.set(name, `::highlight(${name}){background-color:color-mix(in srgb, var(--color-anno-${mark.tone}) 26%, transparent);}`);
+  highlightSheet?.replaceSync([...highlightRules.values()].join("\n"));
+}
 
 /** 按当前标记表重建 `::highlight()` 规则。
  *
@@ -229,15 +240,34 @@ export function rebuildHighlightStyles(): void {
     highlightSheet = new CSSStyleSheet();
     doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, highlightSheet];
   }
-  const rules = MARKS
+  // 基础规则：只为白名单标记生成（名字按 owner 隔离后，具体名字由 paint 时按需补）。
+  // 这里重放全量（含 paint 时补过的），保证 sheet 与 highlightRules 一致。
+  const base = MARKS
     .filter((mark) => MARK_ID_PATTERN.test(mark.id))
-    .map((mark) => `::highlight(anno-${mark.id}){background-color:color-mix(in srgb, var(--color-anno-${mark.tone}) 26%, transparent);}`)
-    .join("\n");
-  highlightSheet.replaceSync(rules);
+    .map((mark) => `::highlight(anno-${mark.id}){background-color:color-mix(in srgb, var(--color-anno-${mark.tone}) 26%, transparent);}`);
+  highlightSheet.replaceSync([...base, ...highlightRules.values()].join("\n"));
 }
 
 /** 某条消息某个块的批注集合（调用方保证已按 messageId/blockIndex 过滤好）。 */
 export type BlockAnnotations = readonly Annotation[];
+
+/**
+ * 每个 owner（消息块）当前画着的 registry 名字。
+ *
+ * **为什么必须有 owner（Task 0008 修复）**：`CSS.highlights` 是全局单例，而旧实现
+ * 在"本块没有某标记"时 `registry.delete(name)` —— 把**别的块**刚画的同名高亮擦掉了。
+ * 实测：a1 画完 critic，a2/a3 的 paint 立刻把它删光 → 高亮只在重渲染的瞬间存在，
+ * 用户看到的是"鼠标靠近才高亮、移开就没"。现在名字按 owner 隔离，只删自己的。
+ */
+const highlightOwners = new Map<string, Set<string>>();
+
+/** owner 的 registry 名字前缀（CSS ident 安全：只留字母数字下划线连字符）。 */
+const ownerKey = (owner: string): string => owner.replace(/[^a-zA-Z0-9_-]/g, "-") || "default";
+
+/** 测试专用：清空 owner 表（registry 本体由测试自己清）。生产代码不调用。 */
+export function __resetOwnersForTest(): void {
+  highlightOwners.clear();
+}
 
 /** 把批注画成高亮：**按标记分组**，同一标记的所有区间装进一个 Highlight。
  *
@@ -250,8 +280,10 @@ export function paintAnnotations(
   index: BlockIndex,
   annotations: BlockAnnotations,
   registry: HighlightRegistry | undefined = typeof CSS === "undefined" ? undefined : CSS.highlights,
+  owner = "default",
 ): void {
   if (registry === undefined) return;
+  const key = ownerKey(owner);
 
   const perMark = new Map<string, Range[]>();
   for (const anno of annotations) {
@@ -259,30 +291,51 @@ export function paintAnnotations(
     if (range === null) continue;          // 偏移失效：跳过（不静默改数据，见 02-design §3.5）
     for (const markId of anno.marks) {
       if (!MARK_ID_PATTERN.test(markId)) continue;
-      const list = perMark.get(markId);
-      if (list === undefined) perMark.set(markId, [range]);
+      if (!MARKS.some((m) => m.id === markId)) continue;   // 白名单外（如 "nope"）不画：旧实现靠遍历 MARKS 过滤，这里显式拦
+      // 名字带 owner：两个块同用 critic 时互不覆盖（Highlight 同名只能存一份）
+      const name = `anno-${markId}--${key}`;
+      ensureHighlightRule(name, markId);   // 规则按需补（同名只补一次）
+      const list = perMark.get(name);
+      if (list === undefined) perMark.set(name, [range]);
       else list.push(range);
     }
   }
 
-  for (const mark of MARKS) {
-    if (!MARK_ID_PATTERN.test(mark.id)) continue;
-    const name = `anno-${mark.id}`;
-    const ranges = perMark.get(mark.id);
-    if (ranges !== undefined && ranges.length > 0) {
-      registry.set(name, new Highlight(...ranges));
-    } else if (registry.has(name)) {
-      registry.delete(name);
+  // 本 owner 上一轮画过、这一轮没画的 → 清掉（只清自己的，不碰别人的）
+  const previous = highlightOwners.get(key);
+  if (previous !== undefined) {
+    for (const name of previous) {
+      if (!perMark.has(name)) registry.delete(name);
     }
   }
+  const current = new Set<string>();
+  for (const [name, ranges] of perMark) {
+    registry.set(name, new Highlight(...ranges));
+    current.add(name);
+  }
+  if (current.size > 0) highlightOwners.set(key, current);
+  else highlightOwners.delete(key);
 }
 
 /** 清掉本模块给某个块画的所有高亮（切会话/卸载时用）。 */
 export function clearAnnotations(
   registry: HighlightRegistry | undefined = typeof CSS === "undefined" ? undefined : CSS.highlights,
+  owner?: string,
 ): void {
   if (registry === undefined) return;
-  for (const mark of MARKS) registry.delete(`anno-${mark.id}`);
+  if (owner === undefined) {
+    // 全清：不指定 owner 时按旧语义清理基础名 + 所有 owner 名
+    for (const mark of MARKS) registry.delete(`anno-${mark.id}`);
+    for (const names of highlightOwners.values()) for (const name of names) registry.delete(name);
+    highlightOwners.clear();
+    return;
+  }
+  const key = ownerKey(owner);
+  const names = highlightOwners.get(key);
+  if (names !== undefined) {
+    for (const name of names) registry.delete(name);
+    highlightOwners.delete(key);
+  }
 }
 
 /** 几何命中：某个坐标落在哪些批注上。

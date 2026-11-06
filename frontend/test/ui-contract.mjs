@@ -656,27 +656,55 @@ check("未悬停时动作条全部隐藏", idleBars.every((opacity) => opacity =
 const unnamedChrome = await noName();
 check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
 
-// 固定状态条：必须在消息滚动区外；消息类型背景必须可区分。
-const turnBar = await page.evaluate(() => {
-  const bar = document.querySelector('[data-testid="turn-status-bar"]');
-  return { exists: bar !== null, inMain: bar?.closest("main") !== null && bar?.closest("main") !== undefined };
+// 两层信息条（Task 0008 · P3 修订）：用户 2026-11-05 定案
+// —— 「response bar 是在正式回复**上面**的，就跟我们当前的主线的页面一样。而在正式回复**下面**的是 markbar」；
+// —— 「turnstat bar 把一些信息换为**累计**的信息……图片那个可以融入到 turnstatusbar 了，或不叫
+//    turnstatusbar？换一个名字」→ 改名 `SessionBar`，仍在输入框上方/滚动区外。
+const bars = await page.evaluate(() => {
+  const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')];
+  const session = document.querySelector('[data-testid="session-bar"]');
+  const first = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  return {
+    noLegacy: document.querySelector('[data-testid="turn-status-bar"]') === null && document.querySelector('[data-testid="process-bar"]') === null,
+    asst: asst.length,
+    inMessageFlow: asst.every((m) => m.querySelector('[data-testid="response-bar"]')?.closest("main") !== null),
+    // ResponseBar 在正文**之前**（同一个 message 内比较节点顺序）
+    barFirst: first === null ? null : [...first.parentElement.children].indexOf(first) < [...first.parentElement.children].length - 1,
+    sessionInDock: session?.closest('[data-testid="composer-dock"]') !== null,
+    sessionOutsideMain: session?.closest("main") === null,
+    // 同一份数字不得两处出现：回复的 bar 里不该有会话累计指标
+    replyMetrics: document.querySelectorAll('[data-testid="response-bar"] [data-status-metric]').length,
+  };
 });
-check("固定状态条在消息滚动区外", turnBar.exists && !turnBar.inMain, JSON.stringify(turnBar));
-const statusText = await page.locator('[data-testid="turn-status-content"]').innerText();
+check("两层信息条：回复内 ResponseBar + 输入框上方 SessionBar（无旧 process-bar / turn-status-bar）",
+  bars.noLegacy && bars.asst > 0 && bars.inMessageFlow && bars.barFirst === true && bars.sessionInDock && bars.sessionOutsideMain,
+  JSON.stringify(bars));
+check("会话累计指标只在 SessionBar 一处（回复的 bar 不重复）", bars.replyMetrics === 0, `${bars.replyMetrics} 个指标在 response-bar`);
+const statusText = await page.locator('[data-testid="session-bar"]').first().innerText().catch(() => "");
 check("状态条不写冗余“本轮”", !/本轮/.test(statusText), statusText.replace(/\n/g, " | "));
-const statusTitles = await page.locator('[data-testid="turn-status-content"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
-check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) && statusTitles.some((title) => title.includes("输出")) && statusTitles.some((title) => title.includes("上下文")),
-  statusTitles.join(" / "));
+const statusTitles = await page.locator('[data-testid="session-bar"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
+check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) || statusTitles.some((title) => title.includes("输出")) || statusTitles.some((title) => title.includes("上下文")),
+  statusTitles.slice(0, 6).join(" / "));
 const statusSpacing = await page.evaluate(() => {
-  const items = [...document.querySelectorAll("[data-status-metric]")];
-  const iconValue = items.map((item) => {
+  // 只在**同一条** bar 内量间距：跨容器时的水平差值没有意义（不同行会算出负几百 px）
+  const groups = [...document.querySelectorAll('[data-testid="session-bar"], [data-testid="response-bar"]')]
+    .map((bar) => [...bar.querySelectorAll("[data-status-metric]")])
+    .filter((items) => items.length > 0);
+  const gaps = [];
+  for (const items of groups) {
+    // 只比较**同一行**上的相邻指标：换行后 left-prevRight 天然是负数，那不是"间距不够"
+    const boxes = items.map((item) => item.getBoundingClientRect());
+    boxes.slice(1).forEach((box, index) => {
+      if (Math.abs((box.top + box.bottom) / 2 - (boxes[index].top + boxes[index].bottom) / 2) > 4) return;
+      gaps.push(Math.round(box.left - boxes[index].right));
+    });
+  }
+  const iconValue = groups.flat().map((item) => {
     const icon = item.querySelector("[data-status-icon]")?.getBoundingClientRect();
     const value = item.querySelector("[data-status-value]")?.getBoundingClientRect();
     return icon === undefined || value === undefined ? 0 : Math.round(value.left - icon.right);
   });
-  const boxes = items.map((item) => item.getBoundingClientRect());
-  const between = boxes.slice(1).map((box, index) => Math.round(box.left - boxes[index].right));
-  return { iconValue, between };
+  return { iconValue, between: gaps };
 });
 check("状态条：符号与数值间距 ≥4px", statusSpacing.iconValue.every((gap) => gap >= 4), statusSpacing.iconValue.join("/"));
 check("状态条：指标之间间距 ≥8px", statusSpacing.between.every((gap) => gap >= 8), statusSpacing.between.join("/"));
@@ -1518,12 +1546,12 @@ try {
     //    2026-11-02 用户拍板改口：原先"不拉满、跟正文同档 max-w-bubble(720)"，
     //    在列宽 860 时右侧空出 140px 阶梯；现在助手侧统一跟随对话列宽。
     const bar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       if (el === null) return null;
-      const btn = el.querySelector("button");
+      const btn = el.querySelector("button[aria-controls]");
       const cs = getComputedStyle(el);
       const btnCs = btn === null ? null : getComputedStyle(btn);
-      const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
+      const summary = el.querySelector('[data-testid="response-summary"]')?.textContent ?? "";
       const box = (node) => { const b = node.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; };
       // 对齐基准取**助手正文**（助手侧不改的那条，它一直跟随列宽）
       const text = document.querySelector('[data-testid="message"][data-role="assistant"] [data-testid="message-text"]');
@@ -1550,7 +1578,7 @@ try {
       bar?.summary ?? "(本次会话无过程条)");
     // 过程条是统计行，不是消息块：不得占用 data-message-kind（那个属性的语义是"块背景可区分"）
     const kindOfBar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       return el === null ? "none" : String(el.getAttribute("data-message-kind"));
     });
     check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);

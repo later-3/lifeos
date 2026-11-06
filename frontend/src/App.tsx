@@ -23,6 +23,9 @@ import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
+import { processOpenOf } from "./response-fold";
+import { SessionBar } from "./session-bar";
+import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
@@ -35,7 +38,6 @@ import {
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
-import { TurnStatusBar } from "./turn-status";
 import { MobileNav, type Level } from "./mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
@@ -48,6 +50,7 @@ import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
 import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
@@ -253,6 +256,18 @@ type AgentEvent = { seq: number; agentId?: string; sessionId?: string } & (Strea
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
+/**
+ * ResponseBar 过程区折叠态，**按 session 持久**（Task 0008 · P3，用户定案：
+ * "只要折叠了就一直折叠……不要一会儿开一会儿关"）。
+ * 值："open" | "folded"；没写过 = undefined（默认：生成中展开、完成后折叠）。
+ */
+const RESPONSE_PREF_PREFIX = "lifeos.response.";
+
+/** 读 ResponseBar 的 per-session 折叠偏好。 */
+function readResponsePref(sessionId: string | undefined): "open" | "folded" | undefined {
+  if (sessionId === undefined) return undefined;
+  try { const v = localStorage.getItem(`${RESPONSE_PREF_PREFIX}${sessionId}`); return v === "open" || v === "folded" ? v : undefined; } catch { return undefined; }
+}
 const lastSessionKey = (agentId: string) => `lifeos.lastSession.${agentId}`;
 
 function readLast(key: string): string | undefined {
@@ -539,9 +554,13 @@ export default function App() {
     if (target === undefined) return;
     const wasPinned = target.ui.pinned;
     anno.togglePinned(id);
-    if (wasPinned) return;                 // 取消钉住：到此为止
+    if (wasPinned) {
+      // 取消钉住 = 收卡（Task 0008）：hover 收起已删，否则卡片永不退场。
+      window.dispatchEvent(new CustomEvent("lifeos:annotation-close", { detail: { id } }));
+      return;
+    }
     anno.open(id);
-    // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
+    // 打开并定位到原文（MarkBar 行点击是卡片唯一的打开入口，用户 2026-11-05 裁决）
     window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
     window.requestAnimationFrame(() => {
       const host = document.querySelector(
@@ -550,6 +569,23 @@ export default function App() {
       if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   }, [anno]);
+
+  /**
+   * ResponseBar 过程区的 per-session 展开态（用户手动点过的才记；没记过的用默认规则）。
+   * `undefined` = 该 session 用户从未点过。
+   */
+  const [responsePrefs, setResponsePrefs] = useState<Record<string, "open" | "folded">>(() => ({}));
+  const toggleResponseProcess = useCallback(() => {
+    if (sessionId === undefined) return;
+    // 当前实际展开态 = state ?? localStorage（刷新后 state 为空）?? 默认（生成中展开）
+    const isLive = busyRef.current && busySessionRef.current === sessionId;
+    const current = responsePrefs[sessionId] ?? readResponsePref(sessionId) ?? (isLive ? "open" : "folded");
+    const next = current === "open" ? "folded" : "open";
+    // 副作用放在 updater **外面**：updater 必须是纯函数（StrictMode 会双调用，
+    // 写在里面会写两次盘，实测得到与界面相反的值）
+    try { localStorage.setItem(`${RESPONSE_PREF_PREFIX}${sessionId}`, next); } catch { /* 忽略 */ }
+    setResponsePrefs((prev) => ({ ...prev, [sessionId]: next }));
+  }, [sessionId, responsePrefs]);
 
   /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
   const annoPinnedOf = useCallback(
@@ -623,11 +659,10 @@ export default function App() {
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
-  const [turnMetrics, setTurnMetrics] = useState<{ output: number; ttftSeconds: number; tokPerSecond: number }>();
+
   const turnStartedAtRef = useRef(0);
-  const turnFirstTokenAtRef = useRef(0);
-  const turnUsageStartRef = useRef<UsageSummary | undefined>(undefined);
-  const turnMetricsPendingRef = useRef(false);
+
+
   const [meta, setMeta] = useState<SessionMeta | undefined>();
   // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
@@ -637,6 +672,16 @@ export default function App() {
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
   /** 项目默认 Task 缓存（key = taskTitleKey(agent, project, "default")）：无会话时头部显示它 */
   const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
+  /**
+   * 已经**请求过**任务清单的 key（Task 0008 修复）。
+   *
+   * 守卫不能用"缓存里有值"：清单里没有该 taskId（task.md 缺字段、项目搬过）或项目
+   * 连默认 Task 都没有时，缓存永远补不上 → effect 每次渲染都重发一次。
+   * 实测：`{"items":[]}` 的应答让页面 **3 秒发了 2664 次** /tasks。
+   * 规则与单测见 `frontend/src/task-title-cache.ts` / `test/task-title-cache.test.mjs`。
+   */
+  const requestedTaskTitles = useRef<Set<string>>(new Set());
+  const requestedDefaultTasks = useRef<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
@@ -996,14 +1041,6 @@ export default function App() {
       })
       .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
-    if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
-      const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
-      const started = turnFirstTokenAtRef.current === 0 ? turnStartedAtRef.current : turnFirstTokenAtRef.current;
-      const seconds = Math.max(0.1, (Date.now() - started) / 1000);
-      const ttft = turnFirstTokenAtRef.current === 0 ? 0 : Math.max(0, (turnFirstTokenAtRef.current - turnStartedAtRef.current) / 1000);
-      turnMetricsPendingRef.current = false;
-      setTurnMetrics({ output, ttftSeconds: ttft, tokPerSecond: output / seconds });
-    }
     return data;
   }
 
@@ -1090,8 +1127,6 @@ export default function App() {
    *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
   function resetChatState() {
     setHistory(undefined);
-    setTurnMetrics(undefined);
-    turnMetricsPendingRef.current = false;
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -1536,7 +1571,6 @@ export default function App() {
   /** 细节事件（delta/thinking/tool_* …）：焦点会话的消息管道（一条助手消息里的块有序，交给 stream-blocks 归并）。 */
   function applyStreamMessage(payload: AgentEvent): void {
     lastEventAtRef.current = Date.now();
-    if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
     const tailIsStreaming = streaming.current;
     if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
     const next = applyStreamEvent(streamRef.current, payload as never);
@@ -1852,11 +1886,6 @@ export default function App() {
     if (!busyRef.current) {
       setTurnStep(1);
       turnStartedAtRef.current = Date.now();
-      turnFirstTokenAtRef.current = 0;
-      // 新会话没有 meta：从 0 起算；已有会话从当前累计起算。
-      turnUsageStartRef.current = meta?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
-      turnMetricsPendingRef.current = true;
-      setTurnMetrics(undefined);
     }   // 1/4：用户发送（steer 不新起一轮，不改步骤）
     // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
     // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
@@ -1936,7 +1965,6 @@ export default function App() {
       busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
-      turnMetricsPendingRef.current = false;
       // 失败后重新拉一次消息：让"消息列表 / 批注渲染层"回到服务端事实。
       // 不这么做的话，上面那次乐观插入 + 回滚会让批注渲染层重建在 DOM 尚未稳定时发生，
       // 高亮不会重画（实测：批注数据回来了，但文字上没有颜色）。
@@ -2308,17 +2336,17 @@ export default function App() {
     const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
     const key = taskTitleKey(aid, pid, taskId);
     if (taskTitles[key] !== undefined) return;
+    if (!shouldRequest(requestedTaskTitles.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
+        // 200 就算请求过（哪怕清单里没有这个 key）：这正是"永远补不上"的那个 key。
         if (cancelled || data?.items === undefined) return;
-        setTaskTitles((previous) => ({
-          ...previous,
-          ...Object.fromEntries(data.items!.map((task) => [taskTitleKey(aid, pid, task.id), task.title])),
-        }));
+        requestedTaskTitles.current.add(key);
+        setTaskTitles((previous) => mergeTaskTitles(previous, (id) => taskTitleKey(aid, pid, id), data.items!));
       })
-      .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
+      .catch(() => { /* 失败可见性：task 段回退为只显示 ID；没记 attempted，依赖变化时会重试 */ });
     return () => { cancelled = true; };
   }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId, taskTitles]);
 
@@ -2330,16 +2358,19 @@ export default function App() {
     if (aid === undefined || pid === undefined || sessionId !== undefined) return;
     const key = taskTitleKey(aid, pid, "default");
     if (projectDefaultTasks[key] !== undefined) return;
+    if (!shouldRequest(requestedDefaultTasks.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
         if (cancelled || data?.items === undefined) return;
+        // 200 就算请求过：项目还没有默认 Task 时缓存也补不上，不记就是死循环。
+        requestedDefaultTasks.current.add(key);
         const fallback = data.items.find((task) => task.isDefault === true);
         if (fallback === undefined) return;   // 项目还没有默认 Task：该段缺席，不编造
         setProjectDefaultTasks((previous) => ({ ...previous, [key]: { id: fallback.id, title: fallback.title } }));
       })
-      .catch(() => { /* 失败可见性：该段缺席即可，不打断 */ });
+      .catch(() => { /* 失败可见性：该段缺席即可；没有默认 Task 时也不重发 */ });
     return () => { cancelled = true; };
   }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 
@@ -2655,6 +2686,18 @@ export default function App() {
    */
   const renderStatus = outcomeNotice ?? turnStatus;
   /**
+   * 会话累计事实（Task 0008 · P3 修订）：轮次/工具调用/生成耗时/token/平均速度。
+   *
+   * 口径与来源写在 `session-totals.ts` 的文档注释里（那边有单测锁住）。
+   * 这里只在 messages / meta 变化时重算——它是随消息增长的线性统计，别放进每次渲染里裸跑。
+   */
+  const sessionTotals = useMemo(
+    () => sessionTotalsOf(messages, meta?.usage !== undefined
+      ? { input: meta.usage.input, output: meta.usage.output, totalTokens: meta.usage.totalTokens }
+      : undefined),
+    [messages, meta?.usage],
+  );
+  /**
    * 头部显示的模型 = **实际运行模型**（Task 0017）。
    *
    * 旧规则（2026-10-22）是：用过 `/model` → 显示覆盖模型；没用过 → 显示 Agent 的有效默认。
@@ -2787,6 +2830,11 @@ export default function App() {
                   if (anchor.id !== undefined) visibleLastReplyByUserMessageId.set(user.id, anchor.id);
                 }
                 const annoGroups = groupAnnotationsByReply(anno.annotations, messages, latestReplyId, visibleLastReplyByUserMessageId);
+                // ResponseBar 的过程区展开态（本 session 用户点过则听用户的，否则按 live 定）
+                const responsePref = responsePrefs[sessionId ?? ""] ?? readResponsePref(sessionId);
+                // 会话级指标挂哪一条：最后一条 assistant（全列表唯一，避免重复）
+                let lastAssistantIndex = -1;
+                messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
                 return messages.map((message, index) => {
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
@@ -2801,6 +2849,8 @@ export default function App() {
                   let process: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] } | undefined;
                   let mergedBlocks: Block[] | undefined;
                   const isFirstReply = replies.length > 0 && replies[0] === index;
+                  /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
+                  const replyLive = replyMessages.some((m) => m.streaming === true);
                   if (!isUser && isFirstReply) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
                     const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
@@ -2809,7 +2859,7 @@ export default function App() {
                       ...(durationMs > 0 ? { durationMs } : {}),
                       ...(tokens > 0 ? { tokens } : {}),
                     });
-                    const live = replyMessages.some((m) => m.streaming === true);
+                    const live = replyLive;
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
                     const failed = replyMessages.some((m) => m.failure !== undefined || m.error !== undefined);
                     if (hasProcess(stats) && !failed) {
@@ -2849,6 +2899,37 @@ export default function App() {
                    * - consumed 挂在被发送那一轮；
                    * 分组逻辑见 `anno-groups.ts`（纯函数 + 单测）。
                    */
+                  /**
+                   * ResponseBar 的数据（Task 0008 · P3 修订）。
+                   *
+                   * 只说**这一轮**：过程统计 + 进行中状态 + 回合结论文案。
+                   * 会话累计指标（轮次/工具/耗时/token/平均速度/上下文/请求体）归输入框上方的
+                   * `SessionBar`（用户 2026-11-05："turnstat bar 把一些信息换为累计的信息"），
+                   * 不再挂在回复上——两处都显示同一份数字就是重复。
+                   */
+                  const isThisStreaming = message.streaming === true;
+                  /**
+                   * 这一轮是否还在跑（**轮级**，不是"这条消息在跑"）。
+                   *
+                   * 为什么分开：一轮可能有多个 assistant 段，过程块只挂在**第一段**上（`isFirstReply`），
+                   * 而流式标志常在后来的段上。用"这条在流式"判断，会让挂着过程的 bar 在生成期间
+                   * 一直是折叠的（实测：工具跑起来了，bar 还显示"查看过程"）。
+                   * 老 ProcessBar 用的就是轮级 live（`process.live`），这里保持一致。
+                   */
+                  const messageLive = isThisStreaming || replyLive;
+                  const messageResponseBar = message.role === "assistant"
+                    ? {
+                        // 进行中：轮在跑 → live；占位（无 blocks）→ waiting 呼吸
+                        ...(messageLive ? { live: true, waiting: (message.blocks?.length ?? 0) === 0 } : {}),
+                        ...(messageLive ? { step: turnStep, ...(phase !== undefined ? { phase } : {}), ...(activeTool !== undefined ? { activeTool } : {}), ...(retry !== undefined ? { retry } : {}) } : {}),
+                        // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
+                        ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
+                        // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
+                        processOpen: processOpenOf(responsePref, messageLive),
+                        onToggleProcess: () => toggleResponseProcess(),
+                      }
+                    : undefined;
+
                   const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
                     ? (() => {
                         const list = annoGroups.get(message.id) ?? [];
@@ -2869,6 +2950,7 @@ export default function App() {
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
                       annotationActions={isPeerSession ? undefined : annoActions}
+                      {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
@@ -2904,33 +2986,16 @@ export default function App() {
 
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
-                左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
-                手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
-            {/* composer dock：一行共享、不带壳（2026-10-26 用户反馈“框框丑”“——裸行才是低位状态条该有的样子）。
-                左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
-                手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
-            <div data-testid="composer-dock"
-              className={`${!(isMobile && !busy && renderStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
-              <div className="min-w-0 flex-1" data-testid="turn-status-bar">
-                <TurnStatusBar busy={busy} step={turnStep} phase={phase}
-                  {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
-                  {...(activeTool !== undefined ? { activeTool } : {})}
-                  {...(retry !== undefined ? { retry } : {})}
-                  {...(renderStatus !== undefined ? { status: renderStatus } : {})}
-                  {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
-                  {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-                  {...(meta?.context !== undefined ? { context: meta.context } : {})}
-                  {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})} />
-              </div>
-              {!isMobile && (
-                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
-                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                    data-testid="attach-image" className="shrink-0">
-                    <IconPhoto size={16} />
-                  </IconButton>
-                </div>
-              )}
+            {/* SessionBar（Task 0008 · P3 修订）：输入框上方的**会话累计**事实条 + 添加图片。
+                用户 2026-11-05："turnstat bar 把一些信息换为累计的信息……图片那个可以融入到
+                turnstatusbar 了，或不叫 turnstatusbar？换一个名字" → 改名 SessionBar，图片并进来。
+                手机上仍回 composer 底行（那里已有添加图片）。 */}
+            <div data-testid="composer-dock" className={`${isMobile ? "hidden" : ""} px-1 pb-1`}>
+              <SessionBar totals={sessionTotals}
+                {...(meta?.context !== undefined ? { context: meta.context } : {})}
+                {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})}
+                {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                onAttachImage={() => fileInputRef.current?.click()} />
             </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}

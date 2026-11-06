@@ -159,6 +159,20 @@
     from { opacity: 0; transform: translateY(-2px); }
     to { opacity: 1; transform: translateY(0); }
   }
+
+  /* ResponseBar 等待呼吸（Task 0008 · P3）：轻微透明度呼吸，不抢注意力。
+     数值依据 Material 3 motion（`material-components/material-web` 的
+     `tokens/v0_192/_md-sys-motion.scss`：`duration-short4=200ms`、`duration-medium1=250ms`、
+     `easing-emphasized=cubic-bezier(0.2,0,0,1)`；查证记录见 Task 0008 `tools/nav-demo/AGENTS.md`）。
+     呼吸是**循环**而不是一次性过渡，故取 1.8s 作完整周期：
+     半个周期 900ms 与 arc-spin 一圈同长（0.9s），一转一吸同拍；曲线用 emphasized（进出都缓）。
+     幅度 1 → 0.55：用户要"轻微"，且不能淡到看不见文字（对比度按最淡一帧核算）。
+     仅 opacity，不位移（位移会让人想点它）。 */
+  --animate-response-waiting: response-waiting 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
+  @keyframes response-waiting {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
 }
 
 /*
