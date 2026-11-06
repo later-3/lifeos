@@ -137,6 +137,7 @@
 | 运行中 | 行左点脉冲（conversations §4） | covered |
 | 完成未读 | 右侧绿徽标（`success-soft`） | covered |
 | 失败 | 右侧红点（`danger`） | covered |
+| 动作区（历史/重命名/删除） | 悬停行出现、移开消失；点击行不钉住（Task 0005）；键盘 Tab 进动作钮（focus-visible）出现；触屏点行（focus-within，仅 `@media (hover: none)`）出现；隐藏时 `pointer-events: none` 不可误点 | covered（2026-11-05） |
 | 超长组 | 不截断（本轮）→ todo | 未实现 + 已登记 |
 
 ## 9 内容与可访问性

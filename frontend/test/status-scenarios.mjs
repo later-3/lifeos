@@ -179,9 +179,12 @@ const nums = (badges) => {
   check("2 开跑前无呼吸数字", before.running === 0);
   check("2 开跑 → 助手行呼吸1", nums(p.agentBadges).running === 1, JSON.stringify(nums(p.agentBadges)));
   check("2 开跑 → 项目行呼吸1", nums(p.projectBadges).running === 1, JSON.stringify(nums(p.projectBadges)));
-  check("2 呼吸徽标在动（animate-pulse）", await app.page.evaluate(() => {
+  check("2 呼吸徽标在动（动画名非 none）", await app.page.evaluate(() => {
     const el = document.querySelector('[data-state-count="running"]');
-    return el !== null && getComputedStyle(el).animationName !== "none";
+    if (el === null) return false;
+    // 断的是"有动画"，不是具体哪条 keyframes —— 改版后呼吸从 animate-pulse 换成
+    // badge-dot（圆点缩放），写死 pulse 会让断言假红（C173 坑：断言写成实现细节）。
+    return getComputedStyle(el).animationName !== "none";
   }));
   check("2 会话行有呼吸点", p.rowDots.some((d) => d.title === "生成中" && d.visible));
   await app.close();

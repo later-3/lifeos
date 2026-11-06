@@ -49,8 +49,9 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
+import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 
@@ -100,13 +101,27 @@ type UsageSummary = { input: number; output: number; cacheRead: number; cacheWri
  * 正常结束（绿）与异常结束（红），**规则完全相同：看过就消失，不持久记录**。
  * 所以徽标回答「有几件事要你看」，与**会话行的点永远同步**：点进去了，点和数字一起减。
  *
- * ## 为什么"正在跑"要和"已完成"用不同底色
+ * ## 样式（用户 2026-11-05 选定：P1 配色 + 薄底药丸 + 圆点缩放呼吸）
  *
- * 两个都是绿色会混淆。区分靠**色系深浅 + 动效**，不靠新增色相：
- *   · 正在跑 → 实心 `success` 底 + 白字 + 呼吸（最抢眼：它是活的）
- *   · 已完成 → `success-soft` 底 + `success` 字（安静：它只是等你点一下）
- *   · 异常   → `danger-soft` 底 + `danger` 字
- * 零值不渲染（pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
+ * 三种状态**三个色相**，全部「薄底 + 同色深字」：
+ *   · 正在跑 → `running` 蓝（#1d4ed8 / #eef2ff）← 换了色相，理由见下
+ *   · 已完成 → `success` 绿（#067647 / #ecfdf3）
+ *   · 失败   → `danger` 红（#b42318 / #fef3f2）
+ *
+ * 为什么换掉"实心绿 + 白字"（用户两次指出）：
+ *   ① 结构不协调 —— 另外两个是彩色字，只有它是白字，并排看"白 1"和"绿 3"不像一套东西；
+ *   ② 颜色撞车 —— 在跑与完成都是绿，实测两个 14px 色块 ΔRGB = **0**，
+ *      只靠"在不在呼吸"区分；关掉动画（prefers-reduced-motion）就彻底分不出。
+ *   换蓝后 ΔRGB：run↔done 152、run↔err 248、done↔err 198 —— 两两都远。
+ *   全套对比度 ≥5.4:1（WCAG AA 正文达标）。
+ *
+ * 为什么是蓝而不是橙/灰：橙与 danger 红 ΔRGB 只有 32（13px 上几乎一样）；
+ * 灰不表达"进行中"。蓝是全行业「进行中」的默认色（进度条 / 加载）。
+ *
+ * 呼吸：**圆点缩放**（`animate-badge-dot`），不是整体明暗 —— 实心色块整体变淡会让人
+ * 以为数字要消失了；只让圆点缩放，数字始终清晰。光环（halo）留给未来的角标形态。
+ *
+ * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
  */
 function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unreadDone" | "unreadError"; unit: "会话" }) {
   if (count <= 0) return null;
@@ -116,17 +131,18 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     : kind === "unreadDone"
       ? `${count} 个${unit}已完成待查看`
       : `${count} 个${unit}失败待查看`;
+  // 薄底 + 同色深字（三态结构一致）；只有"在跑"加圆点缩放的呼吸。
   const tone = kind === "running"
-    ? "bg-success text-white animate-pulse"
+    ? "bg-running-soft text-running animate-badge-dot"
     : kind === "unreadDone"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
   return (
     // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
-    // 尺寸：单数字用正方形（14×14），双数字靠 px-1 自然撑开 —— 之前 min-w-4(16px) + px-1.5(12px)
-    // 让一个字符的水滴宽到 19px，视觉上像一块色块，用户反馈"绿色底太宽，很丑"。
-    // 现在用更紧的 min-w-3.5 + px-1；>9 时宽度自然增长，不需要另设规则。
-    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
+    // 尺寸：16×16（h-4 min-w-4 px-1）。14px 时字几乎顶满色块（用户："像色块"），
+    // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
+    // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
+    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -594,8 +610,15 @@ export default function App() {
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
   const lostCheckRef = useRef(false);    // 判丢检查互斥（异步查 running 时不要重入）
-  const sentHistoryRef = useRef<string[]>([]);   // 输入历史（↑/↓ 浏览，本进程内）
-  const historyIndexRef = useRef(-1);
+  /**
+   * 输入历史（↑/↓ 浏览）的游标 —— Task 0012。
+   *
+   * 历史**不在这里存**：它由当前会话的消息派生（`inputHistoryOf(messages)`，见下面 `inputHistory`）。
+   * 这里只存"浏览到第几条"，并且**带上它属于哪个作用域**（会话或草稿键）：
+   * 作用域一变（切会话/切 Agent/发首条消息从草稿变会话），游标自动作废，
+   * 不依赖 React effect 的执行时机去"记得清"（那正是老实现漏清的原因）。
+   */
+  const historyCursorRef = useRef<HistoryCursor>(NO_HISTORY_CURSOR);
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
   // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
   const sendTextRef = useRef<(raw: string) => void>(() => {});
@@ -794,6 +817,18 @@ export default function App() {
     setInputState(text);
     writeDraftFor(draftKey, text);
   }
+
+  /**
+   * 本会话的输入历史（最近一条在前）—— Task 0012。
+   *
+   * **派生，不自记**：事实源是服务端会话消息（`messages` 由 `GET …/sessions/:id` 或流事件重建），
+   * 所以切会话天然隔离、刷新也不丢，不需要"发送时往一个数组里塞"这条第二事实源。
+   * 为什么不用 localStorage：Pi TUI 是在打开会话时用该会话消息 `populateHistory` 重置，
+   * pi-web 直接派生（`ChatWindow.tsx:822-833`）；三家都不额外持久化一份发送流水（见 01-background 行业参考）。
+   */
+  const inputHistory = useMemo(() => inputHistoryOf(messages), [messages]);
+  /** 历史的作用域：有会话 = 会话 id；草稿 = agent/项目。切作用域即换历史（游标随 scope 作废）。 */
+  const historyScope = draftKey ?? "";
 
   // 只在"贴底"时跟随；流式期间直接设 scrollTop（smooth 会追不上 delta，产生抖动）。
   useLayoutEffect(() => {
@@ -2236,16 +2271,10 @@ export default function App() {
       // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
       // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
       if (annosText === "") {
-        if (raw !== "") {
-          sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-          historyIndexRef.current = -1;
-          void sendText(raw);
-        }
+        if (raw !== "") void sendText(raw);
         return;
       }
       const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
-      if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-      historyIndexRef.current = -1;
       // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
       pendingAnnoRestore.current = [...anno.annotations];
       pendingConsumeIdsRef.current = pendingAnnos.map((a) => a.id);
@@ -2254,11 +2283,19 @@ export default function App() {
       return;
     }
 
-    if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
     void sendText(raw);
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
+  /**
+   * 当前打开的会话：**跨项目扁平查找**，不是从「选中项目」的分组里找。
+   *
+   * 为什么（Task 0011 的根因）：`selectedProjectId` 与 `sessionId` 是两份独立状态 ——
+   * 点另一个项目的会话行、或点另一个项目的分组头，两者就会不一致；从选中项目的分组里
+   * `find` 当前会话必然落空，头部大字标题于是变成空、回落产品名「Life OS」。
+   * 会话自带项目归属（session ∈ Agent × Project），查它不需要先知道"当前项目"。
+   */
+  const currentSessionItem = findSessionRow(groups, sessionId);
   /**
    * 当前会话是不是"与其他 Agent 的对话"。
    * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
@@ -2266,9 +2303,18 @@ export default function App() {
    */
   // 判断逻辑抽到 header-strip.ts 的 isPeerSessionOf（纯函数 + 单测），
   // 因为它是"批注能不能用"的总开关，算错一次就是全站失效（2026-11-04 实际发生过）。
-  const isPeerSession = isPeerSessionOf(sessionId, currentGroup?.sessions);
-  // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
-  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
+  //
+  // 用**跨项目找出来的那一条**判断：拿「选中项目」的分组判断，跨项目时会漏成"普通会话" → 批注开关错（Task 0011）。
+  const isPeerSession = isPeerSessionOf(sessionId, currentSessionItem === undefined ? [] : [currentSessionItem]);
+  /**
+   * 头部大字标题（`header h1`）：**只来自会话自己**，与列表同一份派生（Task 0011）。
+   *
+   * 改前的写法是 `sessionTitle !== "" ? sessionTitle : "Life OS"` —— 产品名兜底。
+   * 产品名不是这条会话的任何信息：一旦出现，就说明"选中项目 ≠ 会话所属项目"，
+   * 用户看到的却是一个像标题的假名字。规则已抽进 `headerTitleOf()`（纯函数，单测锁住）。
+   */
+  const sessionTitle = currentSessionItem?.title.display ?? "";
+  const headerTitle = headerTitleOf({ sessionId, displayTitle: sessionTitle });
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
   const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
@@ -2351,10 +2397,7 @@ export default function App() {
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
   const isIdFallback = (item?: SessionItem) => (item?.title.raw ?? "").trim() === "";
-  /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
-  const currentSessionItem = sessionId === undefined
-    ? undefined
-    : groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sessionId);
+  /** 当前打开的会话：上面 `findSessionRow(groups, sessionId)` 已算好（跨项目查找，唯一一处）。 */
 
   /**
    * 会话列表里的"我"这一方（Task 0015 · T17）：用户本人。
@@ -2591,7 +2634,7 @@ export default function App() {
                                 </>
                               }
                               status={runNow
-                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-running animate-badge-dot" data-state-dot="running" title="生成中" />
                                 : failure !== undefined
                                   // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
@@ -2688,7 +2731,7 @@ export default function App() {
           ))}
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
-            <h1 className="truncate text-body font-semibold text-ink-900">{loaded && sessionId === undefined ? "新会话" : sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
+            <h1 className="truncate text-body font-semibold text-ink-900">{headerTitle}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
@@ -3034,6 +3077,10 @@ export default function App() {
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
+                  // 用户一打字就退出历史浏览（Pi TUI 里每个编辑动作都调 exitHistoryBrowsing）。
+                  // 只认 textarea 的 change（只有用户输入会触发它，程序 setInput 不会），
+                  // 不用"文字是否等于历史某条"去猜（规范 2.1：禁止靠值比较猜语义）。
+                  historyCursorRef.current = NO_HISTORY_CURSOR;
                   setInput(next);
                   if (next.startsWith("/") && !next.includes(" ") && !next.includes("\n")) {
                     const items = COMMANDS.filter((item) => item.key.startsWith(next.trim()));
@@ -3074,15 +3121,26 @@ export default function App() {
                     }
                     if (event.key === "Escape") { event.preventDefault(); setPalette(undefined); return; }
                   }
-                  // 输入历史：空输入时 ↑/↓ 浏览（对齐 Pi CLI 的 historyPrevious/Next）
-                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && input === "" && sentHistoryRef.current.length > 0) {
-                    event.preventDefault();
-                    // ↑ 走向更早历史（索引 +1），↓ 走回更新/清空（索引 -1）。
-                    const delta = event.key === "ArrowUp" ? 1 : -1;
-                    const next = Math.max(-1, Math.min(sentHistoryRef.current.length - 1, historyIndexRef.current + delta));
-                    historyIndexRef.current = next;
-                    setInput(next === -1 ? "" : sentHistoryRef.current[next] ?? "");
-                    return;
+                  // 输入历史：↑/↓ 浏览**本会话**发过的消息（chat.md §3.5）——Task 0012。
+                  // 规则全在纯函数里（frontend/src/input-history.ts，逐条契约见 test/input-history.test.mjs）：
+                  //   · 历史从当前会话消息派生，切会话即换（不再有"整页一份、切换忘了清"的问题）；
+                  //   · ↑ = 更旧、↓ = 更新，方向与"最近一条在前"的数组同向（Pi TUI editor.ts:456-486）；
+                  //   · 已在浏览时输入框非空也继续走（`input === ""` 只是**进入**浏览的条件，
+                  //     老实现把它当成每一次按键的前提，于是第一下之后再也按不动）。
+                  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                    const step = historyNavigate({
+                      cursor: historyCursorRef.current,
+                      scope: historyScope,
+                      history: inputHistory,
+                      direction: event.key === "ArrowUp" ? "older" : "newer",
+                      inputEmpty: input === "",
+                    });
+                    if (step !== undefined) {
+                      event.preventDefault();
+                      historyCursorRef.current = step.cursor;
+                      setInput(step.text);
+                      return;
+                    }
                   }
                   if (event.key !== "Enter" || event.shiftKey) return;
                   const native = event.nativeEvent;

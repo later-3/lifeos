@@ -90,7 +90,8 @@
   1. **composer dock（裸行，无框无底色）**：左区 = 回合事实（TurnStatusBar 数据对象不变，只是渲染进来：步骤/耗时/重试/指标，符号 tooltip 忧在）；右区 = 输入工具注册槽（`composer-tools`，📷 图片为第一槽，语音/@文件等往里排，按钮同右端钉住）。手机：工具钮回输入卡底行右端，左区无内容时整行隐藏（规则性降级，非特例）。
   2. **输入卡（`composer` 单容器）**：自上而下 = 排队条/调色板（未来横幅同层）→ 附件缩略图行（`composer-attachments`，多图并排）→ 输入行（textarea + 发送/停止钮在同一 flex 行，`items-end`：单行时占位提示与按钮同行，多行时按钮随末行右端对齐）。
 - **容器持有唯一的 focus ring**（`focus-within:ring-accent`），聚焦时整个卡一个环；textarea 的 focus 指示在设计系统内**移交**给容器（tokens.css `composer-autogrow` 作用域内 outline:none），禁止出现内层第二个环。调色板不做成与输入框无关的独立浮层。
-- **键盘**：Enter 发送、Shift+Enter 换行、IME 组字及 100ms 宽限；调色板打开时 ↑/↓ 选择、Enter 执行、Esc 关闭；空输入 ↑/↓ 浏览本进程输入历史；生成中全局 Esc 打断（组字中除外）。
+- **键盘**：Enter 发送、Shift+Enter 换行、IME 组字及 100ms 宽限；调色板打开时 ↑/↓ 选择、Enter 执行、Esc 关闭；空输入 ↑/↓ 浏览**本会话**输入历史（见下）；生成中全局 Esc 打断（组字中除外）。
+- **输入历史**（2026-11-05 用户报告后重做，Task 0012）：**从当前会话的用户消息派生**（`frontend/src/input-history.ts` 的 `inputHistoryOf`），不是另记一份流水——所以切会话天然隔离、刷新不丢。↑ = 更旧（最近一条先出）、↓ = 更新（走到底回到空输入）；**已在浏览时输入框非空也继续走**（「空输入」只是进入浏览的条件）；用户一打字即退出浏览；历史属于哪个会话由游标的作用域决定（切会话游标自动作废）。上限 50、按内容去重（口径与三条对照见 `reference-baseline.md` 的「输入历史」行）。
 - **生成中**：Enter 走 Pi 原生 `steer` 插话；API 也支持 `followUp`/排队；排队条已实现（`run-queue`，仅可见展示）。
 - **高度**：CSS 原生自适应（`composer-autogrow` = `field-sizing: content`，不支持浏览器 JS 兜底），下限 = 单行，上限 = `tokens.css` 的 `--composer-max-height`（8 行），超出内部滚动。
 - **占位符**：单句；桌面在同行附键盘提示（如“输入消息 · Enter 发送 · Esc 打断 · / 命令”），**禁止**用 `\n` 排版多行说明；手机只写“输入消息”（mobile.md §3）。
@@ -141,7 +142,7 @@
 | 列折叠 | 完全独立；收起进全局 44px 导航轨（常数与实现见 `specs/frontend-development/frontend-spec.md` §3） | 并列折叠仍保聊天宽度 |
 | 列拖宽 | 列间 1px 分隔线拖动 | 夹紧区间；宽度 localStorage；方向按把手位置 |
 | 左侧图标轨 | 常驻 44px（全局规则见 `specs/frontend-development/frontend-spec.md` §3），高亮 = 该列展开 | 不做 hover 自动展开；不做多列互斥 |
-| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；无会话时标题显示“新会话”（草稿态没有会话标题）；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；**无会话时显示"新会话将用的档位"**（Agent 配置 → 系统 settings → Pi 默认 `medium`，来自 `/api/agents/:id/config` 的 `effective.thinkingLevel`，与模型段同源）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
+| 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；**标题规则（Task 0011，2026-11-05）**：`header h1` 只来自**会话自己**（`header-strip.ts` 的 `headerTitleOf()` + `findSessionRow()`，跨项目扁平查找，与列表同一份 `title.display`）——无会话 →「新会话」；有会话有名 → 显示名；有会话无名 → `会话 <id8>`；**任何情况都不回落产品名**（改前跨项目时因从「选中项目」的分组里找会话而落成 `Life OS`）；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；**无会话时显示"新会话将用的档位"**（Agent 配置 → 系统 settings → Pi 默认 `medium`，来自 `/api/agents/:id/config` 的 `effective.thinkingLevel`，与模型段同源）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
 | 固定状态条 | 消息滚动区外、输入框上方；左边 4 步/阶段/耗时数字，右边 `⚡速度 · ↑输入 ↓输出 ◔上下文`（均有 tooltip） | 不随消息滚；不写“本轮”前缀；符号必须有 tooltip |
 | 输入框 | 单容器 composer（见 §3.5）；草稿按会话归属；Enter 发送/插话；输入法组字不发送 | 发送失败回填草稿；`submittingRef` 防重复 |
 | 消息区 | 阅读列居中；用户深色气泡，助手贴白底；思考/工具/成功/失败用不同 token 背景 | 禁 HTML 透传；思考/工具可折叠；每个块带 `data-message-kind` |
@@ -192,7 +193,7 @@
 - 空会话输入框可用；首条消息自动建会话；输入法组字中的 Enter 不发送。
 - 右侧面板互斥；完整历史工具结果按 `toolCallId` 配对，不出现“永远执行中”。
 - 手机：会话页可见“返回项目”；导航选会话关闭；系统返回逐级退；离开底部出现回到底部箭头，点击后恢复跟随。
-- 输入框：composer 只有一个 focus ring；调色板/未来横幅在容器内；textarea 有可访问名；自动 1–8 行；空输入 ↑/↓ 能取回本进程输入历史；手机 placeholder 只有“输入消息”，调色板行 ≥44。
+- 输入框：composer 只有一个 focus ring；调色板/未来横幅在容器内；textarea 有可访问名；自动 1–8 行；空输入 ↑ 取回**本会话**最近一条、连按 ↑ 逐条更早、↓ 逐条回来并回到空输入；**切到另一个会话后 ↑ 只能取到那个会话自己的话**；手机 placeholder 只有“输入消息”，调色板行 ≥44。
 
 ## 失败提示的可解读性（2026-10-26）
 
