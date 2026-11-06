@@ -88,3 +88,18 @@
 
 - 规则：行上的绿色徽标数字只表示"待查看"（Project = 未看会话数，Agent = 待看 Project 数）；总数只出现在列头统计里。Agent 的数字不得等于其下会话数之和。
 - 依据：2026-10-25 C126（上一版 Agent 数字写成会话数之和，且项目行同时显示总数与未读数，用户无法分辨）。机器检查：`test/status-map.test.mjs`（T67–T69）；视觉对比度 `frontend/test/ui-contract.mjs`（统计小药丸的文字色达标）。
+
+### 2.16 全局单例状态（高亮注册表、cache、id 计数器）的清理必须按归属，且要有跨归属回归测试
+
+- 规则：凡是对全局单例做 `delete` / `clear` / 覆盖写的地方，必须先确定"这条状态是不是我的"：高亮注册表 `CSS.highlights` 的名字带 owner（`anno-<markId>--<messageId>:<blockIndex>`），缓存键带完整作用域，id 生成必须对"当下已知集合"查重。测试夹具至少要两个归属先后跑，断言"先来的那个还活着"。
+- 依据：2026-11-05 C025（`paintAnnotations` 按块清全局 registry，兄弟块的批注高亮被擦，表现为"鼠标靠近才高亮"）、C024 同源缺陷（模块级 id 计数器 + 服务端持久数据 → 刷新后新建批注与旧 id 撞车，落盘静默覆盖）。机器检查：`test/annotations-paint.test.mjs`（owner 隔离 3 条）、`test/annotation-id.test.mjs`。
+
+### 2.17 静态资源的缓存与回退：缺失的文件必须 404，入口 HTML 必须 no-cache
+
+- 规则：静态服务不得把"看起来像文件"的缺失路径回退成 `index.html`；`/assets/*`（带内容 hash）用 `immutable` 长缓存，`index.html` / `sw.js` / `manifest` 必须 `no-cache`。任何一处缺失，一次重新构建就会让缓存了旧 HTML 的老页面永久白屏。
+- 依据：2026-11-05 C023（`GET /assets/index-<旧hash>.js` 返回 `200 text/html` → module script MIME 报错 → `#root` 永远空，刷新也无效）。机器检查：`test/static.test.mjs`。
+
+### 2.18 effect 里的请求守卫写"请求过了"，不写"缓存里有值"
+
+- 规则：数据加载 effect 的守卫条件必须能在"响应正常但不含所需数据"时变成假。按 key 记"已请求过"的集合，请求 200 即记（失败不记，留待重试）；不得用"缓存里已有该 key 的值"当唯一守卫。
+- 依据：2026-11-05 C023 第二缺陷（清单里没有某个 taskId 时守卫永远为假，实测 3 秒 **2664 次** `/tasks` 请求，当天日志 96% 是这一个端点）。机器检查：`test/task-title-cache.test.mjs`。
