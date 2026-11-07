@@ -98,3 +98,77 @@ test("T70 聚合层不做 99 上限（截断是显示层的事）", async () => 
   const r = deriveStatus({ sessions: {}, aggregate: [agg("alpha", "p1", 120, 150, 8)] }, { visible: false });
   assert.deepEqual(r.agents.alpha, { running: 120, unreadDone: 150, unreadError: 8 });
 });
+
+// ——————————————————————————————————————————————————————————————
+// 状态机：补丁如何改槽位（2026-11-05 用户实测 bug 的回归）
+// ——————————————————————————————————————————————————————————————
+//
+// 这两个用例对应一个真实故障：用户点开一个**正在跑**的会话，
+// 行上蓝点在呼吸，但项目行/助手行**没有数字**。
+//
+// 根因：点开会话 → 服务端 focus → `markSessionViewed` 推 `{ unread: null }`
+// → 前端原来一律 `setSlot(..., undefined)`，把整条槽位删掉（含 running）。
+//
+// 现在规则：`{ unread: null }` 只清"未读"，**在跑的保持不动**。
+
+/** 迷你版状态机（与 App.tsx 的 setSlot / clearUnreadSlot 同一规则）。 */
+const makeSlots = () => {
+  const map = new Map();
+  const setSlot = (sessionId, agentId, projectId, slot) => {
+    if (slot === undefined) { map.delete(sessionId); return; }
+    const current = map.get(sessionId);
+    // projectId 只增不减
+    const effective = projectId ?? current?.projectId;
+    map.set(sessionId, { agentId, ...(effective !== undefined ? { projectId: effective } : {}), slot });
+  };
+  const clearUnreadSlot = (sessionId) => {
+    const current = map.get(sessionId);
+    if (current === undefined) return;
+    if (current.slot === "running") return;   // 在跑的不受"已读"影响
+    map.delete(sessionId);
+  };
+  const apply = (sessionId, agentId, projectId, patch) => {
+    if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
+      setSlot(sessionId, agentId, projectId, patch.failure != null ? "unreadError" : "unreadDone");
+    } else if ("unread" in patch && patch.unread === null) {
+      clearUnreadSlot(sessionId);
+    } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
+      setSlot(sessionId, agentId, projectId, "running");
+    } else if ("running" in patch && patch.running === null) {
+      setSlot(sessionId, agentId, projectId, undefined);
+    }
+  };
+  return { map, apply };
+};
+
+test("T67 点开正在跑的会话（{unread:null}）不清掉 running 槽位", () => {
+  const { map, apply } = makeSlots();
+  apply("s1", "a", "p1", { running: { since: "2026-11-05T00:00:00Z" } });
+  assert.equal(map.get("s1")?.slot, "running", "开跑后应占 running 格");
+
+  // 用户点开它 → 服务端推 {unread: null}（此时它根本没有未读）
+  apply("s1", "a", "p1", { unread: null });
+
+  assert.equal(map.get("s1")?.slot, "running", "在跑的会话不能被「已读」清掉");
+  assert.equal(map.get("s1")?.projectId, "p1", "项目归属也要保住");
+});
+
+test("T68 点开已完成未读的会话（{unread:null}）清掉槽位", () => {
+  const { map, apply } = makeSlots();
+  apply("s1", "a", "p1", { unread: { since: "2026-11-05T00:00:00Z" } });
+  assert.equal(map.get("s1")?.slot, "unreadDone");
+
+  apply("s1", "a", "p1", { unread: null });
+
+  assert.equal(map.get("s1"), undefined, "未读被看过 → 这条不再计数");
+});
+
+test("T69 不带 projectId 的补丁不把槽位挪到「无项目桶」", () => {
+  const { map, apply } = makeSlots();
+  apply("s1", "a", "p1", { running: { since: "2026-11-05T00:00:00Z" } });
+
+  // 历史上 focus 端点推的补丁不带 projectId
+  apply("s1", "a", undefined, { running: { since: "2026-11-05T00:00:05Z" } });
+
+  assert.equal(map.get("s1")?.projectId, "p1", "projectId 只增不减：不能被 undefined 覆盖");
+});

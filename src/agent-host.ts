@@ -712,7 +712,13 @@ export function turnSnapshotAll(): Array<TurnRecord & { agentId: string }> {
  * 只做①不做②，行上的绿点会一直留到下次全量重取列表 —— 这是 Task 0005 实测到的缺口。
  */
 export function markSessionViewed(agentId: string, sessionId: string, at: string, projectId: string | undefined): void {
+  // **没有未读就不要推补丁**（2026-11-05 修）：一个正在跑的会话没有任何未读可清，
+  // 原来照样推 `{ unread: null }` —— 前端把它当"清状态"，把 running 槽位一起删了，
+  // 于是"行上蓝点在呼吸、项目/助手没有数字"（用户截图报告的 bug）。
+  // 这一层是兜底：即使调用方乱调，也不会发出会误导前端的补丁。
+  const before = sessionViewsOf().unread().some((item) => item.agentId === agentId && item.sessionId === sessionId);
   sessionViewsOf().markViewed(agentId, sessionId, at);
+  if (!before) return;
   rowPatches().pushNow(agentId, sessionId, projectId, { unread: null });
 }
 
