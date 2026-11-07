@@ -24,6 +24,18 @@ import { AnnotationCard, AnnotationDraft } from "./annotation-card";
 import { markById } from "./marks";
 import { Markdown } from "./message-markdown";
 
+/**
+ * 草稿框（拖选后弹出的"新建批注"卡片）**临时关闭** —— Task 0013，用户 2026-11-07 拍板（方案 A）。
+ *
+ * 为什么关：拖选之后弹出的草稿框会①抢走焦点②清空选区，导致"选中即复制"永远来不及
+ *（用户 2026-11-05 原话：「如果选中文字就会出现那个框，用户来不及去复制」）。
+ * 用户 2026-11-06 定：**只暂时不显示，代码保留**，等 T11 重做批注入口（两段式：拖选 → 小图标 → 点击展开）时再启用。
+ *
+ * **删除条件**：T11 落地时删掉这个开关和下面两处 `if (!ANNO_DRAFT_ENABLED)` / `&& ANNO_DRAFT_ENABLED`，
+ * 不要留着变成第二套实现分支。
+ */
+const ANNO_DRAFT_ENABLED = false;
+
 type AnnotatedTextBlockProps = {
   text: string;
   blockIndex?: number;
@@ -266,6 +278,9 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     }
 
     // ② 拖选 → 新建批注。流式期不建（文字还在变，锚点会漂）
+    //    草稿框临时关闭期间（Task 0013）整段跳过：不 setDraft、不 removeAllRanges、不抢焦点，
+    //    选区原样留给"选中即复制"。
+    if (!ANNO_DRAFT_ENABLED) return;
     if (busy) return;
     const range = selection.getRangeAt(0);
     if (!host.contains(range.commonAncestorContainer)) return;
@@ -374,8 +389,8 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
         );
       })}
 
-      {/* draft 编辑框 */}
-      {draft !== null && hostRect !== null && (
+      {/* draft 编辑框（Task 0013：ANNO_DRAFT_ENABLED=false 时不渲染） */}
+      {ANNO_DRAFT_ENABLED && draft !== null && hostRect !== null && (
         <AnnotationDraft
           quote={draft.quote}
           rects={draft.rects}

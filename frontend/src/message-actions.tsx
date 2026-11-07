@@ -83,7 +83,8 @@ export function MessageActionBar({ side, actions, hovered, suppressed = false }:
 
   return (
     <div data-testid="message-actions"
-      className={`flex gap-1 pt-0.5 transition-opacity duration-150 ${side === "user" ? "justify-end" : "justify-start"} ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
+      /* select-none（Task 0013）：动作条是界面件；不然从正文拖到底会把「复制」也复制进去 */
+      className={`flex select-none gap-1 pt-0.5 transition-opacity duration-150 ${side === "user" ? "justify-end" : "justify-start"} ${visible ? "opacity-100" : "opacity-0 pointer-events-none"}`}>
       {shown.map((action) => {
         const state = feedback[action.key];
         return (
