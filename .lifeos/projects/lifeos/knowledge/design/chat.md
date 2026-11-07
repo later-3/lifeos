@@ -143,7 +143,7 @@
 |---|---|---|
 | 整体骨架 | 三列级联 + 聊天 + 右侧面板 | 列宽由 `layout.ts` 计算，组件不重算 |
 | 列折叠 | 完全独立；收起进全局 44px 导航轨（常数与实现见 `specs/frontend-development/frontend-spec.md` §3） | 并列折叠仍保聊天宽度 |
-| 列拖宽 | 列间 1px 分隔线拖动 | 夹紧区间；宽度 localStorage；方向按把手位置 |
+| 列拖宽 | 边界上的 8px 透明命中区拖动（静止不画线，hover 才浮出 2px 高亮；Task 0006） | 夹紧到「不压破聊天保底」为止（`maxWidthOf` 从视口算，不再有 440 这种无依据常量）；宽度 localStorage；方向按把手位置 |
 | 左侧图标轨 | 常驻 44px（全局规则见 `specs/frontend-development/frontend-spec.md` §3），高亮 = 该列展开 | 不做 hover 自动展开；不做多列互斥 |
 | 主区头部 | 44px：标题 + 头部状态条（header strip）+ 文件面板开关 | **头部状态条是分段容器**（Task 0002，2026-10-24）：`frontend/src/header-strip.ts` 的 `buildHeaderSegments()` 纯函数产出段（`agent/project/model/thinking/task`）后 `join(" · ")`，整体 truncate；增删调段 = 增删数组项，将来点击切换 = 给对应段挂 action（容器不改）；模型段没 `/model` 覆盖 → 有效默认（Agent 配置/系统/清单第一项），覆盖过 → 会话模型；**标题规则（Task 0011，2026-11-05）**：`header h1` 只来自**会话自己**（`header-strip.ts` 的 `headerTitleOf()` + `findSessionRow()`，跨项目扁平查找，与列表同一份 `title.display`）——无会话 →「新会话」；有会话有名 → 显示名；有会话无名 → `会话 <id8>`；**任何情况都不回落产品名**（改前跨项目时因从「选中项目」的分组里找会话而落成 `Life OS`）；无会话也显示有效默认；thinking 段显示会话生效档位本身（如 `high`，无"思考"二字）；**无会话时显示"新会话将用的档位"**（Agent 配置 → 系统 settings → Pi 默认 `medium`，来自 `/api/agents/:id/config` 的 `effective.thinkingLevel`，与模型段同源）；task 段显示「ID 标题」（无 Task 前缀，标题来自项目任务清单，缺失时只 ID）；**无会话时显示项目默认 Task**（`0001 默认`，因为新建会话必然绑到它），有会话时只显示该会话的 Task、会话没有 Task 时不拿默认顶替（`header-strip.ts` 的 `headerTaskOf`） | 不放大徽标/计数；不为空白；长内容由容器统一截断 |
 | 固定状态条 | 消息滚动区外、输入框上方；左边 4 步/阶段/耗时数字，右边 `⚡速度 · ↑输入 ↓输出 ◔上下文`（均有 tooltip） | 不随消息滚；不写“本轮”前缀；符号必须有 tooltip |

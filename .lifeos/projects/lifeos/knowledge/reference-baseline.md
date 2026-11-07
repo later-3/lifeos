@@ -99,6 +99,7 @@
 
 ## 3. 明确不参照
 
+- **Zulip 的界面**（2026-11-06 用户裁决）：它可作为机制/产品决策参考（读代码与文档），但**界面观感一律不参照**。理由见 §0.1。
 - **泛泛的"行业惯例"**：不写具体项目与文件的，不作为依据；
 - 与本项目形态差异大的系统（K8s/Helm/Terraform 等）：除非某场景真的需要它已成型的小机制，否则不引；
 - 第三方 Agent 框架（LangChain 等）：Life OS 的 Agent 运行时是 Pi，**不引第二套**。
@@ -158,14 +159,29 @@
 | **Radix Themes**（审美基线；`@radix-ui/themes@3.3.0` 已取到发布包） | 颜色阶与 alpha 机制的"权威做法" | 12 步中性（`gray-1..12` + `gray-a1..a12`）+ 9 步主色（`indigo-1..9`）+ 语义层（`--color-panel-solid/translucent`、`--color-surface: rgba(255,255,255,.85)`）；组件里悬停用 `--gray-a3`（57 处）、卡片描边 `--gray-a3/a6`（`components.css:1932-1967`） | 无 | 借"阶 + 角色层 + alpha"机制，替掉我们手挑的 4 个中性 hex | 它的整体观感（中性克制，不是我们的 IM 气质）；不引入它的组件实现 |
 | **LobeChat `@lobehub/ui@6.10.2`**（审美基线，IM 气质） | 对话类产品的观感 + 主题派生 | 用 `chroma-js` 从品牌色推导整套色；含 `Tree`/`ChatHeader` 等 IM 组件 | 无 | "主题模式"的实现路数：一套 token，多套色阶 | 它的业务组件与图标集 |
 
-### 0.1 参考分两栏（2026-10-31 用户裁决，案例 C155）
+### 0.1 参考分两栏（2026-10-31 用户裁决，案例 C155；2026-11-06 修订名单）
 
 **"参考某个项目"必须先说明借哪一栏。** 两栏不能混：混了就会把丑产品的装饰件抄进来（已发生：P-02 照抄 Zulip 括线）。
 
 | 栏 | 允许借 | 本项目名单 |
 |---|---|---|
-| **机制参考**（观感反例，只借机制/算法/结构） | 缩进 = disclosure 列宽、描边用 alpha、弱填充 + 描边做状态、折叠状态存数组、深色用公式派生 | **Zulip** @`3e9bc1e`、**Mattermost** @`8b2fb370`、**Rocket.Chat** @`034260e` |
-| **审美基线**（必须好看且可核） | 表面分层、中性色相与阶、状态词汇、密度分级、光学补偿、主题派生 | **shadcn/ui Sidebar**、**Radix Themes**、**LobeChat `@lobehub/ui`** |
+| **机制参考**（只借机制/算法/结构，**不看界面**） | 缩进 = disclosure 列宽、描边用 alpha、弱填充 + 描边做状态、折叠状态存数组、深色用公式派生 | **Zulip** @`3e9bc1e`（**只看代码/文档，不看 UI**）、**Mattermost** @`8b2fb370`、**Rocket.Chat** @`034260e` |
+| **审美基线**（必须好看且可核） | 表面分层、中性色相与阶、状态词汇、密度分级、光学补偿、主题派生 | **LobeHub 产品界面**（A 级，读源码，见下方 §0.2）、**shadcn/ui Sidebar**、**Radix Themes**、**Discourse**（C 级，见 §0.2） |
+
+**硬约束（2026-11-06 用户裁决）**：
+
+- **禁止** Zulip 的**界面**作为任何观感依据（用户："它的 UI 就很丑"）。它的代码与文档仍可作机制参考，但**不得抄它的视觉**；
+  已经照抄的观感件按此作废（D10 括线，Task 0006）。
+- 名单外的产品不得作为观感依据；新增参考必须先补 §0.2 的行（项目 + commit + 日期 + 借什么/不借什么）再落码。
+
+### 0.2 审美基线名单（2026-11-06 用户裁决）
+
+| 参考 | 级别 | 本机位置 / 版本 | 能借什么（观感） | 不借 |
+|---|---|---|---|---|
+| **LobeHub 产品界面** | **A**（读源码） | `Task 0006/evidence/lobehub` @ `39c18141`（`canary`，2026-11-07 检出）；产品 `https://github.com/lobehub/lobehub` | 导航层三档底色（`colorBgLayout` / `LIST_COLUMN_BACKGROUND` / `colorBgContainer`）、选中的**重量级**（filled .06 强于 hover .03）、一条 1px 列边、`NavItem` 的行结构与缩进对齐、`DraggablePanel` 的宽度处理 | 它的业务组件、图标集、品牌色、Next/StyleX 技术栈 |
+| **shadcn/ui Sidebar** | A（取到 registry 源码） | `https://ui.shadcn.com/r/styles/new-york-v4/sidebar.json` @2026-10-31 | 角色层 token 家族（`--sidebar-*` 六项）、状态词汇、密度分级（h-8 / p-2 / h-7） | React/Radix 组件结构、Tailwind 类名、皮肤值 |
+| **Radix Themes** | A（发布包） | `@radix-ui/themes@3.3.0` | 12 步中性阶 + alpha 机制、`--color-surface` 语义 | 整体观感、组件实现 |
+| **Discourse** | **C**（只看产品/文档，不读前端源码） | `https://github.com/discourse/discourse`（Rails + Ember，前端技术栈与 React 差异大，不 clone） | 产品决策与结构：分组/未读/长列表/侧栏组织 | 它的界面前端实现与视觉皮肤 |
 
 取不到源码的（Linear/Arc/Notion/Vercel Geist）**只能当 C 级气质参考**：存图、比气质，不写条文、不当基线。
 
