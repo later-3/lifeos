@@ -109,6 +109,16 @@ const PALETTES: Palette[] = [
 // 形状：薄底药丸 / 点 + 数字
 // ——————————————————————————————————————————————————————————————
 
+/** badgelab 自己的动画（主应用已换成 badge-breathe / dot-breathe，这里保留对照用的旧形态）。 */
+const LAB_STYLES = `
+@keyframes lab-badge-dot { 0%,100% { transform: scale(1); } 50% { transform: scale(.8); } }
+@keyframes badge-halo { 0% { box-shadow: 0 0 0 0 rgba(29,78,216,.45); } 70% { box-shadow: 0 0 0 4px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes badge-soft { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.animate-badge-dot { animation: lab-badge-dot 2.4s cubic-bezier(.45,0,.55,1) infinite; }
+.animate-halo { animation: badge-halo 2.4s cubic-bezier(.45,0,.55,1) infinite; }
+.animate-badge-soft { animation: badge-soft 1.8s ease-in-out infinite; }
+`;
+
 /**
  * 薄底药丸：16px 高、同色深字、没有白字。
  *
@@ -219,6 +229,7 @@ export default function Lab() {
 
   return (
     <div className="min-h-screen bg-sunken pb-10">
+      <style>{LAB_STYLES}</style>
       <header className="mx-auto max-w-[1220px] px-6 pt-6">
         <h1 className="text-title font-semibold text-ink-900">会话数字徽标 · 配色与形状</h1>
         <p className="mt-1.5 max-w-[860px] text-meta leading-relaxed text-ink-700">
