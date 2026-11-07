@@ -4,7 +4,13 @@
 // 两个工具都只是"薄封装"：真正的动作在 src/agents.ts（创建 / 归档），与 HTTP 接口共用同一份实现。
 // 名字必须加进 createAgentSession 的 tools allowlist（那是白名单："When provided, only matching
 // tools are enabled"），否则注册了也调不到。
-import { Type } from "@earendil-works/pi-ai";
+// `Type` 从 `typebox` 直接取（Task 0015 · P1）：上游 Pi 从 v1.5.0 起不再从 `@earendil-works/pi-ai`
+// 主入口 re-export TypeBox 的 `Type`（校验改由 `@earendil-works/pi-schema` 做），而
+// `ToolDefinition.parameters` 的类型仍是 TypeBox `TSchema`（上游 `core/extensions/types.ts`
+// 的 `TParams extends TSchema`、`core/tools/tool-definition-wrapper.ts` 写明 "TypeBox's Static"）。
+// 版本与 `pi/packages/coding-agent/package.json` 的 typebox 依赖保持一致（1.3.27），
+// 否则 pnpm 会装出第二份副本，`defineTool` 的泛型收窄会因两个 TSchema 而失效。
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { archiveAgent, createAgent } from "./agents.ts";
 import { createTask, listTasks } from "./tasks.ts";

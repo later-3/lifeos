@@ -198,14 +198,16 @@ Pi TUI 的 `↓ Jump to latest message` / 回到底部已作为手机与桌面�
 
 ## 3. 参考代码库
 
-源码参考统一放在仓库外的本机目录（建议 `~/Code/reference/`，不进 Life OS Git）：
+源码参考统一放在**唯一根** `~/Code/reference/`（不进 Life OS Git）。**清单只有一份**：
+`~/.lifeos/projects/workspace/knowledge/reference-projects.md`（所有 Agent 共用，逐项记 repo / 分支 / commit / 日期 / 定位 / 用在哪；例外项与原因也在那里）。
 
-- 每个条目记录 repo、branch、当前 commit、用途、最后核对日期；
+- 要参考什么 → 先读那份索引；不在里面的，按索引里的"新增流程"拉进来再引用；
+- 版本以索引里的 commit 为准，不看"目录当前检出"；
 - 只作为阅读/对照，不把参考代码复制进 Life OS；
 - 更新前先看 `git status`，不覆盖本地改动；不自动 pull 脏工作区；
 - 开源参考优先；闭源产品只保留截图/录屏/官方文档。
 
-具体参考项目按场景写入 `reference-baseline.md`，不在这里复制第二份清单。
+具体场景"借什么/不借什么"写入 `reference-baseline.md`，不在这里复制第二份清单。
 
 ## 4. Agent 模拟验收
 

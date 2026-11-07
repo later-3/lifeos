@@ -25,3 +25,14 @@ export function compactTokens(count: number): string {
   if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   return `${Math.round(count / 1_000_000)}M`;
 }
+
+/**
+ * 本轮已用秒数（Task 0015 · P3）—— 纯函数，可以单测。
+ *
+ * `startedAtMs` = 本轮的**开始时刻**（服务端 `running[].startedAt` 或本会话发起时的时刻）。
+ * 为什么不用"组件挂载时刻"：切会话再切回来，秒数会从 0 重数 —— 同一个回合两个数字。
+ * 时钟回拨（`nowMs < startedAtMs`）夹到 0，不显示负数。
+ */
+export function elapsedSeconds(startedAtMs: number, nowMs: number = Date.now()): number {
+  return Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+}

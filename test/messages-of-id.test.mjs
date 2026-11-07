@@ -98,3 +98,47 @@ test("T1-4 既有字段未被破坏（role/text/blocks 仍在）", async () => {
   // 原有可选字段仍在（不是被 id 挤掉）
   assert.ok("at" in (assistant ?? {}), "at 字段应仍存在");
 });
+
+/**
+ * Task 0015 · P2：`streaming` 只在"本会话正在跑 + 这是最后一条 assistant"时出现。
+ *
+ * 为什么必须测：过程区"一会儿展开一会儿折叠"的根因是切会话时前端拿到的历史里没有
+ * "这条还在追加"这个事实（`App.tsx` 的 `messageLive` 读的就是它）。后端不补这个字段，
+ * 前端只能靠 `busy` 开关猜——而 `busy` 在切会话时被清。
+ */
+test("T2-1 不在跑：任何消息都不带 streaming", async () => {
+  const { dir, file } = await makeSession([
+    msg("s1", "user", [{ type: "text", text: "问" }]),
+    msg("s2", "assistant", [{ type: "text", text: "答" }], "s1", { stopReason: "end" }),
+  ]);
+  const state = stateOf(file, dir);
+  state.session.isStreaming = false;
+  const out = messagesOf(state);
+  assert.equal(out.some((m) => m.streaming !== undefined), false, `不该有 streaming：${JSON.stringify(out.map((m) => [m.role, m.streaming]))}`);
+});
+
+test("T2-2 正在跑：只有最后一条 assistant 带 streaming: true", async () => {
+  const { dir, file } = await makeSession([
+    msg("r1", "user", [{ type: "text", text: "第一问" }]),
+    msg("r2", "assistant", [{ type: "text", text: "第一答" }], "r1", { stopReason: "end" }),
+    msg("r3", "user", [{ type: "text", text: "第二问" }], "r2"),
+    msg("r4", "assistant", [{ type: "thinking", thinking: "想" }], "r3"),
+  ]);
+  const state = stateOf(file, dir);
+  state.session.isStreaming = true;
+  const out = messagesOf(state);
+  assert.equal(out.find((m) => m.id === "r4")?.streaming, true, "最后一条 assistant 必须标 streaming");
+  assert.equal(out.filter((m) => m.streaming === true).length, 1, "只标一条（同一会话最多一条在追加）");
+  assert.equal(out.find((m) => m.id === "r2")?.streaming, undefined, "历史 assistant 不得被标记");
+  assert.equal(out.find((m) => m.id === "r3")?.streaming, undefined, "user 消息不得被标记");
+});
+
+test("T2-3 正在跑但最后一条是 user（刚受理）：没有 assistant 可标，字段不出现", async () => {
+  const { dir, file } = await makeSession([
+    msg("u1", "user", [{ type: "text", text: "问题" }]),
+  ]);
+  const state = stateOf(file, dir);
+  state.session.isStreaming = true;
+  const out = messagesOf(state);
+  assert.equal(out.some((m) => m.streaming !== undefined), false);
+});

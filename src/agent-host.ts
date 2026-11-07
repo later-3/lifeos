@@ -1541,7 +1541,10 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }> };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }>;
+  /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）。
+   *  墙钟耗时要靠它做终点：工具执行时间不在 assistant.durationMs 里（Task 0015 · P4）。 */
+  resultAt?: number; };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
@@ -1567,7 +1570,15 @@ export function sessionImageBytesOf(state: SessionState): number {
 }
 
 /** 消息（含结构化块）：text/thinking/toolCall 按 Pi 真实内容块返回，toolResult 挂回对应调用
- * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
+ * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。
+ *
+ * `streaming`（Task 0015 · P2）：**只在会话正在跑、且这是最后一条 assistant 消息时**给出 `true`，
+ * 其余情况**不出现该字段**（不是 `false`）。
+ * 为什么要它：前端切会话时会 `setMessages(history)`，而历史接口以前从不带"在跑"，
+ * 于是同一轮在"停留"与"切回"两种情形下 `messageLive` 一真一假——过程区一会展开一会折叠的根源
+ * （`frontend/src/App.tsx:2953-2971` 的 `messageLive` 就是读它）。
+ * 为什么不放前端补：运行真相在服务端（`specs/code/architecture` §2.4）；peer、历史接口共用同一份。
+ */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
   // durationMs / tokens（2026-11-02）：过程条要数“花了多久 / 多少 token”，两者都在 assistant 消息上，不在块里
@@ -1584,6 +1595,8 @@ export function messagesOf(state: SessionState) {
      *  批注要挂到"哪条消息"上，没有稳定 id 就只能挂 index，而 index 会随重渲染/切换漂移。
      *  实测：一个 entry 恰好对应一条消息（398 条消息 0 个多产出），entry.id 全局唯一。 */
     id: string;
+    /** 这一段是否还在追加（Task 0015 · P2）：只在"本会话正在跑 + 这是最后一条 assistant"时为 `true`。 */
+    streaming?: true;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
@@ -1660,6 +1673,11 @@ export function messagesOf(state: SessionState) {
         if (call === undefined) continue;
         call.result = result;
         call.isError = message.isError;
+        // 工具结果的产生时刻（Task 0015 · P4）：Pi 的 `toolResult.timestamp` 就是它。
+        // 没有它，一轮的"墙钟耗时"只算到最后一个 assistant 结束，`sleep 20` 这种长工具会被漏掉
+        //（实测：墙钟 34417ms vs Σassistant.durationMs 28323ms，差的 6 秒正是工具执行）。
+        const resultAt = (message as { timestamp?: unknown }).timestamp;
+        if (typeof resultAt === "number" && Number.isFinite(resultAt) && resultAt > 0) call.resultAt = resultAt;
         // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
         const direct = toolResultImages(message);
         const images = direct.length > 0 ? direct : imageBlocksOfRefs(message);   // D7：引用行 → 附件还原
@@ -1667,6 +1685,15 @@ export function messagesOf(state: SessionState) {
         break;
       }
     }
+  }
+  // 运行标记（Task 0015 · P2）：只在"本会话正在跑 + **最后一条消息就是 assistant**"时标 `streaming: true`。
+  // 读的是 Pi 的公开 getter（`AgentSession.isStreaming`，v1.3/v1.5/main 都存在），不是内存记账。
+  // 为什么要求"最后一条就是 assistant"：刚受理时最后一条是 user，此时上一轮的 assistant 已经结束，
+  // 给它标 streaming 会让界面把旧回复当成"正在追加"（实测考例 T2-3 锁这一条）。
+  // 为什么不给前端自己补：切会话时前端拿到的就是这份历史，它无法知道"这条还在追加"。
+  if (state.session.isStreaming) {
+    const last = out[out.length - 1];
+    if (last !== undefined && last.role === "assistant") last.streaming = true;
   }
   return out;
 }

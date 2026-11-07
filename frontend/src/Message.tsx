@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
 import { Spinner } from "./design/ui";
-import { WorkingRow } from "./working-row";
 import { ResponseBar } from "./response-bar";
 import { MarkBar } from "./mark-bar";
 import type { ProcessStats } from "./process-stats";
@@ -36,6 +35,8 @@ export type Block =
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
       result?: string; isError?: boolean; truncated?: boolean; durationMs?: number;
+      /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）：墙钟耗时的终点（Task 0015 · P4） */
+      resultAt?: number;
       /** 工具读到的图片（Pi 的 read）：与 result 文字并列展示 */
       images?: Array<{ data: string; mimeType: string }>;
       /** 仅客户端：由 tool_execution_start/update/end 驱动，不靠整轮 busy */
@@ -125,22 +126,16 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
   annotationActions?: AnnotationActions;
   /**
-   * ResponseBar 的数据（Task 0008 · P3）：undefined = 不渲染。
-   * waiting/live/指标由 App 按会话运行状态算好传入。
+   * ResponseBar 的数据（Task 0008 · P3；Task 0015 · P5 收窄）：undefined = 不渲染。
+   *
+   * **动态状态（第几步/阶段/秒数/重试）不在这里**——用户 2026-11-07 拍板统一到 `SessionBar`，
+   * 这里只留：等待过渡、过程统计、回合结论文案。
    */
   responseBar?: {
     stats?: import("./process-stats").ProcessStats;
     live?: boolean;
     waiting?: boolean;
-    step?: import("./working").TurnStep;
-    phase?: import("./stream-blocks").Phase;
-    activeTool?: string;
     status?: { text: string };
-    metrics?: { output: number; ttftSeconds: number; tokPerSecond: number };
-    usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
-    context?: { percent: number | null; window: number } | null;
-    payload?: { estimated: number; limit: number | null };
-    turnId?: string;
   } | undefined;
   /** MarkBar 的数据与动作（Task 0008 · P2）：undefined = 不渲染（无批注/peer 会话）。 */
   markBar?: {

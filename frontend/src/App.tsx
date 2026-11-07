@@ -24,9 +24,10 @@ import {
 } from "./display-prefs";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
 import { processOpenOf } from "./response-fold";
-import { SessionBar } from "./session-bar";
+import { SessionBar, type SessionBarTurn } from "./session-bar";
 import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
+import { lastUserAtMs, turnWallMsOf } from "./turn-duration";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
@@ -580,17 +581,21 @@ export default function App() {
    * `undefined` = 该 session 用户从未点过。
    */
   const [responsePrefs, setResponsePrefs] = useState<Record<string, "open" | "folded">>(() => ({}));
-  const toggleResponseProcess = useCallback(() => {
+  /**
+   * 切换过程区的展开态（Task 0015 · P2）。
+   *
+   * **参数是用户眼前看到的那个值**（`processOpenOf(...)` 的渲染结果），不再自己拿
+   * `busyRef` 推一遍——以前两处 live 不同源（渲染用 `messageLive`、点击用 `busyRef`），
+   * 两者不一致时点一下会算出与预期相反的 next（"点了没反应"）。
+   */
+  const toggleResponseProcess = useCallback((currentOpen: boolean) => {
     if (sessionId === undefined) return;
-    // 当前实际展开态 = state ?? localStorage（刷新后 state 为空）?? 默认（生成中展开）
-    const isLive = busyRef.current && busySessionRef.current === sessionId;
-    const current = responsePrefs[sessionId] ?? readResponsePref(sessionId) ?? (isLive ? "open" : "folded");
-    const next = current === "open" ? "folded" : "open";
+    const next = currentOpen ? "folded" : "open";
     // 副作用放在 updater **外面**：updater 必须是纯函数（StrictMode 会双调用，
     // 写在里面会写两次盘，实测得到与界面相反的值）
     try { localStorage.setItem(`${RESPONSE_PREF_PREFIX}${sessionId}`, next); } catch { /* 忽略 */ }
     setResponsePrefs((prev) => ({ ...prev, [sessionId]: next }));
-  }, [sessionId, responsePrefs]);
+  }, [sessionId]);
 
   /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
   const annoPinnedOf = useCallback(
@@ -2726,6 +2731,34 @@ export default function App() {
    */
   const renderStatus = outcomeNotice ?? turnStatus;
   /**
+   * 当前回合（Task 0015 · P3/P5）：用户 2026-11-07 要求"在 session bar 里面添加"，
+   * 并要求**动态状态只在这一处**（"放在 session bar 里面，这样也别做两套了"）。
+   *
+   * 只在**焦点会话正在跑**时给出（`busy` 已带归属守卫：`busySessionRef` 必须是当前会话），
+   * 空闲时不传 —— `SessionBar` 整段不渲染，不留空行。
+   *
+   * `startedAtMs` 的优先级（**锚点必须与完成后摘要同一个**，否则数字会跳）：
+   * 1. 本轮用户消息的 `at`（`lastUserAtMs`）—— `turnWallMsOf()` 的起点就是它，
+   *    所以"进行中最后一秒看到的数"与"完成后摘要里的数"能对上；
+   * 2. 服务端 `running[].startedAt` —— 刚受理、user 消息还没落盘（`at` 缺失）时兜底；
+   * 3. 不传 —— `WorkingRow` 回落到自己的挂载时刻（最后兜底，正常路径不会走到）。
+   */
+  const sessionTurn: SessionBarTurn | undefined = useMemo(() => {
+    const live = busy && sessionId !== undefined && busySessionRef.current === sessionId;
+    if (!live) return undefined;
+    const anchor = lastUserAtMs(messages) ?? startedAtOf(runFacts, sessionId);
+    const startedAtMs = anchor ?? (turnStartedAtRef.current > 0 ? turnStartedAtRef.current : undefined);
+    return {
+      step: turnStep,
+      phase,
+      ...(activeTool !== undefined ? { activeTool } : {}),
+      ...(retry !== undefined ? { retry } : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+    };
+    // runFacts.startedAt 每次快照/事件都会换新对象；只取这一个字段作依赖，避免无关变化触发重算
+  }, [busy, sessionId, turnStep, phase, activeTool, retry, runFacts.startedAt, messages]);
+
+  /**
    * 会话累计事实（Task 0008 · P3 修订）：轮次/工具调用/生成耗时/token/平均速度。
    *
    * 口径与来源写在 `session-totals.ts` 的文档注释里（那边有单测锁住）。
@@ -2896,11 +2929,18 @@ export default function App() {
                   const replyLive = replyMessages.some((m) => m.streaming === true);
                   if (!isUser && isFirstReply) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
-                    const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
+                    // 时长（Task 0015 · P4）：**墙钟**，与 SessionBar 的累计口径、以及「当前回合」
+                    // 进行中那个秒数是同一个函数（`turnWallMsOf`）算出来的。
+                    // 以前这里用 Σassistant.durationMs（纯模型时间），跑完会比跑的时候小，
+                    // 数字往回跳（实测 sleep 6 的回合：墙钟 34417ms vs ΣdurationMs 28323ms，案例 C004）。
+                    // **进行中不算时长**：那一刻的墙钟由 SessionBar 的「当前回合」在显示（它每秒在走）。
+                    // 这里只在**完成后**给一个定值，避免同一个数在两个地方各说一套（案例 C004）。
+                    const span = spanByIndex.get(index);
+                    const wallMs = replyLive || span === undefined ? undefined : turnWallMsOf(messages, span);
                     const tokens = replyMessages.reduce((sum, m) => sum + (m.tokens ?? 0), 0);
                     const stats = statsOf(allBlocks, {
-                      ...(durationMs > 0 ? { durationMs } : {}),
-                      ...(tokens > 0 ? { tokens } : {}),
+                      ...(wallMs !== undefined && wallMs > 0 ? { durationMs: wallMs } : {}),
+                      ...(tokens > 0 && !replyLive ? { tokens } : {}),
                     });
                     const live = replyLive;
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
@@ -2960,16 +3000,24 @@ export default function App() {
                    * 老 ProcessBar 用的就是轮级 live（`process.live`），这里保持一致。
                    */
                   const messageLive = isThisStreaming || replyLive;
+                  /** 过程区**当前是否展开**（渲染与点击共用这一个值，Task 0015 · P2）：
+                   *  以前点击自己拿 `busyRef` 再算一遍，两处 live 不同源时点一下会算出相反的 next。 */
+                  const messageProcessOpen = processOpenOf(responsePref, messageLive);
                   const messageResponseBar = message.role === "assistant"
                     ? {
-                        // 进行中：轮在跑 → live；占位（无 blocks）→ waiting 呼吸
+                        // 进行中：轮在跑 → live（等待过渡 / 过程块展开）；占位（无 blocks）→ 等待过渡
                         ...(messageLive ? { live: true, waiting: (message.blocks?.length ?? 0) === 0 } : {}),
-                        ...(messageLive ? { step: turnStep, ...(phase !== undefined ? { phase } : {}), ...(activeTool !== undefined ? { activeTool } : {}), ...(retry !== undefined ? { retry } : {}) } : {}),
+                        // **动态状态不在这里**（Task 0015 · P5，用户 2026-11-07）：
+                        // "关于动态的东西……直接放到 session bar 里面，这样也别做两套了。只是每一次
+                        //  response bar 完成之后，他自己的信息自己给他那儿展示，在正在完成的过程当中，
+                        //  就还是显示在 session bar"。
+                        // 所以 step / phase / activeTool / retry / 秒数全部只由 SessionBar 的「当前回合」显示，
+                        // 这里只在**完成后**给出过程摘要（stats，见 process）。
                         // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
                         ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
                         // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
-                        processOpen: processOpenOf(responsePref, messageLive),
-                        onToggleProcess: () => toggleResponseProcess(),
+                        processOpen: messageProcessOpen,
+                        onToggleProcess: () => toggleResponseProcess(messageProcessOpen),
                       }
                     : undefined;
 
@@ -3032,12 +3080,17 @@ export default function App() {
             {/* SessionBar（Task 0008 · P3 修订）：输入框上方的**会话累计**事实条 + 添加图片。
                 用户 2026-11-05："turnstat bar 把一些信息换为累计的信息……图片那个可以融入到
                 turnstatusbar 了，或不叫 turnstatusbar？换一个名字" → 改名 SessionBar，图片并进来。
-                手机上仍回 composer 底行（那里已有添加图片）。 */}
+                手机上仍回 composer 底行（那里已有添加图片）。
+                **Task 0015 · P3**：用户 2026-11-07 要求把"当前回合"加回来——
+                "这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样，
+                 而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
+                所以 `turn` 只在生成中传（空闲时整段不渲染）；ResponseBar 那边一行不改。 */}
             <div data-testid="composer-dock" className={`${isMobile ? "hidden" : ""} px-1 pb-1`}>
               <SessionBar totals={sessionTotals}
                 {...(meta?.context !== undefined ? { context: meta.context } : {})}
                 {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})}
                 {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                {...(sessionTurn !== undefined ? { turn: sessionTurn } : {})}
                 onAttachImage={() => fileInputRef.current?.click()} />
             </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
@@ -3364,7 +3417,7 @@ function IconArrowUpIcon() {
   );
 }
 import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
+import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./run-facts";
 import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
