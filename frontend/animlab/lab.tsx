@@ -59,15 +59,15 @@ type Params = {
 const PRESETS: Array<{ key: string; name: string; note: string; params: Params }> = [
   {
     key: "now",
-    name: "A · 现在（v4）",
-    note: "已合入 main 的一组。徽标 +1px、点 +1.3px、环 4px。",
-    params: { badgeScale: 1.06, dotScale: 1.22, duration: 2400, easing: "cubic-bezier(.45,0,.55,1)", ringSpread: 4, ringOpacity: 0.38, spinnerDuration: 900, textPulseMin: 0.5, waitingMin: 0.55, chatDuration: 1800, respectReducedMotion: true },
+    name: "A · 现在（v5 你调定的）",
+    note: "徽标几乎不动（1.02），表达交给小蓝点（1.30）；环 3px 但很浓（.8）；周期 3s。",
+    params: { badgeScale: 1.02, dotScale: 1.30, duration: 3000, easing: "cubic-bezier(.45,0,.55,1)", ringSpread: 3, ringOpacity: 0.8, spinnerDuration: 1200, textPulseMin: 0.7, waitingMin: 0.7, chatDuration: 3000, respectReducedMotion: true },
   },
   {
-    key: "v3",
-    name: "B · 上一版（v3）",
-    note: "你说「夸张了一点点」的那一版。徽标 1.12、点 1.35、环 6px。",
-    params: { badgeScale: 1.12, dotScale: 1.35, duration: 2400, easing: "cubic-bezier(.45,0,.55,1)", ringSpread: 6, ringOpacity: 0.45, spinnerDuration: 900, textPulseMin: 0.5, waitingMin: 0.55, chatDuration: 1800, respectReducedMotion: true },
+    key: "v4",
+    name: "B · 上一版（v4）",
+    note: "徽标 1.06、点 1.22、环 4px。你说「稍微有点夸张」。",
+    params: { badgeScale: 1.06, dotScale: 1.22, duration: 2400, easing: "cubic-bezier(.45,0,.55,1)", ringSpread: 4, ringOpacity: 0.38, spinnerDuration: 900, textPulseMin: 0.5, waitingMin: 0.55, chatDuration: 1800, respectReducedMotion: true },
   },
   {
     key: "soft",

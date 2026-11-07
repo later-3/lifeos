@@ -147,7 +147,7 @@
    * 动效只有一处："正在工作"的旋转弧（会话区工作指示 / 工具执行中）。
    * 页面层不再写 animate-[...] —— 时长与曲线只在这里定，改一处全站生效。
    */
-  --animate-arc: arc-spin 0.9s linear infinite;
+  --animate-arc: arc-spin 1.2s linear infinite;
   @keyframes arc-spin {
     to { transform: rotate(360deg); }
   }
@@ -168,10 +168,10 @@
      半个周期 900ms 与 arc-spin 一圈同长（0.9s），一转一吸同拍；曲线用 emphasized（进出都缓）。
      幅度 1 → 0.55：用户要"轻微"，且不能淡到看不见文字（对比度按最淡一帧核算）。
      仅 opacity，不位移（位移会让人想点它）。 */
-  --animate-response-waiting: response-waiting 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
+  --animate-response-waiting: response-waiting 3s cubic-bezier(0.2, 0, 0, 1) infinite;
   @keyframes response-waiting {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
+    50% { opacity: 0.7; }
   }
 }
 
@@ -252,56 +252,64 @@
  *
  * 只有 running 态呼吸；完成/失败都是静止的（它们不会自己变，不需要吸引注意力）。
  */
-@keyframes badge-soft {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: .5; }
-}
 /*
- * 「呼吸」动画（Task 0005 · 2026-11-05 第五版，用户第五次调速：**回收幅度**）。
+ * 动效「呼吸」—— 参数由用户 2026-11-06 在 animlab 里调定（值是用户给的，不是选出来的）。
  *
- * ## 演进（每次都是用户实机看过之后的判断）
+ * ## 为什么是放大而不是缩小（这是硬约束，不是审美）
  *
- * | 版本 | 形态 | 结果 |
- * |---|---|---|
- * | v1 | `scale 1↔.88` | "不明显，整个呼吸的感觉不够" |
- * | v2 | `scale 1↔.80` | 仍不明显；且 6px 的点缩到 4.8px，几何门禁在低谷期变红 |
- * | v3 | `scale 1↔1.12`（徽标）/ `1↔1.35`（点）+ 6px 扩散环 | "还是夸张了一点点，再往回收一些" |
- * | **v4（现行）** | `scale 1↔1.06` / `1↔1.22` + **4px** 扩散环 | 目标：比 v1 强一点点，比 v3 明显收住 |
- *
- * ## 为什么是放大而不是缩小（这一条不变）
- *
- * `getBoundingClientRect()` 返回**变换后**的盒子。缩小会让同一页面在动画不同时刻
- * 时红时绿（实测：6px 的点缩到 .70 只有 4.2px，`≥6×6` 门禁直接失败）。
+ * `getBoundingClientRect()` 返回**变换后**的盒子。缩小会让同一个页面在动画不同时刻
+ * 时红时绿（实测：6px 的点缩到 .70 只有 4.2px，`≥6×6` 的几何门禁直接失败）。
  * 放大则**最小值 = 基准尺寸**，任何时刻都满足几何下限。
  *
- * ## 为什么幅度落在 6% / 22%
+ * ## 演进（每一版都是用户实机看过之后说的）
  *
- * - 徽标 16px 放大 6% = **+1px**：刚好能被余光察觉，不会挤到同行内容；
- * - 点 6px 放大 22% = **+1.3px**：小元素需要**相对**更大的比例才能看见同样多的像素变化；
- * - 扩散环 4px（v3 是 6px）：环太远会显得"在放烟花"，4px 是贴边的轻微外扩。
+ * | 版本 | 徽标 | 点 | 环 | 用户判断 |
+ * |---|---|---|---|---|
+ * | v1 | 1↔.88 | — | — | "不明显" |
+ * | v2 | 1↔.80 | — | — | "还是不够"，且几何门禁在低谷期变红 |
+ * | v3 | 1↔1.12 | 1↔1.35 | 6px | "夸张了一点点，收一些" |
+ * | v4 | 1↔1.06 | 1↔1.22 | 4px | "稍微有点夸张" |
+ * | **v5（现行）** | **1↔1.02** | **1↔1.30** | **3px / .8** | 用户在 animlab 里调定 |
  *
- * 曲线 `cubic-bezier(.45, 0, .55, 1)` 与周期 2.4s 保留 —— 用户认可"丝滑"，只是嫌幅度大。
+ * ## 这一版的取舍（用户选择，不是推导）
+ *
+ * 徽标几乎不动（1.02 = 16px → 16.3px，+0.3px），把"在动"的表达交给
+ * **会话行的小蓝点**（1.30 = 6px → 7.8px，+1.8px）——小元素需要相对更大的比例。
+ * 扩散环起始透明度 .8（比之前浓很多）但距离只有 3px：**贴边的一道亮环**，
+ * 而不是向外扩散的光晕。周期 3s（更接近静息呼吸）。
  */
 @keyframes badge-breathe {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.06); }
+  50%      { transform: scale(1.02); }
 }
 @keyframes dot-breathe {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.22); }
+  50%      { transform: scale(1.30); }
 }
-/* 扩散环：从元素边缘向外推到 4px 并淡出。用 box-shadow 而非 transform → 不动布局。 */
+/* 扩散环：向外推 3px 并淡出。用 box-shadow 而非 transform → 不动布局、不影响几何断言。 */
 @keyframes badge-ring {
-  0%   { box-shadow: 0 0 0 0 var(--badge-ring, rgba(29, 78, 216, .38)); }
-  70%  { box-shadow: 0 0 0 4px transparent; }
+  0%   { box-shadow: 0 0 0 0 var(--badge-ring, rgba(29, 78, 216, .8)); }
+  70%  { box-shadow: 0 0 0 3px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
 @utility animate-badge-breathe {
-  animation: badge-breathe 2.4s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 2.4s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation: badge-breathe 3s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 3s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 @utility animate-dot-breathe {
-  animation: dot-breathe 2.4s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 2.4s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation: dot-breathe 3s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 3s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+
+/*
+ * 工作指示文案的呼吸（「输出中…」）—— 用户 2026-11-06 给的 textPulseMin .7 / 周期 3s。
+ * 原来用 Tailwind 的 `animate-pulse`（opacity 1↔.5 / 2s）：比用户要的更急也更淡。
+ */
+@keyframes text-breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .7; }
+}
+@utility animate-text-breathe {
+  animation: text-breathe 3s cubic-bezier(.45, 0, .55, 1) infinite;
 }
 
 @utility animate-badge-soft {
