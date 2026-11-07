@@ -69,7 +69,14 @@ export function ResponseBar({
   return (
     <div data-testid="response-bar"
       className={waiting ? "rounded-panel motion-safe:animate-response-waiting" : "rounded-panel"}>
-      <div className="flex min-h-7 flex-wrap items-center gap-x-3 gap-y-1 py-1"
+      {/*
+        摘要行 `select-none`（Task 0013）：它是"这一轮做了几次工具、多久、多少 token"的**界面统计**，
+        不是对话内容。不加的话从摘要行往下拖选会把「36 次工具 · 8 分 44 秒 · 200.2k tokens · 查看过程」
+        一起复制进剪贴板（实测）。
+        **只能加在这一行，不能加在根节点**（`:70`）：过程区 `process-body` 是根的子节点，
+        加在根上会连工具/思考正文一起禁选 —— 而那正是用户要能复制的部分。
+      */}
+      <div className="flex min-h-7 select-none flex-wrap items-center gap-x-3 gap-y-1 py-1"
         {...(stats !== undefined ? { title: processDetail(stats) } : {})}>
         {/* 左区按"当下最要紧"排一个：等待 → 进行中 → 回合结论文案；过程摘要是常驻入口，可与它们并存 */}
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">

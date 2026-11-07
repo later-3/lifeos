@@ -173,7 +173,13 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const headerRight = role === "user" && align === "end";
   const header = avatar !== undefined || authorName !== undefined ? (
     <div data-testid="message-header"
-      className={`flex min-w-0 items-center gap-1.5 text-micro text-ink-500 ${headerRight ? "justify-end" : ""}`}>
+      /**
+       * `select-none`（Task 0013）：消息头是界面件，不是对话内容。
+       * 不加的话，从消息头往下拖选会把「c / coder / 09:51」一起复制进去（实测：
+       * 得到 "c\ncoder\n09:51\n\n36 次工具 · 8 分 44 秒 · …\n查看过程\n<正文>"）。
+       * 用户 2026-11-07 拍板：对话区域里的文字都要能复制，但界面文案不该混进剪贴板。
+       */
+      className={`flex min-w-0 select-none items-center gap-1.5 text-micro text-ink-500 ${headerRight ? "justify-end" : ""}`}>
       {avatar}
       {authorName !== undefined && <span className="min-w-0 truncate font-medium text-ink-700">{authorName}</span>}
       {at !== undefined && <span className="shrink-0 tabular-nums text-ink-500">{formatClock(at)}</span>}

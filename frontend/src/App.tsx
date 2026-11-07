@@ -54,6 +54,8 @@ import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
 import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
+import { useCopyOnSelect } from "./use-copy-on-select";
+import { CopyFeedbackToast } from "./copy-toast";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -755,6 +757,12 @@ export default function App() {
   const activeTurnIdRef = useRef<string | null>(null);
   const streaming = useRef(false);
   const scrollRef = useRef<HTMLElement>(null);
+  /**
+   * 选中即复制（Task 0013 · 用户 2026-11-07 拍板）：
+   * 对话区域（`<main>`）里拖选/双击/三击，松手即写剪贴板，并在选区上方显示「已复制 · N 字」1000ms。
+   * 判据与几何都在纯函数里（`copy-on-select.ts`），这里只挂事件与渲染提示。
+   */
+  const copyFeedback = useCopyOnSelect(scrollRef, (message) => toast(message, "error"));
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -2752,6 +2760,9 @@ export default function App() {
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
+
+      {/* 选中即复制的提示（Task 0013）：fixed 定位，不参与任何列布局 */}
+      <CopyFeedbackToast feedback={copyFeedback} />
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
