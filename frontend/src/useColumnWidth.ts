@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DEFAULT_WIDTHS, dragWidth, layout, type Folded, type Widths } from "./design/layout";
+import { DEFAULT_WIDTHS, dragWidth, layout, maxWidthOf, type Folded, type Widths } from "./design/layout";
 
 // 列宽与拖拽（数值全部走 design/layout.ts 的唯一计算入口）：
 // - 持久化；旧格式（无 c4t）整体重置为默认，避免历史坏值把树钳死；
@@ -52,9 +52,12 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = widths[key];
+    // 上限从视口算（`maxWidthOf`）：常量表只当下限/硬顶，实际能拖到哪由「不压破聊天」决定。
+    // 旧实现只看常量表（c2≤440），1280 宽上明明能到 572 却停在 440，用户以为拖不动了。
+    const limit = maxWidthOf(key, viewport, widths, input.folded);
     // 方向来自把手位置（design/layout.ts HANDLE_SIGN），不在调用处判断
     const move = (moveEvent: MouseEvent) => {
-      const next = dragWidth(key, startWidth, moveEvent.clientX - startX);
+      const next = dragWidth(key, startWidth, moveEvent.clientX - startX, limit);
       setWidths((prev) => ({ ...prev, [key]: next }));
     };
     const stop = () => {

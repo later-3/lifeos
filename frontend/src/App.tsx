@@ -328,24 +328,49 @@ function legacyGroupsOpen(): boolean {
 
 function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
-      <Label className="min-w-0 truncate">{label}</Label>
-      {/* 数据统计：列头里的总数（助手/项目/会话各自有多少个），安静地跟在标题后面 */}
+    // 列内边距 8（design-language §5.1 / D21）：与助手行、分组头同一左缘。
+    // 旧值 pl-3(12) 与行的 px-1.5(6) / 分组头的 pl-2(8) 各自平行，一列三条左缘。
+    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2">
+      <Label tone="nav" className="min-w-0 truncate">{label}</Label>
+      {/* 数据统计：列头里的总数（助手/会话各自有多少个），安静地跟在标题后面 */}
       {count !== undefined && (
-        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
+        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
-      {hint !== undefined && <span className="min-w-0 truncate text-micro text-ink-500">· {hint}</span>}
+      {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
       <span className="ml-auto" />
       <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
     </div>
   );
 }
 
-/** 拖宽把手：6px 命中区，hover 才显 2px accent。 */
-function DragHandle({ onStart }: { onStart: (event: ReactMouseEvent) => void }) {
+/**
+ * 列拖宽把手（Task 0006 重做）。
+ *
+ * 旧实现在两列之间插一条 6px 的**布局宽度**，盒子继承父级白色 `bg-surface`，
+ * 两侧列却是 `sunken #fafafa` —— 屏幕上看到的是「白缝 6px + 细线 1px」，三条边，
+ * 而不是一条分界（实测 x276 #fff / x279 #e9e9ec / x280 #fff）。
+ *
+ * 现在：**不占布局宽度**，绝对定位压在列的右缘上（左右各半），静止时完全透明；
+ * 只 hover / 拖动时浮出一条 2px 高亮。依据：
+ * - VS Code `sash.css:63-78`：`:before` 背景 `transparent`，只有 `.hover/.active` 才上色；
+ *   且 sash 是 `position:absolute; width: 4px`，不占两栏之间的空隙。
+ * - LobeHub：列间只有一条 `border-inline-end: 1px solid colorBorderSecondary`
+ *   （`src/features/NavPanel/components/NavPanelDraggable.tsx:33`），没有缝。
+ *
+ * 命中区保持 8px（`HANDLE_HIT`）而不是 0：鼠标要在 8px 内能抓住，否则拖不动。
+ * 它 overflow 到相邻列上，但不占宽度、不挡内容（只在自己身上响应 mousedown）。
+ */
+function DragHandle({ onStart, side = "right" }: { onStart: (event: ReactMouseEvent) => void; side?: "right" | "left" }) {
   return (
-    <div className="group flex w-1.5 shrink-0 cursor-col-resize justify-center" onMouseDown={onStart}>
-      <div className="h-full w-px bg-line transition-colors group-hover:bg-accent" />
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={side === "right" ? "拖动调整宽度" : "拖动调整宽度（左侧面板）"}
+      onMouseDown={onStart}
+      className={`group/handle absolute inset-y-0 z-10 flex w-2 cursor-col-resize items-center justify-center ${side === "right" ? "-right-1" : "-left-1"}`}>
+      {/* 静止透明；hover / 拖动（body 光标为 col-resize 期间浏览器保持 hover）才浮出 2px 高亮 */}
+      <span aria-hidden
+        className="h-full w-0.5 rounded-full bg-transparent transition-colors group-hover/handle:bg-accent" />
     </div>
   );
 }
@@ -2528,10 +2553,13 @@ export default function App() {
     <>
       {!folded.nav && (
         <>
-          <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
+          {/* 列自己画右缘 1px 边（Task 0006）：不再由把手盒子充当分界。
+              `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
+          <aside style={{ width: box.c1 }} data-column="agents"
+            className="relative flex shrink-0 flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="agent-rows">
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
@@ -2560,15 +2588,16 @@ export default function App() {
                 </Row>
               ))}
             </div>
+            <DragHandle onStart={(event) => beginDrag("c1", event)} />
           </aside>
-          <DragHandle onStart={(event) => beginDrag("c1", event)} />
         </>
       )}
 
       {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
       {!folded.groups && (
         <>
-          <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken" data-testid="groups-panel">
+          <aside style={{ width: box.c2 }} data-column="sessions"
+            className="relative flex shrink-0 flex-col border-r border-nav-line bg-nav-bg" data-testid="groups-panel">
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
@@ -2599,7 +2628,7 @@ export default function App() {
                     {open && (
                       <GroupBody>
                         {group.sessions.length === 0 && (
-                          <p className="px-1 py-2 text-micro text-ink-500">该项目还没有会话 · 在右下输入框发消息即可新建</p>
+                          <p className="px-1 py-2 text-micro text-nav-muted">该项目还没有会话 · 在右下输入框发消息即可新建</p>
                         )}
                         {group.sessions.map((item) => {
                           // 会话行的三态**只认 `item.activity`**（Task 0005）。
@@ -2672,7 +2701,7 @@ export default function App() {
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
                                   : unread
                                     ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
-                                    : <span className="text-micro text-ink-500">{timeAgo(item.time.lastActivityAt)}</span>} />
+                                    : <span className="text-micro text-nav-muted">{timeAgo(item.time.lastActivityAt)}</span>} />
                           );
                         })}
                       </GroupBody>
@@ -2684,8 +2713,8 @@ export default function App() {
             <PanelFooter>
               <AddProjectButton onClick={() => setAddingProject(true)} />
             </PanelFooter>
+            <DragHandle onStart={(event) => beginDrag("c2", event)} />
           </aside>
-          <DragHandle onStart={(event) => beginDrag("c2", event)} />
         </>
       )}
     </>
@@ -3218,11 +3247,11 @@ export default function App() {
       {/* 完整历史 · 右侧并列列 */}
       {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          {!isMobile && <DragHandle onStart={(event) => beginDrag("c5", event)} />}
           <aside style={{ width: isMobile ? "100%" : box.history }}
-            className={`flex shrink-0 overflow-hidden ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
+            className={`relative flex shrink-0 overflow-hidden border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
             <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
               agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
+            {!isMobile && <DragHandle side="left" onStart={(event) => beginDrag("c5", event)} />}
           </aside>
         </>
       )}
@@ -3230,9 +3259,9 @@ export default function App() {
       {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
       {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
-          {!isMobile && <DragHandle onStart={(event) => beginDrag("c4", event)} />}
           <aside style={{ width: isMobile ? "100%" : box.panel }}
-            className={`flex shrink-0 overflow-hidden bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+            className={`relative flex shrink-0 overflow-hidden border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+            {!isMobile && <DragHandle side="left" onStart={(event) => beginDrag("c4", event)} />}
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
@@ -3258,13 +3287,13 @@ export default function App() {
                   </div>
                 ) : showTree ? (
                   <>
-                    <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
+                    <div style={{ width: box.tree }} className="relative flex min-w-0 shrink-0 flex-col overflow-hidden">
                       <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+                      <DragHandle onStart={(event) => beginDrag("c4t", event)} />
                     </div>
-                    <DragHandle onStart={(event) => beginDrag("c4t", event)} />
                   </>
                 ) : (
-                  <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-sunken py-1.5">
+                  <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-nav-line bg-nav-bg py-1.5">
                     <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
                   </nav>
                 )}
