@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, RAIL,
-  clampWidth, dragWidth, layout,
+  clampWidth, dragWidth, layout, maxWidthOf,
 } from "../frontend/src/design/layout.ts";
 
 /**
@@ -73,7 +73,8 @@ test("窄视口不再替用户收起列（点了不会弹回），改为压缩�
   assert.deepEqual(narrow.folded, requested, "用户的收展状态必须原样生效（旧规则会强制收项目列）");
   // Task 0015 · T15：合并后 1024 宽**并列放得下**（旧版是 1202 才够）。
   // 这正是合并的硬理由：13 寸笔记本上不再整体退化成抽屉。
-  assert.equal(narrow.overlayLeft, false, "合并后 1024 宽可以直接并列（阈值 588+420=1008）");
+  // Task 0006 后阈值降到 996（把手不占宽），1024 仍并列。
+  assert.equal(narrow.overlayLeft, false, "合并后 1024 宽可以直接并列（阈值 996）");
   assert.ok(narrow.chat >= MIN_CHAT, `浮层模式下聊天仍要保底，实际 ${narrow.chat}`);
   assert.equal(total(narrow), 1024, "宽度仍然守恒（浮层不占聊天宽度）");
 
@@ -87,12 +88,13 @@ test("宽窗口并列、窄窗口浮层：分界由「并列 + 聊天保底」�
   const requested = { nav: false, groups: false };
   const wide = layout({ viewport: 1600, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
   assert.equal(wide.overlayLeft, false, "1600 够放 → 并列");
-  // 合并后分界 = leftDocked(588) + MIN_CHAT(420) = 1008
-  const border = layout({ viewport: 1008, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.equal(border.overlayLeft, false, "1008 刚好够放（588 + 420）→ 仍并列");
+  // 把手不再占布局宽度（Task 0006）→ 分界 = rail(44) + c1(232) + c2(300) + MIN_CHAT(420) = 996
+  const threshold = RAIL + DEFAULT_WIDTHS.c1 + DEFAULT_WIDTHS.c2 + MIN_CHAT;
+  const border = layout({ viewport: threshold, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(border.overlayLeft, false, `${threshold} 刚好够放 → 仍并列`);
   assert.ok(border.chat >= MIN_CHAT);
-  const over = layout({ viewport: 1007, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
-  assert.equal(over.overlayLeft, true, "1007 差 1px → 转浮层");
+  const over = layout({ viewport: threshold - 1, widths: DEFAULT_WIDTHS, requested, panelOpen: false });
+  assert.equal(over.overlayLeft, true, `${threshold - 1} 差 1px → 转浮层`);
   assert.ok(over.chat > MIN_CHAT, "浮层后聊天反而更宽（不让内容被压扁）");
 });
 
@@ -110,16 +112,45 @@ test("拖拽夹紧在声明区间内（c4 上限不再能压到聊天）", () =>
   assert.equal(clampWidth("c1", 9999), 440);
   assert.equal(clampWidth("c4", 1), 320);
   assert.equal(clampWidth("c4t", 9999), 560);
+  // c2 的常量表上限是**硬顶**，不是真实可视上限（Task 0006）：真实值看 maxWidthOf。
+  assert.equal(clampWidth("c2", 99999), 4096, "c2 只有技术兜底，没有任务上限");
+});
+
+test("列宽的真实上限由视口算（Task 0006）：c2 不该停在 440", () => {
+  const folded = { nav: false, groups: false };
+  const widths = { ...DEFAULT_WIDTHS, c2: 300 };
+  // 1280 宽：44 + 232 + 420 + 8 = 704 → 最多可给 c2 576；旧常量 440 会提前卡住
+  assert.equal(maxWidthOf("c2", 1280, widths, folded), 1280 - 44 - 232 - 420 - 8);
+  // 1440 宽：算式同样成立，且大于旧常量上限 440
+  assert.equal(maxWidthOf("c2", 1440, widths, folded), 1440 - 44 - 232 - 420 - 8);
+  assert.ok(maxWidthOf("c2", 1440, widths, folded) > 440, "1440 上必须能超过旧的 440");
+  // 1024 宽：几何上限比常量更小，夹紧后不会触发 overlay（拖到头也不丢列）
+  const limit1024 = maxWidthOf("c2", 1024, widths, folded);
+  const afterDrag = dragWidth("c2", 300, 9999, limit1024);
+  assert.equal(afterDrag, limit1024);
+  const box = layout({ viewport: 1024, widths: { ...DEFAULT_WIDTHS, c2: afterDrag }, requested: folded, panelOpen: false });
+  assert.equal(box.overlayLeft, false, "拖到几何上限时不得整块左区变浮层");
+  assert.ok(box.chat >= MIN_CHAT, `表面拉开时聊天仍保底：${box.chat}`);
+});
+
+test("把手不占布局宽度（Task 0006）：两列之间没有 6px 缝", () => {
+  assert.equal(HANDLE, 0, "HANDLE 必须为 0：缝就是“白缝+细线”三明治的根因");
+  const box = layout({ viewport: 1440, widths: DEFAULT_WIDTHS, requested: { nav: false, groups: false }, panelOpen: false });
+  // 各段相加仍等于视口，且聊天列面积比旧实现（两个 6px 缝）多 12px
+  assert.equal(total(box), 1440);
+  assert.equal(box.chat, 1440 - box.rail - box.c1 - box.c2);
 });
 
 test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反号）", () => {
   // 左列表：把手在右缘 → 右拉变大
   assert.equal(dragWidth("c1", 232, 40), 272);
-  // c2 = 合并后的"项目分组 → 会话"列：范围 240–440（P-02 §5.2）。
+  // c2 = 合并后的"项目分组 → 会话"列：下限 240，上限由视口给（maxWidthOf）。
   // 从 300 往左拉 40 → 260（在区间内，原样生效）
   assert.equal(dragWidth("c2", 300, -40), 260);
   // 再往左拉会撞下限 240：夹紧生效，不会退化成 176
   assert.equal(dragWidth("c2", 300, -100), 240);
+  // 给了视口上限时，上限优先（这是“能一直拖到物理极限”的实现）
+  assert.equal(dragWidth("c2", 300, 9999, 520), 520);
   // 右侧停靠面板：把手在左缘 → 左拉变大、右拉变小
   assert.equal(dragWidth("c4", 600, -60), 660);
   assert.equal(dragWidth("c5", 440, -60), 500);

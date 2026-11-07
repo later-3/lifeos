@@ -11,9 +11,11 @@ export function NavRail({ items }: {
   items: { key: string; label: string; icon: ReactNode; active: boolean; onToggle: () => void }[];
 }) {
   return (
-    // 图标轨用更深的色阶（hover 灰）+ 右侧 hairline：与 sunken 的列、surface 的聊天区分出三级层次。
-    // 同色相邻会让轨与第一列视觉上合并成一个面板，"添加项目"等底部按钮也显得左右不齐。
-    <nav aria-label="左侧图标轨" className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-hover py-1.5">
+    // 图标轨用 nav-edge（比列底 nav-bg 沉 1 档）+ 右侧 1px nav-line。
+    // 旧实现用 `bg-hover #f1f1f3`：它在 sunken 列底上只差 3.1，而且与行 hover 同色
+    // —— 轨与列、轨与行 hover 两层语义叠在同一个值上（Task 0006）。
+    // 现在三档分开：nav-edge(93.0) → nav-bg(96.9) → surface(100.0)，相邻差 3.9 / 3.1。
+    <nav aria-label="左侧图标轨" className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-nav-line bg-nav-edge py-1.5">
       {items.map((item) => (
         <button key={item.key} type="button" onClick={item.onToggle}
           aria-label={item.active ? `收起${item.label}` : `展开${item.label}`}

@@ -6,10 +6,14 @@
 > 数值只来自 `frontend/src/design/tokens.css`；控件只来自 `frontend/src/design/`；布局宽度只来自 `design/layout.ts`。
 > 历史与反例进 cases/ 与 flywheel.md，不在本文堆过程记录。
 
-## 0 两条原则
+## 0 三条原则
 
 1. **参考优先**：`.lifeos/projects/lifeos/knowledge/reference-baseline.md` 里有类似场景的，采用它记录的“借什么/不借什么”；
 2. **自主设计**：参考里没有的，先想清楚数据、关系、交互，再实现；不凭“看起来差不多”补。
+3. **必须** 审美只认 `reference-baseline.md` §0.1 名单里的产品：**shadcn/ui Sidebar、Radix Themes、LobeHub（含 @lobehub/ui）、Discourse**。
+   - **必须** 观感（表面分层、选中语言、密度、间距、圆角、状态词汇）只能从这四家取；名单外的产品一律不得作为观感依据。
+   - **禁止** **Zulip 的界面**作为任何观感依据（用户 2026-11-06 判定其 UI 不可参考）。它的 product 决策与机制仍可用（如"未读权威在服务端"、缩进=disclosure 列宽），但**不得看它的视觉**；已有的 Zulip 观感件（D10 括线）已作废。
+   - **必须** 新增参考前先补 `reference-baseline.md` 的场景行（项目 + commit/日期 + 借什么/不借什么 + 五问），再落码；没写进去的不得当依据。
 
 ## 1 数据模型（系统层）
 

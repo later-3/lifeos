@@ -10,8 +10,12 @@
  *
  * 数值纪律（全部来自 design-language §5.1，不在这里写 px 字面量）：
  * - 分组头高 32、section 字级（content / 600 / ink-900）、左侧 28 折叠列、右侧计数 micro tabular；
- * - 括线 1px `--color-nav-line`、宽 8、圆角 4、上下内缩 8、光学补偿 1px；
- * - 组内行缩进 = 28 + 8 = 36（只允许两条左缘）；组内行双行 56；组间距 8；列内边距 8。
+ * - **不画括线**（Task 0006：D10 作废）：层级只靠一条左缘 + 折叠状态。
+ *   分组头与组内行共用同一套左缘（列内边距 8 + 折叠列 28 + gap 8 = 44），
+ *   与 A 级参考 LobeHub 同构（`NavItem` 的 Center 28 + gap 8 + paddingInline 4，
+ *   `src/features/NavPanel/components/NavItem.tsx:196-215`；分组头同样 C enter 28 + padding 4，
+ *   `src/features/AgentSidebar/Topic/TopicListContent/ByProjectMode/GroupItem.tsx:347-360`）；
+ * - 组内行双行 56；组间距 8；列内边距 8。
  */
 import type { ReactNode } from "react";
 import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconPencil, IconPlus, IconTrash, IconX } from "@tabler/icons-react";
@@ -52,16 +56,17 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
   return (
     // 行高 32（design-language §5.1）；内部按钮用 **h-8**（32 = 命中区档位 ≥28），
     // 不用 h-7（28 视觉高但实测只报 26，撞门禁）。
-    <div className="group flex h-8 items-center gap-2 pl-2 pr-1"
+    // 容器**不加水平内边距**：滚动容器已有 px-2（8），折叠列 28 + gap 8 = 44 刚好与组内行标题同缘（D21）。
+    <div className="group flex h-8 items-center gap-2 pr-1"
       data-testid="group-header" data-group-name={name}>
-      {/* 折叠列 = 28（命中盒档位）= 组内缩进的一半；点击整行折叠（不只点箭头）。
+      {/* 折叠列 = 28 = 命中盒档位；点击整行折叠（不只点箭头）。
           整行可点：把折叠钮与名字合成一个按钮区，避免出现两个可点目标指向同一动作。 */}
       <button type="button"
         onClick={() => { if (onSelect !== undefined && !selected) { onSelect(); return; } onToggle(); }}
         aria-expanded={open}
         aria-current={selected ? "true" : undefined}
         aria-label={`${name}，${open ? "折叠" : "展开"}分组`}
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-control pl-1 pr-1 text-left hover:bg-hover">
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-control text-left hover:bg-nav-accent">
         <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
           {open ? <IconChevronRight size={16} className="rotate-90" /> : <IconChevronRight size={16} />}
         </span>
@@ -78,7 +83,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         </span>
       )}
       <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
-        className="shrink-0 text-micro tabular-nums text-ink-500">{count}</span>
+        className="shrink-0 text-micro tabular-nums text-nav-muted">{count}</span>
       <span className="flex shrink-0 items-center">
         {actions}
         {onRemove !== undefined && (
@@ -94,22 +99,18 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
 }
 
 /**
- * 组内行的容器：画**括线**（从属关系不能靠猜，D10）。
+ * 组内行的容器（Task 0006：**不再画括线**）。
  *
- * 括线用伪元素式的绝对定位 span 实现（不进可访问性树）：1px、宽 8、左侧圆角、
- * 上下内缩 8、`translate-x-px` 光学补偿（shadcn Sidebar `:646` 同一手法）。
+ * 旧的括线是 D10 的落码，而 D10 直接抄了 Zulip 的装饰件 —— 用户 2026-11-06 判定“太丑”。
+ * 现在从属关系只靠**缩进**表达：分组头与组内行共用一套左缘（列内边距 8 + 折叠列 28 + gap 8 = 44），
+ * 括线删掉，列里只剩两条左缘（列头 8 / 行内容 44）。
+ * 依据：LobeHub 没有括线，层级靠 accordion 的展开状态 + 对齐缩进
+ * （`src/features/NavPanel/components/NavItem.tsx:196-215`、`ByProjectMode/GroupItem.tsx:347`）。
  */
 export function GroupBody({ children }: { children: ReactNode }) {
-  // 缩进 = 折叠列 28 + gap 8 = 36（D21：只允许两条左缘），所以 pl-9 = 36px。
-  // 括线落在折叠列中心：36/2 = 18 → 用 4 个网格（4×4=16）再 +1px 光学补偿，
-  // 不写裸 px：位置由"缩进/2 - 线宽/2"推导，边距用 4 网格的 Tailwind 档位。
-  return (
-    <div className="relative pb-1 pl-9 pr-2">
-      <span aria-hidden
-        className="pointer-events-none absolute bottom-2 left-4 top-2 w-2 translate-x-px rounded-l-inner border-b border-l border-nav-line" />
-      {children}
-    </div>
-  );
+  // 缩进 = 折叠列 28（w-7）。行内部再 px-2（8）→ 标题落在 8(列) + 28 + 8 = **44**，
+  // 与分组头名字同一左缘（分组头：8 + 28 + gap8 = 44）。一列只剩两条左缘：列头 8 / 内容 44（D21）。
+  return <div className="pb-1 pl-7 pr-2">{children}</div>;
 }
 
 /** 参与者叠放双头像（会话行第一行的锚点）：表达"这条是两个参与者在谈"。 */
@@ -191,11 +192,11 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
   onRenameCancel: () => void;
 }) {
   return (
-    <div role="button" tabIndex={0} data-testid={testId}
+    <div role="button" tabIndex={0} data-testid={testId} aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}
-      className={`group/session flex h-14 w-full cursor-pointer items-center gap-2 rounded-control px-1.5 transition-colors ${
-        selected ? "bg-surface shadow-sm ring-1 ring-line" : "hover:bg-hover"
+      className={`group/session flex h-14 w-full cursor-pointer items-center gap-2 rounded-control px-2 transition-colors ${
+        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
       }`}>
       <span className="flex min-w-0 flex-1 flex-col">
         {renaming ? (
@@ -208,13 +209,15 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
             }}
             onBlur={onRenameCancel}
             onClick={(event) => event.stopPropagation()}
-            className="min-w-0 rounded bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
+            className="min-w-0 rounded-control bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
         ) : (
-          <span className={`truncate text-body ${titleFallback ? "font-mono text-ink-500" : "text-ink-900"}`}
+          <span className={`truncate text-body ${titleFallback ? "font-mono text-nav-muted" : "text-ink-900"}`}
             data-fallback={titleFallback ? "id" : undefined}
             title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
         )}
-        <span className="flex min-w-0 items-center gap-1.5 text-micro text-ink-500">
+        {/* 副行用 nav-muted 而不是 ink-500：ink-500 在 nav-accent / nav-selected 上只有 4.10 / 4.03，
+            低于 AA 4.5（导航层专用色 nav-muted 为 4.90 / 4.65）。 */}
+        <span className="flex min-w-0 items-center gap-1.5 text-micro text-nav-muted">
           {participants}
           <span className="min-w-0 truncate">{meta}</span>
         </span>
@@ -249,7 +252,7 @@ export function PanelEmpty({ title, hint, action }: { title: string; hint?: stri
   return (
     <div className="px-4 py-6 text-center">
       <p className="text-body text-ink-700">{title}</p>
-      {hint !== undefined && <p className="mt-1 text-micro text-ink-500">{hint}</p>}
+      {hint !== undefined && <p className="mt-1 text-micro text-nav-muted">{hint}</p>}
       {action !== undefined && <div className="mt-3">{action}</div>}
     </div>
   );
@@ -271,11 +274,13 @@ export function AddProjectButton({ onClick }: { onClick: () => void }) {
 /** 列头：Label「会话」+ 总数 + 收起。与 App 里其它列头保持同一形状。 */
 export function GroupsColumnHeader({ count, onHide }: { count?: number; onHide: () => void }) {
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
-      <Label className="min-w-0 truncate">会话</Label>
+    // 列内边距 8（design-language §5.1 / D21）：与助手列的列头同一左缘，
+    // 也与分组头、组内行共用这套网格（旧值 pl-3=12 多出第三条左缘）。
+    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2">
+      <Label tone="nav" className="min-w-0 truncate">会话</Label>
       {count !== undefined && (
         <span aria-label={`会话 ${count} 个`} data-shot-mask="column-count"
-          className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
+          className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
       <span className="ml-auto" />
       <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
