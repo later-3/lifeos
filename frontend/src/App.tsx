@@ -27,6 +27,7 @@ import { processOpenOf } from "./response-fold";
 import { SessionBar, type SessionBarTurn } from "./session-bar";
 import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
+import { lastUserAtMs, turnWallMsOf } from "./turn-duration";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
@@ -2730,21 +2731,23 @@ export default function App() {
    */
   const renderStatus = outcomeNotice ?? turnStatus;
   /**
-   * 当前回合（Task 0015 · P3）：用户 2026-11-07 要求"在 session bar 里面添加"。
+   * 当前回合（Task 0015 · P3/P5）：用户 2026-11-07 要求"在 session bar 里面添加"，
+   * 并要求**动态状态只在这一处**（"放在 session bar 里面，这样也别做两套了"）。
    *
    * 只在**焦点会话正在跑**时给出（`busy` 已带归属守卫：`busySessionRef` 必须是当前会话），
    * 空闲时不传 —— `SessionBar` 整段不渲染，不留空行。
    *
-   * `startedAtMs` 的优先级（从上到下，第一份可得的事实）：
-   * 1. 服务端 `running[].startedAt`（`run-facts` 的 `startedAt`）——切会话回来也不会归零；
-   * 2. `turnStartedAtRef`（本会话自己发起这一轮的时刻）——点击发送后、快照到达前的那几秒；
-   * 3. 不传 —— `WorkingRow` 回落到自己的挂载时刻。
+   * `startedAtMs` 的优先级（**锚点必须与完成后摘要同一个**，否则数字会跳）：
+   * 1. 本轮用户消息的 `at`（`lastUserAtMs`）—— `turnWallMsOf()` 的起点就是它，
+   *    所以"进行中最后一秒看到的数"与"完成后摘要里的数"能对上；
+   * 2. 服务端 `running[].startedAt` —— 刚受理、user 消息还没落盘（`at` 缺失）时兜底；
+   * 3. 不传 —— `WorkingRow` 回落到自己的挂载时刻（最后兜底，正常路径不会走到）。
    */
   const sessionTurn: SessionBarTurn | undefined = useMemo(() => {
     const live = busy && sessionId !== undefined && busySessionRef.current === sessionId;
     if (!live) return undefined;
-    const fromServer = startedAtOf(runFacts, sessionId);
-    const startedAtMs = fromServer ?? (turnStartedAtRef.current > 0 ? turnStartedAtRef.current : undefined);
+    const anchor = lastUserAtMs(messages) ?? startedAtOf(runFacts, sessionId);
+    const startedAtMs = anchor ?? (turnStartedAtRef.current > 0 ? turnStartedAtRef.current : undefined);
     return {
       step: turnStep,
       phase,
@@ -2753,7 +2756,7 @@ export default function App() {
       ...(startedAtMs !== undefined ? { startedAtMs } : {}),
     };
     // runFacts.startedAt 每次快照/事件都会换新对象；只取这一个字段作依赖，避免无关变化触发重算
-  }, [busy, sessionId, turnStep, phase, activeTool, retry, runFacts.startedAt]);
+  }, [busy, sessionId, turnStep, phase, activeTool, retry, runFacts.startedAt, messages]);
 
   /**
    * 会话累计事实（Task 0008 · P3 修订）：轮次/工具调用/生成耗时/token/平均速度。
@@ -2926,11 +2929,18 @@ export default function App() {
                   const replyLive = replyMessages.some((m) => m.streaming === true);
                   if (!isUser && isFirstReply) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
-                    const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
+                    // 时长（Task 0015 · P4）：**墙钟**，与 SessionBar 的累计口径、以及「当前回合」
+                    // 进行中那个秒数是同一个函数（`turnWallMsOf`）算出来的。
+                    // 以前这里用 Σassistant.durationMs（纯模型时间），跑完会比跑的时候小，
+                    // 数字往回跳（实测 sleep 6 的回合：墙钟 34417ms vs ΣdurationMs 28323ms，案例 C004）。
+                    // **进行中不算时长**：那一刻的墙钟由 SessionBar 的「当前回合」在显示（它每秒在走）。
+                    // 这里只在**完成后**给一个定值，避免同一个数在两个地方各说一套（案例 C004）。
+                    const span = spanByIndex.get(index);
+                    const wallMs = replyLive || span === undefined ? undefined : turnWallMsOf(messages, span);
                     const tokens = replyMessages.reduce((sum, m) => sum + (m.tokens ?? 0), 0);
                     const stats = statsOf(allBlocks, {
-                      ...(durationMs > 0 ? { durationMs } : {}),
-                      ...(tokens > 0 ? { tokens } : {}),
+                      ...(wallMs !== undefined && wallMs > 0 ? { durationMs: wallMs } : {}),
+                      ...(tokens > 0 && !replyLive ? { tokens } : {}),
                     });
                     const live = replyLive;
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
@@ -2995,9 +3005,14 @@ export default function App() {
                   const messageProcessOpen = processOpenOf(responsePref, messageLive);
                   const messageResponseBar = message.role === "assistant"
                     ? {
-                        // 进行中：轮在跑 → live；占位（无 blocks）→ waiting 呼吸
+                        // 进行中：轮在跑 → live（等待过渡 / 过程块展开）；占位（无 blocks）→ 等待过渡
                         ...(messageLive ? { live: true, waiting: (message.blocks?.length ?? 0) === 0 } : {}),
-                        ...(messageLive ? { step: turnStep, ...(phase !== undefined ? { phase } : {}), ...(activeTool !== undefined ? { activeTool } : {}), ...(retry !== undefined ? { retry } : {}) } : {}),
+                        // **动态状态不在这里**（Task 0015 · P5，用户 2026-11-07）：
+                        // "关于动态的东西……直接放到 session bar 里面，这样也别做两套了。只是每一次
+                        //  response bar 完成之后，他自己的信息自己给他那儿展示，在正在完成的过程当中，
+                        //  就还是显示在 session bar"。
+                        // 所以 step / phase / activeTool / retry / 秒数全部只由 SessionBar 的「当前回合」显示，
+                        // 这里只在**完成后**给出过程摘要（stats，见 process）。
                         // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
                         ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
                         // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）

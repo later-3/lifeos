@@ -1541,7 +1541,10 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }> };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }>;
+  /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）。
+   *  墙钟耗时要靠它做终点：工具执行时间不在 assistant.durationMs 里（Task 0015 · P4）。 */
+  resultAt?: number; };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
@@ -1670,6 +1673,11 @@ export function messagesOf(state: SessionState) {
         if (call === undefined) continue;
         call.result = result;
         call.isError = message.isError;
+        // 工具结果的产生时刻（Task 0015 · P4）：Pi 的 `toolResult.timestamp` 就是它。
+        // 没有它，一轮的"墙钟耗时"只算到最后一个 assistant 结束，`sleep 20` 这种长工具会被漏掉
+        //（实测：墙钟 34417ms vs Σassistant.durationMs 28323ms，差的 6 秒正是工具执行）。
+        const resultAt = (message as { timestamp?: unknown }).timestamp;
+        if (typeof resultAt === "number" && Number.isFinite(resultAt) && resultAt > 0) call.resultAt = resultAt;
         // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
         const direct = toolResultImages(message);
         const images = direct.length > 0 ? direct : imageBlocksOfRefs(message);   // D7：引用行 → 附件还原

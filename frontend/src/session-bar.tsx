@@ -11,13 +11,20 @@
  * 2. **添加图片**并进这一行（底部不再有独立的一行工具槽）；
  * 3. **改名**：`TurnStatusBar` → `SessionBar`（名字里不再有 turn —— 它已经不是回合级的了）。
  *
- * 进行中的状态原本**不在这里**（P3 把它归给回复自己的 ResponseBar）。
- * **Task 0015 · P3 改回一半**（用户 2026-11-07 拍板）：
- * > "这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样，
- * >  而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
- * 所以现在这一行左区多一段「当前回合」（`data-testid="session-turn"`），
- * 进行中才渲染；ResponseBar 里的同名信息保留不动。—— 两处说的是同一份事实，位置不同：
- * 这里在滚动区外（任何时候都看得见），那里紧贴那条回复。
+ * ## 进行中状态：**只在这里**（Task 0015 · P3 → P5）
+ *
+ * 用户 2026-11-07 分两步拍板：
+ * 1. `"这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样"` → 加回来；
+ * 2. 看到两处秒数不一致后收口：`"response bar 里面的东西关于动态的东西，就是状态呈现的这一块，
+ *    还是直接放到下面来吧，放到 session bar 里面，这样也别做两套了。只是每一次 response bar
+ *    完成之后，他自己的信息自己给他那儿展示，在正在完成的过程当中，就还是显示在 session bar"`。
+ *
+ * 所以：**所有**动态状态（第几步 / 等待模型 / 在跑哪个工具 / 本轮秒数 / 重试倒计时）只在
+ * 这一行的「当前回合」（`data-testid="session-turn"`）里出现；ResponseBar 进行中不再显示这些，
+ * 只保留"正在等待模型回复…"的呼吸过渡与过程块，**完成后**才显示它自己的摘要。
+ *
+ * 秒数的锚点 = 本轮用户消息的 `at`（`turnWallMsOf()` 的同一个起点），所以
+ * "进行中最后看到的秒数"与"完成后摘要里的秒数"必然一致（案例 C004 的回归点）。
  */
 import { IconInfoCircle, IconPhoto } from "@tabler/icons-react";
 import { IconButton } from "./design/ui";
@@ -52,11 +59,9 @@ export type SessionBarProps = {
   /** 添加图片（用户 2026-11-05："图片那个可以融入到 turnstatusbar 了"） */
   onAttachImage?: () => void;
   /**
-   * 当前回合（Task 0015 · P3）：这一轮正在跑时给出，空闲时不传 —— 整段不渲染。
+   * 当前回合（Task 0015 · P3/P5）：这一轮正在跑时给出，空闲时不传 —— 整段不渲染。
    *
-   * 用户 2026-11-07 拍板："这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar
-   * 里面一样，而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
-   * 所以这里是**新增**，不替代 ResponseBar 里的同名信息。
+   * 这是**唯一**显示动态状态的位置（用户 2026-11-07："这样也别做两套了"）。
    */
   turn?: SessionBarTurn;
 };
@@ -67,7 +72,10 @@ export type SessionBarTurn = {
   phase: Phase;
   activeTool?: string;
   retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number };
-  /** 本轮开始时刻（毫秒）：切会话回来时秒数不能归零 */
+  /**
+   * 本轮起点（毫秒）= 本轮用户消息的 `at`，与完成后摘要同一个锚点。
+   * 不给时 `WorkingRow` 用挂载时刻兜底（正常路径不会走到）。
+   */
   startedAtMs?: number;
 };
 
@@ -81,8 +89,9 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
   return (
     <div data-testid="session-bar" data-shot-mask="session-bar"
       className="flex min-h-7 w-full flex-wrap items-center gap-x-3 gap-y-1 py-1">
-      {/* 当前回合（Task 0015 · P3）：只在进行中出现；空闲时整段不渲染（不留空行）。
-          与 ResponseBar 里的同名信息**并存**（用户拍板），这里是滚动区外的常显位置。 */}
+      {/* 当前回合（Task 0015 · P3/P5）：只在进行中出现；空闲时整段不渲染（不留空行）。
+          动态状态**只在这一处**（用户 2026-11-07："这样也别做两套了"），
+          位置在滚动区外 —— 不必翻回复也看得见。 */}
       {turn !== undefined && (
         <div data-testid="session-turn" className="min-w-0 shrink-0">
           <WorkingRow step={turn.step} phase={turn.phase}
@@ -105,8 +114,8 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
                 title={`本会话累计 ${totals.toolCalls} 次工具调用`} />
             )}
             {duration !== undefined && (
-              <Metric symbol="◷" value={duration} label="生成耗时"
-                title={`本会话所有回复的生成耗时合计 ${duration}（不含挂机等待时间）`} />
+              <Metric symbol="◷" value={duration} label="对话耗时"
+                title={`本会话各轮对话的墙钟耗时合计 ${duration}：每轮从你的消息起、到该轮最后一条回复/工具结束（含工具执行，不含轮与轮之间的挂机）`} />
             )}
             {hasTokens && (
               <span className="inline-flex items-center gap-2" data-status-group="tokens">
@@ -116,7 +125,7 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
             )}
             {totals.avgTokPerSecond !== undefined && (
               <Metric symbol="⚡" value={`${totals.avgTokPerSecond.toFixed(1)} tok/s`} label="平均速度"
-                title={`会话平均输出速度 = 累计输出 tokens ÷ 累计生成耗时`} />
+                title="会话平均输出速度 = 累计输出 tokens ÷ 累计模型生成时间（只算模型在写的时间，不含工具执行；与左边「对话耗时」的分母不同）" />
             )}
           </>
         ) : null}
@@ -138,7 +147,7 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
         )}
         {hasAnything && (
           <IconButton label="状态条说明" size="sm"
-            onClick={() => toast("◎ 轮次 · ⌗ 工具调用 · ◷ 生成耗时合计 · ↑↓ 会话累计 tokens · ⚡ 平均输出速度 · ▲ 当前请求体 · ◔ 上下文占用")}>
+            onClick={() => toast("◎ 轮次 · ⌗ 工具调用 · ◷ 对话墙钟耗时合计（含工具执行）· ↑↓ 会话累计 tokens · ⚡ 平均输出速度（分母只有模型时间）· ▲ 当前请求体 · ◔ 上下文占用")}>
             <IconInfoCircle size={14} />
           </IconButton>
         )}

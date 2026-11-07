@@ -13,7 +13,7 @@
  * └─────────────────────────┘
  * ```
  * 输入框上方是 **SessionBar**（原 TurnStatusBar 改名）：会话累计的
- * 轮次 / 工具调用 / 生成耗时 / token / 平均速度 / 上下文 / 请求体 + **添加图片**。
+ * 轮次 / 工具调用 / 对话耗时（墙钟）/ token / 平均速度 / 上下文 / 请求体 + **添加图片**。
  *
  * 每条都读真实渲染结果（DOM + computed style + localStorage），不接受"代码看起来对"。
  */
@@ -57,12 +57,16 @@ async function open(opts = {}) {
       replies: asst.length,
       bars: withBar.length,
       order: asst.map(kids),
-      // ResponseBar 必须排在**正文之前**
+      // ResponseBar 必须排在**正文之前**。
+      // 没有正文的回复（只有工具调用、或失败）不参与比较：那里 bar 之后本来就只有
+      // failure-reason / actions，硬要求 body 存在会把"合法的无正文轮"判成回归。
       barBeforeBody: withBar.every((m) => {
         const bar = idx(m, "response-bar");
         const body = [...m.children].findIndex((c) => c.dataset?.testid === "message-text" || c.classList?.contains("relative"));
-        return bar >= 0 && body >= 0 && bar < body;
+        return bar >= 0 && (body === -1 || bar < body);
       }),
+      // 有正文的回复里，bar 一定在正文之前（这条才是真正要守的顺序）
+      barsWithBody: withBar.filter((m) => [...m.children].some((c) => c.dataset?.testid === "message-text" || c.classList?.contains("relative"))).length,
       // MarkBar（有批注时）排在正文**之后**
       markAfterBody: asst.filter((m) => idx(m, "mark-bar") >= 0).every((m) => {
         const mark = idx(m, "mark-bar");
@@ -73,7 +77,8 @@ async function open(opts = {}) {
     };
   });
   check("每条有过程的回复都有 ResponseBar", layout.bars > 0, `${layout.replies} 回复 / ${layout.bars} bar`);
-  check("ResponseBar 在正文**上方**（与主线同位置）", layout.barBeforeBody === true, JSON.stringify(layout.order[0] ?? []));
+  check("ResponseBar 在正文**上方**（与主线同位置）", layout.barBeforeBody === true && layout.barsWithBody > 0,
+    JSON.stringify({ order: layout.order[0] ?? [], withBody: layout.barsWithBody }));
   check("MarkBar 在正文**下方**", layout.markAfterBody === true, JSON.stringify(layout.order.find((k) => k.includes("mark-bar")) ?? []));
   check("没有内容的回复不留空壳 bar", layout.emptyBars === 0, `${layout.emptyBars} 个空壳`);
   check("旧 process-bar 已不存在", await page.evaluate(() => document.querySelectorAll('[data-testid="process-bar"]').length === 0));
@@ -105,7 +110,7 @@ async function open(opts = {}) {
   check("SessionBar 在输入框上方、滚动区外", snap.exists && snap.dock && snap.outsideScroll, JSON.stringify({ dock: snap.dock, outside: snap.outsideScroll }));
   check("SessionBar 不是消息内容（不挂在 message 里）", snap.inMessage === false);
   check("SessionBar 显示累计口径：轮次/工具调用/耗时/token/平均速度",
-    ["轮次", "工具调用", "生成耗时", "输入", "输出", "平均速度"].every((l) => snap.labels.includes(l)),
+    ["轮次", "工具调用", "对话耗时", "输入", "输出", "平均速度"].every((l) => snap.labels.includes(l)),
     `${snap.labels.join(",")} → ${snap.texts.join(" | ")}`);
   check("「添加图片」并入 SessionBar（用户 2026-11-05）", snap.hasAttach && snap.attachArea, JSON.stringify({ attach: snap.hasAttach }));
   check("回复的 ResponseBar 不再重复会话级指标", snap.replyMetrics === 0, `${snap.replyMetrics} 个指标`);
@@ -154,7 +159,9 @@ async function open(opts = {}) {
   check("等待态有呼吸动画（opacity 循环，无位移）",
     snap.animation !== "none" && snap.iterations === "infinite" && (snap.transform === "none" || snap.transform === "matrix(1, 0, 0, 1, 0, 0)"),
     `${snap.animation} ${snap.duration} ${snap.iterations}`);
-  check("等待态文案", /等待回复/.test(snap.waitingText), snap.waitingText);
+  // 用户 2026-11-07："只是需要衔接 agent 在开始显示工具调用和思考的信息前，有一个过渡就好"
+  // → 文案明确说"等待模型回复"，不是笼统的"等待回复"
+  check("等待态文案：明确说在等模型", /等待模型回复/.test(snap.waitingText), snap.waitingText);
   await page.screenshot({ path: "/tmp/response-bar-waiting.png" });
   await page.close();
 }
@@ -430,7 +437,11 @@ async function open(opts = {}) {
   });
   check("【生成中】SessionBar 里出现「当前回合」（滚动区外）", live.hasTurn && live.inSessionBar && live.outsideMain, JSON.stringify(live));
   check("【生成中】当前回合显示步骤与耗时（阶段文案只在 3/4 出现，见下一段）", live.hasSpinnerText && /\ds/.test(live.text), live.text);
-  check("【生成中】ResponseBar 里的同名状态**仍然在**（用户：还不能取消）", /\d\/4/.test(live.responseLiveText) || /read/.test(live.responseLiveText), live.responseLiveText.slice(0, 120));
+  // Task 0015 · P5（用户 2026-11-07 第二次拍板）：动态状态只留在 SessionBar，
+  // "这样也别做两套了"——ResponseBar 进行中**不再**出现「N/4 · 阶段 · 秒数」。
+  // 它保留的是过程块本身（工具/思考），那是内容不是状态。
+  check("【生成中】ResponseBar 里**不再**重复动态状态（只在 SessionBar 一处）",
+    !/\d\/4/.test(live.responseLiveText), live.responseLiveText.slice(0, 120));
   check("【生成中】当前回合有实际宽度（不是 0×0 的假渲染）", live.turnWidth > 40, `${live.turnWidth}px`);
 
   // 真实收尾是两条事件：`turn(done)` 只清账本，`done` 才清 busy（finishFocused）
