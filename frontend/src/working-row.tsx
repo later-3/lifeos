@@ -47,7 +47,7 @@ export function WorkingRow({ step, phase, activeTool, retry }: {
     <div className={`flex flex-wrap items-center gap-2 py-0.5 text-meta ${retry !== undefined ? "text-danger" : "text-ink-500"}`}>
       <Spinner size={14} className={retry !== undefined ? "text-danger" : "text-accent"} />
       <span className="font-medium text-ink-700">{turnStepText(step)}</span>
-      {step === 3 && <span className="animate-pulse">{label}</span>}
+      {step === 3 && <span className="animate-text-breathe">{label}</span>}
       <span className="tabular-nums text-micro text-ink-500" title="本轮耗时">{total}s</span>
     </div>
   );
