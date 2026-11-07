@@ -3163,7 +3163,9 @@ export default function App() {
                   void collectImages(files);
                 }} />
               {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 */}
-              <div className="flex items-end gap-2 py-2 pl-2 pr-2">
+              {/* 间距收口（Task 0009 · P2-2）：demo 实测四层叠加（8+16 / 8+8+8）比参考厚一倍，收成单层语义。
+              命中区与功能不动：发送/停止 44 触达、附件、palette、历史键程全部保持。 */}
+              <div className="flex items-end gap-1.5 py-1.5 pl-2 pr-1.5">
                 <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
@@ -3248,7 +3250,7 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-4 pr-2 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-2 pr-1 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
                 {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
                   <div className="flex items-end justify-end gap-2 pb-0 pl-2 pr-2">
                   {isMobile && (
