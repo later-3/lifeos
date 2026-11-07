@@ -2758,9 +2758,10 @@ export default function App() {
     <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>
       {!isMobile && <NavRail items={railItems} />}
 
+      {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
 
-      {/* 选中即复制的提示（Task 0013）：fixed 定位在 body 层，不参与任何列布局 */}
+      {/* 选中即复制的提示（Task 0013）：fixed 定位，不参与任何列布局 */}
       <CopyFeedbackToast feedback={copyFeedback} />
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
