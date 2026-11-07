@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
+  IconAdjustments, IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
   IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
@@ -18,7 +18,9 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { DisplayPrefsPanel, loadPrefs, savePrefs } from "./display-prefs-panel";
+import { loadPrefs, savePrefs } from "./display-prefs-panel";
+import { SettingsSurface } from "./settings-surface";
+import { applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
@@ -439,6 +441,12 @@ export default function App() {
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("display");
+  /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
+  const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
+  useEffect(() => { applyTheme(theme); saveTheme(theme); }, [theme]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -2831,12 +2839,23 @@ export default function App() {
             }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
-          {/* 显示设置（用户 2026-11-02：就放在这两个图标旁边）：两个滑块 = 内容宽度 + 字号 */}
-          <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs} />
+          {/* 设置（Task 0009 · P1-3）：原"显示设置"弹层升级为全页设置表面；
+              aria-label 保留（ui-contract 契约依赖），落在"显示"分区——原有两个滑块 1:1 迁入。 */}
+          <IconButton label="显示设置" size="lg" active={settingsOpen}
+            onClick={() => setSettingsOpen((open) => !open)}>
+            <IconAdjustments size={16} />
+          </IconButton>
         </header>
 
         <div className="relative min-h-0 flex-1">
-          <main ref={scrollRef}
+          {settingsOpen && (
+            <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+              theme={theme} onTheme={setTheme}
+              prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+              onPrefsReset={() => setPrefs(parsePrefs({}))}
+              onClose={() => setSettingsOpen(false)} />
+          )}
+          {!settingsOpen && <main ref={scrollRef}
             onScroll={(event) => {
               const node = event.currentTarget;
               const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
@@ -3044,8 +3063,8 @@ export default function App() {
                 });
               })()}
             </div>
-          </main>
-          {!atBottom && (
+          </main>}
+          {!settingsOpen && !atBottom && (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
               <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"
                 onClick={jumpToLatest}

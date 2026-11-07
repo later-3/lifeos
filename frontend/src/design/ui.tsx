@@ -10,7 +10,7 @@ type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
+  primary: "bg-accent-solid text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
   secondary: "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
   ghost: "text-ink-700 hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
   danger: "bg-danger text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
@@ -38,7 +38,7 @@ export function IconButton({ label, active = false, tone = "default", size = "md
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "title">) {
   const box = size === "xl" ? "h-11 w-11" : size === "lg" ? "h-11 w-11 sm:h-8 sm:w-8" : "h-11 w-11 sm:h-7 sm:w-7";
   const look = tone === "solid"
-    ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-500"
+    ? "bg-accent-solid text-white hover:bg-accent-solid disabled:bg-hover disabled:text-ink-500"
     : active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900";
   return (
     <button type="button" aria-label={label} title={label} {...rest}
@@ -59,7 +59,7 @@ export function ComposerButton({ label, tone = "solid", disabled = false, onClic
   return (
     <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick}
       className="group inline-flex h-11 w-11 shrink-0 items-center justify-center justify-self-end rounded-full disabled:cursor-not-allowed">
-      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent text-white" : ""}`}>
+      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent-solid text-white" : ""}`}>
         {children}
       </span>
     </button>

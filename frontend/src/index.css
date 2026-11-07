@@ -55,3 +55,41 @@ html, body, button, input, textarea, select {
 
 /* 文件查看器里的 Markdown 更紧凑（面板窄） */
 .md-body--compact { font-size: var(--text-body); line-height: 1.65; }
+
+/* ══════════════════════════════════════════════════════════════
+ * 设置界面（Task 0009 · settings-surface.tsx 的局部样式）
+ * 数值纪律：间距走 4 网格档位（Tailwind 类为主）；这里只放"组合件"样式。
+ * ══════════════════════════════════════════════════════════════ */
+.theme-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--color-line); border-radius: var(--radius-panel);
+}
+.mode-seg { display: flex; gap: 2px; background: var(--color-sunken); border: 1px solid var(--color-line); border-radius: var(--radius-control); padding: 2px; }
+.mode-seg button { border: 0; background: transparent; padding: 4px 12px; font-size: var(--text-micro); border-radius: 4px; cursor: pointer; color: var(--color-ink-500); }
+.mode-seg button.on { background: var(--color-surface); color: var(--color-ink-900); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); font-weight: 500; }
+
+.swatch-row { display: flex; gap: 10px; }
+.swatch {
+  flex: 1; border: 1px solid var(--color-line); border-radius: var(--radius-panel);
+  padding: 10px; cursor: pointer; background: var(--color-surface); text-align: center; min-width: 0;
+}
+.swatch:hover { border-color: var(--color-nav-muted); }
+.swatch.on { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); }
+.swatch .prev { display: flex; height: 40px; border-radius: var(--radius-control); overflow: hidden; margin-bottom: 8px; border: 1px solid var(--color-line); }
+.swatch .prev i { flex: 1; }
+.swatch .nm { font-size: var(--text-meta); font-weight: 500; color: var(--color-ink-900); }
+
+.accent-dots { display: flex; gap: 8px; flex-wrap: wrap; }
+.accent-dot {
+  width: 32px; height: 32px; border-radius: 999px; cursor: pointer;
+  border: 2px solid transparent; display: grid; place-items: center; color: #fff;
+}
+.accent-dot.on { border-color: var(--color-ink-900); }
+
+.set-slider {
+  display: flex; align-items: center; gap: 10px; padding: 8px 14px; margin-bottom: 8px;
+  border: 1px solid var(--color-line); border-radius: var(--radius-control); font-size: var(--text-meta);
+}
+.set-slider label { flex: none; width: 72px; color: var(--color-ink-700); }
+.set-slider input { flex: 1; accent-color: var(--color-accent); }
+.set-slider .v { flex: none; width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-ink-500); font-size: var(--text-micro); }
