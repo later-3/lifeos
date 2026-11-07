@@ -663,7 +663,10 @@ check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 
 const bars = await page.evaluate(() => {
   const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')];
   const session = document.querySelector('[data-testid="session-bar"]');
-  const first = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  const firstRaw = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  // `.find()` 没命中时返回 `undefined` 而不是 `null`：以前只判 `=== null`，在“没有任何助手带过程条”的
+  // 会话里直接抛 TypeError（Task 0015 · P3 在全新开发实例里踩到），断言本意是“没有就不比顺序”。
+  const first = firstRaw ?? null;
   return {
     noLegacy: document.querySelector('[data-testid="turn-status-bar"]') === null && document.querySelector('[data-testid="process-bar"]') === null,
     asst: asst.length,

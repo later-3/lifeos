@@ -11,16 +11,23 @@
  * 2. **添加图片**并进这一行（底部不再有独立的一行工具槽）；
  * 3. **改名**：`TurnStatusBar` → `SessionBar`（名字里不再有 turn —— 它已经不是回合级的了）。
  *
- * 进行中的状态（发送/受理/模型处理/工具执行/等待秒数）**不在这里**：那是回合级事实，
- * 归回复自己的 ResponseBar（在正文上方，与头像同时出现）。
+ * 进行中的状态原本**不在这里**（P3 把它归给回复自己的 ResponseBar）。
+ * **Task 0015 · P3 改回一半**（用户 2026-11-07 拍板）：
+ * > "这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样，
+ * >  而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
+ * 所以现在这一行左区多一段「当前回合」（`data-testid="session-turn"`），
+ * 进行中才渲染；ResponseBar 里的同名信息保留不动。—— 两处说的是同一份事实，位置不同：
+ * 这里在滚动区外（任何时候都看得见），那里紧贴那条回复。
  */
 import { IconInfoCircle, IconPhoto } from "@tabler/icons-react";
 import { IconButton } from "./design/ui";
 import { useToast } from "./design/toast";
 import { payloadStatusText, type PayloadStat } from "./payload-status";
 import { formatDuration } from "./process-stats";
-import { compactTokens } from "./working";
+import { compactTokens, type TurnStep } from "./working";
 import type { SessionTotals } from "./session-totals";
+import type { Phase } from "./stream-blocks";
+import { WorkingRow } from "./working-row";
 
 function Metric({ symbol, value, label, title, tone = "text-ink-500" }: {
   symbol: string; value: string; label: string; title: string; tone?: string;
@@ -44,9 +51,27 @@ export type SessionBarProps = {
   turnId?: string;
   /** 添加图片（用户 2026-11-05："图片那个可以融入到 turnstatusbar 了"） */
   onAttachImage?: () => void;
+  /**
+   * 当前回合（Task 0015 · P3）：这一轮正在跑时给出，空闲时不传 —— 整段不渲染。
+   *
+   * 用户 2026-11-07 拍板："这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar
+   * 里面一样，而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
+   * 所以这里是**新增**，不替代 ResponseBar 里的同名信息。
+   */
+  turn?: SessionBarTurn;
 };
 
-export function SessionBar({ totals, context, payload, turnId, onAttachImage }: SessionBarProps) {
+/** 「当前回合」的展示数据（见 `SessionBarProps.turn`）。 */
+export type SessionBarTurn = {
+  step: TurnStep;
+  phase: Phase;
+  activeTool?: string;
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number };
+  /** 本轮开始时刻（毫秒）：切会话回来时秒数不能归零 */
+  startedAtMs?: number;
+};
+
+export function SessionBar({ totals, context, payload, turnId, onAttachImage, turn }: SessionBarProps) {
   const toast = useToast();
   const payloadText = payloadStatusText(payload);
   const hasTokens = totals.tokens > 0;
@@ -56,6 +81,16 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage }: 
   return (
     <div data-testid="session-bar" data-shot-mask="session-bar"
       className="flex min-h-7 w-full flex-wrap items-center gap-x-3 gap-y-1 py-1">
+      {/* 当前回合（Task 0015 · P3）：只在进行中出现；空闲时整段不渲染（不留空行）。
+          与 ResponseBar 里的同名信息**并存**（用户拍板），这里是滚动区外的常显位置。 */}
+      {turn !== undefined && (
+        <div data-testid="session-turn" className="min-w-0 shrink-0">
+          <WorkingRow step={turn.step} phase={turn.phase}
+            {...(turn.activeTool !== undefined ? { activeTool: turn.activeTool } : {})}
+            {...(turn.retry !== undefined ? { retry: turn.retry } : {})}
+            {...(turn.startedAtMs !== undefined ? { startedAtMs: turn.startedAtMs } : {})} />
+        </div>
+      )}
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 text-micro text-ink-500">
         {/* 空会话不显示一堆 0：没内容就什么都不写 */}
         {/* 空会话什么都不写（用户 2026-11-04："空就是空，不要画蛇添足"），只有右侧的添加图片 */}

@@ -1,4 +1,4 @@
 [submodule "pi"]
 	path = pi
-	url = https://github.com/later-3/pi.git
-	branch = lifeos
+	url = https://github.com/earendil-works/pi.git
+	branch = main

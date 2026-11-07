@@ -75,7 +75,13 @@ test("会话装配：8 内置 + 15 个 Life OS 自有工具全部启用；注入
     "8 个内置 + 15 个 Life OS 工具全部启用（白名单内才生效）");
   // 事实：system prompt 的分区在 _prepareRun（run 开始时）才应用 extension 变更；
   // 无模型环境下 prompt 在鉴权即失败、到不了注入点 → 这里只断言"未 run 时=Pi 默认"，注入逻辑由下一条离线测试覆盖。
-  assert.match(state.session.systemPrompt, /^You are an expert coding assistant/, "未 run 时为 Pi 默认提示");
+  //
+  // **不锁死逐字文案**（Task 0015 · P1）：Pi v1.5.0 把默认 preamble 从
+  // "You are an expert coding assistant operating inside pi…" 改成
+  // "You are a coding assistant running inside pi…"（`core/system-prompt.ts:156`）。
+  // 断言的是**语义**：仍是 Pi 的默认 preamble（含 "coding agent harness"），且**没有**我们的 identity 注入。
+  assert.match(state.session.systemPrompt, /coding agent harness/, "未 run 时为 Pi 默认提示");
+  assert.doesNotMatch(state.session.systemPrompt, /<lifeos_identity>/, "未 run 时不得已经注入我们的 identity");
   await deleteSession("lifeosagent", sessionId);
 });
 
