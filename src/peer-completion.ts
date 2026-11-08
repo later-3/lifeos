@@ -20,6 +20,16 @@ export type PendingPeer = {
   peerName: string;
   initiatorTaskId?: string;
   projectId: string;
+  /**
+   * 这一轮"属于 send 的那一轮"的 turnId（Task 0014 · L4）。
+   *
+   * 为什么需要：登记是**每会话一条**，而一个会话可以被多方驱动。
+   * 用户在其中插一手跑了一轮，那一轮结束时不能冒充成 send 的回执。
+   * `runTurn` 在占位成功后调用 `bindPendingPeerTurn()` 回填；
+   * `notifyPeerTurnFinished()` 只对**匹配**的轮次投递（且不匹配时**不清登记**）。
+   * 老登记没有该字段 → 保持旧行为（按会话投递一次）。
+   */
+  turnId?: string;
 };
 
 /** 投递实现由 peer 注入（拿到会话 + 组装正文 + sendCustomMessage）。 */
@@ -46,6 +56,20 @@ export function setPeerDeliverer(fn: PeerDeliverer | undefined): void {
 /** 登记"这轮结束后要回流给谁"（send 调用时）。 */
 export function registerPendingPeer(targetAgentId: string, sessionId: string, entry: PendingPeer): void {
   pending.set(keyOf(targetAgentId, sessionId), entry);
+}
+
+/**
+ * 把"这一轮"绑到待回流登记上（`runTurn` 在受理成功后调）。
+ *
+ * 只在该会话**有登记**且**尚未绑定**时写入：
+ * - 没登记 → 不做事（普通会话、ask 路径）；
+ * - 已绑定 → 不覆盖（同一轮重复调不换 id；后续的轮次也不该抢走 send 的那一轮）。
+ */
+export function bindPendingPeerTurn(targetAgentId: string, sessionId: string, turnId: string): void {
+  const key = keyOf(targetAgentId, sessionId);
+  const entry = pending.get(key);
+  if (entry === undefined || entry.turnId !== undefined) return;
+  pending.set(key, { ...entry, turnId });
 }
 
 /** 该会话有没有待回流登记。 */
@@ -88,6 +112,9 @@ export async function notifyPeerTurnFinished(
 ): Promise<boolean> {
   const entry = pending.get(keyOf(targetAgentId, sessionId));
   if (entry === undefined) return false;
+  // 只认自己那一轮：用户/其它来源在同一会话上跑的轮次不冒充回执，也不消耗登记（Task 0014 · L4）。
+  // 老登记（本字段引入前写入）没有 turnId → 保持旧行为（按会话投递一次）。
+  if (entry.turnId !== undefined && entry.turnId !== turnId) return false;
   if (deliverer === undefined) return false;
   if (completionAlreadySent(targetAgentId, sessionId, turnId)) return false;
   try {

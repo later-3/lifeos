@@ -23,8 +23,9 @@ import {
   peerSessionTitle, peerSnapshot, resolvePeer, snapshotText,
 } from "./peer.ts";
 import { registerPendingPeer } from "./peer-completion.ts";
-import { getSession, queueSessionInput, runTurn } from "./agent-host.ts";
+import { getSession, queueSessionInput, reserveTurn, runTurn } from "./agent-host.ts";
 import { resolveHome } from "./home.ts";
+import { log } from "./logging.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 
 export { LIFEOS_TOOL_NAMES };
@@ -479,12 +480,16 @@ export function createAgentTools(ctx: ToolContext) {
 
       const timeoutMs = params.timeoutMs ?? ASK_DEFAULT_TIMEOUT_MS;
       const messagesBeforeSend = before.messages;
-      const turn = runTurn(peer.conversation.agentId, sessionId, params.message);
+      const turn = runTurn(peer.conversation.agentId, sessionId, params.message, {
+        origin: { kind: "agent", agentId: ctx.agentId, name: resolved.name, via: "lifeos_ask" },
+      });
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
       let timedOut = false;
       try {
-        const outcome = await Promise.race([turn.then(() => "done" as const), timeout]);
+        // `busy` = 刚好撞上“已受理但还没开跑”的窗口（技术细节见 02-design L1/L2）：
+        // 不新起一轮、不谎报成功，交给下面的快照统一回执。
+        const outcome = await Promise.race([turn.then((result) => (result.ok ? "done" as const : "busy" as const)), timeout]);
         timedOut = outcome === "timeout";
       } finally {
         if (timer !== undefined) clearTimeout(timer);
@@ -559,23 +564,47 @@ export function createAgentTools(ctx: ToolContext) {
       // 重入守卫（T8）：目标正在跑 → 用 Pi 原生的 followUp 排队（不自造队列、不并发 prompt）。
       const before = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
       const queued = before.state === "running";
+      const origin = { kind: "agent" as const, agentId: ctx.agentId, name: resolved.name, via: "lifeos_send" };
+      let queuedNow = queued;
       if (queued) {
         // Pi 原生排队：会话在跑时 prompt() 会抛错（agent-session.ts:2103），必须走 followUp。
-        const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp");
+        const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp", origin);
         if ("code" in verdict && verdict.code !== "session_idle") {
           throw new Error(`Could not queue the message for ${params.agent}: ${verdict.code === "error" ? verdict.message : verdict.code}`);
         }
       }
-      else void runTurn(peer.conversation.agentId, sessionId, params.message);
+      else {
+        // `send` 的语义是"发出去就返回"：先同步占位判胜负，再后台跑整轮（不 await 整轮）。
+        // 占位失败 = 刚好撞上"已受理未开跑"的窗口（02-design L1）→ 补偿走 followUp，绝不谎报已投递。
+        const slot = reserveTurn(peer.conversation.agentId, sessionId);
+        if (slot === undefined) {
+          const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp", origin);
+          if ("code" in verdict && verdict.code !== "session_idle") {
+            throw new Error(`Could not queue the message for ${params.agent}: ${verdict.code === "error" ? verdict.message : verdict.code}`);
+          }
+          queuedNow = true;
+        } else {
+          const turn = runTurn(peer.conversation.agentId, sessionId, params.message, { origin, reserved: slot });
+          void turn.then((result) => {
+            if (result.ok) return;
+            slot.release();   // 占位成功却 busy：理论上不可达；交还并不静默（抛给日志）
+            throw new Error(`runTurn reported busy after a successful reservation (${params.agent} / ${sessionId})`);
+          }).catch((error: unknown) => {
+            void log.error("agent-tools", "lifeos_send", "后台回合启动失败", {
+              details: { agent: peer.conversation.agentId, sessionId, message: error instanceof Error ? error.message : String(error) },
+            });
+          });
+        }
+      }
 
       return {
         content: [{
           type: "text" as const,
-          text: `Handed off to ${params.agent} (session ${sessionId})${queued ? " — it was already running, so the message is queued after its current turn" : ""}. `
+          text: `Handed off to ${params.agent} (session ${sessionId})${queuedNow ? " — it was already running, so the message is queued after its current turn" : ""}. `
             + "Its completion will be delivered into this conversation; do not poll.",
         }],
         details: {
-          agent: params.agent, sessionId, conversationCreated: peer.conversation.created, queued,
+          agent: params.agent, sessionId, conversationCreated: peer.conversation.created, queued: queuedNow,
           completionWillArriveIn: initiatorSessionId ?? null,
           ...(taskId !== undefined ? { taskId } : {}),
         },

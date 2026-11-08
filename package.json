@@ -34,7 +34,8 @@
     "test:draft": "node frontend/test/new-session-draft.mjs",
     "test:pwa": "node frontend/test/pwa-contract.mjs",
     "state": "node scripts/session-state.mjs",
-    "state:no-ui": "node scripts/session-state.mjs --no-ui"
+    "state:no-ui": "node scripts/session-state.mjs --no-ui",
+    "trace": "node scripts/session-trace.mjs"
   },
   "type": "module",
   "devDependencies": {

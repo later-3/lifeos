@@ -50,7 +50,7 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
 import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
@@ -241,8 +241,19 @@ type RowPatchPayload = {
   task?: { id: string; title: string; status: string; type: string } | null;
 };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
+/**
+ * 这一条 user 消息是谁说的（Task 0014 · D8′）。
+ *
+ * 后端 `messagesOf()` 从会话里的 `lifeos_turn_origin` 配对得出；没有记录的老会话回落 `{kind:"user"}`。
+ * 为什么需要它：Pi 只有 role 级身份（`pi/packages/ai/src/types.ts:564-568` 的 `UserMessage` 无 author），
+ * 所以 Agent↔Agent 会话里那条 user 消息会被界面当成"我说的话"——LobeHub 的注释把同一个错误写得很清楚：
+ * 「instead of hard-coding the viewer's own avatar」（`packages/types/src/message/ui/chat.ts:320-331`）。
+ */
+type MessageSpeaker = { kind: "user" } | { kind: "agent"; agentId: string; name?: string; via?: string };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
+  /** 仅 `role === "user"` 时有值：这一轮是谁发起的（见上面 `MessageSpeaker`）。 */
+  speaker?: MessageSpeaker;
   /** ★ 消息身份（Task 0003 · P1）：后端 messagesOf 透出的 session entry id。
    *  历史消息必有；客户端刚推送的流式消息还没有（下一轮 loadMessages 才补上）。 */
   id?: string;
@@ -668,6 +679,18 @@ export default function App() {
   const [retriedTimes, setRetriedTimes] = useState<number | undefined>();
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
+  /**
+   * 发送失败的**可见残留**（Task 0014 · S11）。
+   *
+   * 为什么不能放进 `messages`：`fail()` 之后会 `loadMessages()` 用服务端事实整体替换 `messages`，
+   * 而"发送被拒"这条在服务端根本不存在（后端没受理），于是刚塞进去的错误气泡会被**立刻冲掉**。
+   * 实测现场：用户连点 5 次 409，界面全程无提示，只能来问"为什么发不出去"。
+   *
+   * 所以错误放独立状态：只有用户发起下一个动作（再发一条 / 切会话）才清。
+   * 参考：LibreChat `steer` 的拒绝码要告诉客户端**怎么降级**（`request.ts:384-387`），
+   * 我们的 toast 直接用服务端的 `message`（它已写明三种出口）。
+   */
+  const [tailError, setTailError] = useState<string | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
 
   const turnStartedAtRef = useRef(0);
@@ -1160,6 +1183,7 @@ export default function App() {
 
   async function openSession(a: Agent, sid: string) {
     resetChatState();
+    setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
     const data = await loadMessages(a.id, sid);
@@ -1982,6 +2006,7 @@ export default function App() {
     }
     if (submittingRef.current) return;
     submittingRef.current = true;
+    setTailError(undefined);             // 用户发起新动作：清掉上一次的失败残留（tailError 的唯一清理点之一）
     activeTurnIdRef.current = null;      // C119：新回合等 turn(running) 事件来认领 turnId
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
     setAttachments([]); attachmentsRef.current = [];
@@ -2000,7 +2025,10 @@ export default function App() {
     setAtBottom(true);
     setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }, { role: "assistant", text: "", blocks: [], streaming: true }]);
     const fail = (message: string) => {
-      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
+      // 错误放独立状态（不进 messages）：否则紧接着的 loadMessages 会把它整体冲掉（见 tailError 注释）
+      setTailError(message);
+      toast(message, "error");           // 立刻可见，用户马上知道"没发出去"以及为什么
+      setMessages((list) => list.slice(0, -1));   // 撤掉乐观插入的那条空 assistant，不伪造一条假回复
       setInput(text);                   // 失败回填草稿
       // 批注也要回填：否则"发送失败"等于把用户刚写的一批批注也弄丢了
       const snapshot = pendingAnnoRestore.current;
@@ -2341,16 +2369,6 @@ export default function App() {
    * 会话自带项目归属（session ∈ Agent × Project），查它不需要先知道"当前项目"。
    */
   const currentSessionItem = findSessionRow(groups, sessionId);
-  /**
-   * 当前会话是不是"与其他 Agent 的对话"。
-   * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
-   * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
-   */
-  // 判断逻辑抽到 header-strip.ts 的 isPeerSessionOf（纯函数 + 单测），
-  // 因为它是"批注能不能用"的总开关，算错一次就是全站失效（2026-11-04 实际发生过）。
-  //
-  // 用**跨项目找出来的那一条**判断：拿「选中项目」的分组判断，跨项目时会漏成"普通会话" → 批注开关错（Task 0011）。
-  const isPeerSession = isPeerSessionOf(sessionId, currentSessionItem === undefined ? [] : [currentSessionItem]);
   /**
    * 头部大字标题（`header h1`）：**只来自会话自己**，与列表同一份派生（Task 0011）。
    *
@@ -2965,13 +2983,24 @@ export default function App() {
                       for (const i of replies) if (i !== index) folded.add(i);
                     }
                   }
-                  // 头像与名字：用户 = 你本人（/api/profile），助手 = 当前 Agent
+                  // 头像与名字（Task 0014 · D8′）：user 消息看后端给的 `speaker`——
+                  // 用户本人 → 你的档案头像；"某个 Agent 发起的" → 那个 Agent 的头像与名字。
+                  // 助手侧一律是当前 Agent。左右对齐不变（D10：保持现状，只换头像名字）。
                   // 头像尺寸随字号缩放（用户 2026-11-02：字号变大而头像不变会畸形）
                   const avatarSize = avatarSizeOf(22, prefs.font.scale);
-                  const avatarNode = isUser
-                    ? (profile === undefined ? undefined : <UserAvatar profile={profile} size={avatarSize} />)
-                    : (agent === undefined ? undefined : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={avatarSize} />);
-                  const authorName = isUser ? profile?.name : agent?.name;
+                  // 先取出 agent 分支的 speaker（TS 窄化：`speaker?.kind === "agent"` 在闭包里会丢，所以提前落到局部常量）
+                  const agentSpeaker = isUser && message.speaker?.kind === "agent" ? message.speaker : undefined;
+                  const speakerAgent = agentSpeaker === undefined ? undefined : (() => {
+                    const known = agents.find((item) => item.id === agentSpeaker.agentId);
+                    // 发起方可能已被归档/删除：有 id 就够画头像（AgentAvatar 由 id 推导色阶 + 首字母）
+                    return { id: agentSpeaker.agentId, name: known?.name ?? agentSpeaker.name ?? agentSpeaker.agentId, avatar: known?.avatar };
+                  })();
+                  const avatarNode = speakerAgent !== undefined
+                    ? <AgentAvatar id={speakerAgent.id} name={speakerAgent.name} {...(speakerAgent.avatar !== undefined ? { avatar: speakerAgent.avatar } : {})} size={avatarSize} />
+                    : isUser
+                      ? (profile === undefined ? undefined : <UserAvatar profile={profile} size={avatarSize} />)
+                      : (agent === undefined ? undefined : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={avatarSize} />);
+                  const authorName = speakerAgent !== undefined ? speakerAgent.name : (isUser ? profile?.name : agent?.name);
 
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
@@ -3021,7 +3050,7 @@ export default function App() {
                       }
                     : undefined;
 
-                  const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
+                  const messageMarkBar = message.role === "assistant" && message.id !== undefined
                     ? (() => {
                         const list = annoGroups.get(message.id) ?? [];
                         return list.length === 0 ? undefined : {
@@ -3040,7 +3069,7 @@ export default function App() {
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
-                      annotationActions={isPeerSession ? undefined : annoActions}
+                      annotationActions={annoActions}
                       {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
@@ -3094,6 +3123,19 @@ export default function App() {
                 onAttachImage={() => fileInputRef.current?.click()} />
             </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
+            {/* 失败残留（Task 0014 · S11）：发送被拒/网络错误时留在这里，不被随后的重新拉取冲掉。
+                与排队区同一容器（"输入区是一个对象"，frontend-spec §5）；下一次发送或切会话才清。 */}
+            {tailError !== undefined && (
+              <div data-testid="send-error" role="alert"
+                className="mb-1 flex items-start gap-2 rounded-panel bg-danger-soft px-3 py-2 text-micro text-danger ring-1 ring-danger/30">
+                <IconInfoCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1">{tailError}</span>
+                <button type="button" aria-label="关闭提示" onClick={() => setTailError(undefined)}
+                  className="shrink-0 rounded p-0.5 text-danger transition-colors hover:bg-danger/10">
+                  <IconX size={12} />
+                </button>
+              </div>
+            )}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (
               <div data-testid="run-queue" className="mb-1 space-y-1">

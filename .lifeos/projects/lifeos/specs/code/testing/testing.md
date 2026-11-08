@@ -161,3 +161,20 @@
   - 覆盖场景**必须**包含"同一状态重复推 5 次"与"重连重放同一快照"——那是防计数器回归的用例。
 - 依据：Task 0005 场景矩阵（12 组场景 / 29 条断言）—— 它抓出了两个真 bug
   （快照不更新行的点、`{unread:null}` 误删 running 槽），这两条都没有被任何单测覆盖。
+
+### 2.16 会话交互类改动必须用"打桩三杆"覆盖，不许依赖真模型（必须）
+
+- 规则：会话/回合/交互类的改动，测试必须能在**不调模型**的前提下跑完，用三根控制杆：
+  ① **挂起**（把 `session.prompt` 换成不 resolve 的 Promise → 造"正在跑"）；
+  ② **失败**（换成抛错，或往会话追加一条 `stopReason:"error"` 的 assistant → 造失败态）；
+  ③ **观察**（`prompts[]` 记录实际发出的文本、`sessionManager.getBranch()` 看条目、SSE `rowsDuring()` 看事件）。
+  前置：`Object.defineProperty(session, "model", {value: undefined, configurable: true})` 跳过鉴权守卫。
+- 规则：stub 掉 `prompt` 时**必须模拟 Pi 的行为**（真实 `prompt` 会把 user 消息写进会话）；
+  不模拟就等于"测了打桩、没测配对"，断言会在空数据上假绿。
+- 规则：场景矩阵必须覆盖：普通会话（用户↔Agent）· `ask`（阻塞）· `send`（异步+回流）·
+  **用户介入 Agent↔Agent 会话** · 同一会话反复多轮 · 新建会话（`newSession` / 换 Task）· 失败后继续 · 并发与快速切换。
+- 规则：并发类断言要查**判定本身**（`sessionBusyOf`），不要查 `meta.running`——
+  后者只反映 `isRunning`，在"已受理未开跑"的窗口里是 `false`（实测会 flaky）。
+- 依据：Task 0014（2026-11-07 用户要求"这些场景完全可以自己独立地进行完整测试，不允许出现没验证到的场景"）。
+- 参考实现：`test/annotation-lifecycle-e2e.test.mjs:36-46`（同一手法的先例）、`test/session-origin.test.mjs`。
+- 机器检查：新增/修改的会话类用例里不出现真实 provider / 真实 baseUrl / 外网地址。
