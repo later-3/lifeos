@@ -172,3 +172,35 @@ test("T69 不带 projectId 的补丁不把槽位挪到「无项目桶」", () =>
 
   assert.equal(map.get("s1")?.projectId, "p1", "projectId 只增不减：不能被 undefined 覆盖");
 });
+
+// ——————————————————————————————————————————————————————————————
+// 焦点判定不看 visible（2026-11-08 用户裁决的回归）
+// ——————————————————————————————————————————————————————————————
+//
+// 用户原话：
+// > 他只要当前在这个 session 上，你就不要管他去干嘛了，我们只做我们自己的逻辑……
+// > 我们只能保证当前页面上是什么状态、怎么去流转，我们的状态机该怎么去转，
+// > 你不可能管到他到底看没看呀。
+//
+// 现象：回合结束时标签页恰好不可见 → 记成未读 → 用户切走 → 服务端再也不会清
+// → "我明明在这个会话里，绿点却一直挂着，还非得再切回去再切出来才消失"。
+
+test("T72 停在某个会话上时，即使标签页不可见，它的未读也不算数", () => {
+  const facts = {
+    sessions: { s1: { meta: { agentId: "a" }, activity: { state: "unread" } } },
+    aggregate: [{ agentId: "a", running: 0, unreadDone: 1, unreadError: 0 }],
+  };
+  for (const visible of [true, false]) {
+    const derived = deriveStatus(facts, { agentId: "a", sessionId: "s1", visible });
+    assert.equal(derived.sessions.s1?.unread, false, `visible=${visible}：停在这个会话上就不算未读`);
+  }
+});
+
+test("T73 停在别的会话上时，这个会话的未读仍然算数", () => {
+  const facts = {
+    sessions: { s1: { meta: { agentId: "a" }, activity: { state: "unread" } } },
+    aggregate: [{ agentId: "a", running: 0, unreadDone: 1, unreadError: 0 }],
+  };
+  const derived = deriveStatus(facts, { agentId: "a", sessionId: "other", visible: true });
+  assert.equal(derived.sessions.s1?.unread, true, "没停在这个会话上 → 未读该显示");
+});

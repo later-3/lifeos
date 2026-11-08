@@ -279,7 +279,44 @@ async function layerDom(playwright, agentId, projectId, expectedRows) {
             },
           };
         });
-      return { agentRows, projectRows, sessions, panelText: (panel?.innerText ?? "").split("\n").slice(0, 6) };
+      /**
+       * **徽标 vs 画面上真的能看到的点**（2026-11-08 新增，用户报"有数字没绿点"时用）。
+       *
+       * 三种情况结论完全不同：
+       *   ① 徽标 N、可见点 N            → 一致
+       *   ② 徽标 N、可见点 < N          → **可能只是那些行被折叠或滚出视口**
+       *                                   （本项目会话列可滚动、分组可折叠）
+       *                                   → 不是 bug，是"用户找不到是哪个"
+       *   ③ 徽标 N、可见点 0 且无隐藏行 → 真 bug（数字有、点没画）
+       */
+      const countDots = (root) => {
+        const out = { running: 0, unreadDone: 0, unreadError: 0 };
+        for (const row of root?.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]') ?? []) {
+          if (row.getAttribute("data-testid") === "group-header") continue;
+          const dot = [...row.querySelectorAll("[title]")].find((x) => {
+            const r = x.getBoundingClientRect();
+            if (!(r.width > 0 && r.width <= 12 && r.height <= 12)) return false;
+            return /生成中|完成未读|失败/.test(x.getAttribute("title") ?? "");
+          });
+          if (dot === undefined) continue;
+          const title = dot.getAttribute("title") ?? "";
+          if (title.includes("生成中")) out.running += 1;
+          else if (title.includes("失败")) out.unreadError += 1;
+          else out.unreadDone += 1;
+        }
+        return out;
+      };
+      const selfCheck = projectRows.map((proj) => {
+        const el = [...(panel?.querySelectorAll("[data-project-id]") ?? [])].find((x) => x.getAttribute("data-project-id") === proj.projectId);
+        return {
+          projectId: proj.projectId,
+          badge: proj.marks,
+          visibleDots: countDots(el),
+          sessionRowsRendered: el?.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length ?? 0,
+          collapsed: el?.querySelector('[data-testid="group-header"]')?.getAttribute("aria-expanded") === "false",
+        };
+      });
+      return { agentRows, projectRows, sessions, selfCheck, panelText: (panel?.innerText ?? "").split("\n").slice(0, 6) };
     });
   } finally {
     await browser.close();
@@ -579,6 +616,29 @@ async function main() {
     for (const m of report.marks) {
       const fmt = (v) => (v === undefined ? "—" : `跑${v.running} 完${v.unreadDone} 败${v.unreadError}`);
       console.log(`  ${m.ok ? " " : "✖"} ${pad(`${m.scope} ${m.agentId}${m.projectId !== undefined ? `/${m.projectId}` : ""}`, 34)}SSE ${pad(fmt(m.sse), 18)}行对象 ${pad(fmt(m.api), 18)}画面 ${fmt(m.dom)}`);
+    }
+  }
+
+  // —— 徽标 vs 画面上真的能看到的点（用户报"有数字没绿点"时看这一节）——
+  const dotChecks = [];
+  for (const [agentId, dom] of domByAgent) {
+    for (const check of dom.selfCheck ?? []) {
+      const { badge, visibleDots, collapsed, sessionRowsRendered } = check;
+      const same = (a, b) => a.running === b.running && a.unreadDone === b.unreadDone && a.unreadError === b.unreadError;
+      if (same(badge, visibleDots)) continue;
+      const hidden = collapsed || sessionRowsRendered === 0;
+      dotChecks.push({ agentId, projectId: check.projectId, badge, visibleDots, hidden, collapsed, sessionRowsRendered });
+    }
+  }
+  if (dotChecks.length > 0) {
+    console.log("\n徽标 vs 画面上能看到的点（不一致时）：");
+    for (const c of dotChecks) {
+      const fmt = (v) => `跑${v.running} 完${v.unreadDone} 败${v.unreadError}`;
+      const verdict = c.hidden
+        ? "分组折叠了 / 行没渲染 → 看不到点是正常的"
+        : "行渲染了但点没画 → **真 bug**";
+      console.log(`  ✖ ${c.agentId}/${c.projectId}  徽标 ${fmt(c.badge)}  可见点 ${fmt(c.visibleDots)}  ${verdict}`);
+      if (!c.hidden) report.problems.push(`徽标 ${c.agentId}/${c.projectId} 与可见点不一致（行渲染了但点没画）`);
     }
   }
 

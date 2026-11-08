@@ -26,7 +26,7 @@ import { decideRestoreModel, decideRestoreThinking } from "./model-follow.ts";
 import type { ModelRef } from "./model-follow-types.ts";
 // 事件总线独立成模块（events.ts）：写操作（agents/projects/任务）在**共享实现**里广播，
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
-import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
+import { broadcast, isOnSession, publish, type AgentEvent } from "./events.ts";
 import { sessionViewsOf, sessionViewsReady, type TurnOutcome } from "./session-views.ts";
 import { bindPendingPeerTurn, notifyPeerTurnFinished } from "./peer-completion.ts";
 import { titleFromFirstMessage } from "./session-title.ts";
@@ -744,7 +744,18 @@ function recordCompletion(agentId: string, sessionId: string, aborted: boolean, 
         ? { state: "error", failureKind, ...(failureDetail !== undefined ? { failureDetail } : {}) }
         : { state: "done" });
   }
-  if (isFocusedVisible(agentId, sessionId)) markSessionViewed(agentId, sessionId, at, projectId);
+  // 「停在哪个会话」= 看过（不看标签页可见性；用户在 2026-11-08 明确了这个判据）
+  //
+  // 这条日志是排查"绿点该不该有"的**唯一判据**：回合结束时到底有没有人在这个会话上。
+  // 用户报"我明明在这个会话里却有绿点"时，先看这一行：
+  //   onSession=false → 那一刻服务端认为没人在这个会话上（前端没上报 / 上报丢了 / 切走时机）
+  //   onSession=true  → 不该有绿点，有就是下游（索引 / 补丁 / 渲染）的问题
+  const onSession = isOnSession(agentId, sessionId);
+  void log.info("agent-host", "recordCompletion", "回合终态与已读判定", {
+    sessionId, agentId, projectId,
+    details: { aborted, onSession, state: failureKind !== undefined ? "error" : "done" },
+  });
+  if (onSession) markSessionViewed(agentId, sessionId, at, projectId);
 }
 
 /** 用户主动打断的会话键（runTurn 结束时取走；不打断的回合不会留下记录）。 */
