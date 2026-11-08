@@ -37,17 +37,22 @@ test("选中必须比悬停更沉（light 与 dark 同律，方向翻转）", ()
   }
 });
 
-test("状态强度达到参考量级（用户 2026-11-09：高亮不明显、深色等于没有）", () => {
-  // VS Code 2026 默认主题实测（alpha 叠在 sideBar.background 上换算）：
-  //   light 选中 ΔL* 12.7 / 悬停 7.0；dark 选中 14.7 / 悬停 8.7
-  // 我们取 hoverD 4.5 + selRatio 2.8（选中 ≈12.6），dark 再 ×1.25。
-  for (const mode of ["light", "dark"]) {
-    const p = calculatePalette(clampState({ mode }));
-    const dHover = Math.abs(p.navBg[0] - p.navAccent[0]);
-    const dSel = Math.abs(p.navBg[0] - p.navSelected[0]);
-    assert.ok(dSel >= 11, `${mode}：选中 ΔL* ${dSel.toFixed(1)} 必须 ≥11（VS Code 12.7/14.7 量级）`);
-    assert.ok(dHover >= 4, `${mode}：悬停 ΔL* ${dHover.toFixed(1)} 必须 ≥4（太弱看不出）`);
-    assert.ok(dHover <= 9, `${mode}：悬停 ΔL* ${dHover.toFixed(1)} 必须 ≤9（每行都变暗 7+ 会太吵）`);
+test("状态强度对齐产品类参考（LibreChat 8.4 / LobeHub 5.2 / novu 3.3）", () => {
+  // 依据 `knowledge/design/theme-systems/comparison.md` §3.2：
+  //   LibreChat light 侧栏选中 ΔL* 8.4、dark 15.9（clickui.json）
+  //   LobeHub  5.2 / novu 3.3 —— 三家区间 3.3–8.4
+  // 我们取 LibreChat 正文档：light 8.4（hoverD 4.2 × selRatio 2.0），dark ×1.9 ≈ 15.9。
+  const light = calculatePalette(clampState({ mode: "light" }));
+  const dSelL = Math.abs(light.navBg[0] - light.navSelected[0]);
+  assert.ok(dSelL >= 7.5 && dSelL <= 9.5, `light 选中 ΔL* ${dSelL.toFixed(1)} 应落在 8.4±1（LibreChat 正文档）`);
+  const dark = calculatePalette(clampState({ mode: "dark" }));
+  const dSelD = Math.abs(dark.navBg[0] - dark.navSelected[0]);
+  assert.ok(dSelD >= 13 && dSelD <= 18, `dark 选中 ΔL* ${dSelD.toFixed(1)} 应落在 15.9±2（LibreChat 暗色实测）`);
+  // 比例：选中 ≈ hover × 2（三家比例区间 1.0–2.4，取中值）
+  for (const p of [light, dark]) {
+    const hover = Math.abs(p.navBg[0] - p.navAccent[0]);
+    const sel = Math.abs(p.navBg[0] - p.navSelected[0]);
+    assert.ok(sel / hover >= 1.7 && sel / hover <= 2.3, `选中/悬停比 ${(sel / hover).toFixed(2)} 应落在 1.7–2.3`);
   }
 });
 
