@@ -9,3 +9,4 @@
 | `agent-config.md` | 助手配置弹窗 |
 | `image-input.md` | 图片输入：支持情况、约束表（唯一事实源）、错误码、实测记录 |
 | `im/` | **IM 版界面（v2 目标设计）**：设计语言 + 5 份页面文档；落地时取代上面同名页面文档，见 `im/AGENTS.md` |
+| `theme-systems/` | **三个参考产品的主题系统源码级分析**（LobeHub / LibreChat / novu）+ 横向择优决策表；改主题或布局前先读，见 `theme-systems/AGENTS.md` |
