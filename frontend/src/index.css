@@ -57,6 +57,27 @@ html, body, button, input, textarea, select {
 .md-body--compact { font-size: var(--text-body); line-height: 1.65; }
 
 /* ══════════════════════════════════════════════════════════════
+ * L3 质感层默认值（Task 0009）：React 起来前先有一份可用的圆角/阴影/动效。
+ * 运行时由 design/theme.ts 的 applySurfaceTokens() 覆盖（深浅色不同）。
+ * 依据见 knowledge/design/theme-systems/comparison.md §3.6。
+ * ══════════════════════════════════════════════════════════════ */
+:root {
+  /* 阴影：light 默认 = novu box-xs（描边影 + 柔影） */
+  --surface-card: 0 0 0 1px rgba(25, 28, 33, 0.04), 0 1px 2px rgba(25, 28, 33, 0.06);
+  --surface-card-hover: 0 0 0 1px rgba(25, 28, 33, 0.06), 0 4px 10px -2px rgba(25, 28, 33, 0.10);
+  --surface-popover: 0 0 0 1px rgba(25, 28, 33, 0.05), 0 10px 22px -6px rgba(25, 28, 33, 0.10), 0 2px 6px rgba(25, 28, 33, 0.06);
+  --surface-modal: 0 0 0 1px rgba(25, 28, 33, 0.06), 0 24px 48px -12px rgba(25, 28, 33, 0.16), 0 6px 14px rgba(25, 28, 33, 0.08);
+  /* 动效：指示类位移统一曲线（novu tabs / segmented 共用） */
+  --motion-indicator: 300ms cubic-bezier(0.65, 0, 0.35, 1);
+  --motion-state: 150ms cubic-bezier(0.645, 0.045, 0.355, 1);
+  --motion-overlay: 200ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  /* 字距：标题负字距（novu −0.035em 收敛到中文可读的 −0.02em） */
+  --tracking-title: -0.02em;
+  --tracking-heading: -0.015em;
+  --tracking-micro: 0.01em;
+}
+
+/* ══════════════════════════════════════════════════════════════
  * 设置界面（Task 0009 · settings-surface.tsx 的局部样式）
  * 数值纪律：间距走 4 网格档位（Tailwind 类为主）；这里只放"组合件"样式。
  * ══════════════════════════════════════════════════════════════ */

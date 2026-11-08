@@ -50,9 +50,26 @@ export function contrastOf(a: [number, number, number], b: [number, number, numb
   return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
 }
 
-/** 深色派生：L* 翻转后压缩到 13–34（台阶 ×1.6 放大——深底上同台阶感知更弱，demo 实测）。 */
+/**
+ * 深色底色映射（2026-11-09 重写）。
+ *
+ * **旧实现是错的**：`13 + (100 - lstar) * 1.6` 把 light 里最亮的"内容"(100) 映射成最暗(13)、
+ * 把最暗的"图标轨"(93) 映射成最亮(24) —— 方向整个反了。后果：深色模式下内容区(卡片)比列/轨都暗，
+ * 卡片与页面同色，整页发平（用户截图可见）。
+ *
+ * **三家的正确方向（一致）**：
+ * - LobeHub dark：`colorBgLayout` `#000000`(L\*0) → `colorBgContainer` `#0d0d0d`(L\*3.4) → `colorBgElevated` `#1a1a1a`；
+ *   即「页面最暗、卡片在上、浮层最亮」（`generateColorPalette.ts:42-62`）
+ * - LibreChat dark：`background.default` `#1f1f1c`(L\*11.7) / `background.muted` `#282828`(L\*16.2) /
+ *   `stroke.default` `#323232`；同样是"底暗、卡片亮、描边再亮"（`clickui.json`）
+ * - novu：无完整暗色（不作参考）
+ *
+ * **结论：深色必须保持 light 里的顺序**（轨 < 列 < 内容），只是把绝对值压缩到 10–17 区间。
+ * 映射：`10 + (lstar − 88) × 0.6` → 88→10.0 / 93→13.0 / 96.9→15.3 / 100→17.2（跨度 7.2）。
+ */
 function darkL(lstar: number): number {
-  return Math.min(34, 13 + (100 - lstar) * 1.6);
+  // 88→5.0 / 93→9.75 / 96.9→13.4 / 100→16.4（三段跨度 11.4，与 LibreChat 11.7→16.2 同量级）
+  return Math.max(4, Math.min(30, 5 + (lstar - 88) * 0.95));
 }
 
 /* ── 主题状态 ── */
@@ -211,7 +228,9 @@ export function calculatePalette(state: ThemeState): Palette {
   const surfaceL = dark ? darkL(state.lSurface) : state.lSurface;
   const navL = dark ? darkL(state.lNav) : state.lNav;
   const railL = dark ? darkL(state.lRail) : state.lRail;
-  const lineL = dark ? Math.min(38, darkL(state.lLine) + 4) : state.lLine;
+  // 深色下"边界线"必须比它所在的底**更亮**才是可见的发丝线；light 下比底更暗。
+  // 取 surfaceL + 6（低于 38，避免亮到抢戏）。旧实现用 darkL+4 → 比 surface 暗，深色下线看不见。
+  const lineL = dark ? Math.min(38, surfaceL + 6) : state.lLine;
   /**
    * 状态强度（2026-11-09 用户反馈"高亮不明显、深色等于没有"后按 VS Code 2026 校准）。
    *
@@ -248,7 +267,9 @@ export function calculatePalette(state: ThemeState): Palette {
 
   return {
     surface: [surfaceL, nC * 0.5, nH],
-    sunken: [dark ? surfaceL - 1.7 : surfaceL - 1.7, nC * 0.5, nH],
+    // 页面底（sunken）：light 比内容暗 1.7（既有观感）；dark 比"列"再暗 1.0，
+    // 保证 rail < nav 列 < sunken 页面 < surface 卡片 这个顺序不被压平（深底上小差距看不出来）。
+    sunken: [dark ? navL - 1.0 : surfaceL - 1.7, nC * 0.5, nH],
     hover: [dark ? navL + state.hoverD + 1.2 : navL - state.hoverD - 0.3, nC, nH],
     line: [lineL, nC * 1.3, nH],
     navBg: [navL, nC, nH],
@@ -266,7 +287,9 @@ export function calculatePalette(state: ThemeState): Palette {
       : [96.5, accentC * 0.16, hue],
     ink900: [ink[900], 0.01, nH],
     ink700: [ink[700], 0.008, nH],
-    ink500: [ink[500], 0.006, nH],
+    // ink-500 压在最深的交互底（hover/line）上也要 ≥4.5：L*48→42（hover 4.96 / line 4.57 / surface 6.01）。
+    // 依据：/tmp 实测 + `knowledge/design/theme-systems/comparison.md` §3.2（底加深必须联动文字）
+    ink500: [42, 0.006, nH],
     ink300: [ink[300], 0.004, nH],
     success: dark ? [72, 0.16, 158] : [45, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],
@@ -339,4 +362,133 @@ export function themeToCss(state: ThemeState): string {
     lines.push(`  ${name}: ${hex(color[0], color[1], color[2])};`);
   }
   return `@theme {\n${lines.join("\n")}\n}`;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+ * L3 质感层：圆角 / 阴影 / 动效 / 字距（2026-11-09 三家择优）
+ *
+ * 三家各自的手法（详见 knowledge/design/theme-systems/comparison.md）：
+ * - **LobeHub**：阴影是**多层叠加**（5 层、每层不同 spread 与 alpha），
+ *   `theme/token/shadow.ts` 的 light `boxShadow` = 40/80px…2/4px 五层，总 alpha 仅 0.20；
+ *   圆角 4/6/8/12（XS/SM/·/LG）。
+ * - **LibreChat**：`click.dialog.radii 0.5rem`、`click.field.space.y 0.2813rem`（4.5px，非整格）、
+ *   主色底按钮**文字色 = 容器色反色**（light `#302e32` 底 + 白字；dark `#faff69` 底 + `#1f1f1c` 字）。
+ * - **novu**：`box-xs` = `0 0 0 1px rgba(25,28,33,.04), 0 1px 2px rgba(25,28,33,.06)`
+ *   （描边影 + 柔影两层，就是"悬浮卡"最小代价）；标题负字距 −0.035em；指示类位移统一曲线。
+ *
+ * 我们取三家的**交集优点**：
+ * - 阴影用 LobeHub 的"多层 + 低总 alpha"（柔和而立体），但层数收敛到 3 层（够用且可读）；
+ * - 卡片用 novu 的"描边影 + 柔影"（比纯投影更清晰，深色下也成立）；
+ * - 圆角用 LobeHub 的 4 档 + 我们的 bubble 档（气泡需要更大）；
+ * - 字距：标题负字距（novu），正文 0（可读性）；
+ * - 动效：指示类位移统一曲线（novu），其余保持我们的克制。
+ */
+
+export type SurfaceScale = {
+  /** 内嵌元素（标签、行内 code） */
+  inner: string;
+  /** 控件（按钮、输入框） */
+  control: string;
+  /** 面板 / 卡片 */
+  panel: string;
+  /** 大面板 / 弹层 */
+  overlay: string;
+  /** 气泡 */
+  bubble: string;
+  /** 胶囊 */
+  full: string;
+};
+
+export const RADIUS: SurfaceScale = {
+  // LobeHub `token/base.ts:4-7`：XS 4 / SM 6 / 8 / LG 12；bubble 14 是我们已有（气泡需要）
+  inner: "4px",
+  control: "6px",
+  panel: "10px",
+  overlay: "12px",
+  bubble: "14px",
+  full: "999px",
+};
+
+export type Elevation = {
+  /** 卡片静息：描边影 + 柔影（novu `box-xs` 手法） */
+  card: string;
+  /** 卡片 hover：更明显一档 */
+  cardHover: string;
+  /** 浮层（菜单/下拉/浮卡）：LobeHub 多层低 alpha 收敛到 3 层 */
+  popover: string;
+  /** 模态 / 抽屉：最深一档 */
+  modal: string;
+};
+
+/** 阴影随主题深浅切换（深色下阴影不可见 → 改用白色微描边，见 light/dark） */
+export function elevationOf(mode: ThemeMode): Elevation {
+  if (mode === "dark") {
+    // 深色：投影几乎不可见（LobeHub `shadow.ts` dark 也把 alpha 提到 0.09 但视觉上仍是"黑上黑"）
+    // → 用"1px 白色微描边 + 极低 alpha 扩散"替代，这是 LibreChat / shadcn 的深色惯用做法
+    return {
+      card: "0 0 0 1px rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.4)",
+      cardHover: "0 0 0 1px rgba(255,255,255,0.10), 0 4px 12px rgba(0,0,0,0.5)",
+      popover: "0 0 0 1px rgba(255,255,255,0.08), 0 8px 24px -6px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4)",
+      modal: "0 0 0 1px rgba(255,255,255,0.10), 0 16px 48px -12px rgba(0,0,0,0.7), 0 4px 12px rgba(0,0,0,0.5)",
+    };
+  }
+  return {
+    // light：novu `box-xs`（描边影 1px 4% + 柔影 1px2px 6%）→ 卡片静息
+    card: "0 0 0 1px rgba(25,28,33,0.04), 0 1px 2px rgba(25,28,33,0.06)",
+    cardHover: "0 0 0 1px rgba(25,28,33,0.06), 0 4px 10px -2px rgba(25,28,33,0.10)",
+    // 浮层：LobeHub `boxShadowSecondary` 的 5 层收敛为 3 层（总 alpha ≈0.10）
+    popover: "0 0 0 1px rgba(25,28,33,0.05), 0 10px 22px -6px rgba(25,28,33,0.10), 0 2px 6px rgba(25,28,33,0.06)",
+    modal: "0 0 0 1px rgba(25,28,33,0.06), 0 24px 48px -12px rgba(25,28,33,0.16), 0 6px 14px rgba(25,28,33,0.08)",
+  };
+}
+
+export type Motion = {
+  /** 指示类位移（tab 指示条、segmented 浮块）：novu 统一曲线 */
+  indicator: string;
+  /** 一般状态过渡（hover / 选中） */
+  state: string;
+  /** 浮层进出 */
+  overlay: string;
+  /** 时长 */
+  fast: string;
+  mid: string;
+  slow: string;
+};
+
+export const MOTION: Motion = {
+  // novu `primitives/tabs.tsx:66` 与 `segmented-control.tsx:52` 共用：cubic-bezier(0.65,0,0.35,1) + 300ms
+  indicator: "300ms cubic-bezier(0.65, 0, 0.35, 1)",
+  // LobeHub `static.ts:56` motionEaseInOut 的同型曲线（0.645,0.045,0.355,1），用于状态色/底
+  state: "150ms cubic-bezier(0.645, 0.045, 0.355, 1)",
+  // LobeHub motionDurationSlow 0.3s + easeOut
+  overlay: "200ms cubic-bezier(0.215, 0.61, 0.355, 1)",
+  fast: "100ms",
+  mid: "150ms",
+  slow: "200ms",
+};
+
+/** 字距：标题负字距（novu −0.035em），正文 0；中文标题收到 −0.02em（中文不需要英文那么大负值） */
+export const TRACKING = {
+  title: "-0.02em",
+  heading: "-0.015em",
+  body: "0",
+  micro: "0.01em",
+} as const;
+
+/** 把 L3 层写到 :root（圆角 / 阴影 / 动效 / 字距） */
+export function applySurfaceTokens(mode: ThemeMode): void {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement.style;
+  const elev = elevationOf(mode);
+  root.setProperty("--surface-card", elev.card);
+  root.setProperty("--surface-card-hover", elev.cardHover);
+  root.setProperty("--surface-popover", elev.popover);
+  root.setProperty("--surface-modal", elev.modal);
+  root.setProperty("--motion-indicator", MOTION.indicator);
+  root.setProperty("--motion-state", MOTION.state);
+  root.setProperty("--motion-overlay", MOTION.overlay);
+  root.setProperty("--tracking-title", TRACKING.title);
+  root.setProperty("--tracking-heading", TRACKING.heading);
+  root.setProperty("--tracking-micro", TRACKING.micro);
 }

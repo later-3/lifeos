@@ -20,7 +20,7 @@ import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
 import { loadPrefs, savePrefs } from "./display-prefs-panel";
 import { SettingsSurface } from "./settings-surface";
-import { applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
+import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
@@ -446,7 +446,11 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("display");
   /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
   const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
-  useEffect(() => { applyTheme(theme); saveTheme(theme); }, [theme]);
+  useEffect(() => {
+    applyTheme(theme);
+    applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
+    saveTheme(theme);
+  }, [theme]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();

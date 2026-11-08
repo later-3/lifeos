@@ -59,7 +59,7 @@ function SetSlider({ id, label, min, max, step, value, onChange, format }: {
 function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
   return (
     <div>
-      <h2 className="text-title font-semibold text-ink-900">{title}</h2>
+      <h2 className="text-title font-semibold text-ink-900" style={{ letterSpacing: "var(--tracking-title)" }}>{title}</h2>
       <p className="mb-5 mt-1 text-meta text-ink-500">{desc}</p>
       {children}
     </div>
@@ -80,7 +80,7 @@ function Placeholder({ note }: { note: string }) {
 /** 一组设置 = 一张卡（Twenty SettingsPageLayout 的 PageCardLayout 同构：分组有边、块内 16 留白）。 */
 function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-panel border border-line">
+    <section className="rounded-panel bg-surface" style={{ boxShadow: "var(--surface-card)" }}>
       <header className="border-b border-line px-4 py-2.5">
         <h3 className="text-body font-semibold text-ink-900">{title}</h3>
         {hint !== undefined && <p className="mt-0.5 text-micro text-ink-500">{hint}</p>}
@@ -282,7 +282,10 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
                 aria-current={section === it.k ? "page" : undefined}
                 onClick={() => onSection(it.k)}>
                 {/* 激活指示条：2px、贴左缘、上下内缩（Hoppscotch TabsNav.vue:78-90 的内缩手法，竖向变体） */}
-                {section === it.k && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent" />}
+                {section === it.k && (
+                  <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent"
+                    style={{ transition: "transform var(--motion-indicator), opacity var(--motion-indicator)" }} />
+                )}
                 {icons[it.k]}
                 <span className="min-w-0 flex-1 truncate">{it.label}</span>
               </button>

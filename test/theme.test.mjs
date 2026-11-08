@@ -56,6 +56,18 @@ test("状态强度对齐产品类参考（LibreChat 8.4 / LobeHub 5.2 / novu 3.3
   }
 });
 
+test("深色分层方向与 light 同向（2026-11-09 修：旧实现把内容映射成最暗，卡片与页面同色）", () => {
+  // 三家一致：页面最暗 → 卡片在上 → 浮层最亮（LobeHub generateColorPalette.ts:42-62、LibreChat clickui.json）
+  for (const mode of ["light", "dark"]) {
+    const p = calculatePalette(clampState({ mode }));
+    assert.ok(p.navEdge[0] < p.navBg[0], `${mode}：图标轨必须比列底暗（rail ${p.navEdge[0].toFixed(1)} < nav ${p.navBg[0].toFixed(1)}）`);
+    assert.ok(p.navBg[0] < p.surface[0], `${mode}：列底必须比内容暗（nav ${p.navBg[0].toFixed(1)} < surface ${p.surface[0].toFixed(1)}）`);
+    // 边界线：light 比底暗、dark 比底亮（发丝线在两个主题下都要"看得出来"）
+    if (mode === "light") assert.ok(p.line[0] < p.navBg[0], "light：线比列底暗");
+    else assert.ok(p.line[0] > p.surface[0], `dark：线必须比内容亮（line ${p.line[0].toFixed(1)} > surface ${p.surface[0].toFixed(1)}）`);
+  }
+});
+
 test("三档分层成立：轨→列→内容 相邻可感（light ≥2、dark ≥1.5）", () => {
   for (const preset of Object.keys(THEME_PRESETS)) {
     const p = calculatePalette(clampState({ ...THEME_PRESETS[preset], preset, mode: "light" }));
