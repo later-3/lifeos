@@ -134,7 +134,17 @@ async function layerIndex(label: string, root: string): Promise<string[]> {
  * - 其余层只给说明文件索引。
  * identity.md 单独作为 customPrompt（Agent 本身）。
  */
-export type PromptParts = { customPrompt: string; harnessSection: string; sources: string[] };
+export type PromptParts = {
+  customPrompt: string;
+  harnessSection: string;
+  /**
+   * 本轮发起方身份段（Task 0014 · D8′）：`<lifeos_current_speaker>…</lifeos_current_speaker>`。
+   * 由 `agent-host` 在每轮开始时从会话最新的 `lifeos_turn_origin` 算出来，
+   * 经 `getParts()` 重新装配（与 Task 切换同一机制）。
+   */
+  speakerSection?: string;
+  sources: string[];
+};
 
 /** 每次 run 都重新装配（Task 在会话中途可切换）；固定 parts 仍可用于离线测试。 */
 export type PromptPartsSource = PromptParts | (() => Promise<PromptParts>);
@@ -256,6 +266,11 @@ export function createLifeOsPromptExtension(source: PromptPartsSource): InlineEx
           ...(tools !== undefined ? { tools } : {}),
           ...(rules !== undefined ? { rules } : {}),
           lifeos_interaction_harness: parts.harnessSection,
+          // 身份段（Task 0014）：Pi 支持任意 tag 作为 sections 项（`core/system-prompt.ts:29-30`）；
+          // 内容是 raw `<lifeos_current_speaker>` 串（与 customPrompt 的 `<lifeos_identity>` 同一写法）。
+          ...(parts.speakerSection !== undefined && parts.speakerSection !== ""
+            ? { lifeos_current_speaker: parts.speakerSection }
+            : {}),
         };
       });
     },

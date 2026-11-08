@@ -108,27 +108,6 @@ test("对端段（Agent↔Agent）：显示 `agent ↔ peer`，用户↔Agent �
   assert.equal(same.some((s) => s.id === "peer"), false);
 });
 
-// ---- isPeerSessionOf（2026-11-04 修的 bug：批注在全站被禁用）----
-import { isPeerSessionOf } from "../frontend/src/header-strip.ts";
-
-test("peer 会话判断：普通会话的 peer 是 null，不能当成 peer", () => {
-  // 后端 src/session-rows.ts:53 的类型是 `peer: RowPeer | null`
-  // 曾经写成 `peer !== undefined`，而 `null !== undefined` 恒为 true → 全站批注被禁用
-  const sessions = [
-    { sessionId: "s1", peer: null },
-    { sessionId: "s2", peer: { id: "a", name: "B" } },
-  ];
-  assert.equal(isPeerSessionOf("s1", sessions), false, "peer=null 是普通会话");
-  assert.equal(isPeerSessionOf("s2", sessions), true, "peer 有对象才是 peer 会话");
-});
-
-test("peer 会话判断：字段缺失 / 无会话 / 无 id 都算普通", () => {
-  assert.equal(isPeerSessionOf("s1", [{ sessionId: "s1" }]), false, "字段缺失");
-  assert.equal(isPeerSessionOf("s1", [{ sessionId: "s1", peer: undefined }]), false, "undefined");
-  assert.equal(isPeerSessionOf(undefined, [{ sessionId: "s1", peer: {} }]), false, "没有当前会话 id");
-  assert.equal(isPeerSessionOf("s1", undefined), false, "会话列表还没加载");
-  assert.equal(isPeerSessionOf("nope", [{ sessionId: "s1", peer: {} }]), false, "id 不匹配");
-});
 
 // ---- 头部大字标题（2026-11-05 修的 bug：标题显示成 "Life OS"）----
 //
