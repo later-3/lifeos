@@ -2802,7 +2802,7 @@ export default function App() {
             }`}>
             <IconSettings size={18} />
           </button>
-        } />}')
+        } />}
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
@@ -2849,12 +2849,14 @@ export default function App() {
             <IconLayoutSidebarRight size={16} />
           </IconButton>
           {/* 设置入口（Task 0009 · 2026-11-09 用户裁决）：桌面在图标轨底部；
-              手机无图标轨，保留头部入口（标签区分，避免与桌面契约选择器撞车）。 */}
-          <IconButton label="打开设置" size="lg" active={settingsOpen}
-            onClick={() => setSettingsOpen((open) => !open)}
-            className="hidden max-sm:inline-flex">
-            <IconSettings size={16} />
-          </IconButton>
+              手机无图标轨，只有头部入口。**条件渲染**而不是 hidden 类——
+              IconButton 自带 inline-flex，类名顺序会让 hidden 失效（2026-11-09 用户抓到重复入口）。 */}
+          {isMobile && (
+            <IconButton label="打开设置" size="lg" active={settingsOpen}
+              onClick={() => setSettingsOpen((open) => !open)}>
+              <IconSettings size={16} />
+            </IconButton>
+          )}
         </header>
 
         <div className="relative min-h-0 flex-1">
