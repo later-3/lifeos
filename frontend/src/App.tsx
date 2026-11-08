@@ -2501,6 +2501,9 @@ export default function App() {
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
   // 展开前若右侧（完整历史/文件面板）开着，先关掉它——宽度预算同一套，避免挤爆聊天区。
   function toggleRail(key: "nav" | "groups") {
+    // 设置页开着时，点任何 rail 项都**先退出设置**（用户 2026-11-09：不要"只能再点设置才能退出"）。
+    // 退出后按原逻辑处理该列，用户视线直接落到他点的那一列上。
+    if (settingsOpen) setSettingsOpen(false);
     const open = key === "nav" ? showNav : showGroups;
     const set = key === "nav" ? setShowNav : setShowGroups;
     if (open) { set(false); return; }

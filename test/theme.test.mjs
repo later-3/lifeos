@@ -37,6 +37,20 @@ test("选中必须比悬停更沉（light 与 dark 同律，方向翻转）", ()
   }
 });
 
+test("状态强度达到参考量级（用户 2026-11-09：高亮不明显、深色等于没有）", () => {
+  // VS Code 2026 默认主题实测（alpha 叠在 sideBar.background 上换算）：
+  //   light 选中 ΔL* 12.7 / 悬停 7.0；dark 选中 14.7 / 悬停 8.7
+  // 我们取 hoverD 4.5 + selRatio 2.8（选中 ≈12.6），dark 再 ×1.25。
+  for (const mode of ["light", "dark"]) {
+    const p = calculatePalette(clampState({ mode }));
+    const dHover = Math.abs(p.navBg[0] - p.navAccent[0]);
+    const dSel = Math.abs(p.navBg[0] - p.navSelected[0]);
+    assert.ok(dSel >= 11, `${mode}：选中 ΔL* ${dSel.toFixed(1)} 必须 ≥11（VS Code 12.7/14.7 量级）`);
+    assert.ok(dHover >= 4, `${mode}：悬停 ΔL* ${dHover.toFixed(1)} 必须 ≥4（太弱看不出）`);
+    assert.ok(dHover <= 9, `${mode}：悬停 ΔL* ${dHover.toFixed(1)} 必须 ≤9（每行都变暗 7+ 会太吵）`);
+  }
+});
+
 test("三档分层成立：轨→列→内容 相邻可感（light ≥2、dark ≥1.5）", () => {
   for (const preset of Object.keys(THEME_PRESETS)) {
     const p = calculatePalette(clampState({ ...THEME_PRESETS[preset], preset, mode: "light" }));

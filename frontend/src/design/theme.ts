@@ -91,8 +91,8 @@ export const THEME_DEFAULTS: ThemeState = {
   lNav: 96.9,
   lRail: 93,
   lLine: 89.4,
-  hoverD: 2.8,
-  selRatio: 1.75,
+  hoverD: 4.5,
+  selRatio: 2.8,
 };
 
 /** 预设 = 覆盖默认的一段增量（demo PRESETS 同源）。 */
@@ -212,9 +212,22 @@ export function calculatePalette(state: ThemeState): Palette {
   const navL = dark ? darkL(state.lNav) : state.lNav;
   const railL = dark ? darkL(state.lRail) : state.lRail;
   const lineL = dark ? Math.min(38, darkL(state.lLine) + 4) : state.lLine;
-  // 深色下方向翻转：状态色比列底**更亮**
-  const hoverL = dark ? navL + state.hoverD : navL - state.hoverD;
-  const selL = dark ? navL + state.hoverD * state.selRatio : navL - state.hoverD * state.selRatio;
+  /**
+   * 状态强度（2026-11-09 用户反馈"高亮不明显、深色等于没有"后按 VS Code 2026 校准）。
+   *
+   * 参考实测（`extensions/theme-defaults/themes/2026-light.json:65-69` / `2026-dark.json:57-63`，
+   * 都是 alpha 叠在 `sideBar.background` 上换算成 ΔL*）：
+   * - light：选中 `#00000025`（14.5%）→ **ΔL* 12.7**；悬停 `#00000014`（8%）→ **7.0**
+   * - dark ：选中 `#FFFFFF22`（13.3%）→ **ΔL* 14.7**；悬停 `#FFFFFF14` → **8.7**
+   *
+   * 我们改前是 5.1 / 2.8（弱 2.5 倍），所以"看不出来"。
+   * 取法：hoverD 4.5 + selRatio 2.8 = 选中 12.6（贴近 12.7），悬停 4.5（比 light_modern 的 2.1 明显、
+   * 比 2026 的 7.0 克制——单行 hover 每行都变暗 7 会太吵）。
+   * 深色再 ×1.25：同一 ΔL* 在深底上感知更弱（VS Code 深色选中 14.7 > 浅色 12.7，同方向）。
+   */
+  const darkBoost = dark ? 1.25 : 1;
+  const hoverL = dark ? navL + state.hoverD * darkBoost : navL - state.hoverD;
+  const selL = dark ? navL + state.hoverD * state.selRatio * darkBoost : navL - state.hoverD * state.selRatio;
 
   const accentC = (state.accentC / 100) * 0.22;
   // accent 的两个职责分开求值（demo v7 实测：单值时深色模式白字对比只有 1.96–2.15）：
@@ -243,7 +256,9 @@ export function calculatePalette(state: ThemeState): Palette {
     navAccent: [hoverL, nC * 1.2, nH],
     navSelected: [selL, nC * 2.6, nH],
     navLine: [lineL, nC * 1.3, nH],
-    navMuted: dark ? [70, 0.008, nH] : [43.5, 0.012, nH],
+    // 辅助文字必须跟"选中/悬停底"的强度联动（2026-11-09：加强高亮后 warm/sakura/ink 三套
+    // 副行/选中对比掉到 3.5–3.8，不达 AA）。light 43.5→36（在选中底上 4.96），dark 70→80（4.84）。
+    navMuted: dark ? [80, 0.008, nH] : [36, 0.012, nH],
     accent: [accentL, accentC, hue],
     accentSolid: [accentSolidL, accentC, hue],
     accentSoft: dark
