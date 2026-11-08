@@ -251,31 +251,43 @@ for (const label of ["助手", "对话"]) {
 
 // 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
 const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
-// Task 0009（2026-11-09 用户裁决 + 布局模型 L1）：rail = **功能页切换器**（tab），不是列开关。
-// v1 两个 tab：对话（业务组）/ 设置（系统组，推到底部）。助手列不再单列 tab——它是"对话"页的第二列。
-check("rail = tab 栏：对话 + 设置 = 2 个 tab", await railButtons.count() === 2, `实际 ${await railButtons.count()} 个`);
-check("tab 顺序固定：对话 → 设置", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => b.getAttribute("aria-label") ?? "").join(",")) === "对话,设置");
-check("高亮 = 当前功能页（恰好一个 aria-current=page）", await page.evaluate(() => {
-  const cur = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-    .filter((b) => b.getAttribute("aria-current") === "page");
-  return cur.length === 1 && cur[0].getAttribute("aria-label") === "对话";
+// Task 0009（2026-11-09 用户二次裁决）：rail 有**两类**开关，都不能少：
+//   ① 列开关（toggle）：助手 / 对话 —— 高亮 = 该列展开（aria-pressed），点击 = 开关该列；
+//   ② 功能页（tab）：设置（底部）—— 高亮 = 当前所在页（aria-current=page）。
+// 为什么两个列开关不合并：Agent × Project × Session 三级里两列可各自收起，是本产品与 LobeHub 的差异点
+// （用户原话：「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的」）。
+check("rail 两个列开关 + 底部设置 = 3 个按钮", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
+check("按钮顺序固定：助手 → 对话 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,设置");
+check("列开关用 aria-pressed 表达展开态（两个都为 true）", await page.evaluate(() => {
+  const toggles = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .filter((b) => b.hasAttribute("aria-pressed"));
+  return toggles.length === 2 && toggles.every((b) => b.getAttribute("aria-pressed") === "true");
+}));
+check("设置是功能页：默认不是当前页（aria-current 为空）", await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .find((b) => (b.getAttribute("aria-label") ?? "") === "设置");
+  return btn !== undefined && btn.getAttribute("aria-current") === null;
 }));
 // 会话列（② 的列表）是否存在：分组头是它的标志（`data-testid="group-header"`）
 const listVisible = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
-// 再点"对话"tab = 收起/展开列表列（VS Code Activity Bar 语义）
-const clickChatTab = async () => { await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="对话"]').click(); await page.waitForTimeout(300); };
+// 点"对话"列开关（label 随状态在 展开对话 / 收起对话 之间变）
+const clickChatTab = async () => {
+  await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="收起对话"], nav[aria-label="左侧图标轨"] button[aria-label="展开对话"]').first().click();
+  await page.waitForTimeout(300);
+};
 const seq = [await listVisible()];
 for (let i = 0; i < 4; i += 1) { await clickChatTab(); seq.push(await listVisible()); }
 // 断言"每次点击都翻转"（与初始状态无关——前面的用例可能已把列表收起）
 const toggles = seq.every((value, i) => i === 0 || value === !seq[i - 1]);
-check("再点当前 tab 可连续收起/展开列表列（每次点击翻转，不弹回）",
+check("点列开关可连续收起/展开会话列（每次点击翻转，不弹回）",
   toggles && new Set(seq).size === 2, JSON.stringify(seq));
-await clickChatTab();   // 恢复展开
-check("tab 高亮不随列表收展改变（仍是当前功能页）", await page.evaluate(() => {
-  const cur = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-    .filter((b) => b.getAttribute("aria-current") === "page");
-  return cur.length === 1 && cur[0].getAttribute("aria-label") === "对话";
+if (!(await listVisible())) await clickChatTab();   // 保证展开（后面的会话行用例依赖列表可见）
+check("列开关的高亮跟随该列展开态（aria-pressed 与分组头可见性一致）", await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .find((b) => (b.getAttribute("aria-label") ?? "").includes("对话"));
+  const listShown = document.querySelectorAll('[data-testid="group-header"]').length > 0;
+  return btn !== undefined && btn.getAttribute("aria-pressed") === String(listShown);
 }));
 
 // 助手行悬停出现删除入口（归档；只断言入口存在，绝不点确认——契约跑在真实家目录上）

@@ -1,26 +1,27 @@
 import type { ReactNode } from "react";
 
 /**
- * 左侧图标轨 = **功能页切换器**（Task 0009 · 布局模型 L1）。
+ * 左侧图标轨（Task 0009 · 布局模型 L1，2026-11-09 用户二次裁决后定稿）。
  *
- * 语义（`knowledge/design/layout-model.md` §1）：
- * - **rail 是 tab 栏**，不是"列开关"：点一个 tab = 切到那个功能页（`aria-current="page"`）；
- * - **再次点当前 tab = 收起列表列**（VS Code Activity Bar 语义，单人系统里"收起列表看全宽"是真需求）；
- * - **tab 可分组**（novu `navigation-group.tsx:33-38`）：业务组 / 系统组，避免 6+ tab 变成长菜单；
- * - **底部常驻系统项**（`last:mt-auto`，novu `:38` / LobeHub `NavRail` 的 flex 占位）；
- * - **可带未读徽标**（LobeHub `RailItem.tsx:39`），但我们用**边框式**而非实心（Hoppscotch `TabsNav.vue:96-104`）。
+ * **两类开子**（这是本产品与 LobeHub 那类产品的差异点）：
+ * - `mode: "toggle"` = **列开关**：助手 / 会话。高亮 = 该列**已展开**（`aria-pressed`），
+ *   点击逻辑 = **切换该列**（开着就收起、收起就展开），不涉及页面切换。
+ *   为什么保留两个而不是合成一个“对话”tab：Agent × Project × Session 三级结构里，
+ *   助手列与会话列是两个**可各自收起**的列（用户 2026-11-09：「这里的会话按钮还是不能少的，
+ *   这是我们跟其他的项目不一样的」），合成一个 tab 会把两个独立能力压成一个开关。
+ * - `mode: "tab"`（默认）= **功能页**：设置。高亮 = 当前所在页（`aria-current="page"`）。
  *
- * 数值（layout-model §3）：轨宽 44、图标 16、命中盒 36、图标↔文字 8（本组件无文字，靠 tooltip）。
- * 状态语言：竖向用"文字/图标变色 + 底色"，不画指示条（Hoppscotch `:120-127`）。
+ * 分组（novu `navigation-group.tsx:33-38`）：业务列在一组、系统页推底（`mt-auto`，同 novu `last:mt-auto`）。
+ * 数值（layout-model §3）：轨宽 44、图谱 16、命中盒 36、角标用**边框式**（Hoppscotch `TabsNav.vue:96-104`）。
  */
 export type RailTab = {
   key: string;
   label: string;
   icon: ReactNode;
-  /** 当前所在功能页（tab 语义，非"列展开"） */
+  /** 列开关：该列是否已展开；功能页：是否当前页 */
   active: boolean;
-  /** 该列已展开——用于"再点收起"的可达性提示 */
-  panelOpen?: boolean;
+  /** `toggle` = 列开关（aria-pressed）；`tab` = 功能页（aria-current） */
+  mode?: "toggle" | "tab";
   onClick: () => void;
   /** 未读数（>0 显示角标） */
   badge?: number;
@@ -30,27 +31,32 @@ export type RailGroup = { id: string; items: RailTab[] };
 
 export function NavRail({ groups, bottom }: {
   groups: RailGroup[];
-  /** 底部系统区（设置等），与业务 tab 分开（novu 的 last:mt-auto 同法） */
+  /** 底部系统区（设置等），与业务区开（novu 的 last:mt-auto 同法） */
   bottom?: RailTab[];
 }) {
-  const item = (tab: RailTab) => (
-    <button key={tab.key} type="button" onClick={tab.onClick}
-      aria-label={tab.label}
-      aria-current={tab.active ? "page" : undefined}
-      title={tab.panelOpen === true ? `收起${tab.label}列表` : tab.label}
-      className={`relative flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
-        tab.active
-          ? "bg-accent-soft text-accent"
-          : "text-ink-500 hover:bg-surface hover:text-ink-900"
-      }`}>
-      {tab.icon}
-      {tab.badge !== undefined && tab.badge > 0 && (
-        <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-nav-edge bg-surface px-1 text-micro font-semibold tabular-nums text-ink-900">
-          {tab.badge > 99 ? "99+" : tab.badge}
-        </span>
-      )}
-    </button>
-  );
+  const item = (tab: RailTab) => {
+    const isToggle = tab.mode === "toggle";
+    return (
+      <button key={tab.key} type="button" onClick={tab.onClick}
+        aria-label={isToggle ? (tab.active ? `收起${tab.label}` : `展开${tab.label}`) : tab.label}
+        {...(isToggle
+          ? { "aria-pressed": tab.active }
+          : { "aria-current": tab.active ? ("page" as const) : undefined })}
+        title={isToggle ? (tab.active ? `收起${tab.label}列` : `展开${tab.label}列`) : tab.label}
+        className={`relative flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
+          tab.active
+            ? "bg-accent-soft text-accent"
+            : "text-ink-500 hover:bg-surface hover:text-ink-900"
+        }`}>
+        {tab.icon}
+        {tab.badge !== undefined && tab.badge > 0 && (
+          <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-nav-edge bg-surface px-1 text-micro font-semibold tabular-nums text-ink-900">
+            {tab.badge > 99 ? "99+" : tab.badge}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   return (
     <nav aria-label="左侧图标轨"

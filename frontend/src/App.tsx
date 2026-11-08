@@ -20,7 +20,6 @@ import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
 import { loadPrefs, savePrefs } from "./display-prefs-panel";
 import { SettingsSurface } from "./settings-surface";
-import type { RailTabKey } from "./design/rail-types";
 import { applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
@@ -2510,43 +2509,40 @@ export default function App() {
     set(true);
   }
   /**
-   * rail = 功能页切换器（Task 0009 · 布局模型 L1，`knowledge/design/layout-model.md` §1）。
+   * rail 内容（Task 0009 · 布局模型 L1；2026-11-09 用户二次裁决后定稿）。
    *
-   * 与旧实现的差别（旧：两个"列开关"）：
-   * - **tab 语义**：`active` = 当前所在页（设置页开着时高亮在设置），不是"这列开没开"；
-   * - **再点当前 tab = 收起列表列**（VS Code Activity Bar；panelOpen 只用于 tooltip 文案）；
-   * - **分组**：工作（对话）在业务组，设置推到底部系统区（novu `last:mt-auto`）。
-   * - 助手列不再是独立 tab：它是"对话"这一页的第二列（模型 L1：② 由 tab 决定）。
+   * **两个列开关 + 一个功能页**：
+   * - `助手`（toggle，showNav）：高亮 = 助手列展开，点击 = 开关该列（与改动前完全一致）；
+   * - `对话`（toggle，showGroups）：高亮 = 会话列展开，点击 = 开关该列（与改动前完全一致）；
+   * - `设置`（tab，settingsOpen）：高亮 = 当前在设置页，点击 = 进/出设置（rail 底部）。
+   *
+   * 为什么不把两个列合并成一个「对话」tab（上一版试过）：Agent × Project × Session 三级里，
+   * 助手列与会话列是**两个可各自收起的列**——用户 2026-11-09：
+   * 「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的，相当于你把我们之前的功能都减少了」。
+   * 所以 rail 保留"列开关"这一层能力，同时用 `mode` 区分它与"功能页"（设置）。
    */
-  const currentTab: RailTabKey = settingsOpen ? "settings" : "chat";
   const railGroups = [
     {
-      id: "work",
+      id: "columns",
       items: [
         {
-          key: "chat", label: "对话", active: currentTab === "chat",
-          panelOpen: showNav || showGroups,
+          key: "nav", label: "助手", mode: "toggle" as const, active: showNav,
           icon: agent === undefined
             ? <IconMessageCircle size={18} />
             : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={20} />,
-          /**
-           * 对话 tab 的动作（布局模型 L1 §1.2）：
-           * - 若设置页开着 → 回到对话（列表保持原样）；
-           * - 否则 = **再点当前 tab**：列表列开着就收起，收起就展开（VS Code Activity Bar 语义）。
-           * 语义只看"会话列开不开"（showGroups）——助手列是会话列的可选前置列，不参与 tab 的开关。
-           */
-          onClick: () => {
-            if (settingsOpen) { setSettingsOpen(false); return; }
-            if (showGroups) setShowGroups(false);
-            else { setShowGroups(true); if (!showNav) setShowNav(true); }
-          },
+          onClick: () => toggleRail("nav"),
+        },
+        {
+          key: "groups", label: "对话", mode: "toggle" as const, active: showGroups,
+          icon: <IconMessageCircle size={18} />,
+          onClick: () => toggleRail("groups"),
         },
       ],
     },
   ];
   const railBottom = [
     {
-      key: "settings", label: "设置", active: currentTab === "settings",
+      key: "settings", label: "设置", mode: "tab" as const, active: settingsOpen,
       icon: <IconSettings size={18} />,
       onClick: () => setSettingsOpen((open) => !open),
     },
