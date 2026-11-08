@@ -251,11 +251,12 @@ for (const label of ["助手", "对话"]) {
 
 // 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
 const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
-// Task 0015 · T15 面板合并：项目列 + 会话列 → 一列「对话」，图标栏 3 → 2（P-02 §5.2）
-check("图标常驻：两列全展开时轨道上有 2 个图标", await railButtons.count() === 2, `实际 ${await railButtons.count()} 个`);
-check("图标顺序固定：助手 → 对话", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话");
-check("高亮 = 该列展开（aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+// Task 0015 · T15：图标栏 3 → 2；Task 0009（2026-11-09 用户裁决）：设置入口移到轨底 → 3 个
+check("图标常驻：两列导航 + 轨底设置 = 3 个图标", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
+check("图标顺序固定：助手 → 对话 → 显示设置", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,显示设置");
+check("高亮 = 该列展开（导航项 aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .filter((b) => b.getAttribute("aria-label") !== "显示设置")
   .every((b) => b.getAttribute("aria-pressed") === "true")));
 // 合并后不再有独立的"项目"列：改成"对话"列里有没有分组头（`data-testid="group-header"`）
 const projectColumn = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
@@ -268,7 +269,7 @@ check("点图标可连续切换（开 → 收 → 开 → 收），不弹回", J
 await clickProject();   // 恢复展开
 check("点图标后高亮跟随状态", await page.evaluate(() => {
   const buttons = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')];
-  return buttons.every((b) => b.getAttribute("aria-pressed") === "true");
+  return buttons.filter((b) => b.getAttribute("aria-label") !== "显示设置").every((b) => b.getAttribute("aria-pressed") === "true");
 }));
 
 // 助手行悬停出现删除入口（归档；只断言入口存在，绝不点确认——契约跑在真实家目录上）

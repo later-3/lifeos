@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  IconArrowLeft, IconCheck, IconLanguage, IconMoon, IconPalette, IconRefresh,
+  IconArrowLeft, IconCheck, IconLanguage, IconPalette, IconRefresh,
   IconBell, IconPlug, IconInfoCircle, IconWand,
 } from "@tabler/icons-react";
 import {
@@ -77,94 +77,107 @@ function Placeholder({ note }: { note: string }) {
 }
 
 /* ── 外观分区（真可用）── */
+/** 一组设置 = 一张卡（Twenty SettingsPageLayout 的 PageCardLayout 同构：分组有边、块内 16 留白）。 */
+function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-panel border border-line">
+      <header className="border-b border-line px-4 py-2.5">
+        <h3 className="text-body font-semibold text-ink-900">{title}</h3>
+        {hint !== undefined && <p className="mt-0.5 text-micro text-ink-500">{hint}</p>}
+      </header>
+      <div className="flex flex-col gap-2 p-4">{children}</div>
+    </section>
+  );
+}
+
 function AppearanceSection({ theme, onChange }: { theme: ThemeState; onChange: (next: ThemeState) => void }) {
   const palette = useMemo(() => calculatePalette(theme), [theme]);
   const set = (patch: Partial<ThemeState>) => onChange({ ...theme, ...patch });
   const pickPreset = (name: ThemePreset) => set({ ...THEME_PRESETS[name], preset: name });
+  /** 预设卡迷你预览：轨 / 列 / 内容 / 主色 四段（与右侧实际生效值同源同公式）。 */
   const previewColors = (name: ThemePreset) => {
-    // 每张预设卡一个迷你预览：轨 / 列 / 内容 / accent 四段（demo 同款）
     const p = calculatePalette({ ...THEME_DEFAULTS, ...THEME_PRESETS[name], preset: name, mode: theme.mode });
-    const hexs = [p.navEdge, p.navBg, p.surface, p.accentSolid].map(([l, c, h]) => {
-      // 复用 theme 内部的 hex？它未导出——这里用 palette 值直接拼（计算同源：OKLCH→sRGB）
-      return rgbHex(l, c, h);
-    });
-    return hexs;
+    return [p.navEdge, p.navBg, p.surface, p.accentSolid].map(([l, c, h]) => rgbHex(l, c, h));
   };
   return (
     <Section title="主题" desc="预设与深浅色即时生效；主色与底色台阶可微调。改动持久化到本浏览器。">
-      {/* 深浅色 */}
-      <div className="theme-row">
-        <span><span className="lab text-meta text-ink-900">深浅色</span><br />
-          <span className="text-micro text-ink-500">深色由同一套语义公式派生，不是第二套手挑值</span></span>
-        <span className="mode-seg" role="radiogroup" aria-label="深浅色">
-          <button type="button" className={theme.mode === "light" ? "on" : ""} aria-pressed={theme.mode === "light"}
-            onClick={() => set({ mode: "light" })}>浅色</button>
-          <button type="button" className={theme.mode === "dark" ? "on" : ""} aria-pressed={theme.mode === "dark"}
-            onClick={() => set({ mode: "dark" })}>深色</button>
-        </span>
-      </div>
-      {/* 预设卡 */}
-      <h3 className="mb-2 mt-4 text-body font-semibold text-ink-900">主题预设</h3>
-      <div className="swatch-row" role="radiogroup" aria-label="主题预设">
-        {(Object.keys(THEME_PRESETS) as ThemePreset[]).map((name) => {
-          const colors = previewColors(name);
-          const on = theme.preset === name;
-          return (
-            <button key={name} type="button" role="radio" aria-checked={on}
-              className={`swatch ${on ? "on" : ""}`} data-preset={name}
-              onClick={() => pickPreset(name)}>
-              <span className="prev" aria-hidden>{colors.map((c, i) => <i key={i} style={{ background: c }} />)}</span>
-              <span className="nm">{PRESET_LABELS[name]}</span>
-            </button>
-          );
-        })}
-      </div>
-      {/* 主色 */}
-      <h3 className="mb-2 mt-4 text-body font-semibold text-ink-900">主色</h3>
-      <div className="accent-dots">
-        {ACCENT_DOTS.map((d) => {
-          const on = theme.accentH === d.h && theme.accentC === d.c;
-          const bg = rgbHex(theme.mode === "dark" ? 60 : 52, (d.c / 100) * 0.22, d.h);
-          return (
-            <button key={d.label} type="button" title={d.label} aria-label={`主色 ${d.label}`} aria-pressed={on}
-              className={`accent-dot ${on ? "on" : ""}`} style={{ background: bg }}
-              onClick={() => set({ accentH: d.h, accentC: d.c })}>
-              {on ? <IconCheck size={14} /> : null}
-            </button>
-          );
-        })}
-      </div>
-      <div className="mt-3">
-        <SetSlider id="theme-accent-h" label="色相" min={0} max={360} step={1} value={theme.accentH}
-          onChange={(v) => set({ accentH: v })} format={(v) => `${v}°`} />
-        <SetSlider id="theme-accent-c" label="饱和" min={0} max={100} step={1} value={theme.accentC}
-          onChange={(v) => set({ accentC: v })} format={(v) => (v === 0 ? "灰" : `${v}%`)} />
-        <label className="chk flex items-center gap-2 text-meta text-ink-700">
-          <input type="checkbox" checked={theme.lockNeutral} aria-label="中性色相跟随主色"
-            onChange={(e) => set({ lockNeutral: e.currentTarget.checked })} />
-          中性色相跟随主色
-        </label>
-      </div>
-      {/* 底色台阶 */}
-      <h3 className="mb-2 mt-4 text-body font-semibold text-ink-900">底色台阶（L*）</h3>
-      <SetSlider id="theme-l-surface" label="内容" min={88} max={100} step={0.5} value={theme.lSurface} onChange={(v) => set({ lSurface: v })} format={(v) => v.toFixed(1)} />
-      <SetSlider id="theme-l-nav" label="列" min={88} max={100} step={0.5} value={theme.lNav} onChange={(v) => set({ lNav: v })} format={(v) => v.toFixed(1)} />
-      <SetSlider id="theme-l-rail" label="图标轨" min={84} max={100} step={0.5} value={theme.lRail} onChange={(v) => set({ lRail: v })} format={(v) => v.toFixed(1)} />
-      <SetSlider id="theme-l-line" label="边界线" min={72} max={100} step={0.5} value={theme.lLine} onChange={(v) => set({ lLine: v })} format={(v) => v.toFixed(1)} />
-      {/* 实时读数（demo 同款：调参时知道自己越线没有） */}
-      <div className="mt-3 rounded-panel border border-line px-4 py-3 text-micro text-ink-500" data-testid="theme-readout">
-        <span>列→内容 ΔL* {Math.abs(palette.surface[0] - palette.navBg[0]).toFixed(1)} · </span>
-        <span>轨→列 ΔL* {Math.abs(palette.navBg[0] - palette.navEdge[0]).toFixed(1)} · </span>
-        <span>悬停 ΔL* {Math.abs(palette.navBg[0] - palette.navAccent[0]).toFixed(1)} · </span>
-        <span>选中 ΔL* {Math.abs(palette.navBg[0] - palette.navSelected[0]).toFixed(1)} · </span>
-        <span className={contrastOf(palette.navMuted, palette.navSelected) < 4.5 ? "text-danger" : ""}>
-          副行/选中 {contrastOf(palette.navMuted, palette.navSelected).toFixed(2)}:1
-        </span>
-      </div>
-      <div className="mt-4">
-        <Button variant="ghost" size="sm" onClick={() => onChange({ ...THEME_DEFAULTS })}>
-          <IconRefresh size={14} /> 恢复默认主题
-        </Button>
+      <div className="flex flex-col gap-4">
+        <Card title="外观模式" hint="深色由同一套语义公式派生，不是第二套手挑值">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-meta text-ink-700">深浅色</span>
+            <span className="mode-seg" role="radiogroup" aria-label="深浅色">
+              <button type="button" className={theme.mode === "light" ? "on" : ""} aria-pressed={theme.mode === "light"}
+                onClick={() => set({ mode: "light" })}>浅色</button>
+              <button type="button" className={theme.mode === "dark" ? "on" : ""} aria-pressed={theme.mode === "dark"}
+                onClick={() => set({ mode: "dark" })}>深色</button>
+            </span>
+          </div>
+        </Card>
+
+        <Card title="主题预设" hint="一套预设 = 一组主色与中性色；点卡片立即换">
+          <div className="swatch-row" role="radiogroup" aria-label="主题预设">
+            {(Object.keys(THEME_PRESETS) as ThemePreset[]).map((name) => {
+              const colors = previewColors(name);
+              const on = theme.preset === name;
+              return (
+                <button key={name} type="button" role="radio" aria-checked={on}
+                  className={`swatch ${on ? "on" : ""}`} data-preset={name}
+                  onClick={() => pickPreset(name)}>
+                  <span className="prev" aria-hidden>{colors.map((c, i) => <i key={i} style={{ background: c }} />)}</span>
+                  <span className="nm">{PRESET_LABELS[name]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+
+        <Card title="主色" hint="默认近黑（最安静）；选了色相后中性色会跟着走，两个色系读成一个 palette">
+          <div className="accent-dots">
+            {ACCENT_DOTS.map((d) => {
+              const on = theme.accentH === d.h && theme.accentC === d.c;
+              const bg = rgbHex(theme.mode === "dark" ? 60 : 52, (d.c / 100) * 0.22, d.h);
+              return (
+                <button key={d.label} type="button" title={d.label} aria-label={`主色 ${d.label}`} aria-pressed={on}
+                  className={`accent-dot ${on ? "on" : ""}`} style={{ background: bg }}
+                  onClick={() => set({ accentH: d.h, accentC: d.c })}>
+                  {on ? <IconCheck size={14} /> : null}
+                </button>
+              );
+            })}
+          </div>
+          <SetSlider id="theme-accent-h" label="色相" min={0} max={360} step={1} value={theme.accentH}
+            onChange={(v) => set({ accentH: v })} format={(v) => `${v}°`} />
+          <SetSlider id="theme-accent-c" label="饱和" min={0} max={100} step={1} value={theme.accentC}
+            onChange={(v) => set({ accentC: v })} format={(v) => (v === 0 ? "灰" : `${v}%`)} />
+          <label className="chk flex items-center gap-2 text-meta text-ink-700">
+            <input type="checkbox" checked={theme.lockNeutral} aria-label="中性色相跟随主色"
+              onChange={(e) => set({ lockNeutral: e.currentTarget.checked })} />
+            中性色相跟随主色
+          </label>
+        </Card>
+
+        <Card title="底色台阶（L*）" hint="四档深度：内容 / 列 / 图标轨 / 边界线。台阶差决定「分层」是否看得见">
+          <SetSlider id="theme-l-surface" label="内容" min={88} max={100} step={0.5} value={theme.lSurface} onChange={(v) => set({ lSurface: v })} format={(v) => v.toFixed(1)} />
+          <SetSlider id="theme-l-nav" label="列" min={88} max={100} step={0.5} value={theme.lNav} onChange={(v) => set({ lNav: v })} format={(v) => v.toFixed(1)} />
+          <SetSlider id="theme-l-rail" label="图标轨" min={84} max={100} step={0.5} value={theme.lRail} onChange={(v) => set({ lRail: v })} format={(v) => v.toFixed(1)} />
+          <SetSlider id="theme-l-line" label="边界线" min={72} max={100} step={0.5} value={theme.lLine} onChange={(v) => set({ lLine: v })} format={(v) => v.toFixed(1)} />
+          {/* 实时读数：调参时知道自己越线没有（<4.5 标红） */}
+          <div className="rounded-control bg-sunken px-3 py-2 text-micro text-ink-500" data-testid="theme-readout">
+            <span>列→内容 ΔL* {Math.abs(palette.surface[0] - palette.navBg[0]).toFixed(1)} · </span>
+            <span>轨→列 ΔL* {Math.abs(palette.navBg[0] - palette.navEdge[0]).toFixed(1)} · </span>
+            <span>悬停 ΔL* {Math.abs(palette.navBg[0] - palette.navAccent[0]).toFixed(1)} · </span>
+            <span>选中 ΔL* {Math.abs(palette.navBg[0] - palette.navSelected[0]).toFixed(1)} · </span>
+            <span className={contrastOf(palette.navMuted, palette.navSelected) < 4.5 ? "text-danger" : ""}>
+              副行/选中 {contrastOf(palette.navMuted, palette.navSelected).toFixed(2)}:1
+            </span>
+          </div>
+        </Card>
+
+        <div>
+          <Button variant="ghost" size="sm" onClick={() => onChange({ ...THEME_DEFAULTS })}>
+            <IconRefresh size={14} /> 恢复默认主题
+          </Button>
+        </div>
       </div>
     </Section>
   );
@@ -199,7 +212,7 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
         <div className="flex flex-col gap-1.5" data-testid="pref-row-width">
           <div className="flex items-baseline justify-between gap-2">
             <label htmlFor="width" className="text-meta text-ink-700">内容宽度</label>
-            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-width">{widthLabel(prefs.width)}</span>
+            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-width">{prefs.width.mode === "full" ? "铺满" : `${prefs.width.value}px`}</span>
           </div>
           <input id="width" data-testid="pref-slider-width" type="range" min={0} max={100} step={1}
             value={sliderFromWidth(prefs.width, viewport)} aria-label={widthLabel(prefs.width)}
@@ -210,7 +223,7 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
         <div className="flex flex-col gap-1.5" data-testid="pref-row-font">
           <div className="flex items-baseline justify-between gap-2">
             <label htmlFor="font" className="text-meta text-ink-700">字号</label>
-            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-font">{fontLabel(prefs.font)}</span>
+            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-font">{Math.round(prefs.font.scale * 100)}%</span>
           </div>
           <input id="font" data-testid="pref-slider-font" type="range" min={0} max={100} step={1}
             value={sliderFromFont(prefs.font)} aria-label={fontLabel(prefs.font)}
@@ -265,13 +278,12 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
       </nav>
       {/* 内容区 */}
       <div className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl px-6 py-8">
+        <div className="mx-auto w-full px-8 py-8" style={{ maxWidth: "var(--container-settings)" }}>
           <div className="mb-6 flex items-center gap-2">
             <button type="button" className="flex items-center gap-1.5 rounded-control px-2 py-1.5 text-meta text-ink-700 hover:bg-hover"
               onClick={onClose} aria-label="关闭设置">
               <IconArrowLeft size={16} /> 返回对话
             </button>
-            <IconMoon size={14} className="ml-auto text-ink-300" aria-hidden />
           </div>
           {section === "appearance" && <AppearanceSection theme={theme} onChange={onTheme} />}
           {section === "display" && <DisplaySection prefs={prefs} viewport={viewport} onChange={onPrefs} onReset={onPrefsReset} />}

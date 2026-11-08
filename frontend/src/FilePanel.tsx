@@ -117,8 +117,9 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
   return (
     <div ref={panel} role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} aria-label={mobile ? "文件面板" : undefined}
       className="flex h-full min-h-0 flex-col bg-surface">
-      {/* 页签行（32px）：图标 + 名 + ×（hover 出现），中键关闭；激活页签用 2px accent 下划线 */}
-      <div className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-line bg-sunken max-sm:h-auto max-sm:min-h-12 max-sm:pt-safe">
+      {/* 页签行（40px，与文件树头同高——两列并排时分隔线必须齐平，错层见 Task 0009 案例）：
+          图标 + 名 + ×（hover 出现），中键关闭；激活页签用 2px accent 下划线 */}
+      <div className="flex h-10 shrink-0 items-stretch overflow-x-auto border-b border-line bg-sunken max-sm:h-auto max-sm:min-h-12 max-sm:pt-safe">
         {onShowTree !== undefined && (
           <Button variant="ghost" size="sm" className="h-11 shrink-0 rounded-none border-r border-line px-3 sm:hidden"
             aria-label="返回文件树" onClick={onShowTree}>文件</Button>
@@ -130,7 +131,7 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
               onClick={() => onSelectTab(tab.id)}
               onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); onCloseTab(tab.id); } }}
               title={tab.filePath}
-              className={`group relative flex h-8 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors max-sm:h-11 ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
+              className={`group relative flex h-10 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors max-sm:h-11 ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
               {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
               {isMarkdown(tab.fileName) ? <IconFileText size={14} className="shrink-0" /> : <IconFile size={14} className="shrink-0" />}
               <span className="truncate">{tab.fileName}</span>

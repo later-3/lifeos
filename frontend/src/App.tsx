@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  IconAdjustments, IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX,
+  IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
+  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconSettings, IconTrash, IconX,
 } from "@tabler/icons-react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
@@ -2793,7 +2793,16 @@ export default function App() {
 
   return (
     <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>
-      {!isMobile && <NavRail items={railItems} />}
+      {!isMobile && <NavRail items={railItems} bottom={
+          <button type="button" aria-label="显示设置" title="设置"
+            aria-current={settingsOpen ? "true" : undefined}
+            onClick={() => setSettingsOpen((open) => !open)}
+            className={`flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
+              settingsOpen ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-surface hover:text-ink-900"
+            }`}>
+            <IconSettings size={18} />
+          </button>
+        } />}')
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
@@ -2839,22 +2848,16 @@ export default function App() {
             }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
-          {/* 设置（Task 0009 · P1-3）：原"显示设置"弹层升级为全页设置表面；
-              aria-label 保留（ui-contract 契约依赖），落在"显示"分区——原有两个滑块 1:1 迁入。 */}
-          <IconButton label="显示设置" size="lg" active={settingsOpen}
-            onClick={() => setSettingsOpen((open) => !open)}>
-            <IconAdjustments size={16} />
+          {/* 设置入口（Task 0009 · 2026-11-09 用户裁决）：桌面在图标轨底部；
+              手机无图标轨，保留头部入口（标签区分，避免与桌面契约选择器撞车）。 */}
+          <IconButton label="打开设置" size="lg" active={settingsOpen}
+            onClick={() => setSettingsOpen((open) => !open)}
+            className="hidden max-sm:inline-flex">
+            <IconSettings size={16} />
           </IconButton>
         </header>
 
         <div className="relative min-h-0 flex-1">
-          {settingsOpen && (
-            <SettingsSurface section={settingsSection} onSection={setSettingsSection}
-              theme={theme} onTheme={setTheme}
-              prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
-              onPrefsReset={() => setPrefs(parsePrefs({}))}
-              onClose={() => setSettingsOpen(false)} />
-          )}
           {!settingsOpen && <main ref={scrollRef}
             onScroll={(event) => {
               const node = event.currentTarget;
@@ -3338,6 +3341,27 @@ export default function App() {
             )}
           </aside>
         </>
+      )}
+
+      {/* 设置表面（Task 0009 · P1-3）：全页——覆盖除图标轨外的所有区域（含 composer）。
+          参照 Twenty/LobeHub：设置是独立页面，不是叠在对话上的浮层。 */}
+      {settingsOpen && !isMobile && (
+        <div className="absolute inset-y-0 right-0 left-11 z-40">
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+            theme={theme} onTheme={setTheme}
+            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onClose={() => setSettingsOpen(false)} />
+        </div>
+      )}
+      {settingsOpen && isMobile && (
+        <div className="fixed inset-0 z-40 bg-surface">
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+            theme={theme} onTheme={setTheme}
+            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onClose={() => setSettingsOpen(false)} />
+        </div>
       )}
 
       {configAgent !== undefined && (

@@ -144,6 +144,11 @@
   /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
   --composer-max-height: 11rem;
 
+  /* 设置页内容列宽上限（Task 0009）：参照 Twenty `SETTINGS_CONTENT_MAX_WIDTH = 760`
+     （`packages/twenty-front/src/modules/settings/constants/SettingsContentMaxWidth.ts:1`）。
+     比阅读列 860 窄一档：设置页是"表单页"，行太长反而难扫。 */
+  --container-settings: 760px;
+
   /* 阅读列宽度：正文行宽上限，避免超宽屏一行 200 字。
    * 宽度滑块改的是 --container-reading-width（inline style 覆盖到根节点）：
    * - 限宽：具体 px（专注模式约 1/3 屏）
