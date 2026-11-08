@@ -202,35 +202,46 @@ function rgbHex(lstar: number, c: number, hDeg: number): string {
 }
 
 /* ── 显示分区（display-prefs 功能 1:1 迁入，含 ui-contract 契约的 testid/id）── */
+/**
+ * 结构与"主题"分区一致：**一组一卡**（Twenty PageCardLayout 同构）。
+ * 2026-11-09 自审：上一版这里是一路裸列表，而同页的主题分区是卡 —— 同页两种结构是缺陷。
+ * 契约保留：`data-testid="display-prefs"`、`#width` / `#font`、恢复默认按钮。
+ */
 function DisplaySection({ prefs, viewport, onChange, onReset }: {
   prefs: DisplayPrefs; viewport: number;
   onChange: (next: DisplayPrefs) => void; onReset: () => void;
 }) {
   return (
-    <Section title="显示" desc="内容宽度与字号，立即生效、自动保存。">
-      <div data-testid="display-prefs" className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1.5" data-testid="pref-row-width">
+    <Section title="显示" desc="内容宽度与字号，立即生效、自动保存。数值写入 CSS 变量，不产生第二份数。">
+      <div className="flex flex-col gap-4" data-testid="display-prefs">
+        <Card title="内容宽度" hint="最左为专注（约 1/3 屏），最右为铺满">
           <div className="flex items-baseline justify-between gap-2">
-            <label htmlFor="width" className="text-meta text-ink-700">内容宽度</label>
-            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-width">{prefs.width.mode === "full" ? "铺满" : `${prefs.width.value}px`}</span>
+            <span className="text-meta text-ink-700">当前</span>
+            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-width">
+              {prefs.width.mode === "full" ? "铺满" : `${prefs.width.value}px`}
+            </span>
           </div>
           <input id="width" data-testid="pref-slider-width" type="range" min={0} max={100} step={1}
             value={sliderFromWidth(prefs.width, viewport)} aria-label={widthLabel(prefs.width)}
             onChange={(e) => onChange({ ...prefs, width: widthFromSlider(Number(e.currentTarget.value), viewport) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-6" />
-          <div className="flex justify-between text-micro text-ink-300"><span>专注（约 1/3 屏）</span><span>铺满</span></div>
-        </div>
-        <div className="flex flex-col gap-1.5" data-testid="pref-row-font">
+          <div className="flex justify-between text-micro text-ink-300"><span>专注</span><span>铺满</span></div>
+        </Card>
+
+        <Card title="字号" hint="整组字阶等比缩放（micro 到 title 一起变），不改单个 px">
           <div className="flex items-baseline justify-between gap-2">
-            <label htmlFor="font" className="text-meta text-ink-700">字号</label>
-            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-font">{Math.round(prefs.font.scale * 100)}%</span>
+            <span className="text-meta text-ink-700">当前</span>
+            <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-font">
+              {Math.round(prefs.font.scale * 100)}%
+            </span>
           </div>
           <input id="font" data-testid="pref-slider-font" type="range" min={0} max={100} step={1}
             value={sliderFromFont(prefs.font)} aria-label={fontLabel(prefs.font)}
             onChange={(e) => onChange({ ...prefs, font: fontFromSlider(Number(e.currentTarget.value)) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-6" />
           <div className="flex justify-between text-micro text-ink-300"><span>85%</span><span>200%</span></div>
-        </div>
+        </Card>
+
         <div>
           <Button variant="ghost" size="sm" onClick={onReset}><IconRefresh size={14} /> 恢复默认</Button>
         </div>
@@ -259,16 +270,19 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
   return (
     <div className="absolute inset-0 z-30 flex bg-surface" data-testid="settings-surface" role="region" aria-label="设置">
       {/* 分区导航（数据驱动） */}
-      <nav aria-label="设置分区" className="w-52 flex-none overflow-y-auto border-r border-line bg-nav-bg p-2">
+      <nav aria-label="设置分区" className="flex-none overflow-y-auto border-r border-line bg-nav-bg p-2"
+      style={{ width: 230 }}>
         {SECTIONS.map((g) => (
           <div key={g.g}>
             <div className="px-2 pb-1 pt-3 text-micro font-semibold tracking-wide text-nav-muted first:pt-1">{g.g}</div>
             {g.items.map((it) => (
               <button key={it.k} type="button"
-                className={`flex h-9 w-full items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
-                  section === it.k ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"}`}
-                aria-current={section === it.k ? "true" : undefined}
+                className={`relative flex h-9 w-full items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
+                  section === it.k ? "font-semibold text-accent" : "text-ink-700 hover:bg-nav-accent"}`}
+                aria-current={section === it.k ? "page" : undefined}
                 onClick={() => onSection(it.k)}>
+                {/* 激活指示条：2px、贴左缘、上下内缩（Hoppscotch TabsNav.vue:78-90 的内缩手法，竖向变体） */}
+                {section === it.k && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent" />}
                 {icons[it.k]}
                 <span className="min-w-0 flex-1 truncate">{it.label}</span>
               </button>
@@ -279,12 +293,6 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
       {/* 内容区 */}
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full px-8 py-8" style={{ maxWidth: "var(--container-settings)" }}>
-          <div className="mb-6 flex items-center gap-2">
-            <button type="button" className="flex items-center gap-1.5 rounded-control px-2 py-1.5 text-meta text-ink-700 hover:bg-hover"
-              onClick={onClose} aria-label="关闭设置">
-              <IconArrowLeft size={16} /> 返回对话
-            </button>
-          </div>
           {section === "appearance" && <AppearanceSection theme={theme} onChange={onTheme} />}
           {section === "display" && <DisplaySection prefs={prefs} viewport={viewport} onChange={onPrefs} onReset={onPrefsReset} />}
           {section === "motion" && <Section title="动效" desc="动画时长、呼吸幅度等演示参数。"><Placeholder note="规划中：动效板块将迁入 animlab 已调定的参数（Task 0007 登记）。" /></Section>}

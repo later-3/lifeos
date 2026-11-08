@@ -251,25 +251,31 @@ for (const label of ["助手", "对话"]) {
 
 // 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
 const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
-// Task 0015 · T15：图标栏 3 → 2；Task 0009（2026-11-09 用户裁决）：设置入口移到轨底 → 3 个
-check("图标常驻：两列导航 + 轨底设置 = 3 个图标", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
-check("图标顺序固定：助手 → 对话 → 显示设置", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,显示设置");
-check("高亮 = 该列展开（导航项 aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .filter((b) => b.getAttribute("aria-label") !== "显示设置")
-  .every((b) => b.getAttribute("aria-pressed") === "true")));
-// 合并后不再有独立的"项目"列：改成"对话"列里有没有分组头（`data-testid="group-header"`）
-const projectColumn = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
-const clickProject = async () => { await page.locator('nav[aria-label="左侧图标轨"] button').nth(1).click(); await page.waitForTimeout(300); };
-const seq = [await projectColumn()];
-await clickProject(); seq.push(await projectColumn());
-await clickProject(); seq.push(await projectColumn());
-await clickProject(); seq.push(await projectColumn());
-check("点图标可连续切换（开 → 收 → 开 → 收），不弹回", JSON.stringify(seq) === JSON.stringify([true, false, true, false]), JSON.stringify(seq));
-await clickProject();   // 恢复展开
-check("点图标后高亮跟随状态", await page.evaluate(() => {
-  const buttons = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')];
-  return buttons.filter((b) => b.getAttribute("aria-label") !== "显示设置").every((b) => b.getAttribute("aria-pressed") === "true");
+// Task 0009（2026-11-09 用户裁决 + 布局模型 L1）：rail = **功能页切换器**（tab），不是列开关。
+// v1 两个 tab：对话（业务组）/ 设置（系统组，推到底部）。助手列不再单列 tab——它是"对话"页的第二列。
+check("rail = tab 栏：对话 + 设置 = 2 个 tab", await railButtons.count() === 2, `实际 ${await railButtons.count()} 个`);
+check("tab 顺序固定：对话 → 设置", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => b.getAttribute("aria-label") ?? "").join(",")) === "对话,设置");
+check("高亮 = 当前功能页（恰好一个 aria-current=page）", await page.evaluate(() => {
+  const cur = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .filter((b) => b.getAttribute("aria-current") === "page");
+  return cur.length === 1 && cur[0].getAttribute("aria-label") === "对话";
+}));
+// 会话列（② 的列表）是否存在：分组头是它的标志（`data-testid="group-header"`）
+const listVisible = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
+// 再点"对话"tab = 收起/展开列表列（VS Code Activity Bar 语义）
+const clickChatTab = async () => { await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="对话"]').click(); await page.waitForTimeout(300); };
+const seq = [await listVisible()];
+for (let i = 0; i < 4; i += 1) { await clickChatTab(); seq.push(await listVisible()); }
+// 断言"每次点击都翻转"（与初始状态无关——前面的用例可能已把列表收起）
+const toggles = seq.every((value, i) => i === 0 || value === !seq[i - 1]);
+check("再点当前 tab 可连续收起/展开列表列（每次点击翻转，不弹回）",
+  toggles && new Set(seq).size === 2, JSON.stringify(seq));
+await clickChatTab();   // 恢复展开
+check("tab 高亮不随列表收展改变（仍是当前功能页）", await page.evaluate(() => {
+  const cur = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .filter((b) => b.getAttribute("aria-current") === "page");
+  return cur.length === 1 && cur[0].getAttribute("aria-label") === "对话";
 }));
 
 // 助手行悬停出现删除入口（归档；只断言入口存在，绝不点确认——契约跑在真实家目录上）
@@ -1619,7 +1625,7 @@ try {
     // 4) 两个滑块：存在、默认值正确、拖到底会改变 --text-scale 与阅读宽度
     // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）
     await page2.evaluate(() => {
-      document.querySelector('button[aria-label="显示设置"]')?.click();
+      document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
     });
     await page2.waitForTimeout(250);
     const sliders = await page2.evaluate(() => {

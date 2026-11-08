@@ -1,36 +1,71 @@
 import type { ReactNode } from "react";
 
 /**
- * 左侧图标轨（前端开发路径 · 参照 VS Code Activity Bar，2026-10-18 用户定）：
- * - **常驻**：不管对应列收起还是展开，图标都在最左边（收起/展开都只占这条 44px 轨）；
- * - **高亮 = 该列展开**；点当前图标 = 收起；点未展开的图标 = 展开（各自独立，可连续切换）；
- * - 轨同时承担"我在哪"：条目带图标 + tooltip，主项（当前助手）显示头像；
- * - 这条轨的宽度由 design/layout.ts 统一计算，组件不再各自声明宽度。
- * - **底部槽**（Task 0009）：设置入口住在这里——参照 VS Code（齿轮在 Activity Bar 底部）
- *   与 LobeHub（`src/features/NavRail`："The rail owns settings and help under im_layout"）。
- *   2026-11-09 用户裁决：设置不该放聊天头部。
+ * 左侧图标轨 = **功能页切换器**（Task 0009 · 布局模型 L1）。
+ *
+ * 语义（`knowledge/design/layout-model.md` §1）：
+ * - **rail 是 tab 栏**，不是"列开关"：点一个 tab = 切到那个功能页（`aria-current="page"`）；
+ * - **再次点当前 tab = 收起列表列**（VS Code Activity Bar 语义，单人系统里"收起列表看全宽"是真需求）；
+ * - **tab 可分组**（novu `navigation-group.tsx:33-38`）：业务组 / 系统组，避免 6+ tab 变成长菜单；
+ * - **底部常驻系统项**（`last:mt-auto`，novu `:38` / LobeHub `NavRail` 的 flex 占位）；
+ * - **可带未读徽标**（LobeHub `RailItem.tsx:39`），但我们用**边框式**而非实心（Hoppscotch `TabsNav.vue:96-104`）。
+ *
+ * 数值（layout-model §3）：轨宽 44、图标 16、命中盒 36、图标↔文字 8（本组件无文字，靠 tooltip）。
+ * 状态语言：竖向用"文字/图标变色 + 底色"，不画指示条（Hoppscotch `:120-127`）。
  */
-export function NavRail({ items, bottom }: {
-  items: { key: string; label: string; icon: ReactNode; active: boolean; onToggle: () => void }[];
-  /** 轨底部的常驻入口（设置等），与导航项视觉一致但不参与收展。 */
-  bottom?: ReactNode;
+export type RailTab = {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  /** 当前所在功能页（tab 语义，非"列展开"） */
+  active: boolean;
+  /** 该列已展开——用于"再点收起"的可达性提示 */
+  panelOpen?: boolean;
+  onClick: () => void;
+  /** 未读数（>0 显示角标） */
+  badge?: number;
+};
+
+export type RailGroup = { id: string; items: RailTab[] };
+
+export function NavRail({ groups, bottom }: {
+  groups: RailGroup[];
+  /** 底部系统区（设置等），与业务 tab 分开（novu 的 last:mt-auto 同法） */
+  bottom?: RailTab[];
 }) {
+  const item = (tab: RailTab) => (
+    <button key={tab.key} type="button" onClick={tab.onClick}
+      aria-label={tab.label}
+      aria-current={tab.active ? "page" : undefined}
+      title={tab.panelOpen === true ? `收起${tab.label}列表` : tab.label}
+      className={`relative flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
+        tab.active
+          ? "bg-accent-soft text-accent"
+          : "text-ink-500 hover:bg-surface hover:text-ink-900"
+      }`}>
+      {tab.icon}
+      {tab.badge !== undefined && tab.badge > 0 && (
+        <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-nav-edge bg-surface px-1 text-micro font-semibold tabular-nums text-ink-900">
+          {tab.badge > 99 ? "99+" : tab.badge}
+        </span>
+      )}
+    </button>
+  );
+
   return (
-    // 图标轨用 nav-edge（比列底 nav-bg 沉一档）+ 右侧 1px nav-line。
-    // 三档分开：nav-edge(93.0) → nav-bg(96.9) → surface(100.0)，相邻差 3.9 / 3.1。
-    <nav aria-label="左侧图标轨" className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-nav-line bg-nav-edge py-1.5">
-      {items.map((item) => (
-        <button key={item.key} type="button" onClick={item.onToggle}
-          aria-label={item.active ? `收起${item.label}` : `展开${item.label}`}
-          aria-pressed={item.active}
-          title={item.active ? `收起${item.label}` : `展开${item.label}（若右侧面板开着，会先关闭面板）`}
-          className={`flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
-            item.active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-surface hover:text-ink-900"
-          }`}>
-          {item.icon}
-        </button>
+    <nav aria-label="左侧图标轨"
+      className="flex w-11 shrink-0 flex-col items-center border-r border-nav-line bg-nav-edge py-1.5">
+      {groups.map((group) => (
+        <div key={group.id} className="flex flex-col items-center gap-1">
+          {group.items.map(item)}
+        </div>
       ))}
-      {bottom !== undefined && <div className="mt-auto flex flex-col items-center">{bottom}</div>}
+      {bottom !== undefined && bottom.length > 0 && (
+        // 系统区推到底（不写死高度：用 flex 占位，与 novu `last:mt-auto` 同效）
+        <div className="mt-auto flex flex-col items-center gap-1 pt-1">
+          {bottom.map(item)}
+        </div>
+      )}
     </nav>
   );
 }

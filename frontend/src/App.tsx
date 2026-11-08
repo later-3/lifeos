@@ -20,6 +20,7 @@ import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
 import { loadPrefs, savePrefs } from "./display-prefs-panel";
 import { SettingsSurface } from "./settings-surface";
+import type { RailTabKey } from "./design/rail-types";
 import { applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
@@ -2508,10 +2509,47 @@ export default function App() {
     else if (panelOpen) setPanelOpen(false);
     set(true);
   }
-  // 合并后只有两个图标（P-02 §5.2）：助手 / 对话
-  const railItems = [
-    { key: "nav", label: "助手", active: showNav, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onToggle: () => toggleRail("nav") },
-    { key: "groups", label: "对话", active: showGroups, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("groups") },
+  /**
+   * rail = 功能页切换器（Task 0009 · 布局模型 L1，`knowledge/design/layout-model.md` §1）。
+   *
+   * 与旧实现的差别（旧：两个"列开关"）：
+   * - **tab 语义**：`active` = 当前所在页（设置页开着时高亮在设置），不是"这列开没开"；
+   * - **再点当前 tab = 收起列表列**（VS Code Activity Bar；panelOpen 只用于 tooltip 文案）；
+   * - **分组**：工作（对话）在业务组，设置推到底部系统区（novu `last:mt-auto`）。
+   * - 助手列不再是独立 tab：它是"对话"这一页的第二列（模型 L1：② 由 tab 决定）。
+   */
+  const currentTab: RailTabKey = settingsOpen ? "settings" : "chat";
+  const railGroups = [
+    {
+      id: "work",
+      items: [
+        {
+          key: "chat", label: "对话", active: currentTab === "chat",
+          panelOpen: showNav || showGroups,
+          icon: agent === undefined
+            ? <IconMessageCircle size={18} />
+            : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={20} />,
+          /**
+           * 对话 tab 的动作（布局模型 L1 §1.2）：
+           * - 若设置页开着 → 回到对话（列表保持原样）；
+           * - 否则 = **再点当前 tab**：列表列开着就收起，收起就展开（VS Code Activity Bar 语义）。
+           * 语义只看"会话列开不开"（showGroups）——助手列是会话列的可选前置列，不参与 tab 的开关。
+           */
+          onClick: () => {
+            if (settingsOpen) { setSettingsOpen(false); return; }
+            if (showGroups) setShowGroups(false);
+            else { setShowGroups(true); if (!showNav) setShowNav(true); }
+          },
+        },
+      ],
+    },
+  ];
+  const railBottom = [
+    {
+      key: "settings", label: "设置", active: currentTab === "settings",
+      icon: <IconSettings size={18} />,
+      onClick: () => setSettingsOpen((open) => !open),
+    },
   ];
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
@@ -2793,16 +2831,7 @@ export default function App() {
 
   return (
     <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>
-      {!isMobile && <NavRail items={railItems} bottom={
-          <button type="button" aria-label="显示设置" title="设置"
-            aria-current={settingsOpen ? "true" : undefined}
-            onClick={() => setSettingsOpen((open) => !open)}
-            className={`flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
-              settingsOpen ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-surface hover:text-ink-900"
-            }`}>
-            <IconSettings size={18} />
-          </button>
-        } />}
+      {!isMobile && <NavRail groups={railGroups} bottom={railBottom} />}
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
