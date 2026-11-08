@@ -236,15 +236,16 @@ export function calculatePalette(state: ThemeState): Palette {
    *
    * 依据（**产品类参考，不是 VS Code**——用户 2026-11-09 明确"VS Code 最多参考布局，不参考 UI"）：
    * - LibreChat Click UI 主题：侧栏 `#ffffff`、选中 `#e6e7e9` → **ΔL* 8.4**；
-   *   深色 `#1f1f1c`、选中 `#414141` → **ΔL* 15.9**
+   *   深色 `#1f1f1c`、选中 `#333332` → **ΔL* 9.5**（`#414141` 是 surface-active，不是侧栏选中）
    *   （`packages/client/src/theme/themes/clickui.json` 的 sidebar navigation item 段）
    * - LobeHub：选中 fill .06 → 5.2 / 悬停 .03 → 2.8（更克制）
    * - novu：选中 alpha .1 → 3.3 / 悬停 alpha .05 → 1.4（最轻）
-   * 三家区间 3.3–8.4；我们取 **LibreChat 的正文档 8.4**（选中≈hover×2），深色取 15.9（深底感知更弱，
-   * LibreChat 自己也是浅 8.4 / 深 15.9）。详见
+   * 三家区间 3.3–8.4；我们取 **LibreChat 的正文档 8.4**（选中≈hover×2）。
+   * 深色取 16.1：两家深色实测只有 9.5（LibreChat #333332）与 11.1（LobeHub），
+   * 我们按用户 2026-11-09 的反馈（深色几乎看不见）取更高一档。详见
    * `knowledge/design/theme-systems/comparison.md` §3.2。
    */
-  const darkBoost = dark ? 1.9 : 1;  // 15.9 / 8.4 ≈ 1.9（LibreChat 实测比）
+  const darkBoost = dark ? 1.9 : 1;  // 深色提升一档（用户反馈：深色高亮必须明显）
   const hoverL = dark ? navL + state.hoverD * darkBoost : navL - state.hoverD;
   const selL = dark ? navL + state.hoverD * state.selRatio * darkBoost : navL - state.hoverD * state.selRatio;
 

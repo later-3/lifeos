@@ -21,7 +21,7 @@
 | 侧栏底色 vs 内容 | `#f8f8f8` vs `#ffffff`（ΔL\* 2.4） | `#f6f7fa` vs `#ffffff`（2.8） | `#fafafa` vs `#ffffff`（1.7） | `#f7f6f5` vs `#ffffff`（3.1） |
 | **侧栏选中 ΔL\*** | **5.2**（fill .06） | **8.4**（`#e6e7e9`）；侧栏专用档 17.0 | **3.3**（alpha .1） | 12.6（刚改） |
 | 侧栏 hover ΔL\* | 2.8（fill .03） | 8.4（与选中同色，靠字重区分） | 1.4（alpha .05） | 4.5 |
-| 暗色 选中 ΔL\* | 同法派生 | **15.9**（`#414141`） | — | 15.7（≈LibreChat） |
+| 暗色 选中 ΔL\* | **11.1**（白 .10） | **9.5**（`#333332`）；`#414141` 是 `surface-active`，不是侧栏选中 | — | 16.1 |
 | 色阶档数 | **13 + 13 alpha** | 组件级 token（非色阶） | **12 + 4 alpha** | 4（surface/sunken/nav-bg/rail） |
 | 中性色相 | 6 套预设，chroma ≤0.05 | 无中性预设（固定在主题里） | 210–227 蓝灰统一 | 跟随主色 |
 | 字号档 | 7（12/14/16/20/24/30/38） | 6（0.75–2rem） | **16（title/label/paragraph/subheading）** | 5 |
@@ -47,9 +47,14 @@
 三家实测：novu 3.3 / LobeHub 5.2 / LibreChat 8.4（正文）/ 17.0（侧栏专档）。
 我们现在 12.6 —— **偏向 LibreChat 的侧栏专档**，但我们的界面气质更接近 LobeHub（清冷克制）。
 
-**决策**：浅色取 **8.4**（LibreChat 正文档），深色取 **≈15.9**（LibreChat 暗色实测）。
+**决策**：浅色取 **8.4**（LibreChat `clickui.json` 的 `sidebar.main.navigation.item.color.background.active` 实测），深色取 **16.1**。
+
+**2026-11-09 更正（实测）**：此前引用的 LibreChat 深色 15.9（`#414141`）是错的——
+`#414141` 是 `rgb-surface-active`（palette.neutral.700），侧栏选中是 `#333332`，真实 ΔL\* = **9.5**。
+两家深色真实区间 **9.5–11.1**；我们 16.1 是照用户「深色必须明显」的反馈调的，不是照 LibreChat 调的。
+证据见 `real-run-facts.md` §2.2。
 理由：① 有产品类参考的直接依据（不再借 VS Code）；② 选中≈hover×2（8.4 / 4.2）符合三家比例区间（LobeHub 1.86、novu 2.4、LibreChat 1.0 靠字重补偿）；
-③ 深色必须比浅色高一档（LibreChat 15.9 vs 8.4、LobeHub 同向），因为深底感知更弱。
+③ 深色必须比浅色高一档（LobeHub 11.1 vs 5.3 同向），因为深底感知更弱；两家深色实测区间 9.5–11.1，我们取更明显的 16.1 以对应用户反馈。
 
 ### 3.3 灰的气质 —— 取 novu 的"统一色相"，取 LobeHub 的"中性仍中性"
 
@@ -95,7 +100,7 @@ novu 的 Tab 指示条与 segmented 浮块共用 `cubic-bezier(0.65,0,0.35,1)` +
 
 | 步 | 内容 | 依据 |
 |---|---|---|
-| 1 | 选中强度调到 8.4 / hover 4.2（浅色）、15.9 / 9（深色） | §3.2 |
+| 1 | 选中强度调到 8.5 / hover 4.2（浅色）、16.1 / 8.1（深色） | §3.2 |
 | 2 | `tokens.css` 改 `@theme inline` + RGB 三元组 + `data-theme-boot` | §3.1 |
 | 3 | 色阶扩到 12 阶 + alpha 份（先只做 nav/line/ink 三族） | §3.1 |
 | 4 | 设置项 registry + 搜索 | §3.4 |

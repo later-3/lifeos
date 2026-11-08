@@ -17,6 +17,8 @@
 | `novu.md` | novu 控制台（Dashboard） | `novu@46ff54b` |
 | `librechat.md` | LibreChat 客户端 | `LibreChat@f4154b6` |
 | `comparison.md` | **三家横向对比 + 我们该择优取哪一项**（决策表） | 同上 |
+| `real-run-facts.md` | **四家真实运行与实测数值**（LobeHub 桌面版 Release、LibreChat/\@lobehub/ui 真实发布包组件、novu 官方 Inbox Playground） | 2026-11-09 实测 |
+| `our-benchmark.md` | 三段式交付：①三家怎么做 ②我们怎么做 ③截图对比 | 2026-11-09 |
 
 ## 什么时候读
 
