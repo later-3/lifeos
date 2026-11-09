@@ -310,6 +310,129 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
 }
 
+// 设置表面（2026-11-09 审核修正，四条实测缺陷的回归契约）
+//
+// 实测记录（都进过 cases/2026-11-09.md）：
+//  · 手机上设置页既没图标轨也没 Esc → **没有任何出口**，且内容列被 230px 导航挤成 160px；
+//  · 导航列了 7 个分区、5 个是空的"该分区还没实现"→ 71% 是死点击；
+//  · 深浅色分段按钮 46×25、range 16px、复选框 13×13 → 命中区低于 28；
+//  · 会话行 hover 动作区 84px 塞在 64px 槽里 → 压住标题 12px。
+{
+  const settingsPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await settingsPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await settingsPage.waitForTimeout(400);
+  await settingsPage.evaluate(() => {
+    document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+  });
+  await settingsPage.waitForTimeout(300);
+  // 主题分区才有复选框与全部控件：先切过去，否则断言只覆盖当前的"显示"分区
+  await settingsPage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("主题"));
+    btn?.click();
+  });
+  await settingsPage.waitForTimeout(300);
+
+  const surf = await settingsPage.evaluate(() => {
+    const surface = document.querySelector('[data-testid="settings-surface"]');
+    if (surface === null) return null;
+    const sections = [...surface.querySelectorAll('nav[aria-label="设置分区"] button')].map((b) => (b.innerText ?? "").trim());
+    const closeBtn = [...surface.querySelectorAll("button")].find((b) => /关闭/.test(b.getAttribute("aria-label") ?? ""));
+    const closeBox = closeBtn === undefined ? null : closeBtn.getBoundingClientRect();
+    // 空占位：仍在文案里出现"还没实现"就说明导航里有死点击
+    return {
+      sections,
+      hasPlaceholderText: (surface.innerText ?? "").includes("还没实现"),
+      closeVisible: closeBox !== null && closeBox.width > 0,
+      // 命中区：设置表面内所有可见控件
+      small: [...surface.querySelectorAll("button,input,[role=button]")]
+        .filter((el) => {
+          const box = el.getBoundingClientRect();
+          // 复选框本体小于 28 是浏览器默认；它的命中区由外层 label 撑（下面单独断言）
+          return box.width > 0 && el.getAttribute("type") !== "checkbox" && (box.width < 28 || box.height < 28);
+        })
+        .map((el) => `${(el.innerText || el.getAttribute("aria-label") || el.id || "").trim().slice(0, 12)} ${
+          Math.round(el.getBoundingClientRect().width)}×${Math.round(el.getBoundingClientRect().height)}`),
+      checkboxLabel: (() => {
+        const input = surface.querySelector('input[type=checkbox]');
+        const label = input?.closest("label");
+        if (label === null || label === undefined) return null;
+        const box = label.getBoundingClientRect();
+        return { w: Math.round(box.width), h: Math.round(box.height), cursor: getComputedStyle(label).cursor };
+      })(),
+    };
+  });
+  check("设置表面存在且可打开", surf !== null, surf === null ? "找不到 settings-surface" : "");
+  if (surf !== null) {
+    check("设置导航只列真可用分区（无“还没实现”死点击）",
+      surf.hasPlaceholderText === false, `分区=${surf.sections.join(",")}`);
+    check("设置表面内的控件命中区 ≥ 28（复选框由 label 撑）", surf.small.length === 0, surf.small.slice(0, 4).join(" | "));
+    check("设置复选框的命中区由 label 撑到 ≥28", surf.checkboxLabel !== null && surf.checkboxLabel.h >= 28,
+      JSON.stringify(surf.checkboxLabel));
+  }
+  // 桌面：设置是 tab，不是浮层 → 不该有"关闭/返回"按钮（layout-model §1.2-2）
+  check("桌面设置不提供关闭按钮（tab 语义，再点 rail 退出）", surf !== null && surf.closeVisible === false,
+    surf === null ? "" : `closeVisible=${surf.closeVisible}`);
+
+  // 手机：必须有可见出口 + 内容列不被导航挤掉
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  await mobilePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await mobilePage.waitForTimeout(400);
+  await mobilePage.evaluate(() => {
+    document.querySelector('button[aria-label="打开设置"]')?.click();
+  });
+  await mobilePage.waitForTimeout(300);
+  const mobile = await mobilePage.evaluate(() => {
+    const surface = document.querySelector('[data-testid="settings-surface"]');
+    if (surface === null) return null;
+    const nav = surface.querySelector('nav[aria-label="设置分区"]');
+    const content = [...surface.children].find((child) => child !== nav && child.tagName !== "HEADER");
+    const closeBtn = [...surface.querySelectorAll("button")].find((b) => /关闭/.test(b.getAttribute("aria-label") ?? ""));
+    return {
+      closeVisible: closeBtn !== undefined && closeBtn.getBoundingClientRect().width > 0,
+      contentWidth: content === null || content === undefined ? 0 : Math.round(content.getBoundingClientRect().width),
+      surfaceWidth: Math.round(surface.getBoundingClientRect().width),
+    };
+  });
+  check("手机设置：有可见的关闭入口（没有图标轨也没有 Esc，否则无出口）", mobile !== null && mobile.closeVisible === true,
+    JSON.stringify(mobile));
+  check("手机设置：内容列不被分区导航挤窄（≥ 视口 80%）",
+    mobile !== null && mobile.contentWidth >= mobile.surfaceWidth * 0.8, JSON.stringify(mobile));
+  await mobilePage.close();
+  await settingsPage.close();
+}
+
+// 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
+{
+  const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await rowPage.waitForTimeout(500);
+  const probe = async () => await rowPage.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="session-rows"] [role=button]');
+    if (row === null) return null;
+    const inner = row.firstElementChild;
+    const slot = row.lastElementChild;
+    const actions = [...slot.children].find((child) => child.className.includes("absolute"));
+    if (inner === null || slot === null || actions === undefined) return null;
+    const innerBox = inner.getBoundingClientRect();
+    const actionBox = actions.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    return {
+      gap: Math.round(actionBox.left - innerBox.right),
+      actionsInsideRow: actionBox.right <= rowBox.right + 1,
+      innerW: Math.round(innerBox.width),
+    };
+  });
+  const rest = await probe();
+  await rowPage.locator('[data-shot-mask="session-rows"] [role=button]').first().hover();
+  await rowPage.waitForTimeout(260);
+  const hover = await probe();
+  check("会话行：动作区不压标题（静止时就有空位）", rest !== null && rest.gap >= 0, JSON.stringify(rest));
+  check("会话行：动作区不超出行的右边界", hover !== null && hover.actionsInsideRow === true, JSON.stringify(hover));
+  check("会话行：hover 不改变标题宽度（不抖动）", rest !== null && hover !== null && rest.innerW === hover.innerW,
+    `${rest?.innerW} → ${hover?.innerW}`);
+  await rowPage.close();
+}
+
 // 会话列（② 的列表）是否存在：分组头是它的标志（`data-testid="group-header"`）
 const listVisible = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
 // 点"对话"列开关（label 随状态在 展开对话 / 收起对话 之间变）
@@ -1679,6 +1802,12 @@ try {
     // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）
     await page2.evaluate(() => {
       document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+    });
+    await page2.waitForTimeout(250);
+    // 设置默认落在"主题"；这段测的是"显示"分区，先切过去（2026-11-09 起默认分区改为导航第一项）
+    await page2.evaluate(() => {
+      const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+      btn?.click();
     });
     await page2.waitForTimeout(250);
     const sliders = await page2.evaluate(() => {

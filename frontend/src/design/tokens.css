@@ -148,6 +148,10 @@
   /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
   --composer-max-height: 11rem;
 
+  /* 设置页分区导航宽（Task 0009）：230 来自 LibreChat 设置侧栏实测（`Nav/Settings` 的 w-230）；
+     与内容列 760 一起构成本项目的设置骨架（layout-model §2 设置一行）。 */
+  --container-settings-nav: 230px;
+
   /* 设置页内容列宽上限（Task 0009）：参照 Twenty `SETTINGS_CONTENT_MAX_WIDTH = 760`
      （`packages/twenty-front/src/modules/settings/constants/SettingsContentMaxWidth.ts:1`）。
      比阅读列 860 窄一档：设置页是"表单页"，行太长反而难扫。 */

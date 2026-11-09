@@ -227,7 +227,23 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
           <span className="min-w-0 truncate">{meta}</span>
         </span>
       </span>
-      <span className="relative flex w-16 shrink-0 items-center justify-end group/slot">
+      {/*
+        * 状态槽宽度 = 时间串的真实宽度（11px 下的"13小时前"约 40px）+ 呼吸余量。
+        *
+        * 2026-11-09 审核实测的缺陷：槽只有 64px，而 hover 出现的动作区（历史/重命名/删除）
+        * 三个 28px 图标 = 84px，绝对定位后会**向左溢出 20px、压住标题 12px**。
+        * 现在把两种宽度分开：槽按内容自适应（min-w），动作区宽度由自己决定并覆盖在槽上，
+        * 且 hover 时标题侧的两行**收窄**到同一右边界，不再被盖。
+        */}
+      {/*
+        * 槽宽 = **动作区宽度**（3 个 28px 图标 = 84 = w-21），不是时间串宽度。
+        *
+        * 2026-11-09 审核实测的缺陷：槽宽 64（时间"13小时前"够用），hover 出现的
+        * 动作区 84px 绝对定位后向左溢出 20px、压住标题 12px，两串字叠在一起。
+        * 试过的另一种修法（hover 时给标题加 pr-92）会把标题挤到 67px，且行内宽度随 hover 变=抖动。
+        * 现在让槽位本身就按动作区定宽：时间右对齐落在同一格里，hover 只换内容不换几何。
+        */}
+      <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
         {/* 状态槽的包装器**必须是 flex 容器**（Task 0004 / C161）：
             里面的点/时间是空 inline 元素，`w-1.5 h-1.5` 对 non-replaced inline 不生效
             （MDN CSS/width：applies to all elements but non-replaced inline elements），
@@ -242,7 +258,9 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
             现在键盘路径收窄为 `:has(:focus-visible)`（鼠标点击行不匹配 focus-visible，实测），
             focus-within 只保留在 `@media (hover: none)` 下给触屏当“点行显现”入口。 */}
         <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
-        <span className="absolute right-0 flex items-center opacity-0 pointer-events-none transition-opacity group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
+        {/* 动作区：固定 3 个 28px 图标 = 84px，右贴行边；hover 时给一层行底色的实底，
+            避免长标题从图标缝里透出来（旧实现无底，实测标题被图标压住后两串字叠在一起）。 */}
+        <span className="absolute right-0 flex items-center rounded-control bg-nav-accent pl-0.5 opacity-0 pointer-events-none transition-opacity group-hover/session:bg-nav-selected group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><IconHistory size={14} /></IconButton>
           <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><IconPencil size={14} /></IconButton>
           <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><IconTrash size={14} /></IconButton>

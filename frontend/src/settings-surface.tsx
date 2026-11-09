@@ -10,10 +10,10 @@
  * 入口：头部"显示设置"按钮（保留 aria-label，ui-contract 契约依赖）→ 打开本表面并落在"显示"分区。
  * 打开时是全页表面（覆盖 main 区），关闭回到原位；手机上同样全页。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
-  IconArrowLeft, IconCheck, IconLanguage, IconPalette, IconRefresh,
-  IconBell, IconPlug, IconInfoCircle, IconWand,
+  IconAdjustmentsHorizontal, IconCheck, IconLanguage, IconPalette, IconRefresh,
+  IconBell, IconPlug, IconInfoCircle, IconWand, IconX,
 } from "@tabler/icons-react";
 import {
   PRESET_LABELS, THEME_DEFAULTS, THEME_PRESETS, calculatePalette, contrastOf,
@@ -23,17 +23,25 @@ import {
   fontFromSlider, fontLabel, sliderFromFont, sliderFromWidth, widthFromSlider, widthLabel,
   type DisplayPrefs,
 } from "./display-prefs";
-import { Button } from "./design/ui";
+import { Button, IconButton } from "./design/ui";
 
 /* ── 分区注册表（数据驱动；新板块加一条即可）── */
 type SectionKey = "appearance" | "display" | "motion" | "language" | "models" | "notify" | "about";
+
+/**
+ * **只登记已有真实控件的分区**（2026-11-09 审核修正）。
+ *
+ * 此前导航列了 7 个分区、其中 5 个点进去只有一句"该分区的配置项还没实现"——
+ * 实测 71% 的导航项是死点击，用户点一次就知道"这页面一半是空的"。
+ * `knowledge/design/layout-model.md` §2.2 本来写的就是用 `show(ctx)` 把未实现的项
+ * **直接不显示**，而不是渲染禁用控件或空占位；这一版按那条落码。
+ * 规划中的分区改在导航底部用一行文字说明（可读、不可点，不制造死点击）。
+ */
 const SECTIONS: Array<{ g: string; items: Array<{ k: SectionKey; label: string }> }> = [
-  { g: "外观", items: [{ k: "appearance", label: "主题" }, { k: "display", label: "显示" }, { k: "motion", label: "动效" }] },
-  { g: "系统", items: [{ k: "language", label: "语言" }, { k: "models", label: "模型" }, { k: "notify", label: "通知" }, { k: "about", label: "关于" }] },
+  { g: "外观", items: [{ k: "appearance", label: "主题" }, { k: "display", label: "显示" }] },
 ];
-const SECTION_TITLES: Record<SectionKey, string> = {
-  appearance: "主题", display: "显示", motion: "动效", language: "语言", models: "模型", notify: "通知", about: "关于",
-};
+/** 规划中的分区：只作为一行说明，不进导航（避免 5 个空点击）。 */
+const PLANNED_SECTIONS = "模型 · 通知 · 语言 · 动效 · 关于";
 
 const ACCENT_DOTS: Array<{ h: number; c: number; label: string }> = [
   { h: 221, c: 62, label: "蓝" }, { h: 158, c: 45, label: "绿" }, { h: 262, c: 50, label: "紫" },
@@ -62,16 +70,6 @@ function Section({ title, desc, children }: { title: string; desc: string; child
       <h2 className="text-title font-semibold text-ink-900" style={{ letterSpacing: "var(--tracking-title)" }}>{title}</h2>
       <p className="mb-5 mt-1 text-meta text-ink-500">{desc}</p>
       {children}
-    </div>
-  );
-}
-
-/** 占位分区：控件禁用 + 一句"待实现"（不渲染假数据）。 */
-function Placeholder({ note }: { note: string }) {
-  return (
-    <div className="rounded-panel border border-line bg-sunken px-4 py-6 text-center">
-      <p className="text-body text-ink-700">该分区的配置项还没实现</p>
-      <p className="mt-1 text-micro text-ink-500">{note}</p>
     </div>
   );
 }
@@ -224,7 +222,7 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
           <input id="width" data-testid="pref-slider-width" type="range" min={0} max={100} step={1}
             value={sliderFromWidth(prefs.width, viewport)} aria-label={widthLabel(prefs.width)}
             onChange={(e) => onChange({ ...prefs, width: widthFromSlider(Number(e.currentTarget.value), viewport) })}
-            className="h-11 w-full cursor-pointer accent-accent sm:h-6" />
+            className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
           <div className="flex justify-between text-micro text-ink-300"><span>专注</span><span>铺满</span></div>
         </Card>
 
@@ -238,7 +236,7 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
           <input id="font" data-testid="pref-slider-font" type="range" min={0} max={100} step={1}
             value={sliderFromFont(prefs.font)} aria-label={fontLabel(prefs.font)}
             onChange={(e) => onChange({ ...prefs, font: fontFromSlider(Number(e.currentTarget.value)) })}
-            className="h-11 w-full cursor-pointer accent-accent sm:h-6" />
+            className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
           <div className="flex justify-between text-micro text-ink-300"><span>85%</span><span>200%</span></div>
         </Card>
 
@@ -263,46 +261,62 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  // 每个分区一个不同图标（旧版"显示"与"动效"共用 IconWand，实测是视觉噪音）
   const icons: Record<SectionKey, React.ReactNode> = {
-    appearance: <IconPalette size={16} />, display: <IconWand size={16} />, motion: <IconWand size={16} />,
+    appearance: <IconPalette size={16} />, display: <IconAdjustmentsHorizontal size={16} />, motion: <IconWand size={16} />,
     language: <IconLanguage size={16} />, models: <IconPlug size={16} />, notify: <IconBell size={16} />, about: <IconInfoCircle size={16} />,
   };
   return (
-    <div className="absolute inset-0 z-30 flex bg-surface" data-testid="settings-surface" role="region" aria-label="设置">
-      {/* 分区导航（数据驱动） */}
-      <nav aria-label="设置分区" className="flex-none overflow-y-auto border-r border-line bg-nav-bg p-2"
-      style={{ width: 230 }}>
-        {SECTIONS.map((g) => (
-          <div key={g.g}>
-            <div className="px-2 pb-1 pt-3 text-micro font-semibold tracking-wide text-nav-muted first:pt-1">{g.g}</div>
-            {g.items.map((it) => (
-              <button key={it.k} type="button"
-                className={`relative flex h-9 w-full items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
-                  section === it.k ? "font-semibold text-accent" : "text-ink-700 hover:bg-nav-accent"}`}
-                aria-current={section === it.k ? "page" : undefined}
-                onClick={() => onSection(it.k)}>
-                {/* 激活指示条：2px、贴左缘、上下内缩（Hoppscotch TabsNav.vue:78-90 的内缩手法，竖向变体） */}
-                {section === it.k && (
-                  <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent"
-                    style={{ transition: "transform var(--motion-indicator), opacity var(--motion-indicator)" }} />
-                )}
-                {icons[it.k]}
-                <span className="min-w-0 flex-1 truncate">{it.label}</span>
-              </button>
-            ))}
-          </div>
-        ))}
+    <div className="absolute inset-0 z-30 flex flex-col bg-surface sm:flex-row"
+      data-testid="settings-surface" role="region" aria-label="设置">
+      {/*
+        * 手机顶部条：**必须有可见的关闭入口**（2026-11-09 审核发现：手机上既没有图标轨、
+        * 也没有 Esc，设置一开就没有任何出口，且内容被 230px 导航挤成 160px）。
+        * 桌面不渲染它：桌面设置是 tab（rail 再点一次退出），加返回/关闭就成了"浮层"语义
+        * （layout-model §1.2-2 明令禁止跨 tab 浮层）。
+        */}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-2 sm:hidden">
+        <IconButton label="关闭设置" onClick={onClose}><IconX size={18} /></IconButton>
+        <span className="text-body font-semibold text-ink-900">设置</span>
+      </header>
+      {/* 分区导航（数据驱动）：手机横向条 / 桌面 230 纵栏（同一份数据，两种排布） */}
+      <nav aria-label="设置分区"
+        className="settings-nav flex-none border-b border-line bg-nav-bg p-2 max-sm:overflow-x-auto sm:overflow-y-auto sm:border-b-0 sm:border-r">
+        <div className="flex items-center gap-1 sm:flex-col sm:items-stretch sm:gap-0">
+          {SECTIONS.map((g) => (
+            <div key={g.g} className="flex items-center gap-1 sm:block">
+              {/* 分组标题只在桌面出现：手机横排没有"组"这个概念 */}
+              <div className="px-2 pb-1 pt-3 text-micro font-semibold tracking-wide text-nav-muted max-sm:hidden">{g.g}</div>
+              {g.items.map((it) => (
+                <button key={it.k} type="button"
+                  className={`relative flex h-9 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
+                    section === it.k
+                      ? "font-semibold text-accent max-sm:bg-surface"
+                      : "text-ink-700 hover:bg-nav-accent"} sm:w-full`}
+                  aria-current={section === it.k ? "page" : undefined}
+                  onClick={() => onSection(it.k)}>
+                  {/* 激活指示条：2px、贴左缘、上下内缩（Hoppscotch TabsNav.vue:78-90 的内缩手法，竖向变体）。
+                      手机上导航是横排，左缘指示条没有意义 → 只在桌面出现。 */}
+                  {section === it.k && (
+                    <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent max-sm:hidden"
+                      style={{ transition: "transform var(--motion-indicator), opacity var(--motion-indicator)" }} />
+                  )}
+                  {icons[it.k]}
+                  <span className="min-w-0 flex-1 truncate">{it.label}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="px-2 pt-4 text-micro leading-relaxed text-nav-muted max-sm:hidden">
+          规划中：{PLANNED_SECTIONS}
+        </p>
       </nav>
       {/* 内容区 */}
       <div className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full px-8 py-8" style={{ maxWidth: "var(--container-settings)" }}>
+        <div className="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8" style={{ maxWidth: "var(--container-settings)" }}>
           {section === "appearance" && <AppearanceSection theme={theme} onChange={onTheme} />}
           {section === "display" && <DisplaySection prefs={prefs} viewport={viewport} onChange={onPrefs} onReset={onPrefsReset} />}
-          {section === "motion" && <Section title="动效" desc="动画时长、呼吸幅度等演示参数。"><Placeholder note="规划中：动效板块将迁入 animlab 已调定的参数（Task 0007 登记）。" /></Section>}
-          {section === "language" && <Section title="语言" desc="界面显示语言。"><Placeholder note="规划中：当前界面文案为中文；多语言待国际化需求成立时实现。" /></Section>}
-          {section === "models" && <Section title="模型" desc="模型与凭据在「助手配置」中按助手分别设置；此处为全局默认（待实现）。"><Placeholder note="规划中：全局默认模型目前由 ~/.lifeos/config/models.json 管理，界面管理待后端接口。" /></Section>}
-          {section === "notify" && <Section title="通知" desc="后台完成提醒、推送。"><Placeholder note="规划中：网页通知 / Web Push 已登记待办（todo #12/#13），实现后在此配置。" /></Section>}
-          {section === "about" && <Section title="关于" desc="Life OS — Agent 的工作操作系统。"><Placeholder note="版本与构建信息待构建管线提供。" /></Section>}
         </div>
       </div>
     </div>

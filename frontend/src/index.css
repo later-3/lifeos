@@ -36,6 +36,14 @@ html, body, button, input, textarea, select {
 .md-body table { border-collapse: collapse; font-size: 0.94em; }
 .md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; }
 .md-body th { background: var(--color-sunken); font-weight: 600; }
+/* 手机：表格改为横向滚动（2026-11-09 审核实拍）——390 宽下 4 列表格被压到每列 20–60px，
+   中文变成逐字竖排（"耗/时"分成两行），完全没法读。`display:block` + `overflow-x:auto`
+   让 table 自己成为滚动容器；内部 tr/td 仍按 table 语义排版（匿名 table box）。
+   桌面不动：屏幕够宽时表格本来就该铺开。 */
+@media (max-width: 639px) {
+  .md-body table { display: block; max-width: 100%; overflow-x: auto; }
+  .md-body th, .md-body td { white-space: nowrap; }
+}
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
@@ -86,7 +94,9 @@ html, body, button, input, textarea, select {
   padding: 12px 14px; border: 1px solid var(--color-line); border-radius: var(--radius-panel);
 }
 .mode-seg { display: flex; gap: 2px; background: var(--color-sunken); border: 1px solid var(--color-line); border-radius: var(--radius-control); padding: 2px; }
-.mode-seg button { border: 0; background: transparent; padding: 4px 12px; font-size: var(--text-micro); border-radius: 4px; cursor: pointer; color: var(--color-ink-500); }
+/* 命中区 ≥28（frontend-spec §2 次级密集控件档）：旧值 4px 上下内边距实测算出 46×25，
+   比 28 的下限还小 —— 触摸设备上点不中。高度改为 min-height 撑到 28。 */
+.mode-seg button { border: 0; background: transparent; min-height: 28px; padding: 0 12px; font-size: var(--text-micro); border-radius: var(--radius-inner); cursor: pointer; color: var(--color-ink-500); }
 .mode-seg button.on { background: var(--color-surface); color: var(--color-ink-900); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); font-weight: 500; }
 
 .swatch-row { display: flex; gap: 10px; }
@@ -100,6 +110,11 @@ html, body, button, input, textarea, select {
 .swatch .prev i { flex: 1; }
 .swatch .nm { font-size: var(--text-meta); font-weight: 500; color: var(--color-ink-900); }
 
+/* 复选框本体 13×13 是浏览器默认，远低于 28 命中区。用 label 撑命中区：
+   勾选框本身不放大（视觉会变笨），而是让整行 label 可点且 ≥28 高。 */
+.chk { min-height: 32px; cursor: pointer; }
+.chk input { width: 14px; height: 14px; }
+
 .accent-dots { display: flex; gap: 8px; flex-wrap: wrap; }
 .accent-dot {
   width: 32px; height: 32px; border-radius: 999px; cursor: pointer;
@@ -112,5 +127,16 @@ html, body, button, input, textarea, select {
   border: 1px solid var(--color-line); border-radius: var(--radius-control); font-size: var(--text-meta);
 }
 .set-slider label { flex: none; width: 72px; color: var(--color-ink-700); }
-.set-slider input { flex: 1; accent-color: var(--color-accent); }
+/* 同 .mode-seg：range 元素默认高 16，低于 28 的命中区下限（实测）。 */
+.set-slider input { flex: 1; min-height: 28px; accent-color: var(--color-accent); }
 .set-slider .v { flex: none; width: 56px; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-ink-500); font-size: var(--text-micro); }
+
+/* ══════════════════════════════════════════════════════════════
+ * 设置页骨架（Task 0009 · 审核修正）
+ *
+ * 数值来自 tokens.css 的 `--container-settings-nav`，但**不能**用 inline style：
+ * 手机要把分区导航改成横排（宽度 100%），inline 会盖掉媒体查询。
+ * 桌面：230 定宽纵列；手机（<640）：100% 横条 + 横向滚动。
+ * ══════════════════════════════════════════════════════════════ */
+.settings-nav { width: 100%; }
+@media (min-width: 640px) { .settings-nav { width: var(--container-settings-nav); } }

@@ -468,7 +468,9 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("display");
+  // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
+  // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
+  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
   /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
   const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
   useEffect(() => {
@@ -2886,7 +2888,19 @@ export default function App() {
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
             <h1 className="truncate text-body font-semibold text-ink-900">{headerTitle}</h1>
-            <p className="truncate text-micro text-ink-500" data-testid="header-meta">
+            {/* truncate 时必须带 title：手机上实测只剩 "Life Agent · workspace · …"，
+                后半段（模型 / 档位 / 任务）被截掉且没有悬停提示 = 信息不可达。 */}
+            <p className="truncate text-micro text-ink-500" data-testid="header-meta"
+              title={joinHeaderSegments(buildHeaderSegments({
+                agentName: agent?.name ?? "",
+                ...(currentSessionItem?.peer != null ? { peerName: currentSessionItem.peer.name } : {}),
+                projectName: currentGroup?.project.name ?? "",
+                sessionTitle,
+                headerModel: headerModel ?? null,
+                thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : agentDefaultThinking,
+                activeTaskId: headerTask?.id,
+                taskTitle: headerTask?.title,
+              }))}>
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
                 // 只有 Agent↔Agent 的会话才有对端（用户↔Agent 的对端就是当前 Agent，写了是重复）
@@ -3323,7 +3337,10 @@ export default function App() {
                 className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-2 pr-1 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
                 {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
                   <div className="flex items-end justify-end gap-2 pb-0 pl-2 pr-2">
-                  {isMobile && (
+                  {/* 图片入口：手机一直在 composer 内；桌面上在 SessionBar 里（用户 2026-11-05 要求并进那条）。
+                      但**空会话时 SessionBar 整条不渲染**（2026-11-09 审核：空白条 + 孤立图标看着像坏了），
+                      这时入口回落到 composer 内 —— 功能一个都不能少，位置随状态走。 */}
+                  {(isMobile || sessionTotals.turns === 0) && (
                     <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                       data-testid="attach-image" className="shrink-0">
                       <IconPhoto size={16} />
