@@ -16,3 +16,7 @@ frontend/test/ui-baseline/
 
 # README 配图：本地产物，不入 Git（用户 2026-11-06 定：不是真实运行截图）
 docs/images/
+
+# 视觉矩阵的**输入产物**不入库，**基线入库**（2026-11-09 起：换机器也能跑，
+# 否则首次跑等于没测；旧的 ui-baseline 仍是本地产物）
+.visual-matrix-shots/

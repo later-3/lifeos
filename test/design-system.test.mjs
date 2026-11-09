@@ -304,3 +304,23 @@ test("没有裸 hex 颜色出现在页面层（设计系统层例外）", () => 
   }
   assert.deepEqual(offenders, [], `颜色只允许在 tokens.css：\n${offenders.join("\n")}`);
 });
+
+test("头像三档底色在 5 预设 × 深浅色下都 ≥4.5 于白字（视觉矩阵抓到的缺陷）", () => {
+  // 2026-11-09 视觉矩阵（chat-dark-1280）一眼看到：头像只剩一个空白圆。
+  // 根因：头像底色用的是 `ink-700/ink-900`，而它们在深色模式下是**近白**（L*82/96），
+  // 首字母固定白字 → 白底白字。改成三个专用 token（各色相二分求"白字仍 AA 的最亮 L"）。
+  for (const preset of Object.keys(THEME_PRESETS)) {
+    for (const mode of ["light", "dark"]) {
+      const p = calculatePalette(clampState({ ...THEME_PRESETS[preset], preset, mode }));
+      for (const key of ["avatar1", "avatar2", "avatar3"]) {
+        const ratio = contrastOf(p[key], [100, 0, 0]);
+        assert.ok(ratio >= 4.5, `${preset}/${mode}: ${key} vs 白字 = ${ratio.toFixed(2)} < 4.5（头像白字看不见）`);
+      }
+      // 三档必须彼此可区分（否则"按 id 派生"没有意义）
+      for (const [a, b] of [["avatar1", "avatar2"], ["avatar2", "avatar3"], ["avatar1", "avatar3"]]) {
+        const dh = Math.abs(p[a][2] - p[b][2]);
+        assert.ok(Math.min(dh, 360 - dh) >= 100, `${preset}/${mode}: ${a} 与 ${b} 色相太近（${dh.toFixed(0)}°）`);
+      }
+    }
+  }
+});

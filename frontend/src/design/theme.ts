@@ -156,6 +156,18 @@ export type Palette = {
   success: PaletteColor;
   danger: PaletteColor;
   running: PaletteColor;
+  /**
+   * 头像底色三档（按 id 派生，同一个助手永远同色）。
+   *
+   * 为什么单独给 token（2026-11-09 视觉矩阵抓到的缺陷）：头像首字母固定**白字**，
+   * 而 `ink-700/ink-900` 在深色模式下是近白（L*82/96）→ 深色下变成"白底白字"，
+   * 头像只剩空白圆。`success/danger/running` 深色下也是"浅底深字"的角色（配白字只有 2.0–2.5）。
+   * 唯一"白字底"的角色是 `accentSolid`（两侧都 ≥4.5），所以头像色从它派生：
+   * **同一个 L（因此同样达 AA）+ 三个色相**，既保证可读又有区分度。
+   */
+  avatar1: PaletteColor;
+  avatar2: PaletteColor;
+  avatar3: PaletteColor;
 };
 
 export function clampState(raw: Partial<ThemeState>): ThemeState {
@@ -304,6 +316,14 @@ export function calculatePalette(state: ThemeState): Palette {
      */
     ink500: [dark ? 68 : 42, 0.006, nH],
     ink300: [ink[300], 0.004, nH],
+    /*
+     * 头像三档：**各自二分求"白字仍达 AA 的最亮 L"**（色相不同会影响相对亮度，
+     * 直接复用 accentSolidL 会让暖色/粉色的对比掉到 3.96 —— 实测过）。
+     * 色相错开 120°，既保证可读又有区分度；用 maxLforWhiteText 与 accentSolid 同法。
+     */
+    avatar1: [maxLforWhiteText([0, 40], hue, 0.045), 0.045, hue],
+    avatar2: [maxLforWhiteText([0, 40], (hue + 120) % 360, 0.045), 0.045, (hue + 120) % 360],
+    avatar3: [maxLforWhiteText([0, 40], (hue + 240) % 360, 0.045), 0.045, (hue + 240) % 360],
     success: dark ? [72, 0.16, 158] : [45, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],
     running: dark ? [72, 0.15, 232] : [40, 0.17, 244],
@@ -333,6 +353,9 @@ const VAR_MAP: Array<[string, keyof Palette]> = [
   ["--color-success", "success"],
   ["--color-danger", "danger"],
   ["--color-running", "running"],
+  ["--color-avatar-1", "avatar1"],
+  ["--color-avatar-2", "avatar2"],
+  ["--color-avatar-3", "avatar3"],
 ];
 
 /** 把主题写到 :root。幂等；任何值变化即全站生效（Tailwind utility 引用 var）。 */

@@ -39,7 +39,12 @@
    * 对比度（同色深字 on 薄底）：6.0:1，WCAG AA 正文达标。
    */
   --color-running: #1d4ed8;
-  --color-running-soft: #eef2ff;
+
+  /* 头像三档底色（设计意图：**始终配白字**，所以深浅色下都要 ≥4.5 于白）。
+     值由 theme.ts 从 accentSolid 派生（同 L、色相错 120°）；这里只是 React 起来前的默认。 */
+  --color-avatar-1: #76554e;
+  --color-avatar-2: #4a6653;
+  --color-avatar-3: #565d78;  --color-running-soft: #eef2ff;
 
   /*
    * diff 专用色（Task 0010 · 检视模式）：增/删行底 + 行标记条。

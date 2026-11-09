@@ -38,7 +38,9 @@
     "state:no-ui": "node scripts/session-state.mjs --no-ui",
     "trace": "node scripts/session-trace.mjs",
     "audit:a11y": "node scripts/a11y-audit.mjs",
-    "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs"
+    "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs",
+    "test:visual": "node scripts/visual-matrix.mjs",
+    "test:visual:update": "node scripts/visual-matrix.mjs --update"
   },
   "type": "module",
   "devDependencies": {
