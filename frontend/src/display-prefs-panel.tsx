@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IconAdjustments, IconMinus, IconPlus } from "@tabler/icons-react";
 import { IconButton } from "./design/ui";
+import { LAYER_CLASS, surfaceClass } from "./design/surface";
 import {
   DEFAULT_PREFS, FONT_SCALE_MAX, FONT_SCALE_MIN, focusWidthOf, fontFromSlider, fontLabel,
   sliderFromFont, sliderFromWidth, widthFromSlider, widthLabel, type DisplayPrefs,
@@ -86,7 +87,7 @@ export function DisplayPrefsPanel({ prefs, viewport, onChange }: {
       {open && (
         <div id={PANEL_ID} role="group" aria-label="显示设置"
           data-testid="display-prefs"
-          className="absolute right-0 top-full z-30 mt-1 flex w-72 flex-col gap-4 rounded-panel border border-line bg-surface p-3 shadow-md">
+          className={`absolute right-0 top-full ${LAYER_CLASS.popover} mt-1 flex w-72 flex-col gap-4 ${surfaceClass("popover")} gap-3`}>
           <SliderRow id="width" label="内容宽度" value={widthPercent}
             display={widthLabel(prefs.width)}
             hintLeft={`专注 ${focusWidthOf(viewport)}px`} hintRight="铺满"

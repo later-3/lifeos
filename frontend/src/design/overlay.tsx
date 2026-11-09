@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { IconX } from "@tabler/icons-react";
 import { Button, IconButton } from "./ui";
 import { useIsMobile } from "../use-mobile";
+import { LAYER_CLASS, surfaceStyle } from "./surface";
 
 /**
  * 模态与确认框（前端开发路径 · 闸 3：键盘断言依赖这里的焦点陷阱 / aria-modal / Esc）。
@@ -70,11 +71,11 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
   useDialogFocus(panel, onClose, initialFocus === undefined ? {} : { initialFocus });
 
   return (
-    <div className={`fixed inset-0 z-50 flex items-center justify-center bg-ink-900/35 backdrop-blur-[2px] ${full ? "p-0" : "p-3"}`}
+    <div className={`fixed inset-0 ${LAYER_CLASS.modal} flex items-center justify-center bg-ink-900/35 backdrop-blur-[2px] ${full ? "p-0" : "p-3"}`}
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={panel} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}
-        style={{ maxWidth: full ? undefined : width, maxHeight: full ? "100dvh" : "calc(100dvh - 24px)" }}
-        className={`flex w-full flex-col overflow-hidden bg-surface shadow-xl ring-1 ring-ink-900/10 ${full ? "h-full rounded-none" : "rounded-panel"}`}>
+        style={{ maxWidth: full ? undefined : width, maxHeight: full ? "100dvh" : "calc(100dvh - 24px)", ...surfaceStyle("modal") }}
+        className={`flex w-full flex-col overflow-hidden bg-surface ring-1 ring-ink-900/10 ${full ? "h-full rounded-none" : "rounded-panel"}`}>
         <header className={`flex shrink-0 items-center gap-3 border-b border-line bg-sunken px-5 py-3 ${full ? "pt-safe" : ""}`}>
           {icon}
           <div className="min-w-0 flex-1">

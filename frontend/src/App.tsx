@@ -3450,10 +3450,11 @@ export default function App() {
             </div>
           </main>}
           {!settingsOpen && !atBottom && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+            <div className={`pointer-events-none absolute inset-x-0 bottom-3 ${LAYER_CLASS.rail} flex justify-center`}>
               <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"
                 onClick={jumpToLatest}
-                className="pointer-events-auto rounded-full border border-line bg-surface shadow-md sm:h-9 sm:w-9">
+                className="pointer-events-auto rounded-full border border-line bg-surface sm:h-9 sm:w-9"
+                style={surfaceStyle("popover")}>
                 <IconArrowDown size={16} />
               </IconButton>
             </div>
@@ -3706,7 +3707,7 @@ export default function App() {
         <>
           <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.history}
             onStart={(event) => beginDrag("c5", event)}
-            className={`border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
+            className={`border-l border-nav-line ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer} bg-surface` : ""}`}>
             <div className="flex min-w-0 flex-1 overflow-hidden">
               <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
                 agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
@@ -3720,7 +3721,7 @@ export default function App() {
         <>
           <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.panel}
             onStart={(event) => beginDrag("c4", event)}
-            className={`border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+            className={`border-l border-nav-line bg-surface ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer}` : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
@@ -3773,7 +3774,7 @@ export default function App() {
       {/* 设置表面（Task 0009 · P1-3）：全页——覆盖除图标轨外的所有区域（含 composer）。
           参照 Twenty/LobeHub：设置是独立页面，不是叠在对话上的浮层。 */}
       {settingsOpen && !isMobile && (
-        <div className="absolute inset-y-0 right-0 left-11 z-40">
+        <div className={`absolute inset-y-0 right-0 left-11 ${LAYER_CLASS.drawer}`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
             prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
@@ -3782,7 +3783,7 @@ export default function App() {
         </div>
       )}
       {settingsOpen && isMobile && (
-        <div className="fixed inset-0 z-40 bg-surface">
+        <div className={`fixed inset-0 ${LAYER_CLASS.drawer} bg-surface`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
             prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
@@ -3837,8 +3838,9 @@ export default function App() {
       {/* 窄窗口：左三列浮层（点空白处收起全部；参照 Pi Web / 通用 AppShell 的 overlay 抽屉） */}
       {!isMobile && box.overlayLeft && anyLeftOpen && (
         <>
-          <div className="absolute inset-0 z-20 bg-ink-900/20" onClick={closeAllLeft} aria-hidden="true" />
-          <div className="absolute inset-y-0 left-11 right-0 z-30 flex overflow-x-auto shadow-lg">
+          <div className={`absolute inset-0 ${LAYER_CLASS.rail} ${SCRIM_CLASS}`} onClick={closeAllLeft} aria-hidden="true" />
+          <div className={`absolute inset-y-0 left-11 right-0 ${LAYER_CLASS.drawer} flex overflow-x-auto`}
+            style={surfaceStyle("popover")}>
             {leftColumns}
           </div>
         </>
@@ -3894,3 +3896,4 @@ import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type Rout
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./event-guards";
+import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";

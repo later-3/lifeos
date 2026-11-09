@@ -24,6 +24,7 @@ import {
   type DisplayPrefs,
 } from "./display-prefs";
 import { Button, IconButton } from "./design/ui";
+import { LAYER_CLASS } from "./design/surface";
 
 /* ── 分区注册表（数据驱动；新板块加一条即可）── */
 type SectionKey = "appearance" | "display" | "motion" | "language" | "models" | "notify" | "about";
@@ -267,7 +268,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
     language: <IconLanguage size={16} />, models: <IconPlug size={16} />, notify: <IconBell size={16} />, about: <IconInfoCircle size={16} />,
   };
   return (
-    <div className="absolute inset-0 z-30 flex flex-col bg-surface sm:flex-row"
+    <div className={`absolute inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:flex-row`}
       data-testid="settings-surface" role="region" aria-label="设置">
       {/*
         * 手机顶部条：**必须有可见的关闭入口**（2026-11-09 审核发现：手机上既没有图标轨、

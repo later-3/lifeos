@@ -38,6 +38,7 @@ import { pairForSplit, splitAnchorOf, type SplitRow } from "./review-split";
 import type { WordDiff, WordSegment } from "./review-word-diff";
 import { ensureWordDiffLib, wordDiffOf } from "./review-word-diff-lib";
 import { awaitingOfComment, canCloseCommentBy, isClosedComment } from "./review-comment-state";
+import { LAYER_CLASS, SCRIM_CLASS, surfaceClass, surfaceStyle } from "./design/surface";
 
 /**
  * 检视面板（Task 0010 · P2）。
@@ -1292,7 +1293,7 @@ function DiffRow({ line, wrap, tokens, words, anchorSide, anchorNo, draftState, 
               event.stopPropagation();
               if (onSelectStart !== undefined) onSelectStart(event);
             }}
-            className={`absolute -right-1 top-1/2 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-control bg-surface text-ink-500 ring-1 ring-line transition-all hover:text-accent hover:ring-accent ${
+            className={`absolute -right-1 top-1/2 ${LAYER_CLASS.rail} flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-control bg-surface text-ink-500 ring-1 ring-line transition-all hover:text-accent hover:ring-accent ${
               draftState?.isStart === true ? "opacity-100" : "opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
             }`}
           >
@@ -2948,7 +2949,7 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         <div
           style={{ top: placed.top, left: placed.left }}
           data-review-pin-side={placed.side}
-          className="pointer-events-auto fixed z-50 w-72 rounded-panel bg-surface p-2 ring-1 ring-line shadow-lg"
+          className={`pointer-events-auto fixed ${LAYER_CLASS.popover} w-72 ${surfaceClass("popover")} p-2`}
           data-review-pin-preview={hoverPin.id}
           onMouseEnter={() => setHoverPin(hoverPin)}
           onMouseLeave={() => setHoverPin(undefined)}
@@ -2975,9 +2976,9 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
 
       {/* 快捷键帮助（G13）：内容就是代码里那张 `KEY_BINDINGS`，不手写第二份文案 */}
       {helpOpen && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink-900/20 p-4" role="dialog" aria-modal="true" aria-label="检视面板快捷键" data-review-help
+        <div className={`absolute inset-0 ${LAYER_CLASS.modal} flex items-center justify-center ${SCRIM_CLASS} p-4`} role="dialog" aria-modal="true" aria-label="检视面板快捷键" data-review-help
           onClick={() => setHelpOpen(false)}>
-          <div className="max-w-sm rounded-panel bg-surface p-3 shadow-lg ring-1 ring-line" onClick={(event) => event.stopPropagation()}>
+          <div className={`max-w-sm ${surfaceClass("modal")}`} onClick={(event) => event.stopPropagation()}>
             <div className="mb-2 flex items-center gap-2">
               <span className="text-body font-semibold text-ink-900">快捷键</span>
               <button type="button" className="ml-auto rounded-inner px-1.5 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-ink-900"

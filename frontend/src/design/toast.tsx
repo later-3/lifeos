@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { IconAlertCircle, IconCheck } from "@tabler/icons-react";
+import { LAYER_CLASS, surfaceClass, surfaceStyle } from "./surface";
 
 /**
  * 全局反馈（前端开发路径 · 闸 2）：保存成功/失败不再各页面自己写"✓ 已保存"。
@@ -35,10 +36,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div aria-live="polite" className="pointer-events-none fixed right-4 top-3 z-50 flex flex-col items-end gap-1.5">
+      <div aria-live="polite" className={`pointer-events-none fixed right-4 top-3 ${LAYER_CLASS.toast} flex flex-col items-end gap-1.5`}>
         {items.map((item) => (
           <div key={item.id}
-            className={`flex items-center gap-2 rounded-panel px-3 py-2 text-body shadow-lg ring-1 ${
+            style={surfaceStyle("toast")}
+            className={`flex items-center gap-2 rounded-panel px-3 py-2 text-body ring-1 ${
               item.tone === "error" ? "bg-danger-soft text-danger ring-danger/20" : "bg-surface text-ink-900 ring-line"
             }`}>
             {item.tone === "error" ? <IconAlertCircle size={16} /> : <IconCheck size={16} className="text-success" />}

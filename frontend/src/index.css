@@ -149,3 +149,25 @@ html, body, button, input, textarea, select {
  * ══════════════════════════════════════════════════════════════ */
 .settings-nav { width: 100%; }
 @media (min-width: 640px) { .settings-nav { width: var(--container-settings-nav); } }
+
+/* ══════════════════════════════════════════════════════════════
+ * 层级语义（design/surface.ts 的 LAYER 是唯一来源，这里是它的 CSS 落点）
+ *
+ * 为什么不用 Tailwind 的 `z-30`：那是任意数字，写错了不报错、顺序错了也不报错。
+ * 现状审计：Toast 与 Modal 同为 z-50 → 模态打开时 Toast 被压在下面（顺序错了）。
+ *
+ * 值必须与 `design/surface.ts` 的 `LAYER` 一致；`test/design-system.test.mjs`
+ * 有一条断言比对这两处（改一处忘另一处会红）。
+ * ══════════════════════════════════════════════════════════════ */
+:root {
+  --z-rail: 10;
+  --z-popover: 30;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+.layer-rail { z-index: var(--z-rail); }
+.layer-popover { z-index: var(--z-popover); }
+.layer-drawer { z-index: var(--z-drawer); }
+.layer-modal { z-index: var(--z-modal); }
+.layer-toast { z-index: var(--z-toast); }
