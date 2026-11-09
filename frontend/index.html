@@ -12,6 +12,25 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Life OS</title>
+    <script>
+      /*
+       * 防闪（Task 0009 · L3，手法来自 LibreChat `theme/applyTheme.ts:20-27` 的 `data-theme-boot`）：
+       * 首屏读取本地主题并立刻写到 :root，避免"先白后黑"的一跳。
+       * 这里只做最小集（mode + 四档底色 + 主色），完整 token 由 design/theme.ts 在 React 起来后覆盖。
+       * 读失败一律静默（隐私模式/无 localStorage），页面照常渲染默认主题。
+       */
+      (function () {
+        try {
+          var raw = localStorage.getItem("lifeos.theme");
+          if (!raw) return;
+          var t = JSON.parse(raw);
+          var root = document.documentElement;
+          root.dataset.themeMode = t.mode === "dark" ? "dark" : "light";
+          root.style.colorScheme = t.mode === "dark" ? "dark" : "light";
+          root.setAttribute("data-theme-boot", "");
+        } catch (e) { /* 忽略 */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

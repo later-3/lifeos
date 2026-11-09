@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX, IconGitCompare, IconSelector } from "@tabler/icons-react";
+  IconGitCompare, IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconSettings, IconSelector, IconTrash, IconX,
+} from "@tabler/icons-react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
   CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
@@ -19,7 +20,9 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { DisplayPrefsPanel, loadPrefs, savePrefs } from "./display-prefs-panel";
+import { loadPrefs, savePrefs } from "./display-prefs-panel";
+import { SettingsSurface } from "./settings-surface";
+import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
@@ -51,6 +54,7 @@ import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream,
 import { TurnInspector } from "./SessionHistory";
 import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
+import { DragHandle, ResizeColumn } from "./design/resize-column";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
@@ -343,26 +347,44 @@ function legacyGroupsOpen(): boolean {
   } catch { return true; }
 }
 
-function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
-  return (
-    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2 pl-3">
-      <Label className="min-w-0 truncate">{label}</Label>
-      {/* 数据统计：列头里的总数（助手/项目/会话各自有多少个），安静地跟在标题后面 */}
-      {count !== undefined && (
-        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-hover px-1.5 text-micro font-medium tabular-nums text-ink-700">{count}</span>
-      )}
-      {hint !== undefined && <span className="min-w-0 truncate text-micro text-ink-500">· {hint}</span>}
-      <span className="ml-auto" />
-      <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
-    </div>
-  );
+/** 分组折叠状态的持久化键（只存收起的项目 id）。 */
+const COLLAPSED_GROUPS_KEY = "lifeos.collapsedGroups";
+
+function readCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    if (raw === null) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === true) out[key] = true;   // 只认 true；其它一律当展开
+    }
+    return out;
+  } catch { return {}; }
 }
 
-/** 拖宽把手：6px 命中区，hover 才显 2px accent。 */
-function DragHandle({ onStart }: { onStart: (event: ReactMouseEvent) => void }) {
+function writeCollapsedGroups(value: Record<string, boolean>): void {
+  try {
+    const keys = Object.keys(value).filter((key) => value[key] === true);
+    if (keys.length === 0) localStorage.removeItem(COLLAPSED_GROUPS_KEY);
+    else localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Object.fromEntries(keys.map((key) => [key, true]))));
+  } catch { /* 忽略：存不下时退化为不持久，不影响功能 */ }
+}
+
+function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
-    <div className="group flex w-1.5 shrink-0 cursor-col-resize justify-center" onMouseDown={onStart}>
-      <div className="h-full w-px bg-line transition-colors group-hover:bg-accent" />
+    // 列内边距 8（design-language §5.1 / D21）：与助手行、分组头同一左缘。
+    // 旧值 pl-3(12) 与行的 px-1.5(6) / 分组头的 pl-2(8) 各自平行，一列三条左缘。
+    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2">
+      <Label tone="nav" className="min-w-0 truncate">{label}</Label>
+      {/* 数据统计：列头里的总数（助手/会话各自有多少个），安静地跟在标题后面 */}
+      {count !== undefined && (
+        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
+      )}
+      {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
+      <span className="ml-auto" />
+      <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
     </div>
   );
 }
@@ -429,6 +451,18 @@ export default function App() {
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
+  // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
+  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
+  /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
+  const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
+  useEffect(() => {
+    applyTheme(theme);
+    applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
+    saveTheme(theme);
+  }, [theme]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -746,7 +780,15 @@ export default function App() {
    * P-02 D12 说"折叠状态存单键数组"；这里用"只存收起的组"（默认全展开），
    * 因为项目通常 3–5 个，全展开是常态，只记住用户明确收起的那几个更省存储也更直观。
    */
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  /**
+   * 分组折叠状态，**按项目 id 持久化**（layout-model §1.2-3「切换 tab 不丢列表状态」；
+   * novu `NavigationGroup` 同法：`navigation-group.tsx:5-21` 用 localStorage 存收起集）。
+   *
+   * 为什么不能只放 state：刷新/切 tab/切助手后折叠全被重置，用户每次都要重新收一遍。
+   * 只存**收起的**那几个（默认全展开）——项目通常 3–5 个，全展开是常态。
+   */
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(readCollapsedGroups);
+  useEffect(() => { writeCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();
@@ -2710,6 +2752,9 @@ export default function App() {
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
   // 展开前若右侧（完整历史/文件面板）开着，先关掉它——宽度预算同一套，避免挤爆聊天区。
   function toggleRail(key: "nav" | "groups") {
+    // 设置页开着时，点任何 rail 项都**先退出设置**（用户 2026-11-09：不要"只能再点设置才能退出"）。
+    // 退出后按原逻辑处理该列，用户视线直接落到他点的那一列上。
+    if (settingsOpen) setSettingsOpen(false);
     const open = key === "nav" ? showNav : showGroups;
     const set = key === "nav" ? setShowNav : setShowGroups;
     if (open) { set(false); return; }
@@ -2717,10 +2762,44 @@ export default function App() {
     else if (panelOpen) setPanelOpen(false);
     set(true);
   }
-  // 合并后只有两个图标（P-02 §5.2）：助手 / 对话
-  const railItems = [
-    { key: "nav", label: "助手", active: showNav, icon: <AgentAvatar id={agent?.id ?? "?"} name={agent?.name ?? "?"} avatar={agent?.avatar} size={20} />, onToggle: () => toggleRail("nav") },
-    { key: "groups", label: "对话", active: showGroups, icon: <IconMessageCircle size={18} />, onToggle: () => toggleRail("groups") },
+  /**
+   * rail 内容（Task 0009 · 布局模型 L1；2026-11-09 用户二次裁决后定稿）。
+   *
+   * **两个列开关 + 一个功能页**：
+   * - `助手`（toggle，showNav）：高亮 = 助手列展开，点击 = 开关该列（与改动前完全一致）；
+   * - `对话`（toggle，showGroups）：高亮 = 会话列展开，点击 = 开关该列（与改动前完全一致）；
+   * - `设置`（tab，settingsOpen）：高亮 = 当前在设置页，点击 = 进/出设置（rail 底部）。
+   *
+   * 为什么不把两个列合并成一个「对话」tab（上一版试过）：Agent × Project × Session 三级里，
+   * 助手列与会话列是**两个可各自收起的列**——用户 2026-11-09：
+   * 「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的，相当于你把我们之前的功能都减少了」。
+   * 所以 rail 保留"列开关"这一层能力，同时用 `mode` 区分它与"功能页"（设置）。
+   */
+  const railGroups = [
+    {
+      id: "columns",
+      items: [
+        {
+          key: "nav", label: "助手", mode: "toggle" as const, active: showNav,
+          icon: agent === undefined
+            ? <IconMessageCircle size={18} />
+            : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={20} />,
+          onClick: () => toggleRail("nav"),
+        },
+        {
+          key: "groups", label: "对话", mode: "toggle" as const, active: showGroups,
+          icon: <IconMessageCircle size={18} />,
+          onClick: () => toggleRail("groups"),
+        },
+      ],
+    },
+  ];
+  const railBottom = [
+    {
+      key: "settings", label: "设置", mode: "tab" as const, active: settingsOpen,
+      icon: <IconSettings size={18} />,
+      onClick: () => setSettingsOpen((open) => !open),
+    },
   ];
 
   /** Agent 级注意点（任务 0007）：该 Agent 下有会话在跑 → 运行点；有完成未读 → 未读点。 */
@@ -2778,10 +2857,13 @@ export default function App() {
     <>
       {!folded.nav && (
         <>
-          <aside style={{ width: box.c1 }} className="flex shrink-0 flex-col bg-sunken">
+          {/* 列自己画右缘 1px 边（Task 0006）：不再由把手盒子充当分界。
+              `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
+          <ResizeColumn resizeKey="c1" width={box.c1} onStart={(event) => beginDrag("c1", event)}
+            className="flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 pb-2" data-shot-mask="agent-rows">
+            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
@@ -2810,15 +2892,15 @@ export default function App() {
                 </Row>
               ))}
             </div>
-          </aside>
-          <DragHandle onStart={(event) => beginDrag("c1", event)} />
+          </ResizeColumn>
         </>
       )}
 
       {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
       {!folded.groups && (
         <>
-          <aside style={{ width: box.c2 }} className="flex shrink-0 flex-col bg-sunken" data-testid="groups-panel">
+          <ResizeColumn resizeKey="c2" width={box.c2} onStart={(event) => beginDrag("c2", event)}
+            testId="groups-panel" className="flex-col border-r border-nav-line bg-nav-bg">
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
@@ -2849,7 +2931,7 @@ export default function App() {
                     {open && (
                       <GroupBody>
                         {group.sessions.length === 0 && (
-                          <p className="px-1 py-2 text-micro text-ink-500">该项目还没有会话 · 在右下输入框发消息即可新建</p>
+                          <p className="px-1 py-2 text-micro text-nav-muted">该项目还没有会话 · 在右下输入框发消息即可新建</p>
                         )}
                         {group.sessions.map((item) => {
                           // 会话行的三态**只认 `item.activity`**（Task 0005）。
@@ -2922,7 +3004,7 @@ export default function App() {
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
                                   : unread
                                     ? <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />
-                                    : <span className="text-micro text-ink-500">{timeAgo(item.time.lastActivityAt)}</span>} />
+                                    : <span className="text-micro text-nav-muted">{timeAgo(item.time.lastActivityAt)}</span>} />
                           );
                         })}
                       </GroupBody>
@@ -2934,8 +3016,7 @@ export default function App() {
             <PanelFooter>
               <AddProjectButton onClick={() => setAddingProject(true)} />
             </PanelFooter>
-          </aside>
-          <DragHandle onStart={(event) => beginDrag("c2", event)} />
+          </ResizeColumn>
         </>
       )}
     </>
@@ -3026,7 +3107,7 @@ export default function App() {
 
   return (
     <div className="relative flex bg-surface text-ink-900" style={{ height: "var(--app-height, 100dvh)" }}>
-      {!isMobile && <NavRail items={railItems} />}
+      {!isMobile && <NavRail groups={railGroups} bottom={railBottom} />}
 
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
@@ -3045,7 +3126,19 @@ export default function App() {
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
             <h1 className="truncate text-body font-semibold text-ink-900">{headerTitle}</h1>
-            <p className="truncate text-micro text-ink-500" data-testid="header-meta">
+            {/* truncate 时必须带 title：手机上实测只剩 "Life Agent · workspace · …"，
+                后半段（模型 / 档位 / 任务）被截掉且没有悬停提示 = 信息不可达。 */}
+            <p className="truncate text-micro text-ink-500" data-testid="header-meta"
+              title={joinHeaderSegments(buildHeaderSegments({
+                agentName: agent?.name ?? "",
+                ...(currentSessionItem?.peer != null ? { peerName: currentSessionItem.peer.name } : {}),
+                projectName: currentGroup?.project.name ?? "",
+                sessionTitle,
+                headerModel: headerModel ?? null,
+                thinkingLevel: sessionId !== undefined ? meta?.thinkingLevel : agentDefaultThinking,
+                activeTaskId: headerTask?.id,
+                taskTitle: headerTask?.title,
+              }))}>
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
                 // 只有 Agent↔Agent 的会话才有对端（用户↔Agent 的对端就是当前 Agent，写了是重复）
@@ -3109,12 +3202,19 @@ export default function App() {
             }}>
             <IconLayoutSidebarRight size={16} />
           </IconButton>
-          {/* 显示设置（用户 2026-11-02：就放在这两个图标旁边）：两个滑块 = 内容宽度 + 字号 */}
-          <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs} />
+          {/* 设置入口（Task 0009 · 2026-11-09 用户裁决）：桌面在图标轨底部；
+              手机无图标轨，只有头部入口。**条件渲染**而不是 hidden 类——
+              IconButton 自带 inline-flex，类名顺序会让 hidden 失效（2026-11-09 用户抓到重复入口）。 */}
+          {isMobile && (
+            <IconButton label="打开设置" size="lg" active={settingsOpen}
+              onClick={() => setSettingsOpen((open) => !open)}>
+              <IconSettings size={16} />
+            </IconButton>
+          )}
         </header>
 
         <div className="relative min-h-0 flex-1">
-          <main ref={scrollRef}
+          {!settingsOpen && <main ref={scrollRef}
             onScroll={(event) => {
               const node = event.currentTarget;
               const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 60;
@@ -3348,8 +3448,8 @@ export default function App() {
                 });
               })()}
             </div>
-          </main>
-          {!atBottom && (
+          </main>}
+          {!settingsOpen && !atBottom && (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
               <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"
                 onClick={jumpToLatest}
@@ -3485,7 +3585,9 @@ export default function App() {
                   void collectImages(files);
                 }} />
               {/* 输入行：textarea 与发送/停止钮在同一 flex 行（items-end），末行对齐、互相占位 */}
-              <div className="flex items-end gap-2 py-2 pl-2 pr-2">
+              {/* 间距收口（Task 0009 · P2-2）：demo 实测四层叠加（8+16 / 8+8+8）比参考厚一倍，收成单层语义。
+              命中区与功能不动：发送/停止 44 触达、附件、palette、历史键程全部保持。 */}
+              <div className="flex items-end gap-1.5 py-1.5 pl-2 pr-1.5">
                 <textarea ref={inputRef} value={input} rows={1} aria-label="输入消息"
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
@@ -3570,10 +3672,13 @@ export default function App() {
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
-                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-4 pr-2 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
+                className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-2 pr-1 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
                 {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
                   <div className="flex items-end justify-end gap-2 pb-0 pl-2 pr-2">
-                  {isMobile && (
+                  {/* 图片入口：手机一直在 composer 内；桌面上在 SessionBar 里（用户 2026-11-05 要求并进那条）。
+                      但**空会话时 SessionBar 整条不渲染**（2026-11-09 审核：空白条 + 孤立图标看着像坏了），
+                      这时入口回落到 composer 内 —— 功能一个都不能少，位置随状态走。 */}
+                  {(isMobile || sessionTotals.turns === 0) && (
                     <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                       data-testid="attach-image" className="shrink-0">
                       <IconPhoto size={16} />
@@ -3599,21 +3704,23 @@ export default function App() {
       {/* 完整历史 · 右侧并列列 */}
       {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          {!isMobile && <DragHandle onStart={(event) => beginDrag("c5", event)} />}
-          <aside style={{ width: isMobile ? "100%" : box.history }}
-            className={`flex shrink-0 overflow-hidden ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
-            <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
-              agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
-          </aside>
+          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.history}
+            onStart={(event) => beginDrag("c5", event)}
+            className={`border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
+            <div className="flex min-w-0 flex-1 overflow-hidden">
+              <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
+                agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
+            </div>
+          </ResizeColumn>
         </>
       )}
 
       {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
       {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
-          {!isMobile && <DragHandle onStart={(event) => beginDrag("c4", event)} />}
-          <aside style={{ width: isMobile ? "100%" : box.panel }}
-            className={`flex shrink-0 overflow-hidden bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.panel}
+            onStart={(event) => beginDrag("c4", event)}
+            className={`border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
@@ -3639,13 +3746,16 @@ export default function App() {
                   </div>
                 ) : showTree ? (
                   <>
-                    <div style={{ width: box.tree }} className="flex min-w-0 shrink-0 flex-col overflow-hidden">
-                      <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
-                    </div>
-                    <DragHandle onStart={(event) => beginDrag("c4t", event)} />
+                    <ResizeColumn resizeKey="c4t" width={box.tree} onStart={(event) => beginDrag("c4t", event)}
+                      as="div" className="min-w-0 flex-col">
+                      {/* 裁切留在内层：ResizeColumn 自己是 overflow-visible（否则把手会被裁掉一半） */}
+                      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+                      </div>
+                    </ResizeColumn>
                   </>
                 ) : (
-                  <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-line bg-sunken py-1.5">
+                  <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-nav-line bg-nav-bg py-1.5">
                     <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
                   </nav>
                 )}
@@ -3656,8 +3766,29 @@ export default function App() {
                 </div>
               </>
             )}
-          </aside>
+          </ResizeColumn>
         </>
+      )}
+
+      {/* 设置表面（Task 0009 · P1-3）：全页——覆盖除图标轨外的所有区域（含 composer）。
+          参照 Twenty/LobeHub：设置是独立页面，不是叠在对话上的浮层。 */}
+      {settingsOpen && !isMobile && (
+        <div className="absolute inset-y-0 right-0 left-11 z-40">
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+            theme={theme} onTheme={setTheme}
+            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onClose={() => setSettingsOpen(false)} />
+        </div>
+      )}
+      {settingsOpen && isMobile && (
+        <div className="fixed inset-0 z-40 bg-surface">
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+            theme={theme} onTheme={setTheme}
+            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onClose={() => setSettingsOpen(false)} />
+        </div>
       )}
 
       {/* 检视面板（Task 0010）：与文件面板并存不互斥（D10）；手机上走全屏表面（mobile 模型，D17a 本期不做手机——这段只在桌面渲染） */}

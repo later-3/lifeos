@@ -12,7 +12,18 @@
  */
 
 export const RAIL = 44;
-export const HANDLE = 6;
+/**
+ * 列间把手的**布局占宽**（Task 0006）：0。
+ *
+ * 旧值 6 把 6px 当成真宽度插在两列之间 —— 那 6px 是把手盒子，继承了父级 `bg-surface`（白），
+ * 而两侧列是 `sunken`，于是屏幕上看到的是「白缝 + 细线」三条边，而不是一条分界
+ * （实测像素 x276 #fff / x279 #e9e9ec / x280 #fff）。
+ * 现在把手是**浮在列右缘上的覆盖层**（`DragHandle` 自己 absolute），不占布局宽度；
+ * 分界由列自己的 1px 边或底色差表达。省下的 2×6px 全部给聊天列。
+ */
+export const HANDLE = 0;
+/** 把手的视觉命中区厚度（不参与布局）：落在边界线正中，左右各半。 */
+export const HANDLE_HIT = 8;
 export const MIN_CHAT = 420;
 /** 完整历史（回合检查器）并列列：最小/默认宽度。它和文件面板互斥。 */
 export const MIN_HISTORY = 360;
@@ -90,14 +101,37 @@ export type Folded = { nav: boolean; groups: boolean };
 export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: number; c5: number };
 
 /**
- * `c2` = 分组面板（项目分组 → 会话行），默认 300、范围 240–440（P-02 已定，不是新数值）。
+ * `c2` = 分组面板（项目分组 → 会话行），默认 300，下限 240。
+ *
+ * **上限不再写常量（Task 0006）**：旧值 440 没有任何依据（`groups-panel.md` 引的是实现自身），
+ * 而几何上限（视口能撑到多宽）在 1280 上已到 572 —— 用户拖到 440 就无声卡住，
+ * 明明还有空间。现在上限由 `maxWidthOf()` 从视口算：能拖到「再宽就压破聊天保底」为止。
+ * 依据：协议 §3.13（加限制必须有参考实现或实测）；LobeHub `NAV_PANEL_MAX_WIDTH = 400`
+ * 有名字但同样缺推导，故不抄它的数（`evidence/lobehub src/store/global/selectors/systemStatus.ts:73`）。
  * `c3` 保留在类型里只为兼容既有调用（合并后不再渲染列，值恒为 0）。
  */
 export const DEFAULT_WIDTHS: Widths = { c1: 232, c2: 300, c3: 0, c4: 600, c4t: 240, c5: DEFAULT_HISTORY };
 
+/**
+ * 防坏值的**技术兜底**（不是产品约束）：localStorage 是用户可写的，一个 1e9 的宽度
+ * 会把布局算成负数。真实可拖上限只看视口（`maxWidthOf`），不看这个数。
+ */
+const SANITY = 4096;
+
 export const WIDTH_LIMITS: Record<keyof Widths, [number, number]> = {
-  c1: [180, 440],
-  c2: [240, 440],
+  /**
+   * **c1 与 c2 必须用同一套上限规则**（2026-11-09 用户报"拖助手列和拖会话列手感不一样"）。
+   *
+   * 旧值 `c1: [180, 440]` 是自创常量（与 c2 被否掉的那个 440 是同一个数，协议 §3.13 禁止）。
+   * 后果是两列手感不同：
+   *   - c1 鼠标移 215px 就撞 440 停住，剩下 185px 鼠标空走（看起来"拖不动了"）；
+   *   - c2 一路跟到 550（几何上限），0 步空走。
+   * 实测：同样移动 250px，c1 有 8/50 步列宽不变，c2 是 0/50。
+   * 现在 c1 与 c2 一样：常量只做技术兜底，真实上限由 `maxWidthOf()` 从视口算。
+   */
+  c1: [180, SANITY],
+  // c2 同理（Task 0006）：旧值 440 是无依据的自创约束，1280 宽上明明能到 576 却停在 440。
+  c2: [240, SANITY],
   c3: [0, 0],
   c4: [320, 1600],
   c4t: [160, 560],
@@ -199,12 +233,55 @@ export function layout(input: LayoutInput): Layout {
  */
 export const HANDLE_SIGN: Record<keyof Widths, 1 | -1> = { c1: 1, c2: 1, c3: 1, c4: -1, c4t: 1, c5: -1 };
 
-/** 拖拽夹紧（纯函数，供 useColumnWidth 调用）。 */
-export function dragWidth(key: keyof Widths, startWidth: number, deltaX: number): number {
-  return clampWidth(key, startWidth + HANDLE_SIGN[key] * deltaX);
+/** 拖拽夹紧（纯函数，供 useColumnWidth 调用）。`limit` 为调用方从视口算出的上限（默认走常量表）。 */
+export function dragWidth(key: keyof Widths, startWidth: number, deltaX: number, limit?: number): number {
+  return clampWidth(key, startWidth + HANDLE_SIGN[key] * deltaX, limit);
 }
 
-export function clampWidth(key: keyof Widths, value: number): number {
+export function clampWidth(key: keyof Widths, value: number, limit?: number): number {
   const [min, max] = WIDTH_LIMITS[key];
-  return Math.min(max, Math.max(min, Math.round(value)));
+  const ceiling = limit === undefined ? max : Math.min(max, limit);
+  return Math.min(ceiling, Math.max(min, Math.round(value)));
+}
+
+/**
+ * 某一列在给定视口下的**真实可视上限**（Task 0006）：把手拖到哪儿就该在哪儿停。
+ *
+ * 为什么需要它：旧实现只有常量表（c2≤440），而实际能放多少由视口算：
+ * `视口 − RAIL − 其他列 − 每道把手 − MIN_CHAT`。两套规则打架时，
+ * 1280 宽上用户拖到 440 就卡住（真实可到 572），1024 宽上一拖过 316 就整块左区变浮层。
+ *
+ * 该函数是 `layout()` 的逆运算：拿掉目标列自身的宽度，算剩下的空间最多能给它多少
+ * —— 且不突破 `overlayLeft` 阈值（否则用户拖宽反而丢列）。
+ */
+export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, folded: Folded): number {
+  const rail = RAIL;
+  // 左侧两列：只有展开的列占宽
+  const c1 = folded.nav ? 0 : widths.c1;
+  const c2 = folded.groups ? 0 : widths.c2;
+  const other = key === "c1" ? 0 : c1;
+  const otherRight = key === "c2" ? 0 : c2;
+  if (key === "c1" || key === "c2") {
+    // 左列上限：视口 − 图标轨 − 另一列 − 右侧最小占用（MIN_CHAT） − 把手厚度
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT - HANDLE_HIT);
+  }
+  if (key === "c4" || key === "c5") {
+    // 右侧列上限：视口 − 左侧全部 − MIN_CHAT − 把手厚度
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+  }
+  if (key === "c4t") {
+    /*
+     * 文件树**不能超出它所在的面板**：`layout()` 里 `tree = min(widths.c4t, panel − MIN_VIEWER)`，
+     * 所以 node 上限不是视口，而是「面板宽 − 查看器最小宽」。
+     *
+     * 2026-11-09 实测踩到：拖 c4t 到 300，松手后回弹到 270 —— 存进去的值超出面板能给的，
+     * `layout()` 再钳回来。用户看到的是"拖到这儿、松手却弹回去"。
+     * 这一条与 MaxWidthOf 的其它分支同一思路：**拖动上限 = 该列的真实可视上限**，
+     * 不是视口一档、也不是常量一档。
+     */
+    const panelLimit = Math.max(0, viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+    const panel = Math.min(widths.c4, Math.max(MIN_PANEL, panelLimit));
+    return Math.max(WIDTH_LIMITS.c4t[0], panel - MIN_VIEWER);
+  }
+  return WIDTH_LIMITS[key][1];
 }

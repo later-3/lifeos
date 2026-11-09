@@ -251,24 +251,447 @@ for (const label of ["助手", "对话"]) {
 
 // 图标常驻 + 高亮 = 展开 + 点击切换（用户 2026-10-18 需求，参照 VS Code Activity Bar）
 const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
-// Task 0015 · T15 面板合并：项目列 + 会话列 → 一列「对话」，图标栏 3 → 2（P-02 §5.2）
-check("图标常驻：两列全展开时轨道上有 2 个图标", await railButtons.count() === 2, `实际 ${await railButtons.count()} 个`);
-check("图标顺序固定：助手 → 对话", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话");
-check("高亮 = 该列展开（aria-pressed 全为 true）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .every((b) => b.getAttribute("aria-pressed") === "true")));
-// 合并后不再有独立的"项目"列：改成"对话"列里有没有分组头（`data-testid="group-header"`）
-const projectColumn = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
-const clickProject = async () => { await page.locator('nav[aria-label="左侧图标轨"] button').nth(1).click(); await page.waitForTimeout(300); };
-const seq = [await projectColumn()];
-await clickProject(); seq.push(await projectColumn());
-await clickProject(); seq.push(await projectColumn());
-await clickProject(); seq.push(await projectColumn());
-check("点图标可连续切换（开 → 收 → 开 → 收），不弹回", JSON.stringify(seq) === JSON.stringify([true, false, true, false]), JSON.stringify(seq));
-await clickProject();   // 恢复展开
-check("点图标后高亮跟随状态", await page.evaluate(() => {
-  const buttons = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')];
-  return buttons.every((b) => b.getAttribute("aria-pressed") === "true");
+// Task 0009（2026-11-09 用户二次裁决）：rail 有**两类**开关，都不能少：
+//   ① 列开关（toggle）：助手 / 对话 —— 高亮 = 该列展开（aria-pressed），点击 = 开关该列；
+//   ② 功能页（tab）：设置（底部）—— 高亮 = 当前所在页（aria-current=page）。
+// 为什么两个列开关不合并：Agent × Project × Session 三级里两列可各自收起，是本产品与 LobeHub 的差异点
+// （用户原话：「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的」）。
+check("rail 两个列开关 + 底部设置 = 3 个按钮", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
+check("按钮顺序固定：助手 → 对话 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,设置");
+check("列开关用 aria-pressed 表达展开态（两个都为 true）", await page.evaluate(() => {
+  const toggles = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .filter((b) => b.hasAttribute("aria-pressed"));
+  return toggles.length === 2 && toggles.every((b) => b.getAttribute("aria-pressed") === "true");
+}));
+check("设置是功能页：默认不是当前页（aria-current 为空）", await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .find((b) => (b.getAttribute("aria-label") ?? "") === "设置");
+  return btn !== undefined && btn.getAttribute("aria-current") === null;
+}));
+// rail 激活态的**可见性**（2026-11-09 实测补的契约）。
+//
+// 反例（C 见 cases/2026-11-09.md）：rail 曾用 `bg-accent-soft text-accent`，纯中性预设下
+// accentC=0 → accent 退化成中灰 L*48.8，比未选中的 ink-500(L*42) **还浅**，active 底又比
+// rail 底更亮（ΔL* 只有 3.8）—— 两个通道同时反向，选中态几乎不可见，且没有任何门禁拦得住。
+// 这里断言**两个通道都活着**：① 激活底 vs rail 底有明确明暗差（浅色更暗 / 深色更亮）；
+// ② 激活图标比未激活图标更"重"（更暗/更亮，不是更浅）。数值门限取「列表行 ΔL* 8.5 的一半」。
+{
+  const railState = async () => await page.evaluate(() => {
+    const L = (color) => {
+      const parts = (color ?? "").match(/[\d.]+/g);
+      if (parts === null || parts.length < 3) return null;
+      const [r, g, b] = parts.slice(0, 3).map(Number).map((v) => v / 255);
+      const lin = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const Y = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+      return Y > 0.008856 ? 116 * Math.cbrt(Y) - 16 : 903.3 * Y;
+    };
+    const nav = document.querySelector('nav[aria-label="左侧图标轨"]');
+    const buttons = [...nav.querySelectorAll("button")];
+    const active = buttons.find((b) => b.getAttribute("aria-pressed") === "true") ?? buttons[0];
+    const idle = buttons.find((b) => !b.hasAttribute("aria-pressed"));
+    let railEl = nav;
+    while (railEl !== null && getComputedStyle(railEl).backgroundColor === "rgba(0, 0, 0, 0)") railEl = railEl.parentElement;
+    const railBg = railEl === null ? null : getComputedStyle(railEl).backgroundColor;
+    return {
+      railL: L(railBg),
+      activeBgL: L(getComputedStyle(active).backgroundColor),
+      activeIconL: L(getComputedStyle(active).color),
+      idleIconL: idle === undefined ? null : L(getComputedStyle(idle).color),
+      dark: document.documentElement.getAttribute("data-theme") === "dark" || document.documentElement.classList.contains("dark"),
+    };
+  });
+  const lightState = await railState();
+  check("rail 激活底与轨底有明确明暗差（≥4，浅色方向为更暗）", lightState.railL !== null && lightState.activeBgL !== null
+    && Math.abs(lightState.activeBgL - lightState.railL) >= 4
+    && lightState.activeBgL < lightState.railL, JSON.stringify(lightState));
+  check("rail 激活图标比未激活图标更重（互比 ≥1.8，不是更浅）", lightState.activeIconL !== null && lightState.idleIconL !== null
+    && lightState.activeIconL < lightState.idleIconL - 8,
+    `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
+}
+
+// 设置表面（2026-11-09 审核修正，四条实测缺陷的回归契约）
+//
+// 实测记录（都进过 cases/2026-11-09.md）：
+//  · 手机上设置页既没图标轨也没 Esc → **没有任何出口**，且内容列被 230px 导航挤成 160px；
+//  · 导航列了 7 个分区、5 个是空的"该分区还没实现"→ 71% 是死点击；
+//  · 深浅色分段按钮 46×25、range 16px、复选框 13×13 → 命中区低于 28；
+//  · 会话行 hover 动作区 84px 塞在 64px 槽里 → 压住标题 12px。
+{
+  const settingsPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await settingsPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await settingsPage.waitForTimeout(400);
+  await settingsPage.evaluate(() => {
+    document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+  });
+  await settingsPage.waitForTimeout(300);
+  // 主题分区才有复选框与全部控件：先切过去，否则断言只覆盖当前的"显示"分区
+  await settingsPage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("主题"));
+    btn?.click();
+  });
+  await settingsPage.waitForTimeout(300);
+
+  const surf = await settingsPage.evaluate(() => {
+    const surface = document.querySelector('[data-testid="settings-surface"]');
+    if (surface === null) return null;
+    const sections = [...surface.querySelectorAll('nav[aria-label="设置分区"] button')].map((b) => (b.innerText ?? "").trim());
+    const closeBtn = [...surface.querySelectorAll("button")].find((b) => /关闭/.test(b.getAttribute("aria-label") ?? ""));
+    const closeBox = closeBtn === undefined ? null : closeBtn.getBoundingClientRect();
+    // 空占位：仍在文案里出现"还没实现"就说明导航里有死点击
+    return {
+      sections,
+      hasPlaceholderText: (surface.innerText ?? "").includes("还没实现"),
+      closeVisible: closeBox !== null && closeBox.width > 0,
+      // 命中区：设置表面内所有可见控件
+      small: [...surface.querySelectorAll("button,input,[role=button]")]
+        .filter((el) => {
+          const box = el.getBoundingClientRect();
+          // 复选框本体小于 28 是浏览器默认；它的命中区由外层 label 撑（下面单独断言）
+          return box.width > 0 && el.getAttribute("type") !== "checkbox" && (box.width < 28 || box.height < 28);
+        })
+        .map((el) => `${(el.innerText || el.getAttribute("aria-label") || el.id || "").trim().slice(0, 12)} ${
+          Math.round(el.getBoundingClientRect().width)}×${Math.round(el.getBoundingClientRect().height)}`),
+      checkboxLabel: (() => {
+        const input = surface.querySelector('input[type=checkbox]');
+        const label = input?.closest("label");
+        if (label === null || label === undefined) return null;
+        const box = label.getBoundingClientRect();
+        return { w: Math.round(box.width), h: Math.round(box.height), cursor: getComputedStyle(label).cursor };
+      })(),
+    };
+  });
+  check("设置表面存在且可打开", surf !== null, surf === null ? "找不到 settings-surface" : "");
+  if (surf !== null) {
+    check("设置导航只列真可用分区（无“还没实现”死点击）",
+      surf.hasPlaceholderText === false, `分区=${surf.sections.join(",")}`);
+    check("设置表面内的控件命中区 ≥ 28（复选框由 label 撑）", surf.small.length === 0, surf.small.slice(0, 4).join(" | "));
+    check("设置复选框的命中区由 label 撑到 ≥28", surf.checkboxLabel !== null && surf.checkboxLabel.h >= 28,
+      JSON.stringify(surf.checkboxLabel));
+  }
+  // 桌面：设置是 tab，不是浮层 → 不该有"关闭/返回"按钮（layout-model §1.2-2）
+  check("桌面设置不提供关闭按钮（tab 语义，再点 rail 退出）", surf !== null && surf.closeVisible === false,
+    surf === null ? "" : `closeVisible=${surf.closeVisible}`);
+
+  // 手机：必须有可见出口 + 内容列不被导航挤掉
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  await mobilePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await mobilePage.waitForTimeout(400);
+  await mobilePage.evaluate(() => {
+    document.querySelector('button[aria-label="打开设置"]')?.click();
+  });
+  await mobilePage.waitForTimeout(300);
+  const mobile = await mobilePage.evaluate(() => {
+    const surface = document.querySelector('[data-testid="settings-surface"]');
+    if (surface === null) return null;
+    const nav = surface.querySelector('nav[aria-label="设置分区"]');
+    const content = [...surface.children].find((child) => child !== nav && child.tagName !== "HEADER");
+    const closeBtn = [...surface.querySelectorAll("button")].find((b) => /关闭/.test(b.getAttribute("aria-label") ?? ""));
+    return {
+      closeVisible: closeBtn !== undefined && closeBtn.getBoundingClientRect().width > 0,
+      contentWidth: content === null || content === undefined ? 0 : Math.round(content.getBoundingClientRect().width),
+      surfaceWidth: Math.round(surface.getBoundingClientRect().width),
+    };
+  });
+  check("手机设置：有可见的关闭入口（没有图标轨也没有 Esc，否则无出口）", mobile !== null && mobile.closeVisible === true,
+    JSON.stringify(mobile));
+  check("手机设置：内容列不被分区导航挤窄（≥ 视口 80%）",
+    mobile !== null && mobile.contentWidth >= mobile.surfaceWidth * 0.8, JSON.stringify(mobile));
+  await mobilePage.close();
+  await settingsPage.close();
+}
+
+// rail 三个按钮的 hover 反馈必须一致（2026-11-09 用户报"有时变有时不变"）
+//
+// 反例：`hover:` 类只写在"未选中"分支 → 已展开的列开关（默认就是展开）hover 毫无反应，
+// 只有未激活的设置 hover 变白底。同一个轨里两种行为，用户当然判定是 bug。
+{
+  const railPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await railPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await railPage.waitForTimeout(400);
+  const buttons = await railPage.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .map((b) => b.getAttribute("aria-label") ?? ""));
+  // 读**叠加层**的 opacity，不读按钮的 background-color：
+  // 现在的 hover 是一层 `ink-900/6` 的叠加（换底色会让选中态一 hover 就丢），
+  // 按钮自己的 backgroundColor 在 hover 前后本来就**不应该**变（2026-11-09 第一版断言踩过）。
+  const results = [];
+  for (const label of buttons) {
+    const overlayOf = async () => await railPage.evaluate((name) => {
+      const nav = document.querySelector('nav[aria-label="左侧图标轨"]');
+      const btn = [...nav.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "") === name);
+      const overlay = btn?.querySelector("span[aria-hidden]");
+      return overlay === null || overlay === undefined ? null : getComputedStyle(overlay).opacity;
+    }, label);
+    await railPage.mouse.move(800, 500);
+    await railPage.waitForTimeout(120);
+    const rest = await overlayOf();
+    await railPage.locator(`nav[aria-label="左侧图标轨"] button[aria-label="${label}"]`).hover();
+    await railPage.waitForTimeout(250);
+    const hover = await overlayOf();
+    results.push({ label, rest, hover, changed: rest === "0" && hover === "1" });
+  }
+  check("rail 三个按钮 hover 都有反馈（含已激活的列开关）",
+    results.length === 3 && results.every((r) => r.changed === true),
+    results.map((r) => `${r.label}:${r.changed ? "✓" : "✗"}`).join(" "));
+  await railPage.close();
+}
+
+// 拖动列宽：一帧不重渲染整棵树（2026-11-09 用户报"拖动不丝滑"，实测 4 个 108–148ms 长任务）
+//
+// 修法：拖动期间只写 DOM 宽度（rAF 合并），松手才提交 React 状态。
+// 断言两件事：① 拖动全程宽度**跟手**（每帧都在变，不是松手才跳）；
+// ② 拖动期间**不产生长任务**（>50ms 的 JS 阻塞）。
+{
+  const dragPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await dragPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await dragPage.waitForTimeout(600);
+  // 统计口径（2026-11-09 两次踩坑后定稿）：
+  //   ① 只看**按下之后**：`longtask` 从页面加载就开始观测，首次挂载的整树渲染本来就有 100–150ms；
+  //   ② 只看**松手之前**：松手时提交一次 React 状态（一次整树渲染）是设计使然，不算"拖动卡"；
+  //      真正要保证的是"拖的过程中不阻塞"，不是一个长任务都不许有。
+  await dragPage.evaluate(() => {
+    window.__dragLong = [];
+    window.__dragFrom = Number.POSITIVE_INFINITY;
+    window.__dragTo = Number.POSITIVE_INFINITY;
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.startTime >= window.__dragFrom && entry.startTime < window.__dragTo) {
+          window.__dragLong.push(Math.round(entry.duration));
+        }
+      }
+    }).observe({ entryTypes: ["longtask"] });
+  });
+  const handle = dragPage.locator('[role=separator][aria-label="拖动调整宽度"]').first();
+  const handleBox = await handle.boundingBox();
+  const widths = [];
+  if (handleBox !== null) {
+    await dragPage.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 300);
+    await dragPage.evaluate(() => { window.__dragFrom = performance.now(); });
+    await dragPage.mouse.down();
+    for (let step = 1; step <= 20; step += 1) {
+      await dragPage.mouse.move(handleBox.x + handleBox.width / 2 + step * 6, handleBox.y + 300);
+      await dragPage.waitForTimeout(16);
+      widths.push(await dragPage.evaluate(() => Math.round(
+        document.querySelector('[data-resize-key="c1"]')?.getBoundingClientRect().width ?? 0)));
+    }
+    await dragPage.evaluate(() => { window.__dragTo = performance.now(); });
+    await dragPage.mouse.up();
+    await dragPage.waitForTimeout(300);
+  }
+  const distinct = new Set(widths).size;
+  const longTasks = await dragPage.evaluate(() => window.__dragLong);
+  check("拖动列宽：宽度逐帧跟手（≥ 一半的采样点宽度不同）",
+    widths.length >= 10 && distinct >= widths.length / 2, `${distinct}/${widths.length} 个不同值`);
+  check("拖动列宽：拖动过程中无长任务（>50ms 阻塞）", longTasks.length === 0, `长任务 ${JSON.stringify(longTasks)}`);
+  await dragPage.close();
+}
+
+// 拖动统一契约（2026-11-09 用户："每个区域都要我单独点出来吗？以后新增是不是也不会按丝滑的方案？"）
+//
+// 这一组不枚举 c1/c2/c4/c4t/c5，而是**枚举页面上所有 `[data-resize-key]`**：
+//   ① 每个可拖区域都必须有一个可命中的把手（`elementFromPoint` 命中把手本身）；
+//   ② 拖动时宽度必须**逐帧变化**（不是松手才跳）。
+// 新增一个可拖区域只要写 `<ResizeColumn resizeKey=...>`，就自动被这两条覆盖；
+// 忘了写 data-resize-key、或把手被父级 overflow 裁掉，这里就会红。
+async function auditResizeColumns(page, sceneSetup) {
+  const keys = await page.evaluate(() => [...document.querySelectorAll("[data-resize-key]")]
+    .map((el) => el.getAttribute("data-resize-key")));
+  const results = [];
+  for (const key of keys) {
+    const probe = await page.evaluate((k) => {
+      const el = document.querySelector(`[data-resize-key="${k}"]`);
+      if (el === null) return { ok: false, why: "区域不存在" };
+      const handle = el.querySelector(':scope > [role="separator"]');
+      if (handle === null) return { ok: false, why: "没有把手" };
+      const box = handle.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + 40);
+      return {
+        ok: hit === handle || handle.contains(hit),
+        why: `命中 ${(hit?.className ?? "").toString().slice(0, 30)}`,
+        x: box.x + box.width / 2, y: box.y + 40,
+        width: Math.round(el.getBoundingClientRect().width),
+      };
+    }, key);
+    if (!probe.ok) {
+      results.push({ key, hit: false, follows: false, why: probe.why });
+      console.log(`    [resize] ${key}: ${probe.why}`);
+      continue;
+    }
+    await page.mouse.move(probe.x, probe.y);
+    await page.mouse.down();
+    await page.mouse.move(probe.x + 60, probe.y);
+    await page.waitForTimeout(120);
+    const during = await page.evaluate((k) => Math.round(
+      document.querySelector(`[data-resize-key="${k}"]`).getBoundingClientRect().width), key);
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    const after = await page.evaluate((k) => Math.round(
+      document.querySelector(`[data-resize-key="${k}"]`).getBoundingClientRect().width), key);
+    results.push({ key, hit: true, follows: during !== probe.width, from: probe.width, during, after });
+    /*
+     * 复位后再测下一个区域，两件事缺一不可：
+     * ① **清掉列宽存储**：刚拖宽的那一列会留在 localStorage 里，下一次 openHistory 的
+     *    `trial.chat < 560` 判定就会把左两列收进导航轨 → 下一个区域"不存在"（实测踩过）；
+     * ② **重新搭场景**：reload 会把「完整历史」关掉。
+     */
+    await page.evaluate(() => localStorage.removeItem("lifeos.columnWidths"));
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    if (sceneSetup !== undefined) await sceneSetup(page);
+  }
+  return results;
+}
+
+{
+  // 三个场景各跑一遍：默认两列 / 完整历史打开 / 文件面板+树打开
+  const scenes = [
+    { name: "默认（两列）", setup: async () => {} },
+    {
+      name: "完整历史",
+      // 等元素出现，不用固定 sleep：面板要拉 entries 才渲染，700ms 实测不够（会误报"把手不可命中"）
+      setup: async (p) => {
+        await p.locator('button[aria-label="完整历史"]').click();
+        await p.waitForSelector('[data-resize-key="c5"]', { timeout: 15000 });
+        await p.waitForTimeout(400);
+      },
+    },
+    {
+      name: "文件面板+树",
+      setup: async (p) => {
+        await p.evaluate(() => { localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
+        await p.reload({ waitUntil: "networkidle" });
+        await p.waitForTimeout(600);
+      },
+    },
+  ];
+  for (const scene of scenes) {
+    const resizePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+    await resizePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+    await resizePage.waitForTimeout(600);
+    await scene.setup(resizePage);
+    const results = await auditResizeColumns(resizePage, scene.setup);
+    const detail = results.map((r) => `${r.key}:${r.hit ? (r.follows ? "✓" : "✗不跟手") : "✗把手不可命中"}`).join(" ");
+    check(`[${scene.name}] 每个可拖区域都能抓住把手`, results.length > 0 && results.every((r) => r.hit), detail);
+    check(`[${scene.name}] 每个可拖区域拖动都逐帧跟手`, results.every((r) => r.follows), detail);
+    await resizePage.close();
+  }
+}
+
+// 两列拖到墙后聊天列宽度一致（同一套上限规则）
+{
+  const capPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await capPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await capPage.waitForTimeout(500);
+  const dragToWall = async (key) => {
+    const handle = capPage.locator(`[data-resize-key="${key}"] > [role=separator]`).first();
+    const box = await handle.boundingBox();
+    if (box === null) return null;
+    await capPage.mouse.move(box.x + box.width / 2, box.y + 300);
+    await capPage.mouse.down();
+    for (let step = 1; step <= 90; step += 1) {
+      await capPage.mouse.move(box.x + box.width / 2 + step * 5, box.y + 300);
+      await capPage.waitForTimeout(4);
+    }
+    await capPage.mouse.up();
+    await capPage.waitForTimeout(200);
+    return await capPage.evaluate(() => Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0));
+  };
+  const chatAfterC1 = await dragToWall("c1");
+  await capPage.evaluate(() => localStorage.removeItem("lifeos.columnWidths"));
+  await capPage.reload({ waitUntil: "networkidle" });
+  await capPage.waitForTimeout(500);
+  const chatAfterC2 = await dragToWall("c2");
+  check("两列拖到墙后聊天列宽度一致（同一套上限规则）",
+    chatAfterC1 !== null && chatAfterC1 === chatAfterC2, `c1 拖到底后聊天 ${chatAfterC1}px / c2 ${chatAfterC2}px`);
+  await capPage.close();
+}
+
+// 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
+// （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
+{
+  const tablePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await tablePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await tablePage.waitForTimeout(700);
+  const tableProbe = async () => await tablePage.evaluate(() => {
+    const table = document.querySelector(".md-body table");
+    if (table === null) return null;
+    const heads = [...table.querySelectorAll("th")].map((th) => Math.round(th.getBoundingClientRect().width));
+    // 单元格里出现逐字换行 = 列被压得过窄（"耗时"竖排的判据：单元格高度 ≥ 3 行字高）
+    const squeezed = [...table.querySelectorAll("td, th")].filter((cell) => {
+      const lineHeight = Number.parseFloat(getComputedStyle(cell).lineHeight) || 20;
+      return cell.getBoundingClientRect().height >= lineHeight * 2.6;
+    }).length;
+    return {
+      minColumn: heads.length === 0 ? 0 : Math.min(...heads),
+      squeezed,
+      scrollable: table.scrollWidth > table.clientWidth + 1,
+      width: Math.round(table.getBoundingClientRect().width),
+    };
+  });
+  const wide = await tableProbe();
+  // 打开完整历史把正文列压窄（真实触发条件，不是人为改 CSS）
+  await tablePage.locator('button[aria-label="完整历史"]').click();
+  await tablePage.waitForSelector('[data-resize-key="c5"]', { timeout: 15000 });
+  await tablePage.waitForTimeout(900);
+  const narrow = await tableProbe();
+  check("正文表格：最窄一列不被压到逐字竖排（宽列下）",
+    wide === null || wide.minColumn >= 60, JSON.stringify(wide));
+  check("正文表格：正文列变窄后依然不压字（可横向滚动）",
+    narrow === null || (narrow.squeezed === 0 && narrow.minColumn >= 60), JSON.stringify(narrow));
+  await tablePage.close();
+}
+
+// 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
+{
+  const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await rowPage.waitForTimeout(500);
+  const probe = async () => await rowPage.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="session-rows"] [role=button]');
+    if (row === null) return null;
+    const inner = row.firstElementChild;
+    const slot = row.lastElementChild;
+    const actions = [...slot.children].find((child) => child.className.includes("absolute"));
+    if (inner === null || slot === null || actions === undefined) return null;
+    const innerBox = inner.getBoundingClientRect();
+    const actionBox = actions.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    return {
+      gap: Math.round(actionBox.left - innerBox.right),
+      actionsInsideRow: actionBox.right <= rowBox.right + 1,
+      innerW: Math.round(innerBox.width),
+    };
+  });
+  const rest = await probe();
+  await rowPage.locator('[data-shot-mask="session-rows"] [role=button]').first().hover();
+  await rowPage.waitForTimeout(260);
+  const hover = await probe();
+  check("会话行：动作区不压标题（静止时就有空位）", rest !== null && rest.gap >= 0, JSON.stringify(rest));
+  check("会话行：动作区不超出行的右边界", hover !== null && hover.actionsInsideRow === true, JSON.stringify(hover));
+  check("会话行：hover 不改变标题宽度（不抖动）", rest !== null && hover !== null && rest.innerW === hover.innerW,
+    `${rest?.innerW} → ${hover?.innerW}`);
+  await rowPage.close();
+}
+
+// 会话列（② 的列表）是否存在：分组头是它的标志（`data-testid="group-header"`）
+const listVisible = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
+// 点"对话"列开关（label 随状态在 展开对话 / 收起对话 之间变）
+const clickChatTab = async () => {
+  await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="收起对话"], nav[aria-label="左侧图标轨"] button[aria-label="展开对话"]').first().click();
+  await page.waitForTimeout(300);
+};
+const seq = [await listVisible()];
+for (let i = 0; i < 4; i += 1) { await clickChatTab(); seq.push(await listVisible()); }
+// 断言"每次点击都翻转"（与初始状态无关——前面的用例可能已把列表收起）
+const toggles = seq.every((value, i) => i === 0 || value === !seq[i - 1]);
+check("点列开关可连续收起/展开会话列（每次点击翻转，不弹回）",
+  toggles && new Set(seq).size === 2, JSON.stringify(seq));
+if (!(await listVisible())) await clickChatTab();   // 保证展开（后面的会话行用例依赖列表可见）
+check("列开关的高亮跟随该列展开态（aria-pressed 与分组头可见性一致）", await page.evaluate(() => {
+  const btn = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .find((b) => (b.getAttribute("aria-label") ?? "").includes("对话"));
+  const listShown = document.querySelectorAll('[data-testid="group-header"]').length > 0;
+  return btn !== undefined && btn.getAttribute("aria-pressed") === String(listShown);
 }));
 
 // 助手行悬停出现删除入口（归档；只断言入口存在，绝不点确认——契约跑在真实家目录上）
@@ -1275,6 +1698,9 @@ const SHOTS = [
   ["viewport-1280.png", 1280, undefined],
   ["viewport-1600.png", 1600, undefined],
   ["folded.png", 1600, async (shotPage) => {
+    // 2026-11-09：这条基线在合并 main 后报 0.02% 差异。人眼对比发现**旧基线本身是坏的**
+    // ——它截到的是一张空白页（当时消息还没到），所以"没变化"其实是"没内容"。
+    // 教训：基线红先看"是不是基线本身错了"，不要直接刷；这次是确认旧基线是空白页之后才更新的。
     const buttons = shotPage.locator('[aria-label="收起此列"]');
     while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
   }],
@@ -1623,7 +2049,13 @@ try {
     // 4) 两个滑块：存在、默认值正确、拖到底会改变 --text-scale 与阅读宽度
     // 注意：click 后 React 要一个 tick 才渲染弹层 —— 同一次 evaluate 里读不到（实测踩过）
     await page2.evaluate(() => {
-      document.querySelector('button[aria-label="显示设置"]')?.click();
+      document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+    });
+    await page2.waitForTimeout(250);
+    // 设置默认落在"主题"；这段测的是"显示"分区，先切过去（2026-11-09 起默认分区改为导航第一项）
+    await page2.evaluate(() => {
+      const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+      btn?.click();
     });
     await page2.waitForTimeout(250);
     const sliders = await page2.evaluate(() => {
@@ -1683,7 +2115,7 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致", "正文表格：最窄一列不被压到逐字竖排（宽列下）", "正文表格：正文列变窄后依然不压字（可横向滚动）", "[默认（两列）] 每个可拖区域都能抓住把手", "[默认（两列）] 每个可拖区域拖动都逐帧跟手"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
@@ -1791,6 +2223,27 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     meta: { thinkingLevel: "off", running: false, context: null },
   };
   let sendRejects = true;
+  /*
+   * **夹具必须自带发言人名**（2026-11-09 合并后修）。
+   *
+   * 原实现只 mock 了会话列表与详情，发言人名字走 `agents.find(id === "coder")?.name`
+   * → 取的是**真实家目录里那个 agent 的显示名**（本机叫 `coder` 小写），
+   * 于是断言 `includes("Coder")` 红。同一份代码在"家目录里没有 coder"的机器上反而是绿的 ——
+   * 这就是环境耦合：门禁红绿取决于用户家目录里恰好有什么。
+   *
+   * 修法：把 agents 列表一起定住（testing 2.15「夹具跟实现走」，实现读的是 agents 列表，
+   * 夹具就要给 agents 列表）。
+   */
+  await page.route(/\/api\/agents$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const res = await route.fetch();
+    const body = await res.json().catch(() => ({ items: [] }));
+    const items = Array.isArray(body.items) ? body.items : [];
+    const withCoder = items.some((item) => item.id === "coder")
+      ? items.map((item) => (item.id === "coder" ? { ...item, name: "Coder" } : item))
+      : [...items, { id: "coder", name: "Coder", description: "", defaultProjectId: "workspace" }];
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: withCoder }) });
+  });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
     const res = await route.fetch();
     const body = await res.json();

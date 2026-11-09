@@ -10,7 +10,7 @@ type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
-  primary: "bg-accent text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
+  primary: "bg-accent-solid text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
   secondary: "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
   ghost: "text-ink-700 hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
   danger: "bg-danger text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
@@ -38,7 +38,7 @@ export function IconButton({ label, active = false, tone = "default", size = "md
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-label" | "title">) {
   const box = size === "xl" ? "h-11 w-11" : size === "lg" ? "h-11 w-11 sm:h-8 sm:w-8" : "h-11 w-11 sm:h-7 sm:w-7";
   const look = tone === "solid"
-    ? "bg-accent text-white hover:bg-accent disabled:bg-hover disabled:text-ink-500"
+    ? "bg-accent-solid text-white hover:bg-accent-solid disabled:bg-hover disabled:text-ink-500"
     : active ? "bg-accent-soft text-accent" : "text-ink-500 hover:bg-hover hover:text-ink-900";
   return (
     <button type="button" aria-label={label} title={label} {...rest}
@@ -59,7 +59,7 @@ export function ComposerButton({ label, tone = "solid", disabled = false, onClic
   return (
     <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick}
       className="group inline-flex h-11 w-11 shrink-0 items-center justify-center justify-self-end rounded-full disabled:cursor-not-allowed">
-      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent text-white" : ""}`}>
+      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent-solid text-white" : ""}`}>
         {children}
       </span>
     </button>
@@ -67,8 +67,18 @@ export function ComposerButton({ label, tone = "solid", disabled = false, onClic
 }
 
 /** 分区小标签（列头、模态分节）——11px + 加字距，和正文拉开层级。 */
-export function Label({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <span className={`text-micro font-medium tracking-wide text-ink-500 ${className}`}>{children}</span>;
+/**
+ * 列头 / 字段标签（meta 档）。
+ *
+ * `tone="nav"` 给导航列用：列底是 `nav-bg`，`ink-500` 在它上面只有 4.48:1（差 0.02 不达 AA），
+ * 换成 `nav-muted` 是 5.27:1。这不是"随手调色"——导航层自成一层，辅助色也得跟着换
+ * （design-language D17；Task 0006 实测）。
+ */
+export function Label({ children, tone = "default", className = "" }: {
+  children: ReactNode; tone?: "default" | "nav"; className?: string;
+}) {
+  const color = tone === "nav" ? "text-nav-muted" : "text-ink-500";
+  return <span className={`text-micro font-medium tracking-wide ${color} ${className}`}>{children}</span>;
 }
 
 /** 表单行：标签 + 控件 + 提示。 */
@@ -86,7 +96,20 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
 export const controlClass =
   "w-full rounded-control bg-surface px-2.5 text-body text-ink-900 ring-1 ring-line transition-shadow placeholder:text-ink-300 focus:ring-accent disabled:bg-hover disabled:text-ink-500";
 
-/** 列表行：32px 高，右侧元信息固定槽位（hover 时图标原地显隐，不造成位移）。 */
+/**
+ * 列表行（Task 0006 重做选中语言）。
+ *
+ * 旧：选中 = 白卡 + `shadow-sm` + `ring-1 ring-line`，未选中 = 透明 —— 问题三个：
+ * 1. 白卡（#fff）压在列底（#fafafa）上只差 ΔL* 1.7，比 hover（3.1）**还弱**，主次颠倒；
+ * 2. 用阴影做深度 —— 阴影是「浮起层」的词汇，列表行不是浮层（design-language D18）；
+ * 3. 助手行与会话行用同一套但会话行带 `font-medium`、助手行不带，同类对象两种语言。
+ *
+ * 现在：选中 = `nav-selected` 填充（ΔL* 4.9）+ `font-medium`；hover = `nav-accent`（ΔL* 2.8）。
+ * 两者比例 1.75 与 A 级参考一致：LobeHub `NavItem` 选中 `variant="filled"`（fill .06）/
+ * hover（fill .03）→ 5.2 / 2.8（`src/features/NavPanel/components/NavItem.tsx:157`，
+ * 底色来自 `colorFillSecondary` / `colorFillTertiary`）。
+ * 不用阴影（D18），也不加第二通道（左色条）—— 选中的底色差已经比旧实现强 2.9 倍。
+ */
 export function Row({ selected = false, className = "", children, onClick, testId }: {
   selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
 }) {
@@ -96,8 +119,9 @@ export function Row({ selected = false, className = "", children, onClick, testI
       onKeyDown={onClick === undefined ? undefined : (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
       }}
-      data-testid={testId} className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors sm:h-8 ${
-        selected ? "bg-surface font-medium text-ink-900 shadow-sm ring-1 ring-line" : "text-ink-700 hover:bg-hover"
+      data-testid={testId} aria-current={selected ? "true" : undefined}
+      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-row px-2 text-body transition-colors sm:h-8 ${
+        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
       } ${className}`}>
       {children}
     </div>

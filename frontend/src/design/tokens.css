@@ -133,11 +133,28 @@
   --color-anno-todo-soft: #f2e9ff;
 
   /*
-   * 导航层（Task 0015 · T15 面板合并，P-02）：项目分组 → 会话行的**括线**用它。
-   * 为什么单独一档而不复用 --color-line：括线要"看得见但不抢戏"，
-   * 与行的描边（--color-line）同色会被读成行的边框（design-language §5.1 连接线，ΔL* ≥ 9）。
+   * 导航层自成一层（Task 0006 · design-language D17 的落地）。
+   *
+   * 为什么要有这一族而不是复用 surface/sunken/hover：旧的三个语义全挤在 L* 98–100 的
+   * 2 个点里（sunken→surface ΔL* 1.7、hover→sunken 3.1），选中的白卡只能靠阴影硬撑，
+   * 而阴影是「浮起层」的词汇 —— 一个界面里出现两种深度语言（design-language D18）。
+   * 这一族把三档拉开：nav-edge(93.0) → nav-bg(96.9) → surface(100.0)，相邻差 3.9 / 3.1。
+   *
+   * 层级（从后到前）：nav-edge = 图标轨；nav-bg = 导航列；surface = 聊天/卡片。
+   * 状态：hover = nav-accent（ΔL* 2.8 vs 列底）；选中 = nav-selected（ΔL* 4.9）——
+   * **选中必须比 hover 更沉**，比例取 A 级参考实测值（LobeHub `NavItem` filled .06 vs .03
+   * → 5.2 / 2.8；VS Code `list.activeSelectionBackground` 同理）。
+   *
+   * nav-line 只在「需要一条边」的地方用（浮层边界、树列分隔）：vs 列底 ΔL* 7.5。
+   * nav-muted 是导航层里的辅助文字（时间、计数、副行）：ink-500 在 nav-accent / nav-selected
+   * 上只有 4.10 / 4.03，低于 AA 4.5；nav-muted 在这两个底上是 4.90 / 4.65，达标。
    */
-  --color-nav-line: #dcdce1;
+  --color-nav-bg: #f5f6fa;
+  --color-nav-edge: #e8ebf0;
+  --color-nav-accent: #eceef4;
+  --color-nav-selected: #e4e8f5;
+  --color-nav-line: #dce1eb;
+  --color-nav-muted: #5f6777;
 
   /* 消息类型背景：不同类型可区分，但都低饱和；只在这里取值。 */
   --color-message-user: #111113;
@@ -184,12 +201,28 @@
 
   --radius-inner: 4px;
   --radius-control: 6px;
+  /* 列表行单独一档（2026-11-09 实测修正）：行与按钮**共用 6px** 时，行看起来像按钮。
+     三家的一致做法是"行 8 / 控件 6"，不是同一档：
+     LobeHub nav 行 8px·按钮 6px（桌面版实测）、LibreChat 行 8px（`rounded-lg`）、novu 7.998px。 */
+  --radius-row: 8px;
   --radius-panel: 10px;
   --radius-bubble: 14px;
   --radius-anno: 12px;
+  /* 胶囊/圆形（头像、徽标、状态点、指示条）。用 `--radius-full` 而不是内联 `999px`：
+     审计脚本按圆角种类计数，内联写死会多出一档"3.35544e+07px"这种噪音值。 */
+  --radius-full: 9999px;
 
   /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
   --composer-max-height: 11rem;
+
+  /* 设置页分区导航宽（Task 0009）：230 来自 LibreChat 设置侧栏实测（`Nav/Settings` 的 w-230）；
+     与内容列 760 一起构成本项目的设置骨架（layout-model §2 设置一行）。 */
+  --container-settings-nav: 230px;
+
+  /* 设置页内容列宽上限（Task 0009）：参照 Twenty `SETTINGS_CONTENT_MAX_WIDTH = 760`
+     （`packages/twenty-front/src/modules/settings/constants/SettingsContentMaxWidth.ts:1`）。
+     比阅读列 860 窄一档：设置页是"表单页"，行太长反而难扫。 */
+  --container-settings: 760px;
 
   /* 阅读列宽度：正文行宽上限，避免超宽屏一行 200 字。
    * 宽度滑块改的是 --container-reading-width（inline style 覆盖到根节点）：

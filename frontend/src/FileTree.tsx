@@ -6,6 +6,7 @@ import { Button, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { Modal, useDialogFocus } from "./design/overlay";
 import { useIsMobile } from "./use-mobile";
 import { isMarkdown } from "./fs-utils";
+import { TREE_INDENT_BASE, TREE_INDENT_DISCLOSURE, TREE_INDENT_STEP } from "./avatar-style";
 
 type TreeEntry = { name: string; isDir: boolean };
 type TreeResult = { path: string; entries: TreeEntry[]; error?: { message: string } };
@@ -125,7 +126,7 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
           <div key={childPath}>
             <button onClick={() => void toggle(childPath)}
               className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
-              style={{ paddingLeft: 8 + depth * 14 }}>
+              style={{ paddingLeft: TREE_INDENT_BASE + depth * TREE_INDENT_STEP }}>
               <IconChevronRight size={14}
                 className={`shrink-0 text-ink-500 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
               {pending.has(childPath)
@@ -138,7 +139,7 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
             {isOpen && (
               <>
                 {(entries[childPath] ?? []).length === 0 && !pending.has(childPath) && (
-                  <p className="py-1 text-micro text-ink-500" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>空</p>
+                  <p className="py-1 text-micro text-ink-500" style={{ paddingLeft: TREE_INDENT_BASE + (depth + 1) * TREE_INDENT_STEP }}>空</p>
                 )}
                 {renderRows(childPath, depth + 1)}
               </>
@@ -149,7 +150,7 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
       return (
         <button key={childPath} onClick={() => onOpenFile(childPath, entry.name)}
           className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
-          style={{ paddingLeft: 8 + depth * 14 + 18 }}>
+          style={{ paddingLeft: TREE_INDENT_BASE + depth * TREE_INDENT_STEP + TREE_INDENT_DISCLOSURE }}>
           {isMarkdown(entry.name)
             ? <IconFileText size={14} className="shrink-0 text-ink-500" />
             : <IconFile size={14} className="shrink-0 text-ink-500" />}

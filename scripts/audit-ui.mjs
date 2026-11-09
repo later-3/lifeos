@@ -6,6 +6,7 @@
  *
  * 用法：pnpm audit:ui            # 默认 1600，可 APP_URL=... pnpm audit:ui
  * 判据（数量只能降不能涨）：字号 ≤ 5、圆角 ≤ 5（inner/control/panel/bubble/full）、文字色 ≤ 6、图标尺寸 ≤ 4（14/16/18/22）、小命中区 = 0。
+ * 口径：会随数据变色的状态徽标（`data-state-count` / `role=status`）只查对比度、不计种类 —— 否则数字随运行状态在 6/7 之间跳。
  */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -64,7 +65,14 @@ for (const viewport of [1024, 1280, 1440, 1600]) {
       if (el.tagName === "svg") iconSizes.add(`${Math.round(box.width)}×${Math.round(box.height)}`);
       if (el.children.length === 0 && (el.textContent ?? "").trim() !== "") {
         fontSizes.add(style.fontSize);
-        textColors.add(style.color);
+        // **只有会随数据变色的元素不计入"风格词汇"普查**（2026-11-09 修）：
+        // 状态徽标（正在跑 / 完成待读 / 失败，带 `data-state-count`）的颜色取决于
+        // "此刻有没有在跑/未读"，同一页面数据一变就让 textColorCount 在 6 和 7 之间跳 ——
+        // 那不是新风格，是数据（与截图基线 testing 2.9 同一条原则）。
+        // 注意：不能用 `data-shot-mask` 判断 —— 那个遮罩盖住了整列/整块正文，
+        // 会把真正的风格词汇也一起漏掉（实测只剩 2 种，等于没测）。
+        const dynamic = el.closest("[data-state-count]") !== null || el.getAttribute("role") === "status";
+        if (!dynamic) textColors.add(style.color);
         contrastPairs.push({ text: (el.textContent ?? "").trim().slice(0, 10), value: ratio(style.color, bgOf(el)) });
       }
     }

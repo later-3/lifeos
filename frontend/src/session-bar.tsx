@@ -86,6 +86,17 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
   const duration = formatDuration(totals.durationMs);
   const hasAnything = totals.turns > 0 || hasTokens || duration !== undefined;
 
+  /*
+   * 没有任何指标时**整条不渲染**（2026-11-09 审核发现）：旧实现即使空会话也要占 36px，
+   * 输入框上方于是飘着一条空白 + 一个孤零零的图片按钮，看着像"加载失败"。
+   * 但「添加图片」不能丢（用户 2026-11-05 要求并进这一条）——所以空会话时把图片按钮
+   * 交给 composer 自己（手机本来就在那儿），桌面这一条直接不出现。
+   */
+  const isEmpty = !hasAnything && payloadText === undefined
+    && (context === undefined || context === null || context.window <= 0)
+    && (turnId === undefined || turnId === "");
+  if (isEmpty) return null;
+
   return (
     <div data-testid="session-bar" data-shot-mask="session-bar"
       className="flex min-h-7 w-full flex-wrap items-center gap-x-3 gap-y-1 py-1">
