@@ -119,3 +119,17 @@ frontend/src/
 - 没有 CI（门禁都在本地跑）；接 CI 是独立 Task；
 - `App.tsx` 3501 行未拆（已进 todo，需独立 Task）；
 - 视觉矩阵只覆盖 5 个场景，检视面板/文件树详情页还没进矩阵。
+
+## 7 axe 审计抓到的三处真缺陷（2026-11-09，都已修）
+
+| 缺陷 | axe 报了几次 | 根因 | 修法 |
+|---|---|---|---|
+| `ink-500` 深色 2.45:1 | 30 | 写死 `L*42`（浅色的解），深色底不够亮 | `dark ? 68 : 42` + 4 底 × 5 预设 × 深浅色矩阵断言 |
+| `ink-300` 承载文本 | 设置页 2 / 批注卡 / PeerPanel / ReviewPanel 行号 | tokens.css 头注"只做分隔线"，但代码里当正文色用 | 全部改 `ink-500` |
+| `nested-interactive` | 34 | 行是 `role="button"`，里面又放真 `<button>` | `Row` 拆「主点击区 + 动作区（兄弟）」，新增 `actions` 槽位；页面不再往 children 塞按钮 |
+| `color-contrast`（失败块） | 11 | 用固定的 `--color-message-failure`（浅粉），深色下配浅红字 1.5:1 | 改 `bg-danger-soft` + 深色重算 `*-soft` 三档 |
+| `accent` 在 nav 底 4.33 | 19 | `accent` 是按"对 surface 达 AA"反解的，没算 nav 底 | 设置导航选中态文字改 `ink-900`，强调交给指示条 |
+| `landmark-unique` | 30 | 助手列/会话列两个 `aside` 都无可访问名 | `ResizeColumn` 加 `ariaLabel` |
+
+**共同点**：全都是"一次写成、之后没人量过"的地方。这一轮之后，`pnpm audit:a11y`
+把它们变成可回归的（38 次运行：4 视口 × 2 模式 × 5 场景）。
