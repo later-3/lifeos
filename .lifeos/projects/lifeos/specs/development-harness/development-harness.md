@@ -155,3 +155,24 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 - **应该** 中断后先看 `logs/` 与 JSONL 尾条，用 `turns/last` 对账；不要把"没在跑"当"已完成"。
 
 **依据**：C116（live-edit 杀回合）、C117（重装写断分支）、C118（Coder 共享 worktree 影响用户实例）。
+
+## 7.8 检视模式：交付前把改动摊在同一份 diff 上（必须）
+
+**为什么有这一节**：检视不是"再读一遍代码"，而是**把 Agent 的自我检查交给用户复核**。
+所以它必须与改动**同源同处**（同一份 diff、同一处行），而不是把 diff 贴进聊天里。
+
+- **必须** 检视对象是**一个 Task**：后端把它展开成「项目 worktree（代码）」+「该 Task 的文档（`~/.lifeos`）」两组源。
+  用户/Agent 只需要给出 Task 编号，不拼路径（`GET …/review-candidates` 会告出哪些 Task 有东西可看）。
+- **必须** 评论**绑检视对象，不绑对话**：换会话、换设备、重启后端都还在（落 `~/.lifeos/state/review-comments/`）。
+  评论是用户意见的正式载体，不是聊天的附件。
+- **必须** 闭环由人收口：Agent 处理完 → 在**线程里回复**"改了什么、改在哪"（自动交棒给用户）→ 用户查看后**自己关闭**。
+  Agent **不得**关闭用户提出的评论（服务端 403）。
+- **必须** 未闭环评论就是责任方的待办：Agent 侧 `lifeos_review_comments({ pendingForMe: true })`，
+  用户侧候选列表的 `N 条等你`——**同一套 `pendingFor` 口径**，不另写一套过滤。
+- **应该** 交付前自己先看一眼渲染效果（代码与 md 都要看：md 的源码 diff 常常看不出"文档变成什么样了"）。
+
+**零 git 写操作**：检视只读（`git diff` / `git show` / 临时 index），不提交、不改分支、不动 worktree。
+"通过后合入"是人的动作，不是检视模式的功能。
+
+**细节（按需读）**：架构与数据模型 → `knowledge/architecture/review-mode.md`；界面 → `knowledge/design/review-panel.md`；
+Agent 工具清单 → `review-mode.md` §7。
