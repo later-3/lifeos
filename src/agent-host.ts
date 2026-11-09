@@ -735,7 +735,7 @@ export function markSessionViewed(agentId: string, sessionId: string, at: string
  * 扫 69 个文件实测 156ms（经 sessionRowsOf 全链路 532ms），而这一步本来就是终态发生时，
  * 信息在手（`classifyFailure` 的返回值），零额外成本。
  */
-function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined, failureKind?: FailureKind, failureDetail?: string): void {
+function recordCompletion(agentId: string, sessionId: string, aborted: boolean, projectId: string | undefined, failureKind?: FailureKind, failureDetail?: string): { onSession: boolean } {
   const at = new Date().toISOString();
   // 被打断不算"完成"（既有语义）：不写未读、也不写终态，避免把一个中断的回合报成 done/error
   if (!aborted) {
@@ -756,6 +756,7 @@ function recordCompletion(agentId: string, sessionId: string, aborted: boolean, 
     details: { aborted, onSession, state: failureKind !== undefined ? "error" : "done" },
   });
   if (onSession) markSessionViewed(agentId, sessionId, at, projectId);
+  return { onSession };
 }
 
 /** 用户主动打断的会话键（runTurn 结束时取走；不打断的回合不会留下记录）。 */
@@ -1029,14 +1030,20 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     const failedDetail = settled?.outcome?.state === "error" ? settled.outcome.failureDetail : undefined;
     // 回合账本 done（turn 终态先到位，再发收尾事件）；未读事实先于事件落定，断线重连的快照一定包含它
     finishTurn(agentId, sessionId, turnId, failedKind !== undefined ? "error" : "done");
-    recordCompletion(agentId, sessionId, aborted, projectIdForLog, failedKind, failedDetail);
+    // `onSession` = 用户此刻停在这个会话上 → 已记为已读 → **补丁不能再发「未读」**
+    // （2026-11-08 修）：原来无条件发 `{ unread: { since } }`，于是一个"刚被标成已读"的回合
+    // 又给前端推了一条"它未读了"——行上闪出绿点、数字 +1，然后 refresh-groups 重取把行刷回 idle，
+    // 但 `sessionSlots` 没人减 → **永久残留一个绿色数字，没有绿点**（用户截图）。
+    const { onSession } = recordCompletion(agentId, sessionId, aborted, projectIdForLog, failedKind, failedDetail);
     // 与其他 Agent 的对话：对方跑完了 → 回流给发起方（T7）。永不抛、不影响下面的收尾。
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "done");
     void log.info("agent-host", "runTurn", "回合完成", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { aborted } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "done" });
     // 列表行补丁（任务 0005）：终态立即发、不节流 —— 用户最需要立刻看到"完了"
     rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
-      ...(aborted ? {} : { unread: { since: new Date().toISOString() } }),
+      // 被打断不算完成；或用户就停在这个会话上（已标已读）→ 两者都**不发**未读。
+      // 显式发 `unread: null` 而不是"省略这个字段"：省略会让前端保留旧值。
+      ...(aborted || onSession ? { unread: null } : { unread: { since: new Date().toISOString() } }),
       // 回合"正常返回"但回复本身失败（模型不可用等）→ 补丁要带 failure，
       // 否则前端只能把它当 unreadDone，数字与行上的红点对不上。
       ...(failedKind !== undefined ? { failure: { kind: failedKind, detail: failedDetail ?? "", at: new Date().toISOString() } } : {}),
@@ -1055,14 +1062,15 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
     finishTurn(agentId, sessionId, turnId, "error");
     // 先算出分类：终态索引要它（recordCompletion），行补丁也要它——只算一次，两处用同一个值
     const kind = classifyFailure({ errorMessage: message, hasContent: false }) ?? "unknown";
-    recordCompletion(agentId, sessionId, false, projectIdForLog, kind, message);
+    const { onSession: failedOnSession } = recordCompletion(agentId, sessionId, false, projectIdForLog, kind, message);
     // 失败也要回流（发起方要知道它失败了、为什么）——同一套去重与投递确认。
     await notifyPeerTurnFinished(agentId, sessionId, turnId, "error");
     void log.error("agent-host", "runTurn", "回合失败", { sessionId, turnId, agentId, projectId: projectIdForLog, details: { message } });
     publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "error" });
     // 列表行补丁：失败态 + 原文（用户裁决不脱敏）+ 未读
     rowPatches().pushTerminal(agentId, sessionId, projectIdForLog, {
-      unread: { since: new Date().toISOString() },
+      // 同成功分支：用户停在这个会话上 → 已记已读 → 不发未读
+      ...(failedOnSession ? { unread: null } : { unread: { since: new Date().toISOString() } }),
       failure: { kind, detail: message, at: new Date().toISOString() },
       lastActivityAt: new Date().toISOString(),
     });

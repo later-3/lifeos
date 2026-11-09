@@ -204,3 +204,49 @@ test("T73 停在别的会话上时，这个会话的未读仍然算数", () => {
   const derived = deriveStatus(facts, { agentId: "a", sessionId: "other", visible: true });
   assert.equal(derived.sessions.s1?.unread, true, "没停在这个会话上 → 未读该显示");
 });
+
+// ——————————————————————————————————————————————————————————————
+// 补丁与"重取"必须说同一套话（2026-11-08 用户实测的 bug 回归）
+// ——————————————————————————————————————————————————————————————
+//
+// 现象：**有绿色数字，但行上没有绿点**。
+// 机制：回合结束时服务端标了已读，却仍然推 `{ unread: {...} }` 补丁 →
+//   前端数字 +1、绿点闪一下；随后 refresh-groups 重取把行刷回 idle（绿点消失），
+//   但 `sessionSlots` 没人减 → 数字永久错位。
+//
+// 两条约束：
+//   ① 服务端：`onSession` 为真时补丁发 `unread: null`，不发未读；
+//   ② 前端：`reloadGroups` 用重取回来的行**校正**槽位（任何竞态都能自愈）。
+
+/** 迷你版：重取后按行校正槽位（与 App.tsx 的 reloadGroups 同一规则）。 */
+const reconcile = (slots, rows, agentId) => {
+  const next = new Map(slots);
+  for (const row of rows) {
+    const state = row.activity.state;
+    const want = state === "running" ? "running" : state === "unread" ? "unreadDone" : state === "failure" ? "unreadError" : undefined;
+    if (want === undefined) { next.delete(row.sessionId); continue; }
+    next.set(row.sessionId, { agentId, projectId: "p1", slot: want });
+  }
+  return next;
+};
+
+test("T77 重取时行已无状态 → 槽位必须跟着删（这条就是「绿数字留下、绿点没了」的修复）", () => {
+  // 起点：一条补丁把 s1 标成未读（数字 +1）
+  const slots = new Map([["s1", { agentId: "a", projectId: "p1", slot: "unreadDone" }]]);
+  // 重取回来：服务端说它是 idle（因为其实已经被标已读了）
+  const rows = [{ sessionId: "s1", activity: { state: "idle" } }];
+  const after = reconcile(slots, rows, "a");
+  assert.equal(after.get("s1"), undefined, "行说没状态了 → 槽位不该留着（否则数字永远比点多 1）");
+});
+
+test("T78 重取时行仍是未读 → 槽位保持", () => {
+  const slots = new Map([["s1", { agentId: "a", projectId: "p1", slot: "unreadDone" }]]);
+  const after = reconcile(slots, [{ sessionId: "s1", activity: { state: "unread" } }], "a");
+  assert.equal(after.get("s1")?.slot, "unreadDone");
+});
+
+test("T79 重取时行在跑 → 槽位切成 running（补丁漏发的运行态也能被纠正）", () => {
+  const slots = new Map([["s1", { agentId: "a", projectId: "p1", slot: "unreadDone" }]]);
+  const after = reconcile(slots, [{ sessionId: "s1", activity: { state: "running" } }], "a");
+  assert.equal(after.get("s1")?.slot, "running");
+});

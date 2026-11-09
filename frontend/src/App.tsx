@@ -1253,12 +1253,50 @@ export default function App() {
     if (latest !== undefined) await openSession(agent, latest.sessionId);
   }
 
+  /**
+   * 重取会话列表。
+   *
+   * **同时校正状态机**（2026-11-08 修）：`sessionSlots` 是数字的唯一事实源，
+   * 但它只由「快照重建」和「row 补丁」维护 —— 一旦某条补丁发早了/发漏了，
+   * 数字就会永久错位（用户实测：绿色 1 挂着但行上没有绿点，因为补丁说未读、
+   * 重取之后行的绿点没了，而槽位没人减）。
+   *
+   * 修法：重取回来的每一行**就是服务端此刻的真相**，用它覆盖槽位。
+   * 这样任何"补丁与事实不一致"都会被下一次重取自愈，不需要再补一堆对称的减一。
+   */
   async function reloadGroups() {
     const id = ctx.current.agentId;
     if (id === undefined) return undefined;
     const next = await fetchGroups(id);
     rememberGroups(id, next);
     setGroups(next);
+    setSessionSlots((previous) => {
+      let changed = false;
+      const slots = new Map(previous);
+      for (const group of next) {
+        for (const item of group.sessions) {
+          const state = item.activity.state;
+          const want: "running" | "unreadDone" | "unreadError" | undefined =
+            state === "running" ? "running"
+              : state === "unread" ? "unreadDone"
+                : state === "failure" ? "unreadError"
+                  : undefined;
+          const current = slots.get(item.sessionId);
+          if (want === undefined) {
+            if (current === undefined) continue;
+            // 行说这条没有状态了 → 槽位也不该有（这正是"绿点消失但数字还在"的修复点）
+            slots.delete(item.sessionId);
+            changed = true;
+            continue;
+          }
+          const effectiveProject = group.project.id;
+          if (current !== undefined && current.slot === want && current.agentId === id && current.projectId === effectiveProject) continue;
+          slots.set(item.sessionId, { agentId: id, projectId: group.project.id, slot: want });
+          changed = true;
+        }
+      }
+      return changed ? slots : previous;
+    });
     return next;
   }
 
