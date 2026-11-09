@@ -20,7 +20,7 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { loadPrefs, savePrefs } from "./display-prefs-panel";
+import { DisplayPrefsPanel, loadPrefs, savePrefs } from "./display-prefs-panel";
 import { SettingsSurface } from "./settings-surface";
 import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
@@ -453,6 +453,14 @@ export default function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * 头部「显示」快捷弹层（2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
+   * 因为之前是改动配置，用户能实时看到工作区的改变"）。
+   *
+   * 与设置页的关系：**这里是快捷入口，设置页是总入口**，两者读写同一份 prefs，不存在第二份状态。
+   * 只在桌面渲染（`hidden sm:inline-flex` 交给外层容器）：手机头部已有 6 个图标、标题只剩 38px。
+   */
+  const [displayPrefsOpen, setDisplayPrefsOpen] = useState(false);
   // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
   // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
   const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
@@ -3153,6 +3161,13 @@ export default function App() {
             </p>
           </div>
           <span className="ml-auto" />
+          {/* 快捷显示设置（老位置）：桌面显示、手机隐藏（手机去设置页）。
+              className 里用 `hidden sm:inline-flex` 会让 IconButton 自带的 inline-flex 失效，
+              所以外面套一层条件渲染的容器 —— 与页面里其它"手机不渲染"的写法一致。 */}
+          {!isMobile && (
+            <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs}
+              open={displayPrefsOpen} onOpenChange={setDisplayPrefsOpen} />
+          )}
           <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
             onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
             <IconHistory size={16} />

@@ -606,6 +606,73 @@ async function auditResizeColumns(page, sceneSetup) {
   await capPage.close();
 }
 
+// 头部快捷显示设置（Popover primitive 的第一个使用者）
+//
+// 2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
+// 因为之前是改动配置，用户能实时看到工作区的改变的。"
+// 五条：入口在（桌面）→ 打开贴锚点 6px → 拖滑块正文实时变 → Esc 关闭且焦点归还 → 手机不渲染。
+{
+  const quickPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await quickPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await quickPage.waitForTimeout(500);
+  const anchor = quickPage.locator('header button[aria-label="显示设置"]');
+  check("头部快捷显示设置：入口存在（桌面）", await anchor.count() === 1, `count=${await anchor.count()}`);
+  if (await anchor.count() === 1) {
+    await anchor.click();
+    await quickPage.waitForSelector('[data-testid="popover"]', { timeout: 5000 });
+    const geom = await quickPage.evaluate(() => {
+      const panel = document.querySelector('[data-testid="popover"]');
+      const btn = document.querySelector('header button[aria-label="显示设置"]');
+      const panelBox = panel.getBoundingClientRect();
+      const anchorBox = btn.getBoundingClientRect();
+      return {
+        gap: Math.round(panelBox.top - anchorBox.bottom),
+        width: Math.round(panelBox.width),
+        inViewport: panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
+        z: Number(getComputedStyle(panel).zIndex),
+        shadow: getComputedStyle(panel).boxShadow,
+      };
+    });
+    check("头部快捷显示设置：贴锚点下方 6px 且不越出视口",
+      geom.gap === 6 && geom.inViewport === true, JSON.stringify(geom));
+    check("头部快捷显示设置：用的是 SURFACE.popover 的阴影（不是 Tailwind 裸值）",
+      /rgba\(25, 28, 33/.test(geom.shadow) || /rgba\(255, 255, 255/.test(geom.shadow), geom.shadow.slice(0, 40));
+
+    // 拖滑块 → 正文列宽实时变化（"边调边看"的实质）
+    const before = await quickPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim());
+    await quickPage.evaluate(() => {
+      const input = document.querySelector("#quick-width");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(input, "0");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await quickPage.waitForTimeout(300);
+    const after = await quickPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim());
+    check("头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
+      Number.parseInt(before, 10) > Number.parseInt(after, 10), `${before} → ${after}`);
+
+    // Esc 关闭 + 焦点归还
+    await quickPage.keyboard.press("Escape");
+    await quickPage.waitForTimeout(200);
+    const closed = await quickPage.evaluate(() => document.querySelector('[data-testid="popover"]') === null);
+    const focused = await quickPage.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+    check("头部快捷显示设置：Esc 关闭且焦点回到锚点", closed && focused === "显示设置", `closed=${closed} focus=${focused}`);
+  }
+  await quickPage.close();
+
+  // 手机：不渲染（手机头部已有 6 个图标、标题只剩 38px）
+  const phonePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  await phonePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await phonePage.waitForTimeout(500);
+  const phoneCount = await phonePage.locator('header button[aria-label="显示设置"]').count();
+  const phoneTitle = await phonePage.evaluate(() => {
+    const h1 = document.querySelector("header h1");
+    return h1 === null ? null : Math.round(h1.getBoundingClientRect().width);
+  });
+  check("头部快捷显示设置：手机不渲染（头部不再增加图标）", phoneCount === 0, `count=${phoneCount} 标题宽=${phoneTitle}`);
+  await phonePage.close();
+}
+
 // 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
 // （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
 {
@@ -2115,7 +2182,24 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致", "正文表格：最窄一列不被压到逐字竖排（宽列下）", "正文表格：正文列变窄后依然不压字（可横向滚动）", "[默认（两列）] 每个可拖区域都能抓住把手", "[默认（两列）] 每个可拖区域拖动都逐帧跟手"];
+const REQUIRED = [
+  // 防"静默删除"：这些名字必须在结果里出现，删掉检查项会立刻红（testing 2.4）
+  "聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区",
+  "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线",
+  "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块",
+  "显示设置：滑块真生效",
+  "rail 三个按钮 hover 都有反馈",
+  "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致",
+  "头部快捷显示设置：入口存在（桌面）",
+  "头部快捷显示设置：贴锚点下方 6px 且不越出视口",
+  "头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
+  "头部快捷显示设置：Esc 关闭且焦点回到锚点",
+  "头部快捷显示设置：手机不渲染（头部不再增加图标）",
+  "正文表格：最窄一列不被压到逐字竖排（宽列下）",
+  "正文表格：正文列变窄后依然不压字（可横向滚动）",
+  "[默认（两列）] 每个可拖区域都能抓住把手",
+  "[默认（两列）] 每个可拖区域拖动都逐帧跟手",
+];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
