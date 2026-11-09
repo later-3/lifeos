@@ -33,17 +33,26 @@ html, body, button, input, textarea, select {
 .md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
 /* 引用块里的内联代码：保持正文色（继承的弱化色叠在代码底色上对比度不足 4.5，UI 契约 2026-10-25 实测） */
 .md-body blockquote code { color: var(--color-ink-900); }
-.md-body table { border-collapse: collapse; font-size: 0.94em; }
-.md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; }
+/*
+ * 表格：**按内容宽排版，放不下就横向滚动**，永远不压缩列宽。
+ *
+ * 2026-11-09 实拍两次踩到同一类问题：
+ * ① 手机（390）4 列表格被压到每列 20–60px，中文逐字竖排；
+ * ② 桌面打开「完整历史」后正文列从 1024 缩到 584，同一张表的「耗时」列被压到
+ *    只剩「1-2 / 小 / 时」三行 —— 与手机是同一个病，只是触发条件不同（列变窄）。
+ *
+ * 修法不能只加手机断点（第二条就是桌面发生的）。改成：
+ *   `display: block` 让 table 自己成为滚动容器（内部 tr/td 仍是 table 语义，走匿名 table box），
+ *   `width: max-content` 让表格按内容自然宽排版（不压缩），`max-width: 100%` 限制在正文列内。
+ * 屏幕够宽时 max-content < 100%，表现与普通表格完全一致；放不下时才出现横向滚动条。
+ */
+.md-body table { border-collapse: collapse; font-size: 0.94em; display: block; max-width: 100%; overflow-x: auto; }
+/* `min-width` 是配套的关键：不给下限时，窄容器里列会被压到 79px，
+   「1-2 小时」于是按字断开成「1-2 / 小 / 时」三行（2026-11-09 实拍，桌面开完整历史后复现）。
+   4.5em ≈ 5 个汉字宽 —— 够放一个短词，又不至于逼出滚动条（三列 4.5em 在 536 宽里放得下）。
+   真要更宽的表格（内容本身就长）才走 overflow-x 滚动，那是内容决定，不是压缩决定。 */
+.md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; min-width: 4.5em; }
 .md-body th { background: var(--color-sunken); font-weight: 600; }
-/* 手机：表格改为横向滚动（2026-11-09 审核实拍）——390 宽下 4 列表格被压到每列 20–60px，
-   中文变成逐字竖排（"耗/时"分成两行），完全没法读。`display:block` + `overflow-x:auto`
-   让 table 自己成为滚动容器；内部 tr/td 仍按 table 语义排版（匿名 table box）。
-   桌面不动：屏幕够宽时表格本来就该铺开。 */
-@media (max-width: 639px) {
-  .md-body table { display: block; max-width: 100%; overflow-x: auto; }
-  .md-body th, .md-body td { white-space: nowrap; }
-}
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }

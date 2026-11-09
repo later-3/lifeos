@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, RAIL,
+  DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_VIEWER, RAIL,
   clampWidth, dragWidth, layout, maxWidthOf,
 } from "../frontend/src/design/layout.ts";
 
@@ -109,11 +109,24 @@ test("面板宽度：要么收起(0)，要么不小于 MIN_PANEL 且不挤破聊
 
 test("拖拽夹紧在声明区间内（c4 上限不再能压到聊天）", () => {
   assert.equal(clampWidth("c1", 10), 180);
-  assert.equal(clampWidth("c1", 9999), 440);
   assert.equal(clampWidth("c4", 1), 320);
   assert.equal(clampWidth("c4t", 9999), 560);
-  // c2 的常量表上限是**硬顶**，不是真实可视上限（Task 0006）：真实值看 maxWidthOf。
+  // c1 / c2 的常量表上限都是**技术兜底**，不是真实可视上限（Task 0006 + 2026-11-09）：
+  // 真实值看 maxWidthOf。两列必须同一套规则，否则拖动时一列撞常量墙、另一列不撞，
+  // 手感不同（用户 2026-11-09 报的就是这个）。
+  assert.equal(clampWidth("c1", 99999), 4096, "c1 只有技术兜底，没有任务上限");
   assert.equal(clampWidth("c2", 99999), 4096, "c2 只有技术兜底，没有任务上限");
+});
+
+test("两列的可用上限都由视口算（同一套规则，不靠各自的常量）", () => {
+  const folded = { nav: false, groups: false };
+  const widths = { ...DEFAULT_WIDTHS };
+  for (const key of ["c1", "c2"]) {
+    const limit = maxWidthOf(key, 1440, widths, folded);
+    // 常量表里没有能把它们卡在几何上限之前的数
+    assert.equal(clampWidth(key, 99999, limit), limit, `${key} 撞到的应该是几何上限，不是常量`);
+    assert.ok(limit > 440, `${key} 在 1440 上必须能超过旧的 440（实际 ${limit}）`);
+  }
 });
 
 test("列宽的真实上限由视口算（Task 0006）：c2 不该停在 440", () => {
@@ -158,4 +171,19 @@ test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反
   // 夹紧仍生效
   assert.equal(dragWidth("c5", 440, -9999), 720);
   assert.equal(dragWidth("c5", 440, 9999), 360);
+});
+
+test("c4t（文件树）的上限是「面板 − 查看器最小宽」，不是视口", () => {
+  // 2026-11-09 实测：拖 c4t 到 300，松手回弹到 270 —— 存进去的超出面板能给的，
+  // layout() 再钳回来（tree = min(widths.c4t, panel − MIN_VIEWER)）。
+  // 拖到哪就该停在哪：上限必须是这条真实可视上限。
+  const folded = { nav: false, groups: false };
+  const widths = { ...DEFAULT_WIDTHS, c4: 600 };
+  const limit = maxWidthOf("c4t", 1600, widths, folded);
+  const panel = Math.min(widths.c4, 1600 - RAIL - widths.c1 - widths.c2 - MIN_CHAT - 8);
+  assert.equal(clampWidth("c4t", 9999, limit), panel - MIN_VIEWER,
+    "c4t 拖到头应停在 panel − MIN_VIEWER，不是更宽的视口上限");
+  // 窄面板时同样成立
+  const narrow = maxWidthOf("c4t", 1600, { ...widths, c4: MIN_PANEL }, folded);
+  assert.equal(clampWidth("c4t", 9999, narrow), Math.max(160, MIN_PANEL - MIN_VIEWER));
 });

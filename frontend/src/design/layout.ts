@@ -178,9 +178,23 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
     // 左列上限：视口 − 图标轨 − 另一列 − 右侧最小占用（MIN_CHAT） − 把手厚度
     return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT - HANDLE_HIT);
   }
-  if (key === "c4" || key === "c4t" || key === "c5") {
+  if (key === "c4" || key === "c5") {
     // 右侧列上限：视口 − 左侧全部 − MIN_CHAT − 把手厚度
     return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+  }
+  if (key === "c4t") {
+    /*
+     * 文件树**不能超出它所在的面板**：`layout()` 里 `tree = min(widths.c4t, panel − MIN_VIEWER)`，
+     * 所以 node 上限不是视口，而是「面板宽 − 查看器最小宽」。
+     *
+     * 2026-11-09 实测踩到：拖 c4t 到 300，松手后回弹到 270 —— 存进去的值超出面板能给的，
+     * `layout()` 再钳回来。用户看到的是"拖到这儿、松手却弹回去"。
+     * 这一条与 MaxWidthOf 的其它分支同一思路：**拖动上限 = 该列的真实可视上限**，
+     * 不是视口一档、也不是常量一档。
+     */
+    const panelLimit = Math.max(0, viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+    const panel = Math.min(widths.c4, Math.max(MIN_PANEL, panelLimit));
+    return Math.max(WIDTH_LIMITS.c4t[0], panel - MIN_VIEWER);
   }
   return WIDTH_LIMITS[key][1];
 }

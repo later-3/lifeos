@@ -472,7 +472,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
       await dragPage.mouse.move(handleBox.x + handleBox.width / 2 + step * 6, handleBox.y + 300);
       await dragPage.waitForTimeout(16);
       widths.push(await dragPage.evaluate(() => Math.round(
-        document.querySelector('[data-column="agents"]')?.getBoundingClientRect().width ?? 0)));
+        document.querySelector('[data-resize-key="c1"]')?.getBoundingClientRect().width ?? 0)));
     }
     await dragPage.evaluate(() => { window.__dragTo = performance.now(); });
     await dragPage.mouse.up();
@@ -486,17 +486,104 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
   await dragPage.close();
 }
 
-// 两列拖动的**可用上限同一套规则**（2026-11-09 用户报"拖助手列和拖会话列手感不一样"）
+// 拖动统一契约（2026-11-09 用户："每个区域都要我单独点出来吗？以后新增是不是也不会按丝滑的方案？"）
 //
-// 反例：`WIDTH_LIMITS.c1 = [180, 440]` 是自创常量（与 c2 被否掉的那个 440 同源），
-// 而 c2 早已改成"只有技术兜底、上限由视口算"。后果：拖 c1 时鼠标移 215px 就撞墙，
-// 剩下 185px 空走（看起来"拖不动了"）；拖 c2 一路跟手。同样操作两种手感。
+// 这一组不枚举 c1/c2/c4/c4t/c5，而是**枚举页面上所有 `[data-resize-key]`**：
+//   ① 每个可拖区域都必须有一个可命中的把手（`elementFromPoint` 命中把手本身）；
+//   ② 拖动时宽度必须**逐帧变化**（不是松手才跳）。
+// 新增一个可拖区域只要写 `<ResizeColumn resizeKey=...>`，就自动被这两条覆盖；
+// 忘了写 data-resize-key、或把手被父级 overflow 裁掉，这里就会红。
+async function auditResizeColumns(page, sceneSetup) {
+  const keys = await page.evaluate(() => [...document.querySelectorAll("[data-resize-key]")]
+    .map((el) => el.getAttribute("data-resize-key")));
+  const results = [];
+  for (const key of keys) {
+    const probe = await page.evaluate((k) => {
+      const el = document.querySelector(`[data-resize-key="${k}"]`);
+      if (el === null) return { ok: false, why: "区域不存在" };
+      const handle = el.querySelector(':scope > [role="separator"]');
+      if (handle === null) return { ok: false, why: "没有把手" };
+      const box = handle.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + 40);
+      return {
+        ok: hit === handle || handle.contains(hit),
+        why: `命中 ${(hit?.className ?? "").toString().slice(0, 30)}`,
+        x: box.x + box.width / 2, y: box.y + 40,
+        width: Math.round(el.getBoundingClientRect().width),
+      };
+    }, key);
+    if (!probe.ok) {
+      results.push({ key, hit: false, follows: false, why: probe.why });
+      console.log(`    [resize] ${key}: ${probe.why}`);
+      continue;
+    }
+    await page.mouse.move(probe.x, probe.y);
+    await page.mouse.down();
+    await page.mouse.move(probe.x + 60, probe.y);
+    await page.waitForTimeout(120);
+    const during = await page.evaluate((k) => Math.round(
+      document.querySelector(`[data-resize-key="${k}"]`).getBoundingClientRect().width), key);
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    const after = await page.evaluate((k) => Math.round(
+      document.querySelector(`[data-resize-key="${k}"]`).getBoundingClientRect().width), key);
+    results.push({ key, hit: true, follows: during !== probe.width, from: probe.width, during, after });
+    /*
+     * 复位后再测下一个区域，两件事缺一不可：
+     * ① **清掉列宽存储**：刚拖宽的那一列会留在 localStorage 里，下一次 openHistory 的
+     *    `trial.chat < 560` 判定就会把左两列收进导航轨 → 下一个区域"不存在"（实测踩过）；
+     * ② **重新搭场景**：reload 会把「完整历史」关掉。
+     */
+    await page.evaluate(() => localStorage.removeItem("lifeos.columnWidths"));
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    if (sceneSetup !== undefined) await sceneSetup(page);
+  }
+  return results;
+}
+
+{
+  // 三个场景各跑一遍：默认两列 / 完整历史打开 / 文件面板+树打开
+  const scenes = [
+    { name: "默认（两列）", setup: async () => {} },
+    {
+      name: "完整历史",
+      // 等元素出现，不用固定 sleep：面板要拉 entries 才渲染，700ms 实测不够（会误报"把手不可命中"）
+      setup: async (p) => {
+        await p.locator('button[aria-label="完整历史"]').click();
+        await p.waitForSelector('[data-resize-key="c5"]', { timeout: 15000 });
+        await p.waitForTimeout(400);
+      },
+    },
+    {
+      name: "文件面板+树",
+      setup: async (p) => {
+        await p.evaluate(() => { localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
+        await p.reload({ waitUntil: "networkidle" });
+        await p.waitForTimeout(600);
+      },
+    },
+  ];
+  for (const scene of scenes) {
+    const resizePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+    await resizePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+    await resizePage.waitForTimeout(600);
+    await scene.setup(resizePage);
+    const results = await auditResizeColumns(resizePage, scene.setup);
+    const detail = results.map((r) => `${r.key}:${r.hit ? (r.follows ? "✓" : "✗不跟手") : "✗把手不可命中"}`).join(" ");
+    check(`[${scene.name}] 每个可拖区域都能抓住把手`, results.length > 0 && results.every((r) => r.hit), detail);
+    check(`[${scene.name}] 每个可拖区域拖动都逐帧跟手`, results.every((r) => r.follows), detail);
+    await resizePage.close();
+  }
+}
+
+// 两列拖到墙后聊天列宽度一致（同一套上限规则）
 {
   const capPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   await capPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await capPage.waitForTimeout(500);
-  const dragToWall = async (index) => {
-    const handle = capPage.locator('[role=separator][aria-label="拖动调整宽度"]').nth(index);
+  const dragToWall = async (key) => {
+    const handle = capPage.locator(`[data-resize-key="${key}"] > [role=separator]`).first();
     const box = await handle.boundingBox();
     if (box === null) return null;
     await capPage.mouse.move(box.x + box.width / 2, box.y + 300);
@@ -509,14 +596,49 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     await capPage.waitForTimeout(200);
     return await capPage.evaluate(() => Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0));
   };
-  const chatAfterC1 = await dragToWall(0);
+  const chatAfterC1 = await dragToWall("c1");
   await capPage.evaluate(() => localStorage.removeItem("lifeos.columnWidths"));
   await capPage.reload({ waitUntil: "networkidle" });
   await capPage.waitForTimeout(500);
-  const chatAfterC2 = await dragToWall(1);
+  const chatAfterC2 = await dragToWall("c2");
   check("两列拖到墙后聊天列宽度一致（同一套上限规则）",
     chatAfterC1 !== null && chatAfterC1 === chatAfterC2, `c1 拖到底后聊天 ${chatAfterC1}px / c2 ${chatAfterC2}px`);
   await capPage.close();
+}
+
+// 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
+// （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
+{
+  const tablePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await tablePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await tablePage.waitForTimeout(700);
+  const tableProbe = async () => await tablePage.evaluate(() => {
+    const table = document.querySelector(".md-body table");
+    if (table === null) return null;
+    const heads = [...table.querySelectorAll("th")].map((th) => Math.round(th.getBoundingClientRect().width));
+    // 单元格里出现逐字换行 = 列被压得过窄（"耗时"竖排的判据：单元格高度 ≥ 3 行字高）
+    const squeezed = [...table.querySelectorAll("td, th")].filter((cell) => {
+      const lineHeight = Number.parseFloat(getComputedStyle(cell).lineHeight) || 20;
+      return cell.getBoundingClientRect().height >= lineHeight * 2.6;
+    }).length;
+    return {
+      minColumn: heads.length === 0 ? 0 : Math.min(...heads),
+      squeezed,
+      scrollable: table.scrollWidth > table.clientWidth + 1,
+      width: Math.round(table.getBoundingClientRect().width),
+    };
+  });
+  const wide = await tableProbe();
+  // 打开完整历史把正文列压窄（真实触发条件，不是人为改 CSS）
+  await tablePage.locator('button[aria-label="完整历史"]').click();
+  await tablePage.waitForSelector('[data-resize-key="c5"]', { timeout: 15000 });
+  await tablePage.waitForTimeout(900);
+  const narrow = await tableProbe();
+  check("正文表格：最窄一列不被压到逐字竖排（宽列下）",
+    wide === null || wide.minColumn >= 60, JSON.stringify(wide));
+  check("正文表格：正文列变窄后依然不压字（可横向滚动）",
+    narrow === null || (narrow.squeezed === 0 && narrow.minColumn >= 60), JSON.stringify(narrow));
+  await tablePage.close();
 }
 
 // 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
@@ -1985,7 +2107,7 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致", "正文表格：最窄一列不被压到逐字竖排（宽列下）", "正文表格：正文列变窄后依然不压字（可横向滚动）", "[默认（两列）] 每个可拖区域都能抓住把手", "[默认（两列）] 每个可拖区域拖动都逐帧跟手"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);

@@ -49,6 +49,7 @@ import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream,
 import { TurnInspector } from "./SessionHistory";
 import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
+import { ResizeColumn } from "./design/resize-column";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
 import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
@@ -368,38 +369,6 @@ function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: st
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
       <span className="ml-auto" />
       <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
-    </div>
-  );
-}
-
-/**
- * 列拖宽把手（Task 0006 重做）。
- *
- * 旧实现在两列之间插一条 6px 的**布局宽度**，盒子继承父级白色 `bg-surface`，
- * 两侧列却是 `sunken #fafafa` —— 屏幕上看到的是「白缝 6px + 细线 1px」，三条边，
- * 而不是一条分界（实测 x276 #fff / x279 #e9e9ec / x280 #fff）。
- *
- * 现在：**不占布局宽度**，绝对定位压在列的右缘上（左右各半），静止时完全透明；
- * 只 hover / 拖动时浮出一条 2px 高亮。依据：
- * - VS Code `sash.css:63-78`：`:before` 背景 `transparent`，只有 `.hover/.active` 才上色；
- *   且 sash 是 `position:absolute; width: 4px`，不占两栏之间的空隙。
- * - LobeHub：列间只有一条 `border-inline-end: 1px solid colorBorderSecondary`
- *   （`src/features/NavPanel/components/NavPanelDraggable.tsx:33`），没有缝。
- *
- * 命中区保持 8px（`HANDLE_HIT`）而不是 0：鼠标要在 8px 内能抓住，否则拖不动。
- * 它 overflow 到相邻列上，但不占宽度、不挡内容（只在自己身上响应 mousedown）。
- */
-function DragHandle({ onStart, side = "right" }: { onStart: (event: ReactMouseEvent) => void; side?: "right" | "left" }) {
-  return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={side === "right" ? "拖动调整宽度" : "拖动调整宽度（左侧面板）"}
-      onMouseDown={onStart}
-      className={`group/handle absolute inset-y-0 z-10 flex w-2 cursor-col-resize items-center justify-center ${side === "right" ? "-right-1" : "-left-1"}`}>
-      {/* 静止透明；hover / 拖动（body 光标为 col-resize 期间浏览器保持 hover）才浮出 2px 高亮 */}
-      <span aria-hidden
-        className="h-full w-0.5 rounded-full bg-transparent transition-colors group-hover/handle:bg-accent" />
     </div>
   );
 }
@@ -2647,8 +2616,8 @@ export default function App() {
         <>
           {/* 列自己画右缘 1px 边（Task 0006）：不再由把手盒子充当分界。
               `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
-          <aside style={{ width: box.c1 }} data-column="agents"
-            className="relative flex shrink-0 flex-col border-r border-nav-line bg-nav-bg">
+          <ResizeColumn resizeKey="c1" width={box.c1} onStart={(event) => beginDrag("c1", event)}
+            className="flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
             <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
@@ -2680,16 +2649,15 @@ export default function App() {
                 </Row>
               ))}
             </div>
-            <DragHandle onStart={(event) => beginDrag("c1", event)} />
-          </aside>
+          </ResizeColumn>
         </>
       )}
 
       {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
       {!folded.groups && (
         <>
-          <aside style={{ width: box.c2 }} data-column="sessions"
-            className="relative flex shrink-0 flex-col border-r border-nav-line bg-nav-bg" data-testid="groups-panel">
+          <ResizeColumn resizeKey="c2" width={box.c2} onStart={(event) => beginDrag("c2", event)}
+            testId="groups-panel" className="flex-col border-r border-nav-line bg-nav-bg">
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
@@ -2805,8 +2773,7 @@ export default function App() {
             <PanelFooter>
               <AddProjectButton onClick={() => setAddingProject(true)} />
             </PanelFooter>
-            <DragHandle onStart={(event) => beginDrag("c2", event)} />
-          </aside>
+          </ResizeColumn>
         </>
       )}
     </>
@@ -3366,21 +3333,23 @@ export default function App() {
       {/* 完整历史 · 右侧并列列 */}
       {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          <aside style={{ width: isMobile ? "100%" : box.history }}
-            className={`relative flex shrink-0 overflow-hidden border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
-            <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
-              agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
-            {!isMobile && <DragHandle side="left" onStart={(event) => beginDrag("c5", event)} />}
-          </aside>
+          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.history}
+            onStart={(event) => beginDrag("c5", event)}
+            className={`border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
+            <div className="flex min-w-0 flex-1 overflow-hidden">
+              <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
+                agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
+            </div>
+          </ResizeColumn>
         </>
       )}
 
       {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
       {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
-          <aside style={{ width: isMobile ? "100%" : box.panel }}
-            className={`relative flex shrink-0 overflow-hidden border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
-            {!isMobile && <DragHandle side="left" onStart={(event) => beginDrag("c4", event)} />}
+          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.panel}
+            onStart={(event) => beginDrag("c4", event)}
+            className={`border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
@@ -3406,10 +3375,13 @@ export default function App() {
                   </div>
                 ) : showTree ? (
                   <>
-                    <div style={{ width: box.tree }} className="relative flex min-w-0 shrink-0 flex-col overflow-hidden">
-                      <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
-                      <DragHandle onStart={(event) => beginDrag("c4t", event)} />
-                    </div>
+                    <ResizeColumn resizeKey="c4t" width={box.tree} onStart={(event) => beginDrag("c4t", event)}
+                      as="div" className="min-w-0 flex-col">
+                      {/* 裁切留在内层：ResizeColumn 自己是 overflow-visible（否则把手会被裁掉一半） */}
+                      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        <FileTree onOpenFile={openFile} onHide={() => setShowTree(false)} />
+                      </div>
+                    </ResizeColumn>
                   </>
                 ) : (
                   <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-nav-line bg-nav-bg py-1.5">
@@ -3423,7 +3395,7 @@ export default function App() {
                 </div>
               </>
             )}
-          </aside>
+          </ResizeColumn>
         </>
       )}
 

@@ -68,11 +68,19 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
     // 上限从视口算（`maxWidthOf`）：常量表只当下限/硬顶，实际能拖到哪由「不压破聊天」决定。
     // 旧实现只看常量表（c2≤440），1280 宽上明明能到 572 却停在 440，用户以为拖不动了。
     const limit = maxWidthOf(key, viewport, widths, input.folded);
-    const columnOf: Partial<Record<keyof Widths, string>> = { c1: "agents", c2: "sessions" };
-    const columnName = columnOf[key];
-    const target = columnName === undefined
-      ? undefined
-      : document.querySelector<HTMLElement>(`[data-column="${columnName}"]`) ?? undefined;
+    /*
+     * 拖动目标**不靠一张手写映射表**找（2026-11-09 用户："每个区域都需要我单独点出来吗？
+     * 以后新增是不是也不会按丝滑的方案？"）。
+     *
+     * 旧写法是一张 `{ c1: "agents", c2: "sessions" }` 的映射，只有左两列登记了，
+     * 于是完整历史（c5）、文件面板（c4）、文件树（c4t）**三处都被漏掉**：
+     * 实测这三个把手拖动时宽度全程不变、松手才跳一下 —— 手感与左边两列完全不同。
+     *
+     * 现在改成**通用约定**：任何可拖宽的区域，在自己的根元素上写 `data-resize-key="cX"`，
+     * 拖动就自动是"逐帧跟手"的。新加区域只要写这一个属性，不需要改这里的任何代码。
+     * 机器检查（ui-contract）：「把手数 = 可拖区域数」，且每个把手拖动都必须逐帧变化。
+     */
+    const target = document.querySelector<HTMLElement>(`[data-resize-key="${key}"]`) ?? undefined;
 
     let latest = startWidth;
     let frame = 0;
