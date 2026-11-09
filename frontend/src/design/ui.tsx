@@ -110,20 +110,44 @@ export const controlClass =
  * 底色来自 `colorFillSecondary` / `colorFillTertiary`）。
  * 不用阴影（D18），也不加第二通道（左色条）—— 选中的底色差已经比旧实现强 2.9 倍。
  */
-export function Row({ selected = false, className = "", children, onClick, testId }: {
+export function Row({ selected = false, className = "", children, onClick, testId, actions }: {
   selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
+  /**
+   * 行内动作（hover 出现的图标按钮）。
+   *
+   * **必须**通过这个 prop 传，由 Row 把它们渲染成"主点击区的**兄弟**"而不是子节点 ——
+   * 行本身是 `role="button"`，里面再放 `<button>` 是非法结构（axe `nested-interactive`：
+   * 读屏与键盘会出现两个可点目标叠在一起）。2026-11-09 axe 审计一次报了 34 处。
+   */
+  actions?: ReactNode;
 }) {
+  const interactive = onClick !== undefined;
   return (
-    <div role={onClick !== undefined ? "button" : undefined} tabIndex={onClick !== undefined ? 0 : undefined}
-      onClick={onClick}
-      onKeyDown={onClick === undefined ? undefined : (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
-      }}
-      data-testid={testId} aria-current={selected ? "true" : undefined}
-      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-row px-2 text-body transition-colors sm:h-8 ${
-        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
-      } ${className}`}>
-      {children}
+    <div className={`group relative flex h-11 w-full items-center rounded-row text-body transition-colors sm:h-8 ${
+      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700"
+    } ${className}`}>
+      <div
+        {...(interactive
+          ? {
+            role: "button" as const,
+            tabIndex: 0,
+            onClick,
+            onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick?.(); }
+            },
+          }
+          : {})}
+        data-testid={testId}
+        aria-current={selected ? "true" : undefined}
+        className={`flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 ${
+          selected ? "" : "hover:bg-nav-accent"
+        }`}>
+        {children}
+      </div>
+      {/* 动作是主点击区的**兄弟**：不嵌套、不抢行的点击（各自 stopPropagation 也不再必需） */}
+      {actions !== undefined && (
+        <span className="flex shrink-0 items-center gap-0.5 pr-1">{actions}</span>
+      )}
     </div>
   );
 }

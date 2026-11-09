@@ -171,3 +171,16 @@ html, body, button, input, textarea, select {
 .layer-drawer { z-index: var(--z-drawer); }
 .layer-modal { z-index: var(--z-modal); }
 .layer-toast { z-index: var(--z-toast); }
+
+/* ══════════════════════════════════════════════════════════════
+ * 语义 soft 底在深色下必须重算（2026-11-09 axe：失败块"浅粉底 + 浅红字"不达标）
+ *
+ * `--color-danger-soft / success-soft / running-soft` 在 tokens.css 里是**浅色**的固定值；
+ * 深色模式下如果把浅底原样搬过去，配浅色的 danger/success 文字就只有 1.5–2.5:1。
+ * 这里按深色重算：底变深（保留色相）、字仍用 danger/success（它们在深色下是亮的）。
+ * ══════════════════════════════════════════════════════════════ */
+[data-theme-mode="dark"] {
+  --color-danger-soft: #3a1f1e;
+  --color-success-soft: #12301f;
+  --color-running-soft: #10263a;
+}

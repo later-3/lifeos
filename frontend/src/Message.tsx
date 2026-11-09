@@ -251,7 +251,7 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
           onRemove={markBar.onRemove} onRemoveAll={markBar.onRemoveAll} />
       )}
       {(failure !== undefined || error !== undefined) && (
-        <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-message-failure px-3 py-2">
+        <div data-testid="failure-reason" data-message-kind="failure" className="rounded-panel bg-danger-soft px-3 py-2">
           <p className="text-meta text-danger">
             {failureLabel(failure)}
             {/* Pi CLI 同款信息（interactive-mode.ts:3768 `Retry failed after N attempts`）：

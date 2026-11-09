@@ -2894,18 +2894,14 @@ export default function App() {
             <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
-                <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
-                  <button aria-label={`配置 ${item.name}`} title="配置助手"
-                    onClick={(event) => { event.stopPropagation(); setConfigAgent(item); }}
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105">
-                    <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
-                  </button>
-                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                    <IconButton label="删除助手" size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
+                <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}
+                  actions={
+                    <>
+                      <IconButton label={`配置 ${item.name}`} size="sm" onClick={() => setConfigAgent(item)}>
+                        <IconSettings size={14} />
+                      </IconButton>
+                      <IconButton label="删除助手" size="sm"
+                      onClick={() => {
                         setConfirm({
                           title: "删除助手",
                           message: `归档「${item.name}」？它的会话与记录全部保留（可恢复），不会删除任何对话数据。`,
@@ -2914,9 +2910,26 @@ export default function App() {
                           run: () => void removeAgent(item),
                         });
                       }}>
-                      <IconTrash size={14} />
-                    </IconButton>
-                  </span>
+                        <IconTrash size={14} />
+                      </IconButton>
+                    </>
+                  }>
+                  {/*
+                    * **不能再嵌套 button**（2026-11-09 axe：`nested-interactive` 34 次）：
+                    * 行本身已经是 `role="button"`，里面再放一个真 `<button>` 是非法结构，
+                    * 读屏与键盘都会出现"两个可点目标叠在一起"。
+                    * 改成语义化 span：`role="button"` + tabIndex + Enter/Space，行为不变，
+                    * 但不构成嵌套交互元素。
+                    */}
+                  {/*
+                    * 头像**不做交互元素**（2026-11-09 axe `nested-interactive`）：
+                    * 行本身就是 role=button，行内再放任何可聚焦/可点的东西都构成"交互元素嵌套"。
+                    * 配置入口移到行尾的 actions 区（hover 出现）—— 与"删除助手"同一处，
+                    * 两个动作在同一区域，也不再用"点头像"这种隐藏入口。
+                    */}
+                  <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
+                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
                 </Row>
               ))}
             </div>

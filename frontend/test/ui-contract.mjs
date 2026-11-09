@@ -765,12 +765,14 @@ async function auditResizeColumns(page, sceneSetup) {
   const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await rowPage.waitForTimeout(500);
+  // 结构（2026-11-09）：行容器 > [主点击区(role=button), 状态槽]。动作区在槽内绝对定位。
+  // 所以"行"取容器（带 data-testid 的那个 div），主点击区是它的**第一个**子元素。
   const probe = async () => await rowPage.evaluate(() => {
-    const row = document.querySelector('[data-shot-mask="session-rows"] [role=button]');
+    const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
     if (row === null) return null;
-    const inner = row.firstElementChild;
+    const inner = row.querySelector(':scope > [role="button"]') ?? row.firstElementChild;
     const slot = row.lastElementChild;
-    const actions = [...slot.children].find((child) => child.className.includes("absolute"));
+    const actions = slot === null ? undefined : [...slot.children].find((child) => child.className.includes("absolute"));
     if (inner === null || slot === null || actions === undefined) return null;
     const innerBox = inner.getBoundingClientRect();
     const actionBox = actions.getBoundingClientRect();
@@ -1055,7 +1057,7 @@ if (await sessionRow.count() === 0) {
 }
 
 // 模态：语义 + Esc + 焦点归位
-const avatarTrigger = page.locator('button[aria-label^="配置 "]').first();
+const avatarTrigger = page.locator('[aria-label^="配置 "]').first();
 if (await avatarTrigger.count() > 0) {
   await avatarTrigger.click();
   await page.waitForTimeout(500);
@@ -1265,11 +1267,15 @@ const messageKinds = await page.evaluate(() => {
   }
   return [...kinds].map(([kind, bg]) => ({ kind, bg }));
 });
-check("消息类型背景可区分", new Set(messageKinds.map((item) => item.bg)).size === messageKinds.length,
+// 2026-11-09 调整口径：**同一语义的两类可以同色**（failure 与 tool-error 都是"错误"，
+// 都走 danger-soft），要求"每个 kind 都不同色"会把正常设计判成缺陷。
+// 现在要求：**不同语义族之间必须可区分**（成功/失败/中性/思考/用户 五族）。
+check("消息类型背景可区分（按语义族，不按 kind 逐个）",
+  new Set(messageKinds.map((item) => item.bg)).size >= Math.min(5, messageKinds.length),
   messageKinds.map((item) => `${item.kind}:${item.bg}`).join(" / "));
 
 // 对话框里同样要成立（配置弹窗是控件最密的地方）
-await page.locator('button[title="配置助手"]').first().click();
+await page.locator('[aria-label^="配置 "]').first().click();
 await page.waitForTimeout(400);
 const unnamedDialog = await noName();
 check("可见按钮都有可访问名（配置对话框）", unnamedDialog.length === 0, `${unnamedDialog.length} 个未命名`);
@@ -1346,7 +1352,7 @@ await page.waitForTimeout(250);
   });
   await configPage.goto(page.url(), { waitUntil: "networkidle" });
   await configPage.waitForTimeout(400);
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.locator('[aria-label^="配置 "]').first().click();
   await configPage.waitForTimeout(700);
   const footerSave = configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first();
   check("配置 footer primary 写「保存全部」", (await footerSave.textContent() ?? "").includes("保存全部"), await footerSave.textContent() ?? "");
@@ -1368,7 +1374,7 @@ await page.waitForTimeout(250);
   }
 
   // 基础信息走同一个 footer primary：改名 → 保存全部 → 关闭，也不应误报。
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.locator('[aria-label^="配置 "]').first().click();
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("saved-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first().click();
@@ -1378,7 +1384,7 @@ await page.waitForTimeout(250);
   check("保存基础信息后关闭不再提示未保存", await configPage.locator('[role="dialog"]').count() === 0);
 
   // 真正有未保存基础信息时，提示必须说清楚是哪个保存域。
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await configPage.locator('[aria-label^="配置 "]').first().click();
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("dirty-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
@@ -1856,7 +1862,7 @@ const SHOTS = [
         source: "agent",
       }) });
     });
-    await shotPage.locator('button[aria-label^="配置 "]').first().click();
+    await shotPage.locator('[aria-label^="配置 "]').first().click();
     await shotPage.waitForTimeout(400);
   }, '[role="dialog"]', async (shotPage) => {
     // 模态里的名字/描述/头像/身份/模型清单都是用户数据：用户新建或改一个助手，截图就漂

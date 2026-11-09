@@ -294,7 +294,9 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
                 <button key={it.k} type="button"
                   className={`relative flex h-9 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
                     section === it.k
-                      ? "font-semibold text-accent max-sm:bg-surface"
+                      // 选中态文字用 ink-900（accent 在 nav-bg 上只有 4.33，不到 AA 4.5）；
+                      // 强调交给左侧 2px 指示条 —— 颜色是稀缺信号，不该由文字颜色承担
+                      ? "font-semibold text-ink-900 max-sm:bg-surface"
                       : "text-ink-700 hover:bg-nav-accent"} sm:w-full`}
                   aria-current={section === it.k ? "page" : undefined}
                   onClick={() => onSection(it.k)}>
