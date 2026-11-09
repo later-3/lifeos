@@ -20,7 +20,8 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { DisplayPrefsPanel, loadPrefs, savePrefs } from "./display-prefs-panel";
+import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
+import { fetchUiPrefs, persistDisplayPrefs, persistTheme } from "./ui-prefs-client";
 import { SettingsSurface } from "./settings-surface";
 import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
@@ -469,8 +470,26 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
     applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
-    saveTheme(theme);
+    persistTheme(theme);              // 缓存 + 防抖同步到 ~/.lifeos/config/ui.json
   }, [theme]);
+  /**
+   * 启动时拉一次服务端偏好（2026-11-09 用户："是否重启就丢了配置？"）。
+   *
+   * 服务端是事实源（`~/.lifeos/config/ui.json`），localStorage 只是首屏缓存。
+   * **只在服务端有值时覆盖** —— 首次使用（服务端没存过）时保持本地已调过的值，
+   * 不拿默认值把用户刚才的调整盖掉（那是"重置"而不是"恢复"）。
+   * 失败静默：偏好丢了不该让界面打不开，本地缓存仍在。
+   */
+  useEffect(() => {
+    let alive = true;
+    void fetchUiPrefs().then((remote) => {
+      if (!alive || remote === undefined) return;
+      if (remote.theme !== undefined) setTheme(remote.theme);
+      if (remote.display !== undefined) setPrefs(remote.display);
+    });
+    return () => { alive = false; };
+  }, []);
+
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -897,7 +916,8 @@ export default function App() {
     return () => { alive = false; };
   }, []);
   // —— 显示偏好：落盘 + 把字号与阅读宽度写到根节点（组件只用 token，不感知缩放） ——
-  useEffect(() => { savePrefs(prefs); }, [prefs]);
+  // 显示偏好：写缓存（刷新不丢）+ 防抖同步到服务端（换设备/换 origin 也在）
+  useEffect(() => { persistDisplayPrefs(prefs); }, [prefs]);
   useEffect(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);

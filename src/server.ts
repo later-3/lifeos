@@ -30,6 +30,7 @@ import {
 } from "./profile.ts";
 import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
+import { readUiPrefs, writeUiPrefs } from "./ui-prefs.ts";
 import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
@@ -777,6 +778,36 @@ app.use(async (c, next) => {
     draining: isDraining(),
     ...(drainingForMs() !== undefined ? { drainingForMs: drainingForMs() } : {}),
   }));
+  /*
+   * 用户界面偏好（主题 / 显示）—— **跨设备、跨入口的事实源**。
+   *
+   * 2026-11-09 用户："是否用户重启了，这些配置就丢了？" 实测：重启不丢，但换浏览器/换设备/清缓存
+   * 全部回默认，且 5173 / 43120 / lifeos.ai4child.asia 是三个 origin 互不相通。
+   * 落点选 `~/.lifeos/config/ui.json`：与 profile / file-roots 同一层（一个家目录一份），
+   * **不塞 config/settings.json**（那是 Pi 的模型配置）。
+   *
+   * 浏览器 localStorage 保留为首屏缓存（index.html 的防闪脚本读它，避免等网络往返才上色）。
+   */
+  app.get("/api/ui-prefs", async (c) => c.json(await readUiPrefs()));
+
+  app.put("/api/ui-prefs", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { theme?: unknown; display?: unknown } | undefined;
+    if (body === undefined) {
+      const error = problem("invalid_request", "需要 JSON 请求体（可以只带 theme 或 display）", 400);
+      return c.json(error.body, error.status);
+    }
+    // 只认这两个键：多余字段忽略（而不是 400）—— 前端将来加字段不应让旧后端拒绝整次保存
+    const patch: { theme?: unknown; display?: unknown } = {};
+    if (body.theme !== undefined) patch.theme = body.theme;
+    if (body.display !== undefined) patch.display = body.display;
+    if (patch.theme === undefined && patch.display === undefined) {
+      const error = problem("invalid_request", "请求体里既没有 theme 也没有 display", 400);
+      return c.json(error.body, error.status);
+    }
+    const saved = await writeUiPrefs(patch);
+    return c.json(saved);
+  });
+
   // 排空：拒绝新回合，已在跑的继续跑到结束。supervisor 据 running 计数决定何时重启（进程重启后排空标记自然清除）。
   app.post("/api/runtime/drain", (c) => {
     setDraining(true);

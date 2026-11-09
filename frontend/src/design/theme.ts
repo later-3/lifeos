@@ -31,7 +31,9 @@ function oklchToRgb(lstar: number, c: number, hDeg: number): [number, number, nu
   return [f(r), f(g), f(bl)].map((v) => Math.max(0, Math.min(255, Math.round(v * 255)))) as [number, number, number];
 }
 
-function hex(lstar: number, c: number, hDeg: number): string {
+/** OKLCH(L*, C, H) → hex。导出给 `test/boot-theme.test.mjs` 用：
+ *  首屏脚本的取值必须与这里算的一致，测试不能自己另写一份转换。 */
+export function hex(lstar: number, c: number, hDeg: number): string {
   return "#" + oklchToRgb(lstar, c, hDeg).map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
