@@ -152,3 +152,51 @@
   「耗时」又被压成「1-2 / 小 / 时」三行。
 - 机器检查：`frontend/test/ui-contract.mjs`（「正文表格：最窄一列不被压到逐字竖排（宽列下）」、
   「正文表格：正文列变窄后依然不压字」）。
+
+### 2.22 浮层（popover/modal/toast）只允许用 design/surface.ts 的配方与层级（必须）
+
+- 场景：任何"浮在内容之上"的表面 —— 下拉面板、预览气泡、模态、Toast、抽屉。
+- 规则：
+  - **必须** 从 `design/surface.ts` 的 `SURFACE[tone]` 取圆角/边界/阴影/内距，`LAYER_CLASS[name]` 取层级；
+  - **必须** 边界统一用 `ring-1`（`border` 占 1px 布局，两个浮层并排时边框会差 1px）；
+  - **必须** 阴影用 `--surface-*`（深浅色各一套，深色带 1px 白色描边），**必须不** 用 Tailwind 的
+    `shadow-md/lg/xl`（固定黑投影，深色底下几乎不可见 —— 实测 `#292828` 上肉眼无差）；
+  - **必须** 层级只用 `rail / popover / drawer / modal / toast` 五个语义名，**必须不** 写裸 `z-<数字>`
+    （现状教训：Toast 与 Modal 同为 50 → 模态打开时看不到 toast）；
+  - **应该** 用 `Popover` primitive（`design/popover-view.tsx`）而不是自己拼定位 + 关闭逻辑
+    （定位算法在 `design/popover.ts`，纯函数可穷举；组件补了外点关闭/Esc/焦点归还）。
+- 依据：2026-11-09 审计 —— 5 个浮层 5 套写法（border+shadow-md / ring+shadow-lg / ring+shadow-xl …），
+  而 `tokens.css` 的 `--surface-popover/-modal` 早已算好却 0 使用。
+- 机器检查：`test/design-system.test.mjs`（禁裸 shadow-*、禁裸 z-、LAYER 与 index.css 一致、遮罩只有一种）。
+
+### 2.23 token 写了就必须有人用；不能用"看起来合理"的数值当上限（必须）
+
+- 场景：往 tokens.css / theme.ts 加新的设计 token；给任何可拖/可调的东西定上限。
+- 规则：
+  - **必须** 让每个新 token 至少有一个消费者（组件或 primitive）；只想"留给未来"的必须先说明理由
+    并写进测试的 `ALLOW_UNUSED`（默认不允许）；
+  - **必须** 让上限与"它所在容器的真实尺寸"同源：嵌套区域的上限由外层算出，
+    而**外层算尺寸的公式只能有一处**（本项目：`layout()`；`maxWidthOf()` 必须向它要值）；
+  - **必须不** 在预算公式里加减"命中区厚度/装饰宽度"这类**不影响布局**的量
+    （教训：`maxWidthOf` 多减 `HANDLE_HIT(8)`，导致"拖到 436 就停而面板实际能到 444"，
+    同类缺陷发生过两次：c1 的 440 常量、c4t 的重复预算）；
+  - **应该** 用"关系断言"而不是"数值断言"锁住设计意图（如 hover < 选中 < 选中 ≈ hover×2），
+    数值可以调、关系不能反。
+- 依据：2026-11-09 审计 —— `--surface-popover/-modal`、`--motion-*`、`--tracking-*`、`--radius-full`
+  写好了但 0 使用；五套浮层由此而生。上限漂移两次都造成"拖不动"。
+- 机器检查：`test/design-system.test.mjs`（token 使用率、状态强度关系、分层方向、层级一致性）。
+
+### 2.24 视觉回归用固定夹具 + 矩阵；基线入库（必须）
+
+- 场景：截图基线 / 视觉回归。
+- 规则：
+  - **必须** 用 route mock 的**固定夹具**渲染（agents / sessions / messages / profile / ui-prefs），
+    **必须不** 让真实家目录的用户数据进基线（本轮两次假红都源于此）；
+  - **必须** 覆盖「页面 × 深浅色 × 视口」矩阵（`pnpm test:visual`：5 × 2 × 2 = 20 张）；
+  - **必须** 基线入库（`frontend/test/visual-matrix/`），输入产物（`.visual-matrix-shots/`）忽略 ——
+    基线不入库时"换机器首次跑"等于没测；
+  - **必须** 差异时先看报告（左基线/右本次），先判断"差异是我想改的吗 / 旧基线本身是不是错的 /
+    新图里有没有用户数据"，三者答完再决定刷新还是改实现。
+- 依据：2026-11-09 —— `folded.png` 长期"稳定通过"是因为它一直在比两张空白页；
+  头像"白底白字"在零散图里没人看，在矩阵里一眼可见。
+- 机器检查：`scripts/visual-matrix.mjs`（20 张全一致才算通过）。
