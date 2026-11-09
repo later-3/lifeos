@@ -137,6 +137,10 @@
 
   --radius-inner: 4px;
   --radius-control: 6px;
+  /* 列表行单独一档（2026-11-09 实测修正）：行与按钮**共用 6px** 时，行看起来像按钮。
+     三家的一致做法是"行 8 / 控件 6"，不是同一档：
+     LobeHub nav 行 8px·按钮 6px（桌面版实测）、LibreChat 行 8px（`rounded-lg`）、novu 7.998px。 */
+  --radius-row: 8px;
   --radius-panel: 10px;
   --radius-bubble: 14px;
   --radius-anno: 12px;

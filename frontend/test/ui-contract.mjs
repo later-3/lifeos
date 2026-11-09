@@ -269,6 +269,47 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     .find((b) => (b.getAttribute("aria-label") ?? "") === "设置");
   return btn !== undefined && btn.getAttribute("aria-current") === null;
 }));
+// rail 激活态的**可见性**（2026-11-09 实测补的契约）。
+//
+// 反例（C 见 cases/2026-11-09.md）：rail 曾用 `bg-accent-soft text-accent`，纯中性预设下
+// accentC=0 → accent 退化成中灰 L*48.8，比未选中的 ink-500(L*42) **还浅**，active 底又比
+// rail 底更亮（ΔL* 只有 3.8）—— 两个通道同时反向，选中态几乎不可见，且没有任何门禁拦得住。
+// 这里断言**两个通道都活着**：① 激活底 vs rail 底有明确明暗差（浅色更暗 / 深色更亮）；
+// ② 激活图标比未激活图标更"重"（更暗/更亮，不是更浅）。数值门限取「列表行 ΔL* 8.5 的一半」。
+{
+  const railState = async () => await page.evaluate(() => {
+    const L = (color) => {
+      const parts = (color ?? "").match(/[\d.]+/g);
+      if (parts === null || parts.length < 3) return null;
+      const [r, g, b] = parts.slice(0, 3).map(Number).map((v) => v / 255);
+      const lin = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      const Y = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+      return Y > 0.008856 ? 116 * Math.cbrt(Y) - 16 : 903.3 * Y;
+    };
+    const nav = document.querySelector('nav[aria-label="左侧图标轨"]');
+    const buttons = [...nav.querySelectorAll("button")];
+    const active = buttons.find((b) => b.getAttribute("aria-pressed") === "true") ?? buttons[0];
+    const idle = buttons.find((b) => !b.hasAttribute("aria-pressed"));
+    let railEl = nav;
+    while (railEl !== null && getComputedStyle(railEl).backgroundColor === "rgba(0, 0, 0, 0)") railEl = railEl.parentElement;
+    const railBg = railEl === null ? null : getComputedStyle(railEl).backgroundColor;
+    return {
+      railL: L(railBg),
+      activeBgL: L(getComputedStyle(active).backgroundColor),
+      activeIconL: L(getComputedStyle(active).color),
+      idleIconL: idle === undefined ? null : L(getComputedStyle(idle).color),
+      dark: document.documentElement.getAttribute("data-theme") === "dark" || document.documentElement.classList.contains("dark"),
+    };
+  });
+  const lightState = await railState();
+  check("rail 激活底与轨底有明确明暗差（≥4，浅色方向为更暗）", lightState.railL !== null && lightState.activeBgL !== null
+    && Math.abs(lightState.activeBgL - lightState.railL) >= 4
+    && lightState.activeBgL < lightState.railL, JSON.stringify(lightState));
+  check("rail 激活图标比未激活图标更重（互比 ≥1.8，不是更浅）", lightState.activeIconL !== null && lightState.idleIconL !== null
+    && lightState.activeIconL < lightState.idleIconL - 8,
+    `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
+}
+
 // 会话列（② 的列表）是否存在：分组头是它的标志（`data-testid="group-header"`）
 const listVisible = async () => await page.evaluate(() => document.querySelectorAll('[data-testid="group-header"]').length > 0);
 // 点"对话"列开关（label 随状态在 展开对话 / 收起对话 之间变）

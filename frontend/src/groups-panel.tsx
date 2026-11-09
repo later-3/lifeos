@@ -70,7 +70,12 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
           {open ? <IconChevronRight size={16} className="rotate-90" /> : <IconChevronRight size={16} />}
         </span>
-        <span className="min-w-0 flex-1 truncate text-content font-semibold text-ink-900">{name}</span>
+        {/* 分组头 = **容器**，字级要比行标题**小一号**、颜色更弱（2026-11-09 实测修正）。
+            旧值是 text-content(15px)/600 —— 比行标题 text-body(13.5px) 还大，容器抢了内容的戏。
+            两家产品参考：LobeHub 分组标签 12px/500/中灰（桌面版实测）、
+            LibreChat 分区标题 12px/500/text-secondary（`Nav/KeyboardShortcutsDialog.tsx:240`）。
+            我们用 text-meta(12px)/500 + nav-muted：字级与颜色两条都弱下去，名字仍可扫。 */}
+        <span className="min-w-0 flex-1 truncate text-meta font-medium text-nav-muted">{name}</span>
       </button>
       {/* 新建会话：在项目名之后、计数之前。
           不放最右是因为最右是「移除项目」（hover 出现），两个图标紧挨着误点代价不对称。 */}
@@ -195,7 +200,7 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
     <div role="button" tabIndex={0} data-testid={testId} aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}
-      className={`group/session flex h-14 w-full cursor-pointer items-center gap-2 rounded-control px-2 transition-colors ${
+      className={`group/session flex h-14 w-full cursor-pointer items-center gap-2 rounded-row px-2 transition-colors ${
         selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
       }`}>
       <span className="flex min-w-0 flex-1 flex-col">

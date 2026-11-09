@@ -13,6 +13,12 @@ import type { ReactNode } from "react";
  *
  * 分组（novu `navigation-group.tsx:33-38`）：业务列在一组、系统页推底（`mt-auto`，同 novu `last:mt-auto`）。
  * 数值（layout-model §3）：轨宽 44、图谱 16、命中盒 36、角标用**边框式**（Hoppscotch `TabsNav.vue:96-104`）。
+ *
+ * 激活态**不用** `accent` / `accent-soft`（2026-11-09 实测修正）：中性预设 `accentC = 0` 时
+ * accent 退化成中灰 L\*48.8，比未选中图标的 `ink-500`（L\*42）**还浅** —— 唯一的信号只剩
+ * 底色 3.8 的 ΔL\*（列表行是 8.5），方向还是"变亮"（三家都是变暗/变亮但更强）。
+ * 现在改用与列表行**同一套选中语言**：底色 `nav-selected` + 文字升到 `ink-900`（L\*42 → 18，互比 2.34）。
+ * 两个通道都活，且与 ② 区的选中语义一致（layout-model §3「竖向 rail 用底色 + 图标变色」）。
  */
 export type RailTab = {
   key: string;
@@ -45,7 +51,7 @@ export function NavRail({ groups, bottom }: {
         title={isToggle ? (tab.active ? `收起${tab.label}列` : `展开${tab.label}列`) : tab.label}
         className={`relative flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
           tab.active
-            ? "bg-accent-soft text-accent"
+            ? "bg-nav-selected text-ink-900"
             : "text-ink-500 hover:bg-surface hover:text-ink-900"
         }`}>
         {tab.icon}

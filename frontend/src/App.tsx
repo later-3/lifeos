@@ -330,6 +330,31 @@ function legacyGroupsOpen(): boolean {
   } catch { return true; }
 }
 
+/** 分组折叠状态的持久化键（只存收起的项目 id）。 */
+const COLLAPSED_GROUPS_KEY = "lifeos.collapsedGroups";
+
+function readCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    if (raw === null) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (value === true) out[key] = true;   // 只认 true；其它一律当展开
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function writeCollapsedGroups(value: Record<string, boolean>): void {
+  try {
+    const keys = Object.keys(value).filter((key) => value[key] === true);
+    if (keys.length === 0) localStorage.removeItem(COLLAPSED_GROUPS_KEY);
+    else localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Object.fromEntries(keys.map((key) => [key, true]))));
+  } catch { /* 忽略：存不下时退化为不持久，不影响功能 */ }
+}
+
 function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
     // 列内边距 8（design-language §5.1 / D21）：与助手行、分组头同一左缘。
@@ -742,7 +767,15 @@ export default function App() {
    * P-02 D12 说"折叠状态存单键数组"；这里用"只存收起的组"（默认全展开），
    * 因为项目通常 3–5 个，全展开是常态，只记住用户明确收起的那几个更省存储也更直观。
    */
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  /**
+   * 分组折叠状态，**按项目 id 持久化**（layout-model §1.2-3「切换 tab 不丢列表状态」；
+   * novu `NavigationGroup` 同法：`navigation-group.tsx:5-21` 用 localStorage 存收起集）。
+   *
+   * 为什么不能只放 state：刷新/切 tab/切助手后折叠全被重置，用户每次都要重新收一遍。
+   * 只存**收起的**那几个（默认全展开）——项目通常 3–5 个，全展开是常态。
+   */
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(readCollapsedGroups);
+  useEffect(() => { writeCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
   const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
   const [addingProject, setAddingProject] = useState(false);
   const [configAgent, setConfigAgent] = useState<Agent>();

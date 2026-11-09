@@ -120,7 +120,7 @@ export function Row({ selected = false, className = "", children, onClick, testI
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
       }}
       data-testid={testId} aria-current={selected ? "true" : undefined}
-      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-body transition-colors sm:h-8 ${
+      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-row px-2 text-body transition-colors sm:h-8 ${
         selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
       } ${className}`}>
       {children}
