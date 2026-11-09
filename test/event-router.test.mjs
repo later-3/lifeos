@@ -116,3 +116,27 @@ test("T77 失败终态补丁必须带 failure —— 前端靠它区分「失败
   assert.equal(actions[0].patch.failure.kind, "auth", "失败补丁必须带 failure；不带就会被当成 unreadDone");
   assert.ok(actions[0].patch.unread !== undefined);
 });
+
+// ── D32：Agent 请求打开检视面板（review_open 事件分流）────────────────────
+
+test("D32·R1 review_open 分流成 review-open 动作（带 taskId/taskDir/agentId/projectId）", () => {
+  const event = {
+    seq: 5, type: "review_open", taskId: "0010",
+    taskDir: "/h/agents/a/projects/p/tasks/0010-x", agentId: "a", projectId: "p",
+  };
+  const actions = routeEvent(event, { visible: true }, 0);
+  assert.deepEqual(actions, [{
+    kind: "review-open", taskId: "0010", taskDir: "/h/agents/a/projects/p/tasks/0010-x", agentId: "a", projectId: "p",
+  }]);
+});
+
+test("D32·R2 review_open 缺 taskId 或 taskDir → 丢弃（不猜）", () => {
+  const base = { seq: 5, type: "review_open", agentId: "a", projectId: "p" };
+  assert.deepEqual(routeEvent({ ...base, taskDir: "/x" }, { visible: true }, 0), [{ kind: "drop", reason: "stale" }]);
+  assert.deepEqual(routeEvent({ ...base, taskId: "0001" }, { visible: true }, 0), [{ kind: "drop", reason: "stale" }]);
+});
+
+test("D32·R3 基线之前的 review_open 被丢弃（快照优先，C119 推广）", () => {
+  const event = { seq: 3, type: "review_open", taskId: "0001", taskDir: "/x", agentId: "a", projectId: "p" };
+  assert.deepEqual(routeEvent(event, { visible: true }, 5), [{ kind: "drop", reason: "stale" }]);
+});
