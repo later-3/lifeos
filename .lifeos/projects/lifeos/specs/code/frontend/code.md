@@ -200,3 +200,30 @@
 - 依据：2026-11-09 —— `folded.png` 长期"稳定通过"是因为它一直在比两张空白页；
   头像"白底白字"在零散图里没人看，在矩阵里一眼可见。
 - 机器检查：`scripts/visual-matrix.mjs`（20 张全一致才算通过）。
+
+### 2.25 可点击容器内部不得再放可点击元素（必须）
+
+- 场景：列表行、卡片、整块可点的区域，右上角/行尾还要放图标按钮（配置、删除、历史）。
+- 规则：
+  - **必须** 把"主点击区"与"行内动作"渲染成**兄弟**：外层容器只负责底色与 hover 分组，
+    主点击区是 `role="button"`（或 `<button>`），动作是有序的 `<button>` 列表；
+  - **必须不** 让 `role="button"` / `<button>` 套住另一个 `button` / `a[href]` / `role="button"`
+    —— axe 的 `nested-interactive` 明确禁止，读屏与键盘会出现"两个目标叠在一起"；
+  - **必须** 单个 primitive 提供 `actions` 之类的槽位（本项目 `Row` 的 `actions`），
+    页面不要自己往 children 里塞按钮 —— 否则下一个调用点又会套回去；
+  - **应该** 把"隐藏入口"（点头像配置）移到动作区，让动作集中在一处（找得到、也可断言）。
+- 依据：2026-11-09 axe 审计 34 处 `nested-interactive`（助手行头像按钮、会话行三按钮）。
+- 机器检查：`pnpm audit:a11y`（serious/critical 含 `nested-interactive` 必须为 0）。
+
+### 2.26 语义 soft 底（danger-soft / success-soft / running-soft）必须给深色值（必须）
+
+- 场景：任何"浅底 + 同色深字"的语义块（失败提示、成功徽标、进行中标签）。
+- 规则：
+  - **必须** 让 `*-soft` 在深色模式下重算（本项目 `index.css` 的 `[data-theme-mode="dark"]`），
+    **必须不** 直接把浅色的固定值搬到深色（深色下"浅粉底 + 浅红字"只有约 1.5:1）；
+  - **必须** 用语义 token（`bg-danger-soft`）而不是曾经的一次性色板（`--color-message-failure`），
+    否则深色重算覆盖不到；
+  - **应该** 成功的同类块（`tool-done`）与失败的同类块（`tool-error`）共用同一族 soft，
+    语义相同的两块**同色是正确的**，不要为了"看得出区别"再造一档。
+- 依据：2026-11-09 axe 审计（失败块在深色下 11 处 color-contrast，含 `bg-message-failure`）。
+- 机器检查：`pnpm audit:a11y` + `test/design-system.test.mjs`（对比度矩阵）。
