@@ -10,6 +10,7 @@
     "@hono/node-server": "^1.19.1",
     "@memtensor/memos-local-plugin": "2.0.16-beta.1",
     "hono": "^4.9.7",
+    "typebox": "1.3.27",
     "undici": "^8.12.3"
   },
   "scripts": {
@@ -27,13 +28,15 @@
     "test:ui": "node frontend/test/ui-contract.mjs",
     "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:draft && pnpm test:jump && pnpm test:pwa",
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:draft && pnpm test:jump && pnpm test:pwa && pnpm test:review",
     "test:mobile": "node frontend/test/mobile-contract.mjs",
     "test:jump": "node frontend/test/jump-to-latest.mjs",
     "test:draft": "node frontend/test/new-session-draft.mjs",
     "test:pwa": "node frontend/test/pwa-contract.mjs",
+    "test:review": "node frontend/test/review-contract.mjs",
     "state": "node scripts/session-state.mjs",
-    "state:no-ui": "node scripts/session-state.mjs --no-ui"
+    "state:no-ui": "node scripts/session-state.mjs --no-ui",
+    "trace": "node scripts/session-trace.mjs"
   },
   "type": "module",
   "devDependencies": {

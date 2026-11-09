@@ -17,6 +17,7 @@
 | **会话列表 / 状态点 / 状态数量** | `knowledge/architecture/agent.md` §4（`SessionRow` 字段与来源、四态唯一实现）→ `knowledge/architecture/conversation.md` §13b（`row` 补丁事件的三条发送规则）→ `specs/code/api/api.md` 2.7/2.8（一个形状一处实现；局部补丁）→ `specs/code/testing/testing.md` 2.15（界面契约必须断言到几何，**0×0 的假断言会让回归恒绿**）→ 规模/虚拟化计划见 `knowledge/architecture/session-list-rendering.md` |
 | 测试用例 | `.lifeos/projects/lifeos/specs/code/testing/testing.md`；检视时的证据规则见 `.lifeos/projects/lifeos/specs/review/review.md` |
 | 检视 / 评审 | `.lifeos/projects/lifeos/specs/review/review.md` → 按范畴核对 `.lifeos/projects/lifeos/specs/code/` 对应条文 |
+| **检视模式（Task diff 检视）** | `knowledge/architecture/review-mode.md`（检视对象在哪、模块分层、评论数据模型与四条规则、Pi 工具清单、界面结构）→ 改代码时再按 §3 的分层读对应模块 |
 | 架构 / 底座 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md`、`.lifeos/projects/lifeos/knowledge/architecture/foundation.md`（事实现状）→ `.lifeos/projects/lifeos/specs/code/architecture/architecture.md`（约束） |
 | 家目录结构 / 安装 | `.lifeos/projects/lifeos/knowledge/architecture/directory-structure.md` → `.lifeos/projects/lifeos/knowledge/architecture/foundation.md` → `pnpm home:check` |
 | 起并行开发实例（worktree / 端口 / 独立家目录） | `.lifeos/projects/lifeos/specs/development-harness/development-harness.md` §7（规则）→ `.lifeos/projects/lifeos/tools/dev-port/AGENTS.md`（命令与排障） |

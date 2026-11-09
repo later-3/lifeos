@@ -17,9 +17,27 @@ export type RunFacts = {
   queue: Record<string, QueueItem[] | undefined>;
   /** 会话归属（任务 0008）：状态映射要用它做 Session → Project → Agent 的聚合 */
   meta: Record<string, { agentId: string; projectId?: string | undefined } | undefined>;
+  /**
+   * 每会话**本轮开始的壁钟时刻**（ms，Task 0015 · P3）。
+   *
+   * 为什么要有：状态条要显示"这一轮已经跑了多久"，而这个秒数不能由组件重新挂载起算——
+   * 切会话再切回来就从 0 重数（同一个回合两个数字）。服务端一直在 `running[].startedAt` 里
+   * 给这个事实（`src/session-runtime.ts:6` 的 `RunSnapshot`），只是以前没被前端留下。
+   * 只从"服务端说在跑"的三条路写入：快照、`/api/runtime` 对账、running 事件。
+   */
+  startedAt: Record<string, number | undefined>;
 };
 
-export const emptyRunFacts = (): RunFacts => ({ snapRunning: [], lastTurn: {}, unread: {}, queue: {}, meta: {} });
+export const emptyRunFacts = (): RunFacts => ({ snapRunning: [], lastTurn: {}, unread: {}, queue: {}, meta: {}, startedAt: {} });
+
+/** 记一次"本轮开始时刻"（只接受合法日期；非法就当没有）。 */
+function withStartedAt(startedAt: RunFacts["startedAt"], sessionId: string, iso: string | undefined): RunFacts["startedAt"] {
+  if (iso === undefined) return startedAt;
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return startedAt;
+  if (startedAt[sessionId] === ms) return startedAt;
+  return { ...startedAt, [sessionId]: ms };
+}
 
 /** 把事件/快照里带的归属写进 meta（只补全，不清空：归属一旦知道就一直有效）。 */
 function withMeta(meta: RunFacts["meta"], sessionId: string | undefined, agentId: string | undefined, projectId: string | undefined): RunFacts["meta"] {
@@ -102,7 +120,7 @@ export function settleStopped(facts: RunFacts, sessionId: string | undefined, no
 export function applySnapshotFacts(
   facts: RunFacts,
   snapshot: {
-    running: Array<{ sessionId: string; agentId?: string; projectId?: string }>;
+    running: Array<{ sessionId: string; agentId?: string; projectId?: string; startedAt?: string }>;
     unread: Array<{ sessionId: string; agentId?: string; projectId?: string }>;
   },
   now: number,
@@ -125,17 +143,27 @@ export function applySnapshotFacts(
  */
 export function applyRunningFacts(
   facts: RunFacts,
-  running: Array<{ sessionId: string; agentId?: string; projectId?: string }>,
+  running: Array<{ sessionId: string; agentId?: string; projectId?: string; startedAt?: string }>,
   now: number,
 ): RunFacts {
   let meta = facts.meta;
-  for (const entry of running) meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+  let startedAt = facts.startedAt;
+  for (const entry of running) {
+    meta = withMeta(meta, entry.sessionId, entry.agentId, entry.projectId);
+    startedAt = withStartedAt(startedAt, entry.sessionId, entry.startedAt);
+  }
   const runningIds = [...new Set(running.map((entry) => entry.sessionId))];
   const lastTurn: Record<string, TurnFact | undefined> = { ...facts.lastTurn };
   for (const [sessionId, fact] of Object.entries(lastTurn)) {
     if (fact?.state === "running" && !runningIds.includes(sessionId)) lastTurn[sessionId] = { ...fact, state: "done", at: now };
   }
-  return { ...facts, snapRunning: runningIds, lastTurn, meta };
+  return { ...facts, snapRunning: runningIds, lastTurn, meta, startedAt };
+}
+
+/** 本轮开始时刻（ms）；没有就不给（调用方回落到自己的基准）。 */
+export function startedAtOf(facts: RunFacts, sessionId?: string): number | undefined {
+  if (sessionId === undefined || sessionId === "") return undefined;
+  return facts.startedAt[sessionId];
 }
 
 /** 批量写入会话归属（列表加载、事件携带时）：只补全，不清空。 */

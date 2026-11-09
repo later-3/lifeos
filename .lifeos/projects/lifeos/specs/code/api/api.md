@@ -80,3 +80,14 @@
   正确做法是让**徽标与行的点永远同步**（都看已读，或都不看）。
 - **应该**用视觉区分语义相近的徽标（本项目"正在跑"实心绿+呼吸 vs "已完成"浅绿静态），
   且**应该**只靠深浅与动效，不新增色相（颜色是稀缺信号）。
+
+### 2.11 `POST …/messages` 的"打架"失败族：`409 session_running`（必须）
+
+- 规则：同一会话**已有一轮在跑**时，不带 `behavior` 的 `POST …/messages` → `409 {error:{code:"session_running", message}}`；
+  message 必须写明三种出口（等它跑完 / 生成中按 Enter 插话 / 点停止打断后重发）。
+- 规则：带 `behavior=steer|followUp` 时**不受**这条限制：在跑 → 202，空闲 → `409 session_idle`（客户端改发新回合）。
+- 规则：`409` 只用于"打架"（这一轮还没结束）；**不得**用于表达"这类会话不允许发言"——
+  会话来源不是权限（`specs/code/backend/code.md` 2.18）。
+- 规则：受理成功（202）要带回 `turnId`，排查工具与回流绑定都靠它。
+- 依据：Task 0014。2026-11-07 之前这里是 `409 peer_conversation_readonly`（无条件拒绝），已删除。
+- 机器检查：`test/api.test.mjs`（空闲 202 / 在跑 409）、`test/session-origin.test.mjs`（并发唯一 202、T6）。

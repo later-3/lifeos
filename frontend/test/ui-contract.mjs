@@ -1086,13 +1086,18 @@ check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 
 const bars = await page.evaluate(() => {
   const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')];
   const session = document.querySelector('[data-testid="session-bar"]');
-  const first = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  const firstRaw = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  // `.find()` 没命中时返回 `undefined` 而不是 `null`：以前只判 `=== null`，在“没有任何助手带过程条”的
+  // 会话里直接抛 TypeError（Task 0015 · P3 在全新开发实例里踩到），断言本意是“没有就不比顺序”。
+  const first = firstRaw ?? null;
   return {
     noLegacy: document.querySelector('[data-testid="turn-status-bar"]') === null && document.querySelector('[data-testid="process-bar"]') === null,
     asst: asst.length,
     inMessageFlow: asst.every((m) => m.querySelector('[data-testid="response-bar"]')?.closest("main") !== null),
     // ResponseBar 在正文**之前**（同一个 message 内比较节点顺序）
-    barFirst: first === null ? null : [...first.parentElement.children].indexOf(first) < [...first.parentElement.children].length - 1,
+    // `find()` 在没有 assistant 消息的会话上返回 `undefined`（不是 `null`）：两种都算"没有找到"。
+    // 全新家目录（开发实例首跑）没有真实对话，这里必须容错，否则整份契约在空环境直接崩。
+    barFirst: first === null || first === undefined ? null : [...first.parentElement.children].indexOf(first) < [...first.parentElement.children].length - 1,
     sessionInDock: session?.closest('[data-testid="composer-dock"]') !== null,
     sessionOutsideMain: session?.closest("main") === null,
     // 同一份数字不得两处出现：回复的 bar 里不该有会话累计指标
@@ -2185,6 +2190,96 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     }
     await countPage.close();
   }
+}
+
+// ─── Task 0014：身份渲染 + 失败可见（都用 route mock，不建真会话、零持久副作用）───
+{
+  const SID = "fixture-0014-7000-8000-000000000014";
+  const agentId = new URL(page.url()).searchParams.get("agent") ?? "lifeosagent";
+  const row = {
+    sessionId: SID,
+    title: { raw: "与 Coder 的对话", display: "与 Coder 的对话" },
+    project: { id: "workspace", name: "workspace" },
+    task: null,
+    peer: { kind: "agent", id: "coder", name: "Coder" },
+    counts: { user: 2, assistant: 2, toolResult: 0, system: 0, total: 4 },
+    time: { createdAt: "2026-11-07T08:00:00.000Z", firstMessageAt: "2026-11-07T08:00:00.000Z",
+      lastMessageAt: "2026-11-07T08:05:00.000Z", lastActivityAt: "2026-11-07T08:05:00.000Z", fileModifiedAt: "2026-11-07T08:05:00.000Z" },
+    activity: { state: "idle" },
+    isDefault: false,
+  };
+  // 关键夹具：**第一条 user 是 coder 发起的**（speaker.kind=agent），第二条是用户自己
+  const detail = {
+    sessionId: SID,
+    messages: [
+      { role: "user", text: "这是 coder 派过来的活", blocks: [{ type: "text", text: "这是 coder 派过来的活" }], id: "fx-u1", speaker: { kind: "agent", agentId: "coder", name: "Coder", via: "lifeos_send" } },
+      { role: "assistant", text: "收到，我来做", blocks: [{ type: "text", text: "收到，我来做" }], id: "fx-a1", stopReason: "stop" },
+      { role: "user", text: "我接着催一句", blocks: [{ type: "text", text: "我接着催一句" }], id: "fx-u2", speaker: { kind: "user" } },
+      { role: "assistant", text: "好", blocks: [{ type: "text", text: "好" }], id: "fx-a2", stopReason: "stop" },
+    ],
+    meta: { thinkingLevel: "off", running: false, context: null },
+  };
+  let sendRejects = true;
+  await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    const items = body.items ?? [];
+    if (!items.some((item) => item.sessionId === SID)) items.push(row);
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+  });
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
+    const sid = new URL(route.request().url()).pathname.split("/").pop();
+    if (sid === SID) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail) });
+    return route.fallback();
+  });
+  // 发送被拒（模拟"这一轮还没结束"）：断言失败**在界面上看得见**
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/, (route) => {
+    if (!sendRejects) return route.fallback();
+    return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({
+      error: { code: "session_running", message: "这一轮还没结束，新消息没有发出：等它跑完再发 / 生成中按 Enter 插话（steer）/ 点停止（Esc）打断后重发" },
+    }) });
+  });
+
+  await page.goto(`${APP_URL}/?agent=${agentId}&project=workspace&session=${SID}`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+
+  const heads = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-header"]')]
+    .map((node) => (node.textContent ?? "").trim()));
+  check("身份：Agent 发起的那一轮显示的是发起方名字（不是用户自己）",
+    heads.some((text) => text.includes("Coder")), `headers=${JSON.stringify(heads)}`);
+  check("身份：用户自己那一轮不误标成 Agent",
+    heads.filter((text) => text.includes("Coder")).length === 1, `headers=${JSON.stringify(heads)}`);
+
+  // 失败可见：发一条被拒的消息，断言横幅存在且文案来自服务端
+  const composer = page.locator('[data-testid="composer"] textarea').first();
+  await composer.fill("再发一条试试");
+  await composer.press("Enter");
+  await page.waitForTimeout(900);
+  const banner = page.locator('[data-testid="send-error"]');
+  const bannerCount = await banner.count();
+  const bannerText = bannerCount > 0 ? (await banner.first().innerText()).replace(/\s+/g, " ").trim() : "";
+  check("失败可见：发送被拒后有可见横幅", bannerCount > 0, `count=${bannerCount}`);
+  check("失败可见：横幅文案来自服务端（含三种出口）",
+    bannerText.includes("还没结束") && bannerText.includes("插话"), bannerText.slice(0, 60));
+
+  // 不被轮询冲掉：等几秒（超过一次对账节奏）仍在
+  await page.waitForTimeout(3000);
+  check("失败可见：几秒后横幅仍在（没被重新拉取冲掉）",
+    (await page.locator('[data-testid="send-error"]').count()) > 0, "");
+  // 清空出口：点关闭按钮能关掉
+  const closeBtn = page.locator('[data-testid="send-error"] button[aria-label="关闭提示"]');
+  if (await closeBtn.count() > 0) {
+    await closeBtn.first().click();
+    await page.waitForTimeout(200);
+    check("失败可见：可以手动关闭", (await page.locator('[data-testid="send-error"]').count()) === 0, "");
+  } else {
+    check("失败可见：可以手动关闭", false, "没有关闭按钮");
+  }
+
+  sendRejects = false;
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/);
 }
 
 const failed = results.filter((item) => !item.ok);

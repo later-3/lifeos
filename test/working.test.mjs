@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compactTokens, retryRemainingSeconds, TURN_STEP_TOTAL, turnStepText } from "../frontend/src/working.ts";
+import { compactTokens, elapsedSeconds, retryRemainingSeconds, TURN_STEP_TOTAL, turnStepText } from "../frontend/src/working.ts";
 
 test("重试倒计时：逐秒减少，到底夹到 0（不出现负数）", () => {
   assert.equal(retryRemainingSeconds(4000, 0), 4);
@@ -23,4 +23,12 @@ test("token 数字保持短，不挤占状态条", () => {
   assert.equal(compactTokens(1200), "1.2k");
   assert.equal(compactTokens(12_400), "12k");
   assert.equal(compactTokens(1_200_000), "1.2M");
+});
+
+test("本轮已用秒数：从本轮开始时刻算（切会话不归零），时钟回拨夹到 0", () => {
+  const start = Date.parse("2026-11-07T10:00:00.000Z");
+  assert.equal(elapsedSeconds(start, start), 0);
+  assert.equal(elapsedSeconds(start, start + 7_400), 7, "7.4 秒 → 7 秒（四舍五入到秒）");
+  assert.equal(elapsedSeconds(start, start + 60_000), 60);
+  assert.equal(elapsedSeconds(start, start - 5_000), 0, "时钟回拨不显示负数");
 });

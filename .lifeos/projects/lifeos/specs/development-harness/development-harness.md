@@ -72,6 +72,19 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 - 家目录结构改动后运行 `pnpm home:check`：说明文件缺失、旧结构残留、Task 编号与类型不一致、开发类缺 `log.md`、默认 Task 不唯一等都会报错。
 - 安装测试与全流程模拟在 `test/home.test.mjs`、`test/protocol-flow.test.mjs`，改结构时要同步更新。
 
+## 6.5 每件开发任务的固定纪律（2026-11-07 用户指示，必须）
+
+用户 2026-11-07 的原话，逐条落成可检查的要求：
+
+| # | 纪律 | 怎么检查 |
+|---|---|---|
+| 1 | **参考先查再写**：凡有同类场景，先读 Pi SDK / Pi Web / Pi agent / 顶级开源项目的对应源码，登记 repo + 分支 + commit + 日期 + 行号，写"借什么 / 不借什么" | 任务的参考文档（如 `07-references.md`）存在且每条有 commit；`knowledge/reference-baseline.md` 有对应场景行 |
+| 2 | **测试覆盖全部场景，且不依赖真模型**：用打桩三杆（挂起 / 失败 / 观察）在同一套 `pnpm test` 里跑完；真模型只用于最后的端到端人工验收 | 任务的测试矩阵文档；用例里不出现真实 provider / 真实 baseUrl / 网络 |
+| 3 | **能做工具就做工具**：定位、核对、复用类能力落成 `scripts/` + `tools/<name>/AGENTS.md` + `package.json` 入口 + 自测，不留一次性排查 | `pnpm <name>` 能跑；工具目录有说明书；索引表有该行 |
+| 4 | **案例必写**：每次"决策错了 / 返工 / 用户报告"都落 `cases/<日期>.md`，反例四段齐全（现象 → 问题 → 后果 → 纠正） | 案例文件存在且编号连续 |
+| 5 | **用户指导意见写进文档，不靠记性**：用户新给的做事方式，先落到任务 `01-background.md` 的"已拍板决策"，再用到跨任务时提升到本规范或项目层 | 决策表里有出处（用户原话 + 日期） |
+| 6 | **不需要用户介入的不请示**：只有"取舍 / 风险 / 不可逆 / 效果要看"时才停下来让用户拍板 | `log.md` 里每次停顿都写明"为什么这必须由用户定" |
+
 ## 7 并行开发与交付切换（Life OS 专属）
 
 > 起因（2026-10-24）：Coder 在共享 worktree 上开发 Life OS，改前端导致用户页面白屏/语法错误，跑 build/test 触发重启——**开发实例与用户实例必须分开**。
@@ -155,3 +168,24 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 - **应该** 中断后先看 `logs/` 与 JSONL 尾条，用 `turns/last` 对账；不要把"没在跑"当"已完成"。
 
 **依据**：C116（live-edit 杀回合）、C117（重装写断分支）、C118（Coder 共享 worktree 影响用户实例）。
+
+## 7.8 检视模式：交付前把改动摊在同一份 diff 上（必须）
+
+**为什么有这一节**：检视不是"再读一遍代码"，而是**把 Agent 的自我检查交给用户复核**。
+所以它必须与改动**同源同处**（同一份 diff、同一处行），而不是把 diff 贴进聊天里。
+
+- **必须** 检视对象是**一个 Task**：后端把它展开成「项目 worktree（代码）」+「该 Task 的文档（`~/.lifeos`）」两组源。
+  用户/Agent 只需要给出 Task 编号，不拼路径（`GET …/review-candidates` 会告出哪些 Task 有东西可看）。
+- **必须** 评论**绑检视对象，不绑对话**：换会话、换设备、重启后端都还在（落 `~/.lifeos/state/review-comments/`）。
+  评论是用户意见的正式载体，不是聊天的附件。
+- **必须** 闭环由人收口：Agent 处理完 → 在**线程里回复**"改了什么、改在哪"（自动交棒给用户）→ 用户查看后**自己关闭**。
+  Agent **不得**关闭用户提出的评论（服务端 403）。
+- **必须** 未闭环评论就是责任方的待办：Agent 侧 `lifeos_review_comments({ pendingForMe: true })`，
+  用户侧候选列表的 `N 条等你`——**同一套 `pendingFor` 口径**，不另写一套过滤。
+- **应该** 交付前自己先看一眼渲染效果（代码与 md 都要看：md 的源码 diff 常常看不出"文档变成什么样了"）。
+
+**零 git 写操作**：检视只读（`git diff` / `git show` / 临时 index），不提交、不改分支、不动 worktree。
+"通过后合入"是人的动作，不是检视模式的功能。
+
+**细节（按需读）**：架构与数据模型 → `knowledge/architecture/review-mode.md`；界面 → `knowledge/design/review-panel.md`；
+Agent 工具清单 → `review-mode.md` §7。

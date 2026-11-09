@@ -13,3 +13,4 @@
 |---|---|
 | `dev-port/` | 开发实例的端口分配与登记（`claim` / `list` / `release`） |
 | `session-state/` | 会话状态的**四层核对**：用户报"数字对不上"时先跑它（`pnpm state`） |
+| `session-trace/` | 单条会话的**交互时间线**：用户报"发不出消息 / 不知道卡在哪"时先跑它（`pnpm trace`） |

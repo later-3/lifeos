@@ -4,10 +4,19 @@
 // 两个工具都只是"薄封装"：真正的动作在 src/agents.ts（创建 / 归档），与 HTTP 接口共用同一份实现。
 // 名字必须加进 createAgentSession 的 tools allowlist（那是白名单："When provided, only matching
 // tools are enabled"），否则注册了也调不到。
-import { Type } from "@earendil-works/pi-ai";
+// `Type` 从 `typebox` 直接取（Task 0015 · P1）：上游 Pi 从 v1.5.0 起不再从 `@earendil-works/pi-ai`
+// 主入口 re-export TypeBox 的 `Type`（校验改由 `@earendil-works/pi-schema` 做），而
+// `ToolDefinition.parameters` 的类型仍是 TypeBox `TSchema`（上游 `core/extensions/types.ts`
+// 的 `TParams extends TSchema`、`core/tools/tool-definition-wrapper.ts` 写明 "TypeBox's Static"）。
+// 版本与 `pi/packages/coding-agent/package.json` 的 typebox 依赖保持一致（1.3.27），
+// 否则 pnpm 会装出第二份副本，`defineTool` 的泛型收窄会因两个 TSchema 而失效。
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { archiveAgent, createAgent } from "./agents.ts";
-import { createTask, listTasks } from "./tasks.ts";
+import { createTask, listTasks, resolveTaskDir } from "./tasks.ts";
+import { addReply, pendingFor, readComments, setCommentState, upsertComment } from "./review-comments.ts";
+import { broadcast } from "./events.ts";
+import { formatReviewOverview, reviewOverviewOf } from "./review-overview.ts";
 import { bindProject, listAgentProjects, unbindProject } from "./projects.ts";
 import { deleteMemory, recordMemory, searchMemory, searchMemoryScopes } from "./memory/index.ts";
 import { defaultReadOrder, roleLabel, type MemoryRole } from "./memory/roles.ts";
@@ -17,8 +26,9 @@ import {
   peerSessionTitle, peerSnapshot, resolvePeer, snapshotText,
 } from "./peer.ts";
 import { registerPendingPeer } from "./peer-completion.ts";
-import { getSession, queueSessionInput, runTurn } from "./agent-host.ts";
+import { getSession, queueSessionInput, reserveTurn, runTurn } from "./agent-host.ts";
 import { resolveHome } from "./home.ts";
+import { log } from "./logging.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 
 export { LIFEOS_TOOL_NAMES };
@@ -473,12 +483,16 @@ export function createAgentTools(ctx: ToolContext) {
 
       const timeoutMs = params.timeoutMs ?? ASK_DEFAULT_TIMEOUT_MS;
       const messagesBeforeSend = before.messages;
-      const turn = runTurn(peer.conversation.agentId, sessionId, params.message);
+      const turn = runTurn(peer.conversation.agentId, sessionId, params.message, {
+        origin: { kind: "agent", agentId: ctx.agentId, name: resolved.name, via: "lifeos_ask" },
+      });
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
       let timedOut = false;
       try {
-        const outcome = await Promise.race([turn.then(() => "done" as const), timeout]);
+        // `busy` = 刚好撞上“已受理但还没开跑”的窗口（技术细节见 02-design L1/L2）：
+        // 不新起一轮、不谎报成功，交给下面的快照统一回执。
+        const outcome = await Promise.race([turn.then((result) => (result.ok ? "done" as const : "busy" as const)), timeout]);
         timedOut = outcome === "timeout";
       } finally {
         if (timer !== undefined) clearTimeout(timer);
@@ -553,23 +567,47 @@ export function createAgentTools(ctx: ToolContext) {
       // 重入守卫（T8）：目标正在跑 → 用 Pi 原生的 followUp 排队（不自造队列、不并发 prompt）。
       const before = await peerSnapshot(peer.conversation.agentId, sessionId, taskId);
       const queued = before.state === "running";
+      const origin = { kind: "agent" as const, agentId: ctx.agentId, name: resolved.name, via: "lifeos_send" };
+      let queuedNow = queued;
       if (queued) {
         // Pi 原生排队：会话在跑时 prompt() 会抛错（agent-session.ts:2103），必须走 followUp。
-        const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp");
+        const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp", origin);
         if ("code" in verdict && verdict.code !== "session_idle") {
           throw new Error(`Could not queue the message for ${params.agent}: ${verdict.code === "error" ? verdict.message : verdict.code}`);
         }
       }
-      else void runTurn(peer.conversation.agentId, sessionId, params.message);
+      else {
+        // `send` 的语义是"发出去就返回"：先同步占位判胜负，再后台跑整轮（不 await 整轮）。
+        // 占位失败 = 刚好撞上"已受理未开跑"的窗口（02-design L1）→ 补偿走 followUp，绝不谎报已投递。
+        const slot = reserveTurn(peer.conversation.agentId, sessionId);
+        if (slot === undefined) {
+          const verdict = await queueSessionInput(peer.conversation.agentId, sessionId, params.message, "followUp", origin);
+          if ("code" in verdict && verdict.code !== "session_idle") {
+            throw new Error(`Could not queue the message for ${params.agent}: ${verdict.code === "error" ? verdict.message : verdict.code}`);
+          }
+          queuedNow = true;
+        } else {
+          const turn = runTurn(peer.conversation.agentId, sessionId, params.message, { origin, reserved: slot });
+          void turn.then((result) => {
+            if (result.ok) return;
+            slot.release();   // 占位成功却 busy：理论上不可达；交还并不静默（抛给日志）
+            throw new Error(`runTurn reported busy after a successful reservation (${params.agent} / ${sessionId})`);
+          }).catch((error: unknown) => {
+            void log.error("agent-tools", "lifeos_send", "后台回合启动失败", {
+              details: { agent: peer.conversation.agentId, sessionId, message: error instanceof Error ? error.message : String(error) },
+            });
+          });
+        }
+      }
 
       return {
         content: [{
           type: "text" as const,
-          text: `Handed off to ${params.agent} (session ${sessionId})${queued ? " — it was already running, so the message is queued after its current turn" : ""}. `
+          text: `Handed off to ${params.agent} (session ${sessionId})${queuedNow ? " — it was already running, so the message is queued after its current turn" : ""}. `
             + "Its completion will be delivered into this conversation; do not poll.",
         }],
         details: {
-          agent: params.agent, sessionId, conversationCreated: peer.conversation.created, queued,
+          agent: params.agent, sessionId, conversationCreated: peer.conversation.created, queued: queuedNow,
           completionWillArriveIn: initiatorSessionId ?? null,
           ...(taskId !== undefined ? { taskId } : {}),
         },
@@ -646,5 +684,255 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send, agentList, askList];
+  /**
+   * 检视状态总览（P4）——**Agent 的入口**：检视对象在哪、有多少改动、几条等我。
+   *
+   * 用户 2026-11-07："我们做检视模式的工具，把工具给到 agent，然后 agent 能知道怎么查询有哪些检视意见，怎么回复。"
+   * 所以这个工具的输出**必须能直接促成下一步**：给出文件样本、线程 id、等待方统计，并点名用哪个工具继续。
+   * 业务在 `src/review-overview.ts`（聚合，不新增规则），这里只是外壳（backend 2.6）。
+   */
+  const reviewState = defineTool({
+    name: "lifeos_review_state",
+    label: "Read Life OS review state",
+    description:
+      "Overview of the review mode for a task: where the reviewed sources are (project worktree + task documents), how many files "
+      + "changed with +/- counts, and how many comment threads exist per state and per waiting side. Start here when the user says "
+      + "'review my task', 'what did I annotate', or 'what do I still owe you'. Then use lifeos_review_comments for full text, "
+      + "lifeos_review_comment_reply to answer a thread, lifeos_review_comment_resolve to close one you raised.",
+    promptSnippet: "Read the review state of a task (sources, changes, comment counts)",
+    promptGuidelines: [
+      "Call lifeos_review_state first when review mode comes up; it tells you where the diff is and what is waiting for you.",
+      "It only summarises: use lifeos_review_comments for the full comment text and replies.",
+      "Threads the user raised can only be closed by the user: reply in them instead of resolving.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      const overview = await reviewOverviewOf(taskDir, params.taskId.trim());
+      return {
+        content: [{ type: "text" as const, text: formatReviewOverview(overview) }],
+        details: { overview },
+      };
+    },
+  });
+
+  /**
+   * 打开某个 Task 的检视面板（D32）：让 Agent 主动把用户带到"这个 Task 的改动"面前。
+   *
+   * 用户 2026-11-08："这里要做 agent 的触发检视模式，也差不多是这样，总得让 agent 知道该检视啥东西才行。"
+   * 语义：写一条 `review_open` 事件（带 taskDir），前端收到就打开面板并切到该 Task。
+   * **和用户自己点按钮走同一条路径**——都落到"某个 Task 的检视对象"，不做第二套。
+   */
+  const reviewOpen = defineTool({
+    name: "lifeos_review_open",
+    label: "Open the review panel for a task",
+    description:
+      "Open the review panel on a task's changes so the user can look at them. The panel shows both sources of that task: "
+      + "the project worktree (code) and the task's own documents under ~/.lifeos. Use it when the user says "
+      + "'show me what I changed', or after you finish a piece of work and want them to review it.",
+    promptSnippet: "Open the review panel on a task's changes",
+    promptGuidelines: [
+      "Call lifeos_review_open with the task id (e.g. '0010') after delivering work the user should look at.",
+      "The panel is per task; it always shows both the worktree and the task documents — you do not pick a path.",
+      "Do not also paste the diff into the chat: the panel is the place to read it.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      const taskId = /^(\d{4})/.exec(taskDir.split("/").pop() ?? "")?.[1] ?? params.taskId.trim();
+      broadcast({ type: "review_open", taskId, taskDir, agentId: ctx.agentId, projectId: ctx.projectId });
+      return {
+        content: [{ type: "text" as const, text: `Asked the UI to open the review panel for task ${taskId} (${taskDir}).` }],
+        details: { taskId, taskDir },
+      };
+    },
+  });
+
+  /**
+   * 读某个 Task 的检视评论（S4-c）。
+   *
+   * 为什么这个工具存在：**Agent 不需要看界面**，但不能不知道"用户/别的 Agent 在 diff 上说了什么"。
+   * 评论绑 taskId（不绑对话，D22 / Gerrit 的 Change-Id 范式），所以任何会话都能读。
+   */
+  const reviewComments = defineTool({
+    name: "lifeos_review_comments",
+    label: "Read Life OS review comments",
+    description:
+      "Read the review comments (threads) left on a task's diff. Comments are bound to the task (not to any conversation), "
+      + "so any agent can read them. Returns author, location (path + line range), tone marks, state, awaiting, the root body "
+      + "and every reply (who said what, and when). "
+      + "Use it when the user says 'look at my review comments' / 'check what I annotated', and to find the threads you still owe an answer to.",
+    promptSnippet: "Read the review comment threads on a task's diff",
+    promptGuidelines: [
+      "Use lifeos_review_comments when the user refers to review comments/annotations they or another agent left.",
+      "Pass taskId (e.g. 0010). The current task's id is usually what they mean; if unsure, ask or call lifeos_task_list.",
+      "Pass pendingForMe:true to get only the unresolved threads that wait for you (or for nobody yet) — that is your review TODO list.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+      pendingForMe: Type.Optional(Type.Boolean({ description: "Only unresolved threads that wait for this agent (or nobody yet). This is the review TODO list." })),
+      state: Type.Optional(Type.String({ description: "Filter by state: draft / open / resolved." })),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      const all = await readComments(taskDir);
+      let comments = all;
+      if (params.state === "draft" || params.state === "open" || params.state === "resolved") {
+        comments = comments.filter((c) => c.state === params.state);
+      }
+      if (params.pendingForMe === true) {
+        // 未闭环 = 我的待办（用户在 2026-11-05 明确："他有很多还没闭环的，那只是他的 TODO"）
+        comments = pendingFor(comments, "agent");
+      }
+      if (comments.length === 0) {
+        return { content: [{ type: "text" as const, text: `No review comments on task ${params.taskId} match.` }], details: { comments: [] } };
+      }
+      const lines = comments.map((c) => {
+        const where = c.anchor.start === c.anchor.end ? `L${c.anchor.start}` : `L${c.anchor.start}-L${c.anchor.end}`;
+        const tone = c.marks.length > 0 ? ` [${c.marks.join(",")}]` : "";
+        const body = c.body === "" ? "(no text)" : c.body;
+        const head = `- ${c.id} ${c.anchor.path}:${where} (${c.anchor.side})${tone} by ${c.author.kind}:${c.author.id} · ${c.state}`
+          + `${c.awaiting === null ? "" : ` · waiting for ${c.awaiting}`}`;
+        // 回复必须带出来：Agent 要看的正是“前一个人说了什么、我答过什么”
+        const replies = c.replies.map((r) => `    ↳ ${r.author.kind}:${r.author.id}: ${r.body}`);
+        return [head, `  ${body}`, ...replies].join("\n");
+      });
+      return {
+        content: [{ type: "text" as const, text: `${comments.length} review thread(s) on task ${params.taskId}:\n${lines.join("\n")}` }],
+        details: { comments },
+      };
+    },
+  });
+
+  /**
+   * 写一条检视评论（S4-c）。业务在 `src/review-comments.ts`，这里只是外壳（backend 2.6）。
+   * 作者固定为**当前 Agent**（`ctx.agentId`）——这样用户在前端能分辨"这是哪个 Agent 提的"。
+   */
+  const reviewCommentAdd = defineTool({
+    name: "lifeos_review_comment_add",
+    label: "Add a Life OS review comment",
+    description:
+      "Add a review comment on a task's diff at a file/line range. The author is this agent (the user sees which agent wrote it). "
+      + "Bound to the task, not to this conversation. Tone marks are optional: query / critic / praise / agree / archive / todo.",
+    promptSnippet: "Add a review comment on a task's diff at file:line",
+    promptGuidelines: [
+      "Review comments are for pointing at specific code: always give path + line range (side is old/new).",
+      "Do not paraphrase the user; write what YOU think about that code, and pick a tone mark.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+      source: Type.String({ description: "'worktree' (project code) or 'lifeos' (the task's own documents)." }),
+      path: Type.String({ description: "File path relative to the source root, e.g. 'README.md'." }),
+      side: Type.String({ description: "Which side of the diff: 'old' (removed) or 'new' (added/context)." }),
+      start: Type.Number({ description: "First line (1-based)." }),
+      end: Type.Number({ description: "Last line (1-based; same as start for a single line)." }),
+      body: Type.String({ description: "The comment text." }),
+      marks: Type.Optional(Type.Array(Type.String(), { description: "Optional tone marks." })),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      if (params.source !== "worktree" && params.source !== "lifeos") throw new Error("source must be 'worktree' or 'lifeos'");
+      if (params.side !== "old" && params.side !== "new") throw new Error("side must be 'old' or 'new'");
+      if (!Number.isFinite(params.start) || !Number.isFinite(params.end) || params.start < 1 || params.end < 1) {
+        throw new Error("start/end must be 1-based line numbers (>= 1)");
+      }
+      const saved = await upsertComment(taskDir, {
+        taskId: params.taskId.trim(),
+        author: { kind: "agent", id: ctx.agentId },
+        anchor: {
+          source: params.source,
+          path: params.path,
+          side: params.side,
+          start: params.start,
+          end: params.end,
+        },
+        body: params.body,
+        marks: params.marks ?? [],
+        state: "open",
+        origin: { kind: "agent-tool", ...(ctx.sessionId !== undefined ? { sessionId: ctx.sessionId } : {}) },
+      });
+      return {
+        content: [{ type: "text" as const, text: `Added review comment ${saved.id} on ${saved.anchor.path}:L${saved.anchor.start}${saved.anchor.end === saved.anchor.start ? "" : `-L${saved.anchor.end}`}.` }],
+        details: { comment: saved },
+      };
+    },
+  });
+
+  /**
+   * 回复一条已有评论（S4-h · A23）——**Agent 闭环后"说明他怎么闭环"的入口**。
+   *
+   * 用户 2026-11-05："Agent 去闭环了，他肯定要回复一下他是怎么闭环的，然后我们再去查看，再把这个评论给关掉。"
+   * 所以：回复 → `awaiting` 自动变成 user（交棒给用户去看、去关）；关闭权限不变（Agent 关不了用户的评论）。
+   */
+  const reviewCommentReply = defineTool({
+    name: "lifeos_review_comment_reply",
+    label: "Reply to a Life OS review comment",
+    description:
+      "Reply inside an existing review thread (the comment id comes from lifeos_review_comments). The reply is written with this agent as author, "
+      + "and the thread's `awaiting` flips to the other side: after an agent replies, the user is expected to read and close it. "
+      + "Resolved threads cannot be replied to — reopen first.",
+    promptSnippet: "Reply inside a review thread (say how you closed it)",
+    promptGuidelines: [
+      "After you act on a review comment, reply in its thread to say what you changed and where (file:line or commit/subject) — the user reads that before closing.",
+      "Do not open a new comment to answer an existing one: use lifeos_review_comment_reply with the thread id.",
+      "You cannot close a comment the user opened (only its author or the user can); leave it for the user.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+      id: Type.String({ description: "Thread (comment) id, from lifeos_review_comments." }),
+      body: Type.String({ description: "The reply text: what you did, and where." }),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      const updated = await addReply(taskDir, params.id.trim(), { author: { kind: "agent", id: ctx.agentId }, body: params.body });
+      return {
+        content: [{ type: "text" as const, text: `Replied in thread ${updated.id} (${updated.replies.length} repl${updated.replies.length === 1 ? "y" : "ies"}). Waiting for: ${updated.awaiting ?? "nobody"}.` }],
+        details: { comment: updated },
+      };
+    },
+  });
+
+  /**
+   * 关闭（或重开）一条评论（S4-h · A23）——只在**你是提出者**或**用户本人**时成功（D24）。
+   * 服务端 403 会如实报错，Agent 应该如实转告用户（而不是换个说法假装成功）。
+   */
+  const reviewCommentResolve = defineTool({
+    name: "lifeos_review_comment_resolve",
+    label: "Close or reopen a Life OS review comment",
+    description:
+      "Close (resolved=true) or reopen (resolved=false) a review thread. Permission: only the comment's author or the user can close it — "
+      + "an agent cannot close a comment the user raised (reply in it instead).",
+    promptSnippet: "Close or reopen a review thread (author or user only)",
+    promptGuidelines: [
+      "Close only threads you raised yourself. For threads the user raised, reply and let the user close them.",
+      "If the server answers 403, tell the user plainly that only they can close it.",
+    ],
+    parameters: Type.Object({
+      taskId: Type.String({ description: "Task number (e.g. '0010'); the full directory name is also accepted." }),
+      id: Type.String({ description: "Thread (comment) id, from lifeos_review_comments." }),
+      resolved: Type.Optional(Type.Boolean({ description: "true = close (default), false = reopen." })),
+    }),
+    async execute(_toolCallId, params) {
+      const taskDir = await resolveTaskDir(ctx, params.taskId.trim());
+      if (taskDir === undefined) throw new Error(`No task ${params.taskId} in this project. Use lifeos_task_list to see the available tasks.`);
+      const target = params.resolved === false ? "open" : "resolved";
+      const updated = await setCommentState(taskDir, params.id.trim(), target, { kind: "agent", id: ctx.agentId });
+      if (updated === undefined) throw new Error(`No review comment ${params.id} on task ${params.taskId}.`);
+      return {
+        content: [{ type: "text" as const, text: `Thread ${updated.id} is now ${updated.state}.` }],
+        details: { comment: updated },
+      };
+    },
+  });
+
+  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send, agentList, askList, reviewState, reviewOpen, reviewComments, reviewCommentAdd, reviewCommentReply, reviewCommentResolve];
 }

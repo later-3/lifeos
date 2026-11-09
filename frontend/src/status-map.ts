@@ -65,6 +65,12 @@ export type StatusFacts = {
   aggregate?: Array<{ agentId: string; projectId?: string | undefined; running: number; unreadDone: number; unreadError: number }>;
 };
 
+/**
+ * 前端此刻停在哪。
+ *
+ * `visible` **保留**（它决定要不要把 token 细节推到这个连接），但**不参与"是否已读"的判定**：
+ * 「停在哪个会话」= 看过（用户 2026-11-08 裁决）。见 `src/events.ts` 的 `isOnSession()`。
+ */
 export type StatusFocus = { agentId?: string | undefined; sessionId?: string | undefined; visible: boolean };
 
 /**
@@ -141,7 +147,8 @@ export function deriveStatus(facts: StatusFacts, focus: StatusFocus): DerivedSta
   for (const [sessionId, row] of Object.entries(facts.sessions)) {
     if (row === undefined) continue;
     const { meta, activity } = row;
-    const watching = focus.visible && focus.sessionId === sessionId && focus.agentId === meta.agentId;
+    // **不看 visible**：停在这个会话上就不算未读（否则切标签页会让行上的绿点"复活"）
+    const watching = focus.sessionId === sessionId && focus.agentId === meta.agentId;
     sessions[sessionId] = {
       running: activity.state === "running",
       unread: activity.state === "unread" && !watching,

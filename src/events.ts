@@ -21,6 +21,16 @@ export type AgentEventPayload =
   // 助手/项目列表变了（写操作在共享实现里广播）：前端收到后重取，无需手动刷新
   | { type: "agents_changed" }
   /**
+   * Agent 请求打开检视（D32）：`lifeos_review_open(taskId)` 工具写这条，
+   * 前端收到就把检视面板打开并切到该 Task。
+   *
+   * 为什么用事件而不是让工具直接改前端状态：工具跑在服务端，界面在浏览器；
+   * 这条事件让 Agent 与用户走**同一条路径**（都通过"选某个 Task 的检视对象"进入），
+   * 不做第二套语义。参考基线：difit 的对象在进 UI 前就定了、opencode 绑定当前会话，
+   * 两家都没有"Agent 主动开面板"，所以这是我们新增的能力（不是"抄来的"）。
+   */
+  | { type: "review_open"; taskId: string; taskDir: string; agentId: string; projectId: string }
+  /**
    * 一行的局部补丁（任务 0005）：只带变了的字段，前端**只更新那一行**，不重取整个列表。
    *
    * 为什么新增事件而不是复用 `turn`：`turn` 已有语义（回合生命周期），塞 phase 会让它变成
@@ -64,7 +74,7 @@ export type RowPatch = {
 export type AgentEvent = AgentEventPayload & { seq: number; agentId?: string };
 
 /** 回合级事件类型：发给所有连接，不做焦点过滤。 */
-const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed", "row"]);
+const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed", "row", "review_open"]);
 export const isDetailEvent = (type: string): boolean => !TURN_LEVEL.has(type);
 
 /**
@@ -158,11 +168,31 @@ export function setFocusOf(connectionId: string, focus: Focus | undefined): bool
   return true;
 }
 
-/** 此刻是否有连接正在可见地查看这个会话（完成时据此决定要不要记为未读）。 */
-export function isFocusedVisible(agentId: string, sessionId: string): boolean {
+/**
+ * 此刻是否有连接**停在这个会话上**（完成时据此决定要不要记为未读）。
+ *
+ * **不看 `visible`**（2026-11-08 用户裁决）：
+ *
+ * > 他只要当前在这个 session 上，你就不要管他去干嘛了，我们只做我们自己的逻辑，
+ * > 他自然说他看没看得到，那是他自己的问题。我们只能保证当前页面上是什么状态、
+ * > 怎么去流转，我们的状态机该怎么去转，你不可能管到他到底看没看呀。
+ *
+ * 我们只负责状态机：**页面停在哪个会话，那个会话的回合结束就算已读**。
+ * 用户是不是真的在盯着屏幕（切了标签页 / 去泡咖啡 / 屏幕锁了），不是我们能管的，
+ * 也不该由一布尔值假装能判断。
+ *
+ * 原来这里要求 `f.visible === true`，于是出现一个真实的坏状态：
+ * 回合结束时标签页恰好不可见 → 记成未读 → 用户切走 → **服务端再也不会清**
+ * （只有切回去才触发 focus 上报去清）→ "我明明在这个会话里，绿点却一直挂着，
+ * 还非得再切回去再切出来才消失"（用户 2026-11-08 实测）。
+ *
+ * `visible` 仍然上报、仍然有用：它决定**细节事件要不要投给这个连接**
+ * （见 `matchesFocus`），那是"要不要往你屏幕上推 token"的问题，与"看没看过"无关。
+ */
+export function isOnSession(agentId: string, sessionId: string): boolean {
   for (const reg of registry.values()) {
     const f = reg.sub.focus;
-    if (f !== undefined && f.visible && f.agentId === agentId && f.sessionId === sessionId) return true;
+    if (f !== undefined && f.agentId === agentId && f.sessionId === sessionId) return true;
   }
   return false;
 }
@@ -175,7 +205,7 @@ export function publish(agentId: string, event: AgentEventPayload): AgentEvent {
 }
 
 /** 全局广播（不绑定某个会话）：助手/项目是跨 Agent 的实体。 */
-export function broadcast(event: { type: "agents_changed" }): AgentEvent {
+export function broadcast(event: { type: "agents_changed" } | { type: "review_open"; taskId: string; taskDir: string; agentId: string; projectId: string }): AgentEvent {
   const full = { ...event, seq: ++seq } as AgentEvent;
   dispatch(full);
   return full;

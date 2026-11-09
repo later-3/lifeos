@@ -39,4 +39,10 @@
 | 34 | Task 0008 交付了「一轮回复的三条信息条」（ResponseBar 正文上方 / MarkBar 正文下方 / SessionBar 输入框上方），
 但**左侧导航竖条**（原 0008 需求 7–18）与**批注重做**（选中即复制、两段式入口、视觉与丝滑度）因用户 2026-11-06 收窄范围而移出；原型 `tools/nav-demo/` 已获用户认可 | **左侧消息导航竖条 + 批注交互重做** | 详见 `agents/coder/projects/workspace/tasks/0008-批注面板展示逻辑优化/todo/todo.md` B 节（含逐条裁决与连带未解项 T6 长度/token 口径、T7 滑动窗口）；建议拆 1–2 个新 Task：竖条是纯新增组件，批注重做要先出 `tools/` 交互原型 |
 
+| 35 | 长回复的流式渲染成本：`frontend/src/message-markdown.tsx:13-21` 每个 delta 都 `marked.parse` + `DOMPurify.sanitize` 整段 markdown（`useMemo([text])`）。Pi TUI 自 v1.5.0 用 `MarkdownSlot` 复用已渲染块（`assistant-message.ts`），每次渲染只重排最后一块（#10971）。对照结论见 Task 0015 的 `knowledge/pi-reply-display-comparison.md` §1.1 | **长回复的 Markdown 分段渲染** | 把已稳定的段与正在增长的最后一段分开渲染（上游同思路）；先测基线：一条 2000 字回复，末尾每 token 的重解析耗时。与 #35 同批做（同一渲染管线） |
+| 36 | 工具块的参数增长让整条消息每来一个 `tool_execution_update` 就重渲染一次。Pi TUI 自 v1.5.0 改成 `argsPending` + 下一次 `render()` 才应用（#9265，大工具调用曾经吃满 CPU） | **工具块增量渲染合并** | 我们是声明式渲染，拿不到 `requestRender`；做法是把工具参数增长隔离成独立组件 + rAF 合并（不要照抄命令式的 `argsPending`）。与 #34 同批 |
+| 37 | 压缩期没有任何可见状态：`stream-events.ts` 不映射压缩事件（`specs/code/api/api.md` 2.2 明确不把 compact 类生命周期事件泄漏成 UI 事件）。pi-web 的 `lib/chat-phase-label.ts` 在压缩时显示 `chat.compacting`（含排队数），理由是压缩可能很久、显示等待模型看起来像卡住 | **压缩期可见（正在压缩）** | 先定压缩算不算状态条的一部分；若做，走状态条的派生层（不新增 UI 事件），文案从服务端事实来。对照见 Task 0015 的 `knowledge/pi-reply-display-comparison.md` §2.3 |
+
+| 38 | 检视模式（Task 0010）已交付 P1/P2/S1–S4-i + P4 总览 + G5/G6/G8/G9/G10/G11/G12/G13/G14/G15 + D29/D31/D32；事实见 `knowledge/architecture/review-mode.md` | **检视模式的手机适配**（唯一剩余项） | 按 `specs/frontend-mobile/mobile.md` 走全屏表面 + 单主列 + 44px 触控；跨 agent 候选列表已裁决**不做**（D31g + 协议 §3.7）；实现后把事实写进 `review-mode.md` §9 并删掉这条 |
+
 - [ ] 可选：用 Tauri/Electron 薄壳包住 Life OS 现有 Web 地址做桌面应用（零架构改动，用户想要桌面图标时再做）

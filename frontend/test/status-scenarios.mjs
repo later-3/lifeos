@@ -46,6 +46,8 @@ const browser = await chromium.launch({
  * 返回 { page, push(event), close() } —— push 用来模拟服务端推送。
  */
 async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
+  /** 重取时返回的数据（测试可以改它，模拟"服务端真相变了"）。 */
+  let currentRows = rows;
   const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
   const page = await ctx.newPage();
   const errors = [];
@@ -65,7 +67,7 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
     }
     if (/^\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/.test(p)) {
       const aid = p.split("/")[3];
-      return json({ items: aid === OTHER.id ? [row("other-1")] : rows });
+      return json({ items: aid === OTHER.id ? [row("other-1")] : currentRows });
     }
     if (/^\/api\/agents\/[^/]+\/config$/.test(p)) return json({ model: null, thinkingLevel: "medium" });
     if (/turns\/last$/.test(p)) return json({ turn: null });
@@ -114,7 +116,20 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
   // 不等够的话会得到一堆"全 0"的假结论（C173 坑 3：先等已知元素出现，再判断数据）。
   await page.waitForSelector('[data-project-id] [data-testid]', { timeout: 20000 }).catch(() => {});
 
-  return { page, push, snapshot, errors, close: async () => { await ctx.close(); } };
+  /** 改"服务端此刻的真相"，之后再触发 refresh-groups 就能看到差别。 */
+  const setRows = (next) => { currentRows = next; };
+  /** 等一次重取完成（refresh-groups 是异步 fetch，不是同步渲染）。 */
+  const waitRefresh = async () => {
+    let seen = 0;
+    const start = Date.now();
+    while (Date.now() - start < 4000) {
+      const n = await page.evaluate(() => performance.getEntriesByType("resource").filter((e) => /\/projects\/[^/]+\/sessions$/.test(e.name)).length);
+      if (n > seen) { seen = n; await page.waitForTimeout(400); return true; }
+      await page.waitForTimeout(120);
+    }
+    return false;
+  };
+  return { page, push, snapshot, setRows, waitRefresh, errors, close: async () => { await ctx.close(); } };
 }
 
 /** 读面板上所有会变的点。 */
@@ -331,6 +346,27 @@ const nums = (badges) => {
   await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", type: "row", patch: { running: { since: new Date().toISOString(), phase: "thinking" } } });
   const p = await readPanels(app.page);
   check("12 不带 projectId 的补丁不丢项目归属", nums(p.projectBadges).running === 1, JSON.stringify(nums(p.projectBadges)));
+  await app.close();
+}
+
+// —— 场景 12b：服务端说已读（unread:null）时，数字与点必须一起清 ——
+//
+// 2026-11-08 用户实测："有绿色数字 1，但行上没有绿点"。
+// 机制：补丁发过 unread（数字 +1），随后重取把行刷回 idle（绿点消失），槽位没人减。
+// 现在的约束：重取时用行**校正**槽位 → 行 idle 就把槽位删掉。
+{
+  const app = await openApp({ rows: [row("sess-1")] });
+  // ① 补丁把它标成未读（模拟"发早了的补丁"）
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", projectId: "workspace", type: "row", patch: { unread: { since: new Date().toISOString() } } });
+  check("12b 补丁后：助手行有绿 1", nums((await readPanels(app.page)).agentBadges).unreadDone === 1);
+  // ② 服务端重取说它是 idle（真相：其实已读）→ 走 done 事件的 refresh-groups 路径
+  app.setRows([row("sess-1")]);
+  await app.push("done", { agentId: AGENT.id, sessionId: "sess-1", type: "done" });
+  await app.waitRefresh();
+  const after = await readPanels(app.page);
+  check("12b 重取说 idle 后：绿数字必须消失（不能留下没有绿点的数字）",
+    nums(after.agentBadges).unreadDone === 0, JSON.stringify(nums(after.agentBadges)));
+  check("12b 行上也确实没有绿点", !after.rowDots.some((d) => d.title.startsWith("完成未读")), JSON.stringify(after.rowDots));
   await app.close();
 }
 
