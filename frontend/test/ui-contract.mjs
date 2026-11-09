@@ -486,6 +486,39 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
   await dragPage.close();
 }
 
+// 两列拖动的**可用上限同一套规则**（2026-11-09 用户报"拖助手列和拖会话列手感不一样"）
+//
+// 反例：`WIDTH_LIMITS.c1 = [180, 440]` 是自创常量（与 c2 被否掉的那个 440 同源），
+// 而 c2 早已改成"只有技术兜底、上限由视口算"。后果：拖 c1 时鼠标移 215px 就撞墙，
+// 剩下 185px 空走（看起来"拖不动了"）；拖 c2 一路跟手。同样操作两种手感。
+{
+  const capPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await capPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await capPage.waitForTimeout(500);
+  const dragToWall = async (index) => {
+    const handle = capPage.locator('[role=separator][aria-label="拖动调整宽度"]').nth(index);
+    const box = await handle.boundingBox();
+    if (box === null) return null;
+    await capPage.mouse.move(box.x + box.width / 2, box.y + 300);
+    await capPage.mouse.down();
+    for (let step = 1; step <= 90; step += 1) {
+      await capPage.mouse.move(box.x + box.width / 2 + step * 5, box.y + 300);
+      await capPage.waitForTimeout(4);
+    }
+    await capPage.mouse.up();
+    await capPage.waitForTimeout(200);
+    return await capPage.evaluate(() => Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0));
+  };
+  const chatAfterC1 = await dragToWall(0);
+  await capPage.evaluate(() => localStorage.removeItem("lifeos.columnWidths"));
+  await capPage.reload({ waitUntil: "networkidle" });
+  await capPage.waitForTimeout(500);
+  const chatAfterC2 = await dragToWall(1);
+  check("两列拖到墙后聊天列宽度一致（同一套上限规则）",
+    chatAfterC1 !== null && chatAfterC1 === chatAfterC2, `c1 拖到底后聊天 ${chatAfterC1}px / c2 ${chatAfterC2}px`);
+  await capPage.close();
+}
+
 // 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
 {
   const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
@@ -1952,7 +1985,7 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
