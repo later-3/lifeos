@@ -49,12 +49,22 @@ export function NavRail({ groups, bottom }: {
           ? { "aria-pressed": tab.active }
           : { "aria-current": tab.active ? ("page" as const) : undefined })}
         title={isToggle ? (tab.active ? `收起${tab.label}列` : `展开${tab.label}列`) : tab.label}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-control transition-colors ${
-          tab.active
-            ? "bg-nav-selected text-ink-900"
-            : "text-ink-500 hover:bg-surface hover:text-ink-900"
+        // hover 反馈对**两种状态都给**，且用**叠加层**而不是换底色（2026-11-09 用户报"有时变有时不变"）：
+        //
+        // 旧写法只把 `hover:` 放在未选中分支 → "已展开的列开关"（默认就是展开）hover 毫无反应，
+        // 只有"未激活的设置"hover 变白底 —— 同一个轨里两种行为，用户当然判定是 bug。
+        //
+        // 为什么不能直接写 `hover:bg-xxx`：它会**整体替换**底色，选中态一 hover 就丢了（=闪）。
+        // 所以 hover 用一层 `ink-900/6` 的叠加：
+        //   浅色下 ink-900 是近黑 → 底色变暗 3.2–3.4（选中/未选中一致）；
+        //   深色下 ink-900 是近白 → 底色变亮 4.4–6.4（同向、同样明显）。
+        // 一套规则在 2 个状态 × 2 种深浅色下都成立，不需要为每个分支各写一遍。
+        className={`group relative flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:text-ink-900 ${
+          tab.active ? "bg-nav-selected text-ink-900" : ""
         }`}>
-        {tab.icon}
+        <span aria-hidden
+          className="pointer-events-none absolute inset-0 rounded-control bg-ink-900/6 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+        <span className="relative">{tab.icon}</span>
         {tab.badge !== undefined && tab.badge > 0 && (
           <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-nav-edge bg-surface px-1 text-micro font-semibold tabular-nums text-ink-900">
             {tab.badge > 99 ? "99+" : tab.badge}

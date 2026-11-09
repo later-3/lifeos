@@ -48,6 +48,19 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
 
   const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true });
 
+  /**
+   * 拖动期间**不走 React 状态**，直接写列元素的宽度；松手时提交一次。
+   *
+   * 为什么（2026-11-09 用户报"拖动不丝滑"，实测确认）：
+   * 旧实现每个 mousemove 都 `setWidths` → App 整棵树重渲染。实测 108 条消息的会话里，
+   * 一次拖动产生 **4 个 108–148ms 的长任务**，帧时间 p90 从 10ms 涨到 16.7ms、最长 160ms；
+   * 空会话则完全没有长任务 —— 成本全在"重渲染整条消息列表"（`MessageView` 未 memo）。
+   *
+   * 现在：拖动只改 DOM（`el.style.width`），一帧最多写一次（rAF 合并）；松手才 `setWidths`。
+   * 聊天列是 `flex-1`，会自然跟着变宽变窄，不需要一起重算。
+   * 这样既不牺牲"拖到哪停到哪"的准确度，也不需要在消息层引入 memo 的复杂度
+   * （消息层的 props 里有十几个每帧重建的回调，memo 反而容易漏更新）。
+   */
   function beginDrag(key: keyof Widths, event: ReactMouseEvent) {
     event.preventDefault();
     const startX = event.clientX;
@@ -55,16 +68,32 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
     // 上限从视口算（`maxWidthOf`）：常量表只当下限/硬顶，实际能拖到哪由「不压破聊天」决定。
     // 旧实现只看常量表（c2≤440），1280 宽上明明能到 572 却停在 440，用户以为拖不动了。
     const limit = maxWidthOf(key, viewport, widths, input.folded);
+    const columnOf: Partial<Record<keyof Widths, string>> = { c1: "agents", c2: "sessions" };
+    const columnName = columnOf[key];
+    const target = columnName === undefined
+      ? undefined
+      : document.querySelector<HTMLElement>(`[data-column="${columnName}"]`) ?? undefined;
+
+    let latest = startWidth;
+    let frame = 0;
+    const paint = () => {
+      frame = 0;
+      if (target !== undefined && target !== null) target.style.width = `${latest}px`;
+    };
     // 方向来自把手位置（design/layout.ts HANDLE_SIGN），不在调用处判断
     const move = (moveEvent: MouseEvent) => {
-      const next = dragWidth(key, startWidth, moveEvent.clientX - startX, limit);
-      setWidths((prev) => ({ ...prev, [key]: next }));
+      latest = dragWidth(key, startWidth, moveEvent.clientX - startX, limit);
+      if (frame !== 0) return;                       // 一帧只写一次（mousemove 可能高于帧率）
+      frame = window.requestAnimationFrame(paint);
     };
     const stop = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", stop);
+      if (frame !== 0) { window.cancelAnimationFrame(frame); frame = 0; }
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      if (target !== undefined && target !== null) target.style.width = "";   // 交还给 React
+      setWidths((prev) => (prev[key] === latest ? prev : { ...prev, [key]: latest }));
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", stop);

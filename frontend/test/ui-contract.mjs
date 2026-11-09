@@ -401,6 +401,91 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
   await settingsPage.close();
 }
 
+// rail 三个按钮的 hover 反馈必须一致（2026-11-09 用户报"有时变有时不变"）
+//
+// 反例：`hover:` 类只写在"未选中"分支 → 已展开的列开关（默认就是展开）hover 毫无反应，
+// 只有未激活的设置 hover 变白底。同一个轨里两种行为，用户当然判定是 bug。
+{
+  const railPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await railPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await railPage.waitForTimeout(400);
+  const buttons = await railPage.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+    .map((b) => b.getAttribute("aria-label") ?? ""));
+  // 读**叠加层**的 opacity，不读按钮的 background-color：
+  // 现在的 hover 是一层 `ink-900/6` 的叠加（换底色会让选中态一 hover 就丢），
+  // 按钮自己的 backgroundColor 在 hover 前后本来就**不应该**变（2026-11-09 第一版断言踩过）。
+  const results = [];
+  for (const label of buttons) {
+    const overlayOf = async () => await railPage.evaluate((name) => {
+      const nav = document.querySelector('nav[aria-label="左侧图标轨"]');
+      const btn = [...nav.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "") === name);
+      const overlay = btn?.querySelector("span[aria-hidden]");
+      return overlay === null || overlay === undefined ? null : getComputedStyle(overlay).opacity;
+    }, label);
+    await railPage.mouse.move(800, 500);
+    await railPage.waitForTimeout(120);
+    const rest = await overlayOf();
+    await railPage.locator(`nav[aria-label="左侧图标轨"] button[aria-label="${label}"]`).hover();
+    await railPage.waitForTimeout(250);
+    const hover = await overlayOf();
+    results.push({ label, rest, hover, changed: rest === "0" && hover === "1" });
+  }
+  check("rail 三个按钮 hover 都有反馈（含已激活的列开关）",
+    results.length === 3 && results.every((r) => r.changed === true),
+    results.map((r) => `${r.label}:${r.changed ? "✓" : "✗"}`).join(" "));
+  await railPage.close();
+}
+
+// 拖动列宽：一帧不重渲染整棵树（2026-11-09 用户报"拖动不丝滑"，实测 4 个 108–148ms 长任务）
+//
+// 修法：拖动期间只写 DOM 宽度（rAF 合并），松手才提交 React 状态。
+// 断言两件事：① 拖动全程宽度**跟手**（每帧都在变，不是松手才跳）；
+// ② 拖动期间**不产生长任务**（>50ms 的 JS 阻塞）。
+{
+  const dragPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await dragPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await dragPage.waitForTimeout(600);
+  // 统计口径（2026-11-09 两次踩坑后定稿）：
+  //   ① 只看**按下之后**：`longtask` 从页面加载就开始观测，首次挂载的整树渲染本来就有 100–150ms；
+  //   ② 只看**松手之前**：松手时提交一次 React 状态（一次整树渲染）是设计使然，不算"拖动卡"；
+  //      真正要保证的是"拖的过程中不阻塞"，不是一个长任务都不许有。
+  await dragPage.evaluate(() => {
+    window.__dragLong = [];
+    window.__dragFrom = Number.POSITIVE_INFINITY;
+    window.__dragTo = Number.POSITIVE_INFINITY;
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.startTime >= window.__dragFrom && entry.startTime < window.__dragTo) {
+          window.__dragLong.push(Math.round(entry.duration));
+        }
+      }
+    }).observe({ entryTypes: ["longtask"] });
+  });
+  const handle = dragPage.locator('[role=separator][aria-label="拖动调整宽度"]').first();
+  const handleBox = await handle.boundingBox();
+  const widths = [];
+  if (handleBox !== null) {
+    await dragPage.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 300);
+    await dragPage.evaluate(() => { window.__dragFrom = performance.now(); });
+    await dragPage.mouse.down();
+    for (let step = 1; step <= 20; step += 1) {
+      await dragPage.mouse.move(handleBox.x + handleBox.width / 2 + step * 6, handleBox.y + 300);
+      await dragPage.waitForTimeout(16);
+      widths.push(await dragPage.evaluate(() => Math.round(
+        document.querySelector('[data-column="agents"]')?.getBoundingClientRect().width ?? 0)));
+    }
+    await dragPage.evaluate(() => { window.__dragTo = performance.now(); });
+    await dragPage.mouse.up();
+    await dragPage.waitForTimeout(300);
+  }
+  const distinct = new Set(widths).size;
+  const longTasks = await dragPage.evaluate(() => window.__dragLong);
+  check("拖动列宽：宽度逐帧跟手（≥ 一半的采样点宽度不同）",
+    widths.length >= 10 && distinct >= widths.length / 2, `${distinct}/${widths.length} 个不同值`);
+  check("拖动列宽：拖动过程中无长任务（>50ms 阻塞）", longTasks.length === 0, `长任务 ${JSON.stringify(longTasks)}`);
+  await dragPage.close();
+}
+
 // 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
 {
   const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
@@ -1867,7 +1952,7 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效"];
+const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务"];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);
