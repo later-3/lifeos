@@ -7,21 +7,28 @@
 
 **为什么要有这份说明书**：读图是按像素烧 token 的，而 90% 的场合只需要"这张图大概是什么版式、借了什么"——文字能回答。实测本目录 14 张图 **4,241,434 字节 ≈ 4.04 MB**；按长边 1568 缩放后**全量读一遍 ≈ 33,700 图像 token**（口径：宽×高÷750，见文末对照表）。本文件先把每张图的**内容 / 布局 / 风格 / 可借 / 不可借**写成文字，读图变成最后手段。
 
+> ⚠️ **索引准确性（2026-11-09 复核）**：本表曾与文件实际内容不符 6 处（有 3 张图被替换过但文件名没变）。
+> 现在已按**实际读图**逐条核对并修正。**读图结论与本节冲突时，以读图为准，并回来修正本节**。
+
 ## 里面有什么
 
 | 文件 | 尺寸 | 字节 | 是什么 |
 |---|---|---|---|
 | `2c1bccb72a45a569cc01ab74c9d4e8d2.webp` | 3200×2400 | 81 KB | Personal / AI Assistant 财务助手（蓝天背景版） |
 | `f8e97d432474a98bbd9e014b65b28fef.webp` | 3200×2400 | 73 KB | 同上，整窗版（含窗口条）——与上一张同族 |
-| `original-2bcbab90467c67819195a33fb6b228fb.webp` | 3200×2400 | 96 KB | 同上，另一种裁切（"Good Morning, Julie!"）——同族 |
+| `original-2bcbab90467c67819195a33fb6b228fb.webp` | 3200×2400 | 96 KB | **"Welcome, David!" 空态三卡**（不是财务助手）——与 Twiks 空态同族 |
 | `660b1a18e0a9b40a0a7b24b0bccdf008.webp` | 3810×2717 | 307 KB | Harmonic AI 团队工作台（多 Agent 卡片网格 + 热力表） |
-| `original-27f477ccb88bcaa1c868588a70f4e2ed.webp` | 3200×2400 | 175 KB | Design You 项目管理仪表盘（叠放头像组） |
+| `original-27f477ccb88bcaa1c868588a70f4e2ed.webp` | 3200×2400 | 175 KB | **看板（Kanban）**：Design for Landing Page，四列 Planned/In Progress/Done/On Hold，卡底叠放头像 + `+7`/`+18` |
 | `original-37cc787d7c393228837ed891b4fe1b67.webp` | 3810×2858 | 231 KB | 同上，更大更清——同族 |
 | `original-6d52793f1189a0702545d9d0066a28a9.webp` | 3200×2400 | 153 KB | Codomo 看板 v1（任务卡底叠放头像） |
 | `original-f576886481d6d7834a8efc8a409001e1.webp` | 3200×2400 | 158 KB | Codomo 看板 v2（头像组 + 数字汇总 "18"） |
-| `original-ac790b5b53efe89fe0bf54d6ec375416.webp` | 2400×1800 | 133 KB | Twiks.AI 欢迎页 / 空态三卡 |
+| `original-ac790b5b53efe89fe0bf54d6ec375416.webp` | 2400×1800 | 133 KB | **绿底三栏社交 App**：左 Friends 列表（头像+名+副标题+右缘图标）/ 中 Feed 流 / 右详情——**与本项目左栏结构唯一同构的参考** |
 | `original-c3d1aaef364bf85ac892b26fd21e9592.webp` | 3810×2858 | 196 KB | Witty.ai 求职信生成（空态） |
 | `original-24273b8a6c542108f321ebf4806c5aae.webp` | 3810×2858 | 278 KB | 同上，已生成态（右栏有真实内容） |
+| `469d61c0e6a14f99da269b437c2c08b2.webp` | 3810×2858 | 381 KB | **手机旅行 App 3 屏**（中间屏是 Obertauern Ski Resort 营地卡） |
+| `original-bcfa8fe502fef5963c379cc64acafe49.webp` | 3810×2858 | 116 KB | **手机旅行「Where do you want to go」**：搜索胶囊 + 图上信息标签 + 路线卡 |
+| `original-927c58b7cfa659e131e5d314c3a41c08.webp` | 1170×728 | 39 KB | **Instagram 模板卡三联**：黄底、图上大字排版、卡底 ❤️💬✈ 动作行 |
+| `original-997da9d082f8273f315732f1681ab690.webp` | 3200×2400 | 274 KB | **Simstagram 手机三联**：story 环头像 / 帖子卡（大头图+动作行+标签）/ 九宫格探索 |
 | `original-95c19cf8b520874429f3f1cc32967a2b.webp` | 3200×2400 | 274 KB | 粉色社交 AI（双手机模型：生成器 + 群聊） |
 | `Snipaste_2026-11-01_22-01-36.png` | 2864×1880 | 1.08 MB | **GitHub Copilot 会话**（过程折叠的来源） |
 | `Snipaste_2026-11-01_22-05-25.png` | 2888×1894 | 0.91 MB | **GitHub Copilot 会话**（参与者评论流 / 动作条） |
