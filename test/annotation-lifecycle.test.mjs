@@ -79,11 +79,13 @@ if (found === undefined) {
       host.remove();
       return keys;
     }, `<div id="root">0123456789</div>`);
-    assert.deepEqual(r, { "anno-critic": 1 }, "marks 为空的批注跳过，不影响其它");
+    assert.deepEqual(r, { "anno-critic--default": 1 }, "marks 为空的批注跳过，不影响其它");
   });
 
   test("失败路径：未知 markId 不绘制但也不抛", async () => {
     const r = await page.evaluate((html) => {
+      for (const name of [...CSS.highlights.keys()]) CSS.highlights.delete(name);
+      window.__M.__resetOwnersForTest?.();
       const host = document.createElement("div");
       host.innerHTML = html;
       document.body.appendChild(host);

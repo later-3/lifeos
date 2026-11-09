@@ -13,3 +13,6 @@ Snipaste_*.png
 # 视觉契约测试的截图产物与基线：均为本地产物，不入 Git（用户 2026-10-18 定）
 .ui-shots/
 frontend/test/ui-baseline/
+
+# README 配图：本地产物，不入 Git（用户 2026-11-06 定：不是真实运行截图）
+docs/images/

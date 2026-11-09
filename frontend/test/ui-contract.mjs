@@ -457,6 +457,61 @@ if (before !== null) {
   check("hover 不改变行几何（无抖动）", false, "找不到会话行样本");
 }
 
+// 会话行动作区可见性（Task 0005）：悬停出现、移开消失、点击不钉死、隐藏不可误点、键盘可达。
+// 规范：code.md 2.4（opacity + pointer-events、键盘焦点强制可见）+ frontend-spec §5。
+const actionState = () => page.evaluate(() => {
+  const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
+  const btn = row === null ? null : row.querySelector('[aria-label="删除会话"]');
+  if (row === null || btn === null) return null;
+  const wrap = btn.parentElement;
+  const box = btn.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  return {
+    opacity: getComputedStyle(wrap).opacity,
+    pointer: getComputedStyle(wrap).pointerEvents,
+    hitIsAction: hit !== null && (hit === btn || btn.contains(hit)),
+  };
+});
+const sessionRow = page.locator('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])').first();
+if (await sessionRow.count() === 0) {
+  check("会话行动作区：默认隐藏且不可点", false, "找不到会话行样本");
+  check("会话行动作区：悬停出现", false, "找不到会话行样本");
+  check("会话行动作区：点击后移开鼠标即隐藏（不固定常显）", false, "找不到会话行样本");
+  check("会话行动作区：隐藏时不可误点", false, "找不到会话行样本");
+  check("会话行动作区：键盘 Tab 进入时可见", false, "找不到会话行样本");
+} else {
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(280);
+  const idle = await actionState();
+  check("会话行动作区：默认隐藏且不可点", idle?.opacity === "0" && idle?.pointer === "none", JSON.stringify(idle));
+
+  await sessionRow.hover();
+  await page.waitForTimeout(280);
+  const hovered = await actionState();
+  check("会话行动作区：悬停出现", hovered?.opacity === "1" && hovered?.pointer === "auto", JSON.stringify(hovered));
+
+  await sessionRow.click();          // 点击选中：动作区不许因此被钉住
+  await page.mouse.move(900, 500);   // 鼠标移到聊天区
+  await page.waitForTimeout(320);
+  const afterClick = await actionState();
+  check("会话行动作区：点击后移开鼠标即隐藏（不固定常显）", afterClick?.opacity === "0" && afterClick?.pointer === "none", JSON.stringify(afterClick));
+  check("会话行动作区：隐藏时不可误点", afterClick?.hitIsAction === false, `命中动作钮=${afterClick?.hitIsAction}`);
+
+  // 键盘：行获得焦点后 Tab 进入动作区（focus-visible）→ 必须显现（code.md 2.4）
+  await page.evaluate(() => {
+    document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])')?.focus();
+  });
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(280);
+  const kb = await page.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
+    const btn = row === null ? null : row.querySelector('[aria-label="会话历史"]');
+    return btn === null ? null : { opacity: getComputedStyle(btn.parentElement).opacity, focusVisible: btn.matches(":focus-visible") };
+  });
+  check("会话行动作区：键盘 Tab 进入时可见", kb?.focusVisible === true && kb?.opacity === "1", JSON.stringify(kb));
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
 // 模态：语义 + Esc + 焦点归位
 const avatarTrigger = page.locator('button[aria-label^="配置 "]').first();
 if (await avatarTrigger.count() > 0) {
@@ -601,27 +656,60 @@ check("未悬停时动作条全部隐藏", idleBars.every((opacity) => opacity =
 const unnamedChrome = await noName();
 check("可见按钮都有可访问名（主界面）", unnamedChrome.length === 0, `${unnamedChrome.length} 个未命名`);
 
-// 固定状态条：必须在消息滚动区外；消息类型背景必须可区分。
-const turnBar = await page.evaluate(() => {
-  const bar = document.querySelector('[data-testid="turn-status-bar"]');
-  return { exists: bar !== null, inMain: bar?.closest("main") !== null && bar?.closest("main") !== undefined };
+// 两层信息条（Task 0008 · P3 修订）：用户 2026-11-05 定案
+// —— 「response bar 是在正式回复**上面**的，就跟我们当前的主线的页面一样。而在正式回复**下面**的是 markbar」；
+// —— 「turnstat bar 把一些信息换为**累计**的信息……图片那个可以融入到 turnstatusbar 了，或不叫
+//    turnstatusbar？换一个名字」→ 改名 `SessionBar`，仍在输入框上方/滚动区外。
+const bars = await page.evaluate(() => {
+  const asst = [...document.querySelectorAll('[data-testid="message"][data-role="assistant"]')];
+  const session = document.querySelector('[data-testid="session-bar"]');
+  const firstRaw = asst.map((m) => m.querySelector(':scope > [data-testid="response-bar"]')).find((b) => b !== null);
+  // `.find()` 没命中时返回 `undefined` 而不是 `null`：以前只判 `=== null`，在“没有任何助手带过程条”的
+  // 会话里直接抛 TypeError（Task 0015 · P3 在全新开发实例里踩到），断言本意是“没有就不比顺序”。
+  const first = firstRaw ?? null;
+  return {
+    noLegacy: document.querySelector('[data-testid="turn-status-bar"]') === null && document.querySelector('[data-testid="process-bar"]') === null,
+    asst: asst.length,
+    inMessageFlow: asst.every((m) => m.querySelector('[data-testid="response-bar"]')?.closest("main") !== null),
+    // ResponseBar 在正文**之前**（同一个 message 内比较节点顺序）
+    // `find()` 在没有 assistant 消息的会话上返回 `undefined`（不是 `null`）：两种都算"没有找到"。
+    // 全新家目录（开发实例首跑）没有真实对话，这里必须容错，否则整份契约在空环境直接崩。
+    barFirst: first === null || first === undefined ? null : [...first.parentElement.children].indexOf(first) < [...first.parentElement.children].length - 1,
+    sessionInDock: session?.closest('[data-testid="composer-dock"]') !== null,
+    sessionOutsideMain: session?.closest("main") === null,
+    // 同一份数字不得两处出现：回复的 bar 里不该有会话累计指标
+    replyMetrics: document.querySelectorAll('[data-testid="response-bar"] [data-status-metric]').length,
+  };
 });
-check("固定状态条在消息滚动区外", turnBar.exists && !turnBar.inMain, JSON.stringify(turnBar));
-const statusText = await page.locator('[data-testid="turn-status-content"]').innerText();
+check("两层信息条：回复内 ResponseBar + 输入框上方 SessionBar（无旧 process-bar / turn-status-bar）",
+  bars.noLegacy && bars.asst > 0 && bars.inMessageFlow && bars.barFirst === true && bars.sessionInDock && bars.sessionOutsideMain,
+  JSON.stringify(bars));
+check("会话累计指标只在 SessionBar 一处（回复的 bar 不重复）", bars.replyMetrics === 0, `${bars.replyMetrics} 个指标在 response-bar`);
+const statusText = await page.locator('[data-testid="session-bar"]').first().innerText().catch(() => "");
 check("状态条不写冗余“本轮”", !/本轮/.test(statusText), statusText.replace(/\n/g, " | "));
-const statusTitles = await page.locator('[data-testid="turn-status-content"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
-check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) && statusTitles.some((title) => title.includes("输出")) && statusTitles.some((title) => title.includes("上下文")),
-  statusTitles.join(" / "));
+const statusTitles = await page.locator('[data-testid="session-bar"] [title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute("title") ?? ""));
+check("状态条符号有 tooltip 解释", statusTitles.some((title) => title.includes("输入")) || statusTitles.some((title) => title.includes("输出")) || statusTitles.some((title) => title.includes("上下文")),
+  statusTitles.slice(0, 6).join(" / "));
 const statusSpacing = await page.evaluate(() => {
-  const items = [...document.querySelectorAll("[data-status-metric]")];
-  const iconValue = items.map((item) => {
+  // 只在**同一条** bar 内量间距：跨容器时的水平差值没有意义（不同行会算出负几百 px）
+  const groups = [...document.querySelectorAll('[data-testid="session-bar"], [data-testid="response-bar"]')]
+    .map((bar) => [...bar.querySelectorAll("[data-status-metric]")])
+    .filter((items) => items.length > 0);
+  const gaps = [];
+  for (const items of groups) {
+    // 只比较**同一行**上的相邻指标：换行后 left-prevRight 天然是负数，那不是"间距不够"
+    const boxes = items.map((item) => item.getBoundingClientRect());
+    boxes.slice(1).forEach((box, index) => {
+      if (Math.abs((box.top + box.bottom) / 2 - (boxes[index].top + boxes[index].bottom) / 2) > 4) return;
+      gaps.push(Math.round(box.left - boxes[index].right));
+    });
+  }
+  const iconValue = groups.flat().map((item) => {
     const icon = item.querySelector("[data-status-icon]")?.getBoundingClientRect();
     const value = item.querySelector("[data-status-value]")?.getBoundingClientRect();
     return icon === undefined || value === undefined ? 0 : Math.round(value.left - icon.right);
   });
-  const boxes = items.map((item) => item.getBoundingClientRect());
-  const between = boxes.slice(1).map((box, index) => Math.round(box.left - boxes[index].right));
-  return { iconValue, between };
+  return { iconValue, between: gaps };
 });
 check("状态条：符号与数值间距 ≥4px", statusSpacing.iconValue.every((gap) => gap >= 4), statusSpacing.iconValue.join("/"));
 check("状态条：指标之间间距 ≥8px", statusSpacing.between.every((gap) => gap >= 8), statusSpacing.between.join("/"));
@@ -1033,28 +1121,114 @@ if (emptyTarget === null) {
 }
 await freshPage.close();
 
-// 输入历史 ↑/↓（chat.md §3.5；拦截 202，不打真实模型）
-await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/, (route) => route.fulfill({
-  status: 202, contentType: "application/json", body: JSON.stringify({ accepted: true }),
-}));
-await chatComposer.fill("history-probe");
-await chatComposer.press("Enter");
-await page.waitForTimeout(350);
-await chatComposer.fill("");
-await page.waitForTimeout(120);
-await chatComposer.press("ArrowUp");
-await page.waitForTimeout(120);
-const historyValue = await chatComposer.inputValue();
-await chatComposer.fill("");
-await page.waitForTimeout(120);
-await chatComposer.press("ArrowDown");
-await page.waitForTimeout(120);
-const historyCleared = await chatComposer.inputValue();
-check("空输入 ↑ 取回输入历史", historyValue === "history-probe", `value=${historyValue}`);
-check("空输入 ↓ 返回空输入", historyCleared === "", `value=${historyCleared}`);
-await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/);
-await page.reload({ waitUntil: "networkidle" });
-await page.waitForTimeout(300);
+// 输入历史 ↑/↓（chat.md §3.5 · Task 0012）
+//
+// **为什么这组断言必须覆盖"两个会话"**：改前的断言只发一条消息、按一次 ↑，
+// 于是"方向反 / 只能走一步 / 跨会话串 / 索引不复位"四个缺陷全部测不出来（门禁全绿、用户全中）。
+// 现在按用户可验证的行为断言，且**用真实点击会话行切会话**（不是直接改 URL，那会绕过切换路径）：
+//   T-UI1 空输入连按 ↑：最近 → 更早 → 最早（方向 + 可连按）；
+//   T-UI2 连按 ↓：逐条回来，最后回到空输入；
+//   T-UI3 切到另一个会话再按 ↑：拿到**那个会话自己的**历史，绝不串；
+//   T-UI4 切回第一个会话：仍是它自己的历史（切换不丢、不复用上一次的位置）。
+//
+// 夹具：往会话列表与两个会话的详情接口注入 mock（不建真会话 → 清理只要 unroute，零持久副作用；
+// testing 规 2.11）。历史是从会话消息派生的，所以 mock 的 messages 就是它的输入。
+{
+  const HIST_A = "fixture-0000-7000-8000-00000000000a";
+  const HIST_B = "fixture-0000-7000-8000-00000000000b";
+  const historyAgent = new URL(page.url()).searchParams.get("agent") ?? "lifeosagent";
+  const rowOf = (sid, name, at) => ({
+    sessionId: sid,
+    title: { raw: name, display: name },
+    project: { id: "workspace", name: "workspace" },
+    task: null, peer: null,
+    counts: { user: 3, assistant: 3, toolResult: 0, system: 0, total: 6 },
+    time: { createdAt: at, firstMessageAt: at, lastMessageAt: at, lastActivityAt: at, fileModifiedAt: at },
+    activity: { state: "idle" },
+    isDefault: false,
+  });
+  const detailOf = (sid, texts) => {
+    const messages = [];
+    for (const text of texts) {
+      messages.push({ role: "user", text, blocks: [{ type: "text", text }], id: `fixture-u-${sid}-${text}` });
+      messages.push({ role: "assistant", text: "ok", blocks: [{ type: "text", text: "ok" }], id: `fixture-a-${sid}-${text}` });
+    }
+    return { sessionId: sid, messages, meta: { thinkingLevel: "off", running: false, context: null } };
+  };
+
+  await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    const items = body.items ?? [];
+    // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
+    if (!items.some((item) => item.sessionId === HIST_A)) {
+      items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
+      items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
+    }
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+  });
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
+    const sid = new URL(route.request().url()).pathname.split("/").pop();
+    if (sid === HIST_A) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailOf(sid, ["第一条历史", "第二条历史", "第三条历史"])) });
+    if (sid === HIST_B) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detailOf(sid, ["另一个会话的话"])) });
+    return route.fallback();
+  });
+
+  const openFixture = async (sid) => {
+    await page.locator(`[data-testid="${sid}"]`).first().click();
+    await page.waitForTimeout(700);
+    await chatComposer.click();
+  };
+  const pressUp = async () => { await chatComposer.press("ArrowUp"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
+  const pressDown = async () => { await chatComposer.press("ArrowDown"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
+
+  await page.goto(`${APP_URL}/?agent=${historyAgent}&project=workspace`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  const fixtureVisible = await page.locator(`[data-testid="${HIST_A}"]`).count() > 0;
+  check("输入历史夹具：两个会话行已渲染", fixtureVisible, `A=${fixtureVisible}`);
+
+  if (fixtureVisible) {
+    // —— 会话 A ——
+    await openFixture(HIST_A);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const a1 = await pressUp();
+    const a2 = await pressUp();
+    const a3 = await pressUp();
+    check("输入历史：空输入 ↑ 先取最近一条", a1 === "第三条历史", `value=${a1}`);
+    check("输入历史：继续按 ↑ 走向更早（不是只能走一步）", a2 === "第二条历史" && a3 === "第一条历史", `${a2} → ${a3}`);
+
+    // T-UI2 ↓ 逐条回来，最后清空
+    const d1 = await pressDown();
+    const d2 = await pressDown();
+    const d3 = await pressDown();
+    check("输入历史：↓ 逐条走回更新的消息", d1 === "第二条历史" && d2 === "第三条历史", `${d1} → ${d2}`);
+    check("输入历史：↓ 走到底回到空输入", d3 === "", `value=${d3}`);
+
+    // —— 切到会话 B：历史必须是 B 自己的 ——
+    await chatComposer.fill("");
+    await openFixture(HIST_B);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const b1 = await pressUp();
+    check("输入历史：切会话后只取本会话的历史（不串）", b1 === "另一个会话的话", `value=${b1}`);
+    const b2 = await pressUp();
+    check("输入历史：会话 B 只有一条，再按 ↑ 停住（不回落到会话 A）", b2 === "另一个会话的话", `value=${b2}`);
+
+    // —— 切回 A：仍是 A 自己的历史 ——
+    await chatComposer.fill("");
+    await openFixture(HIST_A);
+    await chatComposer.fill("");
+    await page.waitForTimeout(80);
+    const backA = await pressUp();
+    check("输入历史：切回原会话仍是它自己的历史", backA === "第三条历史", `value=${backA}`);
+  }
+
+  await page.unroute(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
+  await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(400);
+}
 
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
@@ -1105,6 +1279,10 @@ const SHOTS = [
     while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
   }],
   ["history.png", 1600, async (shotPage) => {
+    // 动作区现在隐藏时不可点（Task 0005 pointer-events）：先悬停所在行让它显现，再点
+    const historyRow = shotPage.locator('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])').first();
+    await historyRow.hover();
+    await shotPage.waitForTimeout(200);
     await shotPage.locator('[aria-label="会话历史"]').first().click();
     await shotPage.waitForTimeout(600);
   }],
@@ -1373,12 +1551,12 @@ try {
     //    2026-11-02 用户拍板改口：原先"不拉满、跟正文同档 max-w-bubble(720)"，
     //    在列宽 860 时右侧空出 140px 阶梯；现在助手侧统一跟随对话列宽。
     const bar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       if (el === null) return null;
-      const btn = el.querySelector("button");
+      const btn = el.querySelector("button[aria-controls]");
       const cs = getComputedStyle(el);
       const btnCs = btn === null ? null : getComputedStyle(btn);
-      const summary = el.querySelector('[data-testid="process-summary"]')?.textContent ?? "";
+      const summary = el.querySelector('[data-testid="response-summary"]')?.textContent ?? "";
       const box = (node) => { const b = node.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; };
       // 对齐基准取**助手正文**（助手侧不改的那条，它一直跟随列宽）
       const text = document.querySelector('[data-testid="message"][data-role="assistant"] [data-testid="message-text"]');
@@ -1405,7 +1583,7 @@ try {
       bar?.summary ?? "(本次会话无过程条)");
     // 过程条是统计行，不是消息块：不得占用 data-message-kind（那个属性的语义是"块背景可区分"）
     const kindOfBar = await page2.evaluate(() => {
-      const el = document.querySelector('[data-testid="process-bar"]');
+      const el = document.querySelector('[data-testid="response-bar"]');
       return el === null ? "none" : String(el.getAttribute("data-message-kind"));
     });
     check("过程条不冒充消息块（不占 data-message-kind）", kindOfBar === "null" || kindOfBar === "none", kindOfBar);
@@ -1562,7 +1740,10 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     for (const scope of ["project", "agent"]) {
       const rows = read[scope];
       const label = scope === "project" ? "项目行" : "助手行";
-      for (const want of [{ kind: "running", text: "2" }, { kind: "unread", text: "3" }, { kind: "failure", text: "1" }]) {
+      // kind 名跟着实现走：2026-11-04 起是 `running / unreadDone / unreadError`
+      // （原来叫 unread / failure —— 那时"未读"还是一个总体，failure 也还没看已读）。
+      // 契约测试必须与实现同一套词，否则它测的是一个不存在的元素（假红）。
+      for (const want of [{ kind: "running", text: "2" }, { kind: "unreadDone", text: "3" }, { kind: "unreadError", text: "1" }]) {
         const got = rows.find((r) => r.kind === want.kind);
         check(`P1·1.5 聚合数量：${label}「${want.kind}」显示 ${want.text}`, got !== undefined && got.text === want.text,
           got === undefined ? "没有这个徽标" : `实际 ${got.text}`);
@@ -1573,13 +1754,103 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       }
       // 只有运行中那个在呼吸（用户裁决 A：整个徽标呼吸）
       const running = rows.find((r) => r.kind === "running");
-      const unread = rows.find((r) => r.kind === "unread");
+      const unread = rows.find((r) => r.kind === "unreadDone");
       check(`P1·1.5 聚合数量：${label}「运行中」在呼吸、「待查看」不呼吸`,
         running?.animated === true && unread?.animated === false,
         `running=${running?.animated} unread=${unread?.animated}`);
     }
     await countPage.close();
   }
+}
+
+// ─── Task 0014：身份渲染 + 失败可见（都用 route mock，不建真会话、零持久副作用）───
+{
+  const SID = "fixture-0014-7000-8000-000000000014";
+  const agentId = new URL(page.url()).searchParams.get("agent") ?? "lifeosagent";
+  const row = {
+    sessionId: SID,
+    title: { raw: "与 Coder 的对话", display: "与 Coder 的对话" },
+    project: { id: "workspace", name: "workspace" },
+    task: null,
+    peer: { kind: "agent", id: "coder", name: "Coder" },
+    counts: { user: 2, assistant: 2, toolResult: 0, system: 0, total: 4 },
+    time: { createdAt: "2026-11-07T08:00:00.000Z", firstMessageAt: "2026-11-07T08:00:00.000Z",
+      lastMessageAt: "2026-11-07T08:05:00.000Z", lastActivityAt: "2026-11-07T08:05:00.000Z", fileModifiedAt: "2026-11-07T08:05:00.000Z" },
+    activity: { state: "idle" },
+    isDefault: false,
+  };
+  // 关键夹具：**第一条 user 是 coder 发起的**（speaker.kind=agent），第二条是用户自己
+  const detail = {
+    sessionId: SID,
+    messages: [
+      { role: "user", text: "这是 coder 派过来的活", blocks: [{ type: "text", text: "这是 coder 派过来的活" }], id: "fx-u1", speaker: { kind: "agent", agentId: "coder", name: "Coder", via: "lifeos_send" } },
+      { role: "assistant", text: "收到，我来做", blocks: [{ type: "text", text: "收到，我来做" }], id: "fx-a1", stopReason: "stop" },
+      { role: "user", text: "我接着催一句", blocks: [{ type: "text", text: "我接着催一句" }], id: "fx-u2", speaker: { kind: "user" } },
+      { role: "assistant", text: "好", blocks: [{ type: "text", text: "好" }], id: "fx-a2", stopReason: "stop" },
+    ],
+    meta: { thinkingLevel: "off", running: false, context: null },
+  };
+  let sendRejects = true;
+  await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    const items = body.items ?? [];
+    if (!items.some((item) => item.sessionId === SID)) items.push(row);
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+  });
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
+    const sid = new URL(route.request().url()).pathname.split("/").pop();
+    if (sid === SID) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(detail) });
+    return route.fallback();
+  });
+  // 发送被拒（模拟"这一轮还没结束"）：断言失败**在界面上看得见**
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/, (route) => {
+    if (!sendRejects) return route.fallback();
+    return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({
+      error: { code: "session_running", message: "这一轮还没结束，新消息没有发出：等它跑完再发 / 生成中按 Enter 插话（steer）/ 点停止（Esc）打断后重发" },
+    }) });
+  });
+
+  await page.goto(`${APP_URL}/?agent=${agentId}&project=workspace&session=${SID}`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+
+  const heads = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-header"]')]
+    .map((node) => (node.textContent ?? "").trim()));
+  check("身份：Agent 发起的那一轮显示的是发起方名字（不是用户自己）",
+    heads.some((text) => text.includes("Coder")), `headers=${JSON.stringify(heads)}`);
+  check("身份：用户自己那一轮不误标成 Agent",
+    heads.filter((text) => text.includes("Coder")).length === 1, `headers=${JSON.stringify(heads)}`);
+
+  // 失败可见：发一条被拒的消息，断言横幅存在且文案来自服务端
+  const composer = page.locator('[data-testid="composer"] textarea').first();
+  await composer.fill("再发一条试试");
+  await composer.press("Enter");
+  await page.waitForTimeout(900);
+  const banner = page.locator('[data-testid="send-error"]');
+  const bannerCount = await banner.count();
+  const bannerText = bannerCount > 0 ? (await banner.first().innerText()).replace(/\s+/g, " ").trim() : "";
+  check("失败可见：发送被拒后有可见横幅", bannerCount > 0, `count=${bannerCount}`);
+  check("失败可见：横幅文案来自服务端（含三种出口）",
+    bannerText.includes("还没结束") && bannerText.includes("插话"), bannerText.slice(0, 60));
+
+  // 不被轮询冲掉：等几秒（超过一次对账节奏）仍在
+  await page.waitForTimeout(3000);
+  check("失败可见：几秒后横幅仍在（没被重新拉取冲掉）",
+    (await page.locator('[data-testid="send-error"]').count()) > 0, "");
+  // 清空出口：点关闭按钮能关掉
+  const closeBtn = page.locator('[data-testid="send-error"] button[aria-label="关闭提示"]');
+  if (await closeBtn.count() > 0) {
+    await closeBtn.first().click();
+    await page.waitForTimeout(200);
+    check("失败可见：可以手动关闭", (await page.locator('[data-testid="send-error"]').count()) === 0, "");
+  } else {
+    check("失败可见：可以手动关闭", false, "没有关闭按钮");
+  }
+
+  sendRejects = false;
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+\/messages$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
+  await page.unroute(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/);
 }
 
 const failed = results.filter((item) => !item.ok);

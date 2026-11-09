@@ -4,6 +4,47 @@
 // 纯函数：frontend 2.7（可穷举测试）；测试 test/header-strip.test.mjs。
 export type HeaderSegment = { id: string; text: string };
 
+/**
+ * 会话在列表里的**扁平**查找（跨项目）。
+ *
+ * 为什么需要它（2026-11-05 修的 bug）：头部大字标题原来是从「**选中项目**」的分组里找
+ * 「当前会话」（`currentGroup?.sessions.find(...)`）。而 `selectedProjectId` 与 `sessionId`
+ * 是两份独立状态：点另一个项目的会话行、或点另一个项目的分组头，两者就会不一致 ——
+ * 于是 `find` 返回 undefined、标题变成空串，最后回落成产品名「Life OS」。
+ *
+ * 会话的身份包含它所属的项目（session ∈ Agent × Project），所以查会话**不需要**先知道项目：
+ * 跨所有分组找，谁命中就是谁。
+ */
+export function findSessionRow<T extends { sessionId: string }>(
+  groups: readonly { project: { id: string }; sessions: readonly T[] }[] | undefined,
+  sessionId: string | undefined,
+): T | undefined {
+  if (groups === undefined || sessionId === undefined) return undefined;
+  for (const group of groups) {
+    const found = group.sessions.find((item) => item.sessionId === sessionId);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/**
+ * 聊天区顶部大字标题（`header h1`）的取值规则。
+ *
+ * 三条分支，与列表里那一行**同一份派生**（列表用 `titleOf(item)`）：
+ * 1. 没有会话 → 草稿态，显示「新会话」；
+ * 2. 有会话、有显示名 → 显示名；
+ * 3. 有会话、没有显示名 → `会话 <id 前 8 位>`（与列表兜底相同）。
+ *
+ * **不再回落到产品名**：产品名不是这条会话的任何信息，它只会让用户以为标题坏了。
+ * 参考（2026-11-05 核对）：Open WebUI `src/lib/components/chat/Navbar.svelte:128` 的
+ * `title || chat?.chat?.title || $i18n.t('New Chat')` —— 空标题回落的是**中性占位**，不是产品名。
+ */
+export function headerTitleOf(input: { sessionId: string | undefined; displayTitle: string }): string {
+  if (input.sessionId === undefined) return "新会话";
+  const display = input.displayTitle.trim();
+  return display !== "" ? display : `会话 ${input.sessionId.slice(0, 8)}`;
+}
+
 /** 任务标题缓存的键：**必须带 agent + project**，否则切 Agent 后同号 Task 会串标题（C120）。 */
 export function taskTitleKey(agentId: string, projectId: string, taskId: string): string {
   return `${agentId}\u0000${projectId}\u0000${taskId}`;
@@ -81,21 +122,3 @@ export function joinHeaderSegments(segments: readonly HeaderSegment[]): string {
   return segments.map((segment) => segment.text).join(" · ");
 }
 
-/**
- * 当前会话是不是"与其他 Agent 的对话"（peer 会话）。
- *
- * 这类会话由对端 Agent 驱动，`POST /messages` 会 409，批注在里面**禁用**。
- *
- * **注意 peer 的类型是 `RowPeer | null`**（`src/session-rows.ts:53`），不是 `undefined`。
- * 2026-11-04 的 bug：写成 `item.peer !== undefined`，而普通会话的 peer 是 `null`，
- * `null !== undefined` 恒为 true → 所有会话都被判成 peer → 批注在全站被禁用，
- * 表现是"拖选文字什么都不弹"，看起来像功能没上线。
- * 所以这里用 `!= null`（null 与 undefined 都为假），并有单测锁住。
- */
-export function isPeerSessionOf(
-  sessionId: string | undefined,
-  sessions: readonly { sessionId: string; peer?: unknown }[] | undefined,
-): boolean {
-  if (sessionId === undefined) return false;
-  return sessions?.some((item) => item.sessionId === sessionId && item.peer != null) === true;
-}

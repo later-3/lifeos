@@ -10,6 +10,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import { uniqueAnnotationId } from "./annotation-id";
 import type { Annotation, AnnotationAuthor } from "./annotations.ts";
 
 /** 一条待创建批注的定位信息（拖选得到）。 */
@@ -72,10 +73,21 @@ export type AnnotationStore = {
 };
 
 let seq = 0;
-const nextId = (): string => `a${++seq}`;
+/**
+ * 生成一条新批注的 id：避开 `taken` 里的全部已知 id。
+ *
+ * 旧实现 `a${++seq}` 的 seq 每次刷新从 0 重计 → 刷新后新建的第一条永远叫 `a1`，
+ * 与服务端已有的 `a1` 撞车：同 id 两张卡一起拖/一起删，落盘重放时还静默覆盖旧批注。
+ * 规则与单测见 `frontend/src/annotation-id.ts`。
+ */
+const nextId = (taken: ReadonlySet<string>): string =>
+  uniqueAnnotationId(taken, ++seq, Date.now());
 
 export function useAnnotations(): AnnotationStore {
   const [annotations, setAnnotations] = useState<readonly Annotation[]>([]);
+  // add 用的当下集合（useCallback 不依赖 annotations，读 ref 才是"现在"的事实）
+  const annotationsRef = useRef<readonly Annotation[]>([]);
+  annotationsRef.current = annotations;
   // ofBlock/ofMessage 共用同一份缓存（避免每次渲染都新建 Map 造成子组件重渲染）
   const cacheRef = useRef<{
     source: readonly Annotation[];
@@ -113,7 +125,8 @@ export function useAnnotations(): AnnotationStore {
   }, [annotations, ofBlock]);
 
   const add = useCallback((anchor: AnnotationDraftAnchor, marks: readonly string[], note: string, author?: AnnotationAuthor) => {
-    const id = nextId();
+    // 用当下集合查重：哪怕服务端回来一条同名的，新 id 也绕开它
+    const id = nextId(new Set(annotationsRef.current.map((a) => a.id)));
     setAnnotations((list) => [
       ...list,
       {

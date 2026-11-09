@@ -55,6 +55,12 @@ if (target === undefined) {
   process.exit(1);
 }
 const { sid, messageId } = target;
+/** 原样备份：跑完还原（T13——早先这些测试清空后不还原，验收会话的批注被吃掉了）。 */
+const snapshot = (await api.list(sid)).map((a) => ({ ...a }));
+const restore = async () => {
+  for (const a of await api.list(sid)) await api.post(sid, { op: "remove", annotation: { id: a.id } });
+  for (const a of snapshot) await api.post(sid, { op: "add", annotation: a });
+};
 const url = `${ENTRY}/?agent=${AGENT}&project=${PROJECT}&session=${sid}`;
 const open = async () => { await page.goto(url, { waitUntil: "networkidle" }); await page.waitForTimeout(1500); };
 
@@ -95,7 +101,7 @@ const rows = await page.evaluate(() => [...document.querySelectorAll('[data-test
   consumed: r.dataset.consumed, text: r.innerText.replace(/\s+/g, " ").trim().slice(0, 60),
 })));
 check("展开后 2 行", rows.length === 2, JSON.stringify(rows));
-check("已发送的行带「已发送」标记", rows.some((r) => r.consumed === "true" && r.text.includes("已发送")), JSON.stringify(rows));
+check("已发送的行带「已发」标记（6 列后标记在序号格）", rows.some((r) => r.consumed === "true" && r.text.includes("已发")), JSON.stringify(rows));
 check("待发送的行显示发送文本", rows.some((r) => r.consumed === "false" && r.text.includes("我是批评的语气！")), JSON.stringify(rows));
 
 // 5) 删除单条：行消失 + 落盘
@@ -114,6 +120,7 @@ check("清空已落盘", (await api.list(sid)).length === 0);
 // 7) 无批注的消息不渲染 MarkBar（用同一会话另一条消息验证）
 check("无批注时不渲染 MarkBar", (await page.locator('[data-testid="mark-bar"]').count()) === 0);
 
+await restore();
 await browser.close();
 const failed = results.filter((r) => !r.ok);
 console.log(failed.length === 0 ? `\nMarkBar 契约通过（${results.length} 项）` : `\nMarkBar 契约失败 ${failed.length} 项`);

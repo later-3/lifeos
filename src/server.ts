@@ -19,8 +19,8 @@ import { resolveTaskDir } from "./tasks.ts";
 import {
   abortRetryOf, abortSession, annotationsOf, appendAnnotation, consumeAnnotations, toStoredAnnotation,
   applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
-  applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, projectIdOfSession, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
-  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed,
+  applyAgentDefaultThinking, nameSessionFromFirstMessage, pruneSessionViewsOnce, reserveTurn, sessionExists, sessionIntegrity, turnLastOf, queueSessionInput, readSessionEntries, renameSession, runTurn, sessionCwd, sessionMeta, payloadMetaOf,
+  setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed, projectIdOfSession,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
@@ -33,6 +33,7 @@ import { listTasks } from "./tasks.ts";
 import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
 import { appendFrontendRows, log } from "./logging.ts";
+import { cacheControlOf, looksLikeFile, REVALIDATE_CACHE } from "./static.ts";
 import { randomUUID } from "node:crypto";
 import { bodyLimit } from "hono/body-limit";
 import { declaredImageSupport, MAX_SESSION_IMAGE_BYTES, validateImages } from "./image-input.ts";
@@ -542,14 +543,13 @@ app.use(async (c, next) => {
     if (state === undefined) {
       const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status);
     }
-    // 与其他 Agent 的对话会话由发起方驱动：用户直接插话会打乱对方正在跑的回合（Task 0013 · M1）。
-    // 挡在服务端：前端禁用只是提示，真正的一致性由这里保证。
-    const peerOf = peerMarkerOf(state.session.sessionManager);
-    if (peerOf !== undefined) {
-      const error = problem("peer_conversation_readonly",
-        `这是与 Agent「${peerOf}」的对话，由对方驱动；请回到发起方的会话里继续，不要直接在这里发言`, 409);
-      return c.json(error.body, error.status);
-    }
+    // 发言权：**只看“这一轮是否在跑”**，不看会话来源（Task 0014 · D4/D6）。
+    // 旧实现在这里无条件拒绝对话会话（`peer_conversation_readonly`），
+    // 理由写的是“用户插话会打乱对方正在跑的回合”——理由关并发，结论却是永久只读，
+    // 而且普通会话根本没有并发守卫。现在两条入口同一条规则，判定只在 `runTurn`/`sessionBusyOf` 一处。
+    //
+    // 顺序要求：`behavior` 必须先于“新回合”判定被解析——否则生成中想插话也会被 409 吃掉。
+    const behavior = body.behavior === "steer" || body.behavior === "followUp" ? body.behavior : undefined;
     // 图片校验：张数、单张大小、魔数、会话字节预算（docs/design/image-input.md 约束表）
     const images = validateImages(body.images, sessionImageBytesOf(state));
     if (!images.ok) {
@@ -566,7 +566,6 @@ app.use(async (c, next) => {
       }
     }
     // 生成中投入输入：对接 Pi 原生 steer / followUp（不自造客户端队列）
-    const behavior = body.behavior === "steer" || body.behavior === "followUp" ? body.behavior : undefined;
     if (behavior !== undefined) {
       const verdict = await queueSessionInput(agent.id, sessionId, body.text, behavior);
       if ("code" in verdict) {
@@ -581,9 +580,29 @@ app.use(async (c, next) => {
       }
       return c.json({ queued: verdict.queued }, 202);
     }
+    // 新回合：先**同步占位**拿到判决（202 / 409），再后台跑整轮。
+    // 只 `await runTurn()` 是不可行的（实测 300s 超时）：它是 async，会连带等整轮结束，
+    // 202 就一直不返回。所以占位与执行分开（02-design L1/L2）。
+    const slot = reserveTurn(agent.id, sessionId);
+    if (slot === undefined) {
+      const error = problem("session_running",
+        "这一轮还没结束，新消息没有发出：等它跑完再发 / 生成中按 Enter 插话（steer）/ 点停止（Esc）打断后重发", 409);
+      return c.json(error.body, error.status);
+    }
     nameSessionFromFirstMessage(agent.id, sessionId, body.text);   // 同步命名：返回 202 时标题已生效（会话维护，提交 a08a21e）
-    void runTurn(agent.id, sessionId, body.text, images.images);
-    return c.json({ accepted: true, images: images.images.length }, 202);
+    const turn = runTurn(agent.id, sessionId, body.text, { images: images.images, reserved: slot });
+    void turn.then((result) => {
+      if (result.ok) return;
+      // 占位成功却拿到 busy：理论上不可达（占位就是判据）。释放占位并记日志，不静默吞。
+      slot.release();
+      void log.error("http", "messages", "占位成功但 runTurn 回报 busy", { sessionId, agentId: agent.id });
+    }).catch((error: unknown) => {
+      void log.error("http", "messages", "runTurn 抛出未捕获错误", {
+        sessionId, agentId: agent.id, details: { message: error instanceof Error ? error.message : String(error) },
+      });
+    });
+    // 202 立刻带回 turnId：调用方（前端/工具/排查工具）要用它认领这一轮（Task 0014 · L4）。
+    return c.json({ accepted: true, images: images.images.length, turnId: slot.turnId }, 202);
   });
 
   // 打断（Pi abort()）：run 的 finally 会照常发 done，前端据此收尾
@@ -727,10 +746,17 @@ app.use(async (c, next) => {
     if (!setFocusOf(body.connectionId, focus)) {
       const error = problem("connection_not_found", "事件连接不存在（已断开）；请重连后重新上报焦点", 404); return c.json(error.body, error.status);
     }
-    // 与回合结束时的已读走**同一个函数**（见 agent-host 的 markSessionViewed 注释）
-    // `Focus` 不带 projectId（它只用于投递路由）。补丁里的 projectId 是给排障看的附带信息，
-    // 缺省不影响前端应用补丁（前端按 sessionId 找行）——不为了一个日志字段去改事件契约。
-    if (focus !== undefined && focus.visible) markSessionViewed(focus.agentId, focus.sessionId, new Date().toISOString(), undefined);
+    // 与回合结束时的已读走**同一个函数**（见 agent-host 的 markSessionViewed 注释）。
+    //
+    // **必须带上 projectId**（2026-11-05 修）：原来的注释说"缺省不影响前端应用补丁"是错的 ——
+    // 前端用补丁里的 projectId 建/改状态槽位，传 undefined 会把这条会话的数字
+    // 从"某个项目"挪到"该 Agent 的无项目桶"，项目行上的数字就消失了。
+    // 这里多一次 `projectIdOfSession()`（先查内存 pending、再查落盘，命中即返回），
+    // 实测 <1ms，且只在用户切会话时发生，不在热路径上。
+    if (focus !== undefined && focus.visible) {
+      const projectId = await projectIdOfSession(focus.agentId, focus.sessionId);
+      markSessionViewed(focus.agentId, focus.sessionId, new Date().toISOString(), projectId);
+    }
     return c.json({ ok: true });
   });
 
@@ -1348,8 +1374,24 @@ app.use(async (c, next) => {
     return c.json(result);
   });
 
-  app.use("/*", serveStatic({ root: "./frontend/dist" }));
-  app.get("/*", serveStatic({ path: "./frontend/dist/index.html" }));
+  // 静态产物（Task 0008）：
+  // 1) 缓存分级 —— 带 hash 的 `/assets/*` 永久缓存；`index.html` / `sw.js` 一律回源校验。
+  //    这两条算错的后果是**页面永久白屏**，且浏览器不给任何提示（见 src/static.ts 顶部）。
+  // 2) 缺失的文件 404，不回退 index.html —— 否则旧 hash 的产物请求会拿回一份 HTML，
+  //    浏览器按 module script 加载失败，`#root` 永远空（实测记录在 src/static.ts）。
+  const distOptions = {
+    root: "./frontend/dist",
+    onFound: (path: string, c: Context) => {
+      c.header("Cache-Control", cacheControlOf(c.req.path));
+    },
+  };
+  app.use("/*", serveStatic(distOptions));
+  // 页面回退只给**看起来不是文件**的路径（前端状态全在 query 里，没有路径路由）。
+  app.get("/*", async (c, next) => {
+    if (looksLikeFile(c.req.path)) return next();
+    c.header("Cache-Control", REVALIDATE_CACHE);
+    return serveStatic({ path: "./frontend/dist/index.html" })(c, next);
+  });
 
   return app;
 }

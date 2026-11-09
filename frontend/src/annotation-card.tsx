@@ -122,6 +122,18 @@ type ShellProps = {
 
 function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStart, onDragMove, onDragEnd, onPressEnd, children, testId, annoId, bar, onMouseEnter, onMouseLeave }: ShellProps) {
   const ref = useRef<HTMLDivElement>(null);
+  /**
+   * 拖动进行中的实时偏移（Task 0008 修复）。
+   *
+   * 旧实现拖动时直接改 DOM，而下面的定位 effect **没有依赖数组**，
+   * 拖动路径上只要发生一次重渲染（比如鼠标划过正文 → setHostRect），
+   * effect 就拿旧闭包里的 offset（= 拖动前的 0）把位置**抹回起点**。
+   * 实测：向正文方向拖，每步 style.left 停在 8px，松手瞬间跳到 -152px。
+   * 现在拖动先写 ref（同步、无渲染），effect 读 ref —— 拖动期间谁也覆写不了它。
+   */
+  const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
+  /** 首次摆放算定的基准（槽位或 popupPosition 的结果）；拖动的 base 不再从 style.left 读回来。 */
+  const baseRef = useRef<{ left: number; top: number } | null>(null);
 
   /**
    * 在框里按下鼠标 → 视为"按住中"，直到 window 层 mouseup 才释放。
@@ -154,9 +166,11 @@ function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStar
   useLayoutEffect(() => {
     const el = ref.current;
     if (el === null) return;
+    // 拖动中：直接写在 DOM 上的就是事实，effect 不许碰（否则抹回起点，见 dragOffsetRef 注释）
+    if (dragOffsetRef.current !== null) return;
     const size = { width: el.offsetWidth, height: el.offsetHeight };
     const known = slots?.get(annoId);
-    let base = known;
+    let base = baseRef.current ?? known ?? undefined;
     if (base === undefined) {
       // 第一次摆：读此刻已摆定的其他槽位，算一个不与它们相撞的位置，然后固定下来
       const occupied: OccupiedBox[] = [...(slots?.values() ?? [])].map((o) => ({ ...o }));
@@ -166,9 +180,9 @@ function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStar
         rects, hostRect, hostRect.height, size, { dx: 0, dy: 0 }, occupied,
         { top: 0, bottom: window.innerHeight },
       );
-      base = { left: pos.left, top: pos.top, width: size.width, height: size.height };
-      onSlot?.(base);
+      base = { left: pos.left, top: pos.top };
     }
+    baseRef.current = { left: base.left, top: base.top };
     el.style.left = `${base.left + offset.dx}px`;
     el.style.top = `${Math.max(0, base.top + offset.dy)}px`;
   });
@@ -212,23 +226,34 @@ function PopupShell({ rects, hostRect, offset, pinned, slots, onSlot, onDragStar
           let dy = offset.dy;
           let moved = false;
           const el = ref.current;
-          const baseLeft = el === null ? 0 : parseFloat(el.style.left) || 0;
-          const baseTop = el === null ? 0 : parseFloat(el.style.top) || 0;
+          // 基准 = baseRef（effect 首摆时算定的槽位/位置）+ 已落盘的 offset。
+          // **不从 style.left 读回来**：拖动中途被渲染打断时 style 可能是脏的，
+          // 读回它会把上一次的错误位置当成新基准（误差累积，实测遇过）。
+          const base = baseRef.current ?? { left: 0, top: 0 };
+          const baseLeft = base.left + offset.dx;
+          const baseTop = base.top + offset.dy;
 
           const onMove = (ev: MouseEvent) => {
+            const nextDx = offset.dx + (ev.clientX - startX);
+            const nextDy = offset.dy + (ev.clientY - startY);
+            // 位移不足 2px 不算拖动：手抖/误按不产生「已拖动」状态，也不会把
+            // 用户没动的框记成 moved（moved 一旦置上就退出避让，代价不可逆）。
+            if (!moved && Math.abs(ev.clientX - startX) < 2 && Math.abs(ev.clientY - startY) < 2) return;
             moved = true;
-            dx = offset.dx + (ev.clientX - startX);
-            dy = offset.dy + (ev.clientY - startY);
+            dx = nextDx;
+            dy = nextDy;
+            dragOffsetRef.current = { dx: nextDx, dy: nextDy };   // 先写 ref（同步），effect 看到它就让路
             if (el !== null) {
               el.style.left = `${baseLeft + (ev.clientX - startX)}px`;
-              el.style.top = `${baseTop + (ev.clientY - startY)}px`;
+              el.style.top = `${Math.max(0, baseTop + (ev.clientY - startY))}px`;
             }
             onDragMove?.(dx, dy);
           };
           const onUp = () => {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
-              onDragEnd(moved ? dx : offset.dx, moved ? dy : offset.dy);
+            dragOffsetRef.current = null;   // 释放：此后 effect 接管（offset 已由 onDragEnd 落盘）
+            onDragEnd(moved ? dx : offset.dx, moved ? dy : offset.dy);
             onPressEnd?.();
           };
           window.addEventListener("mousemove", onMove);

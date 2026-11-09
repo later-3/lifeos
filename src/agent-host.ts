@@ -28,8 +28,11 @@ import type { ModelRef } from "./model-follow-types.ts";
 // 不再依赖调用方传 notify，也不再产生 agents → agent-host 的循环 import（2026-10-20）。
 import { broadcast, isFocusedVisible, publish, type AgentEvent } from "./events.ts";
 import { sessionViewsOf, sessionViewsReady, type TurnOutcome } from "./session-views.ts";
-import { notifyPeerTurnFinished } from "./peer-completion.ts";
+import { bindPendingPeerTurn, notifyPeerTurnFinished } from "./peer-completion.ts";
 import { titleFromFirstMessage } from "./session-title.ts";
+import {
+  lastOriginOf, parseOrigin, speakerSection, TURN_ORIGIN_ENTRY, USER_ORIGIN, type TurnOrigin,
+} from "./turn-origin.ts";
 import { clearRunning, isRunning, markRunning, runningAll, runningOf, type RunSnapshot } from "./session-runtime.ts";
 import { randomBytes } from "node:crypto";
 import { readTurnVerdict, type TurnVerdict } from "./turn-verdict.ts";
@@ -257,9 +260,12 @@ async function createHostedSession(
   const projectId = projectOfSessionDir(sessionManager.getSessionDir());
   const parts = await buildPromptParts(agentId, projectId, taskId);
   // Task 在会话中途可切换：每次 run 从会话的最后一条 active_task 条目重新装配，而不是把 task.md 固定死在创建时。
+  // 身份同理（Task 0014 · D8′）：每轮从最新的 `lifeos_turn_origin` 重算，不把上一轮的身份漏到这一轮。
   const getParts = async (): Promise<Awaited<ReturnType<typeof buildPromptParts>>> => {
     const currentTaskId = activeTaskOf(sessionManager) ?? taskId;
-    return await buildPromptParts(agentId, projectId, currentTaskId);
+    const base = await buildPromptParts(agentId, projectId, currentTaskId);
+    const origin = currentOriginOf(sessionManager);
+    return origin === undefined ? base : { ...base, speakerSection: speakerSection(origin) };
   };
   const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts, getParts });
 
@@ -712,7 +718,13 @@ export function turnSnapshotAll(): Array<TurnRecord & { agentId: string }> {
  * 只做①不做②，行上的绿点会一直留到下次全量重取列表 —— 这是 Task 0005 实测到的缺口。
  */
 export function markSessionViewed(agentId: string, sessionId: string, at: string, projectId: string | undefined): void {
+  // **没有未读就不要推补丁**（2026-11-05 修）：一个正在跑的会话没有任何未读可清，
+  // 原来照样推 `{ unread: null }` —— 前端把它当"清状态"，把 running 槽位一起删了，
+  // 于是"行上蓝点在呼吸、项目/助手没有数字"（用户截图报告的 bug）。
+  // 这一层是兜底：即使调用方乱调，也不会发出会误导前端的补丁。
+  const before = sessionViewsOf().unread().some((item) => item.agentId === agentId && item.sessionId === sessionId);
   sessionViewsOf().markViewed(agentId, sessionId, at);
+  if (!before) return;
   rowPatches().pushNow(agentId, sessionId, projectId, { unread: null });
 }
 
@@ -814,11 +826,117 @@ async function recordPayloadObservation(target: SessionState, outcome: "ok" | "t
   await recordObservedToFile(resolveHome(), { providerId, bodyBytes, outcome }).catch(() => undefined);
 }
 
+// 准入窗口：`runTurn` 从"受理"到 `markRunning` 之间有两个 await（分片创建、项目解析），
+// 只查 `isRunning` 会在这段留出"两个请求都通过"的缝。所以先用一个同步集合占位。
+// 参考 Pi Web `lib/rpc-manager.ts:216`：它把 `pendingPromptCount > 0`（已受理未开始）也算运行中。
+const startingTurns = new Set<string>();
+// 键里带家目录：与 `session-runtime.ts:10` 的 `keyOf` 同口径。
+// 为什么必须带——单进程里可能同时存在多个家（开发实例 + 测试的临时家 + 引导切换），
+// 只靠 agentId/session 会让"另一个家的同名会话"把这一家的占位判成忙。
+const busyKey = (agentId: string, sessionId: string): string => `${resolveHome()}\u0000${agentId}\u0000${sessionId}`;
+
+/**
+ * 这个会话此刻能不能再起一轮？
+ *
+ * **唯一判定**：调用方（HTTP / `lifeos_ask` / `lifeos_send`）都消费它或 `runTurn()` 的返回值，
+ * 不各自再判一套（`specs/code/backend/code.md` 2.6）。
+ *
+ * 注意它**不看会话来源**：普通会话与 Agent↔Agent 会话同一条规则（Task 0014 · D4/D6）。
+ */
+export function sessionBusyOf(agentId: string, sessionId: string): boolean {
+  return startingTurns.has(busyKey(agentId, sessionId)) || isRunning(agentId, sessionId);
+}
+
+/** `runTurn` 的受理结果：`busy` 表示这一轮**没有**开始（调用方负责给出可行动的拒绝）。 */
+export type RunTurnResult = { ok: true; turnId: string } | { ok: false; reason: "busy" };
+
+/**
+ * 准入占位（Task 0014 · L1/L2）。
+ *
+ * 为什么要把"占位"和"跑起来"分开：HTTP 需要**立刻**知道这一轮有没有被受理（202 还是 409），
+ * 而后端要**异步**跑完整个回合。`runTurn` 是 async 函数，只 `await` 它会连带等整轮结束
+ * （实测：HTTP 请求 300s 超时，202 一直不返回）。
+ *
+ * 用法（唯一正确顺序）：
+ * ```ts
+ * const slot = reserveTurn(agentId, sessionId);
+ * if (slot === undefined) return busy();           // 立刻回 409
+ * void runTurn(agentId, sessionId, text, { reserved: true, ... });  // 后台跑，finally 里释放
+ * return accepted();                                // 立刻回 202
+ * ```
+ */
+export type TurnReservation = {
+  /** 这一轮的 turnId。**在占位时就生成**：HTTP 的 202 要立刻把它带回给调用方（排查与回流绑定都要它），
+   *  而 `runTurn` 内部还有两个 await 才轮到生成——那时 202 早发出去了。 */
+  turnId: string;
+  release: () => void;
+};
+
+/** 同步占位：成功返回释放器与 turnId，失败返回 undefined（**已被占 / 正在跑**）。 */
+export function reserveTurn(agentId: string, sessionId: string): TurnReservation | undefined {
+  const key = busyKey(agentId, sessionId);
+  if (sessionBusyOf(agentId, sessionId)) return undefined;
+  startingTurns.add(key);
+  let released = false;
+  return {
+    turnId: newTurnId(),
+    release: () => {
+      if (released) return;
+      released = true;
+      startingTurns.delete(key);
+    },
+  };
+}
+
+/** `runTurn` 的可选参数：这一轮是谁发起的（Task 0014 · D8′）+ 是否已由调用方占位。 */
+export type RunTurnOptions = {
+  images?: ImageAttachment[];
+  /** 发起方；不传 = 用户（HTTP 发送的默认事实）。 */
+  origin?: TurnOrigin;
+  /** 调用方已经 `reserveTurn()` 成功时传它的结果：`runTurn` 不再自行检查、并用它生成的 turnId。 */
+  reserved?: TurnReservation;
+};
+
+/** 写一条 `lifeos_turn_origin`：plain custom 条目，立即落盘、不进上下文（见 turn-origin.ts 头注）。 */
+export function appendTurnOrigin(
+  manager: ReturnType<typeof SessionManager.open>,
+  origin: TurnOrigin,
+  turnId?: string,
+): void {
+  manager.appendCustomEntry(TURN_ORIGIN_ENTRY, {
+    ...origin,
+    ...(turnId !== undefined ? { turnId } : {}),
+    at: new Date().toISOString(),
+  });
+}
+
+/** 会话当前这一轮的发起方（从分支末尾往前找，与 `activeTaskOf()` 同一手法）。 */
+export function currentOriginOf(manager: ReturnType<typeof SessionManager.open>): TurnOrigin | undefined {
+  return lastOriginOf(manager.getBranch() as ReadonlyArray<{ type?: string; customType?: string; data?: unknown }>);
+}
+
 /** 跑一轮：把 Pi 的文本增量发布成事件。 */
-export async function runTurn(agentId: string, sessionId: string, text: string, images?: ImageAttachment[]): Promise<void> {
+export async function runTurn(agentId: string, sessionId: string, text: string, options: RunTurnOptions = {}): Promise<RunTurnResult> {
+  const images = options.images;
+  const origin: TurnOrigin = options.origin ?? USER_ORIGIN;
   const state = stateOf(agentId);
   const target = state.sessions.get(sessionId);
-  if (target === undefined) return;
+  if (target === undefined) {
+    // 会话不在内存里：调用方按 session_not_found 处理。已占位的话要交还，否则会话永远"在跑"。
+    options.reserved?.release();
+    return { ok: false, reason: "busy" };
+  }
+  // 准入：必须在**第一个 await 之前**同步占位，否则两个并发请求都会通过检查。
+  // 调用方已占位（HTTP：先 `reserveTurn()` 拿到 202/409 的判决）时不重复检查，只负责在 finally 释放。
+  const key = busyKey(agentId, sessionId);
+  let slot: TurnReservation;
+  if (options.reserved !== undefined) {
+    slot = options.reserved;
+  } else {
+    const acquired = reserveTurn(agentId, sessionId);
+    if (acquired === undefined) return { ok: false, reason: "busy" };
+    slot = acquired;
+  }
   // 发起对话才有分片（协议 §6.1）：本轮的日期分片在这里建；失败不阻断对话。
   await ensureTurnShard(agentId, sessionId).catch((error) => {
     console.error(`[tasks] 当天分片创建失败：${error instanceof Error ? error.message : String(error)}`);
@@ -826,8 +944,12 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   });
   // 回合账本（turnId）：受理即开账；SSE turn 事件（running），终态在 try/catch 里补（协议 P1·1.2）
   const projectIdForLog = await projectIdOfSession(agentId, sessionId);
-  const turnId = newTurnId();
+  // turnId 用占位时生成的那个（HTTP 的 202 已经把它带给调用方）。缺省（内部直调）才现生成。
+  const turnId = options.reserved?.turnId ?? newTurnId();
   startTurn(agentId, sessionId, turnId);
+  // 回流只认自己那一轮（Task 0014 · L4）：若这条会话上有 send 的待回流登记，把这一轮绑上去。
+  // 必须在 `startTurn` 之后（此时 turnId 才算生效），且不影响普通会话（无登记 → 空操作）。
+  bindPendingPeerTurn(agentId, sessionId, turnId);
   publish(agentId, { sessionId, projectId: projectIdForLog, type: "turn", turnId, state: "running" });
   void log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId, agentId, projectId: projectIdForLog });
   const startedAtIso = new Date().toISOString();
@@ -853,6 +975,13 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   });
   const requestKey = `${agentId}\u0000${sessionId}`;
   abortRequested.delete(requestKey);
+  // 身份先落盘（在 prompt 之前）：即使用户看到's 回合最终失败，这一次"谁发起的"也是确定的事实。
+  // 写入不抛：身份缺一条不能阻断对话（读侧无 origin 时回落成用户）。
+  try {
+    appendTurnOrigin(target.session.sessionManager, origin, turnId);
+  } catch (error) {
+    void log.warn("agent-host", "runTurn", "写 turn origin 失败（不阻断回合）", { sessionId, turnId, details: { message: error instanceof Error ? error.message : String(error) } });
+  }
   try {
     // 发送前守卫（Task 0017）：会话可能是在凭据还正常时打开的，之后 key 被削/被改；
     // 也可能因为历史原因带着 Pi 偷换的模型。发请求前再验一次，不把用户的钱花在
@@ -930,10 +1059,12 @@ export async function runTurn(agentId: string, sessionId: string, text: string, 
   } finally {
     unsubscribe();
     clearRunning(agentId, sessionId);
+    slot.release();
     // 待落盘登记：只有文件真的落盘了才交给文件列表接管。首轮失败时 Pi 不会落盘（要等助手回复），
     // 直接删登记会让会话从列表消失（2026-10-25 实测：模型不可用时新会话隐身，标题也丢）。
     if (await findSessionFile(agentId, sessionId) !== undefined) state.pending.delete(sessionId);
   }
+  return { ok: true, turnId };
 }
 
 type UsageSnapshot = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; totalTokens: number };
@@ -1294,11 +1425,24 @@ export function abortRetryOf(agentId: string, sessionId: string): boolean {
 export type QueueVerdict = { queued: "steer" | "followUp" } | { code: "session_idle" | "session_not_found" } | { code: "error"; message: string };
 
 /** 生成中投递输入：先裁决（决策 b）—— 空闲返回 409 让前端改发新回合，绝不静默入 Pi 队列。 */
-export async function queueSessionInput(agentId: string, sessionId: string, text: string, behavior: "steer" | "followUp"): Promise<QueueVerdict> {
+export async function queueSessionInput(
+  agentId: string,
+  sessionId: string,
+  text: string,
+  behavior: "steer" | "followUp",
+  origin: TurnOrigin = USER_ORIGIN,
+): Promise<QueueVerdict> {
   const state = stateOf(agentId).sessions.get(sessionId);
   if (state === undefined) return { code: "session_not_found" };
   if (!isRunning(agentId, sessionId)) return { code: "session_idle" };
   try {
+    // 身份先写（Task 0014 · D8′）：插话/排队也是一轮输入，同样要能回答“谁说的”。
+    // 写失败不阻断（读侧无 origin 时回落成用户）。
+    try {
+      appendTurnOrigin(state.session.sessionManager, origin);
+    } catch (error) {
+      void log.warn("agent-host", "queueSessionInput", "写 turn origin 失败（不阻断）", { sessionId, details: { message: error instanceof Error ? error.message : String(error) } });
+    }
     if (behavior === "steer") await state.session.steer(text);
     else await state.session.followUp(text);
     return { queued: behavior };
@@ -1535,7 +1679,10 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }> };
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }>;
+  /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）。
+   *  墙钟耗时要靠它做终点：工具执行时间不在 assistant.durationMs 里（Task 0015 · P4）。 */
+  resultAt?: number; };
 type ImageBlock = { type: "image"; data: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
@@ -1561,13 +1708,27 @@ export function sessionImageBytesOf(state: SessionState): number {
 }
 
 /** 消息（含结构化块）：text/thinking/toolCall 按 Pi 真实内容块返回，toolResult 挂回对应调用
- * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。 */
+ * （参考 Pi Web MessageView 的展示数据；兼容字段 text 保留给纯文本消费者）。
+ *
+ * `streaming`（Task 0015 · P2）：**只在会话正在跑、且这是最后一条 assistant 消息时**给出 `true`，
+ * 其余情况**不出现该字段**（不是 `false`）。
+ * 为什么要它：前端切会话时会 `setMessages(history)`，而历史接口以前从不带"在跑"，
+ * 于是同一轮在"停留"与"切回"两种情形下 `messageLive` 一真一假——过程区一会展开一会折叠的根源
+ * （`frontend/src/App.tsx:2953-2971` 的 `messageLive` 就是读它）。
+ * 为什么不放前端补：运行真相在服务端（`specs/code/architecture` §2.4）；peer、历史接口共用同一份。
+ */
 export function messagesOf(state: SessionState) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
   // durationMs / tokens（2026-11-02）：过程条要数“花了多久 / 多少 token”，两者都在 assistant 消息上，不在块里
   const out: Array<{
     role: string; text: string; blocks: MessageBlock[]; at?: number; error?: string; failure?: FailureKind;
     durationMs?: number; tokens?: number;
+    /**
+     * 这一条 user 消息是谁说的（Task 0014 · D8′）。只出现在 `role === "user"` 上：
+     * assistant 的说话人就是会话所属 Agent，不需要字段。老会话没记 origin → `kind:"user"`，
+     * 与今天的界面行为一致（Open WebUI `chats.py:438` 的“有就记、没有就回落”同一口径）。
+     */
+    speaker?: TurnOrigin;
     /**
      * Pi 的回合终态原样透出（Task 0007）：前端要按与后端**同一张表**判定"这一轮算不算失败"，
      * 就必须拿到同一个输入。在此之前前端只看得到 text/error，只能用"文本是否为空"猜，
@@ -1578,11 +1739,25 @@ export function messagesOf(state: SessionState) {
      *  批注要挂到"哪条消息"上，没有稳定 id 就只能挂 index，而 index 会随重渲染/切换漂移。
      *  实测：一个 entry 恰好对应一条消息（398 条消息 0 个多产出），entry.id 全局唯一。 */
     id: string;
+    /** 这一段是否还在追加（Task 0015 · P2）：只在"本会话正在跑 + 这是最后一条 assistant"时为 `true`。 */
+    streaming?: true;
   }> = [];
   // 时间来自**条目**（session entry 的 timestamp），不是消息本身：投影里的消息没有时间字段。
   // 失败块要显示"什么时候失败的"，否则历史失败会被误读成当前状态（2026-10-26 实测）。
   const projection = state.session.sessionManager.buildSessionProjection();
+  // 身份配对（Task 0014）：origin 是 plain custom 条目（本身不产生消息），
+  // 所以按条目顺序走一遍：记住最近一条 origin，**用完即清**（一条 origin 只管紧接的那条 user）。
+  // 不用“最后一条 origin”是因为历史里可能有多轮：那样整段历史都会变成同一个说话人。
+  let pendingSpeaker: TurnOrigin | undefined;
   const items = projection.entries.flatMap((entry, entryIndex) => {
+    const source = entry.sourceEntry as { type?: string; customType?: string; data?: unknown };
+    if (source.type === "custom" && source.customType === TURN_ORIGIN_ENTRY) {
+      const parsed = parseOrigin(source.data as { kind?: unknown; agentId?: unknown; name?: unknown; via?: unknown } | undefined);
+      // `kind:"user"` 的 origin 与“没有 origin”在展示上等价，但**记下来**仍然有意义：
+      // 它能把“用户亲自发”与“老会话没记录”区分开（读侧不靠猜）。
+      pendingSpeaker = parsed;
+      return [];
+    }
     const raw = (entry.sourceEntry as { timestamp?: unknown }).timestamp;
     const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
     const at = Number.isNaN(parsed) ? undefined : parsed;
@@ -1595,9 +1770,14 @@ export function messagesOf(state: SessionState) {
       id = `entry-${entryIndex}`;
       void log.warn("agent-host", "messagesOf", "session entry 缺少 id，已降级为占位", { details: { entryIndex } });
     }
-    return entry.messages.map((message) => ({ message, at, id }));
+    return entry.messages.map((message) => {
+      // 一条 origin 只配对**下一条 user 消息**；碰到别的 role 不消耗（工具结果可能夹在中间）。
+      const speaker = message.role === "user" && pendingSpeaker !== undefined ? pendingSpeaker : undefined;
+      if (speaker !== undefined) pendingSpeaker = undefined;
+      return { message, at, id, speaker };
+    });
   });
-  for (const { message, at, id } of items) {
+  for (const { message, at, id, speaker } of items) {
     if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
@@ -1611,7 +1791,12 @@ export function messagesOf(state: SessionState) {
       }
       // D7：引用化后用户消息里只有引用行 —— 显示时按附件目录还原（老会话已有图块则原样，见 imageBlocksOfRefs）
       for (const refBlock of imageBlocksOfRefs(message)) blocks.push(refBlock);
-      out.push({ role: "user", text, blocks, id, ...(at !== undefined ? { at } : {}) });
+      out.push({
+        role: "user", text, blocks, id,
+        ...(at !== undefined ? { at } : {}),
+        // 老会话（本任务之前产生）没有 origin：回落成用户，不猜（Task 0014 · 完成标准 11）
+        speaker: speaker ?? USER_ORIGIN,
+      });
     } else if (message.role === "assistant") {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
@@ -1654,6 +1839,11 @@ export function messagesOf(state: SessionState) {
         if (call === undefined) continue;
         call.result = result;
         call.isError = message.isError;
+        // 工具结果的产生时刻（Task 0015 · P4）：Pi 的 `toolResult.timestamp` 就是它。
+        // 没有它，一轮的"墙钟耗时"只算到最后一个 assistant 结束，`sleep 20` 这种长工具会被漏掉
+        //（实测：墙钟 34417ms vs Σassistant.durationMs 28323ms，差的 6 秒正是工具执行）。
+        const resultAt = (message as { timestamp?: unknown }).timestamp;
+        if (typeof resultAt === "number" && Number.isFinite(resultAt) && resultAt > 0) call.resultAt = resultAt;
         // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
         const direct = toolResultImages(message);
         const images = direct.length > 0 ? direct : imageBlocksOfRefs(message);   // D7：引用行 → 附件还原
@@ -1661,6 +1851,15 @@ export function messagesOf(state: SessionState) {
         break;
       }
     }
+  }
+  // 运行标记（Task 0015 · P2）：只在"本会话正在跑 + **最后一条消息就是 assistant**"时标 `streaming: true`。
+  // 读的是 Pi 的公开 getter（`AgentSession.isStreaming`，v1.3/v1.5/main 都存在），不是内存记账。
+  // 为什么要求"最后一条就是 assistant"：刚受理时最后一条是 user，此时上一轮的 assistant 已经结束，
+  // 给它标 streaming 会让界面把旧回复当成"正在追加"（实测考例 T2-3 锁这一条）。
+  // 为什么不给前端自己补：切会话时前端拿到的就是这份历史，它无法知道"这条还在追加"。
+  if (state.session.isStreaming) {
+    const last = out[out.length - 1];
+    if (last !== undefined && last.role === "assistant") last.streaming = true;
   }
   return out;
 }

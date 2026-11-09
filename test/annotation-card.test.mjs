@@ -180,3 +180,4 @@ test("视口翻转：上下都放不下时，贴着可见区（不跑出屏幕�
   assert.ok(pos.top >= 0, "不跑到负坐标");
   assert.ok(pos.top <= 500 - 8, `不跑出可见区，实际 top=${pos.top}`);
 });
+

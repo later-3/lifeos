@@ -114,3 +114,31 @@
   因缺 `lastState` 全部不计，用户编译启动后看到的是「助手列表一个数字都没有」。
 - 检查方式：拿一份真实的家目录副本（不是空目录）启动一次，看新增功能的界面是否有数据。
   **只用空家目录测试等于没测迁移。**
+
+### 2.18 发言权按"这一轮是否在跑"判定，不按会话来源判定（必须）
+
+- 规则：一个会话**同一时刻最多一轮在跑**，这是唯一不变量，**与会话来源（用户发起 / Agent 用工具发起）无关**。
+  能不能再起一轮只有一处判定（`sessionBusyOf()` = 已受理占位的 `startingTurns` ∪ `isRunning`）；
+  HTTP 与 `lifeos_ask` / `lifeos_send` 都消费它的结果或 `runTurn()` 的返回值，**不各自再判一套**。
+- 规则：守卫**必须在第一个 `await` 之前同步占位**。`runTurn` 开头有异步步骤（分片创建、项目解析），
+  只查 `isRunning` 会留出"两个并发请求都通过"的窗口；而"已受理但还没开跑"本身也必须算忙。
+- 规则：拒绝要**可行动**——`409 session_running` 的 message 写明三种出口（等它跑完 / 插话 / 打断），
+  与 `specs/review/review.md` §4 交互交付四问一致。打断（`/abort`）**不得**被这条规则挡住。
+- 规则：**不得**用会话来源（如 `lifeos_peer` 标记）表达任何发言权限。来源只用于表达"这段协作从哪来、完成后回流给谁"。
+- 依据：2026-11-07 Task 0014。反例见该任务 `cases/2026-11-07.md`：Task 0013 · M1 把"并发"这一**时序**约束写成了
+  "这类会话永久只读"的**身份**约束，且只给一类会话加锁（普通会话连并发守卫都没有），
+  代价是用户 5 次被拒、界面零解释，并派生 4 个连带缺陷（插话被挡、批注被禁、抽屉文案误导、回流可能串轮）。
+- 机器检查：`test/session-origin.test.mjs`（并发只一个 202、在跑 409、身份五条路径）、`test/api.test.mjs`
+  （空闲 202 / 在跑 409）、`test/peer-completion.test.mjs`（回流只认自己那轮）。
+
+### 2.19 每条用户轮必须记录发起方（必须）
+
+- 规则：每轮开跑前写一条 plain custom 条目 `lifeos_turn_origin`（`{kind:"user"} | {kind:"agent", agentId, name?, via?}`），
+  三条入口（HTTP / `lifeos_ask` / `lifeos_send`）与两种排队（`steer` / `followUp`）**全部覆盖**。
+- 规则：读侧 `messagesOf()` 按条目顺序配对，一条 origin 只配**紧接的那一条** user 消息（用完即清）；
+  找不到 origin（老会话）回落 `{kind:"user"}`，**不猜**。
+- 规则：身份进模型走系统提示 `sections`，**不得**用 `custom_message`（`convertToLlm` 会把它降级成 `user` 角色，
+  等于正文前多一条假消息），也不得改写消息正文（正文是用户的真实输入）。
+- 依据：Task 0014 · D8′。Pi 只有 role 级身份（`pi/packages/ai/src/types.ts:564-568` 的 `UserMessage` 无 author），
+  Agent↔Agent 会话里那条 user 消息会被界面当成"我说的话"。横向参考见该任务 `07-references.md` §2 / §9.2。
+- 机器检查：`test/session-origin.test.mjs`（T34/T38/T39/T40/T42）、`test/assembly.test.mjs`（身份段）。

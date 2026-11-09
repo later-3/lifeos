@@ -223,8 +223,13 @@ export function planElision(
 /** 调用方读好的上限（配置 + 观测），交给纯函数用；读盘不进这里（R9）。 */
 export type ImageBudgetLimits = { config: PayloadLimitsConfig; state: PayloadLimitsState };
 
-/** 只用模型的两个字段（结构化类型：不绑 Pi 的 Model 泛型，也便于测试传字面量）。 */
-export type BudgetModel = { provider: string; inputLimits?: { maxRequestBytes?: number } | undefined };
+/** 只用模型的两个字段（结构化类型：不绑 Pi 的 Model 泛型，也便于测试传字面量）。
+ *
+ * `maxRequestBytes` 写成 `number | undefined`（Task 0015 · P1）：Pi 从 v1.5.0 起把 `models.json`
+ * 的类型由 TypeBox `Static` 换成 pi-schema `Static`，可选属性变成「可缺省 **或显式 undefined**」。
+ * 本仓库 `tsconfig` 开了 `exactOptionalPropertyTypes`，只写 `?: number` 会把「显式 undefined」判为不兼容
+ * （实测：`src/assembly.ts:347` TS2345）。这里放宽的是**输入侧的接受面**，不改任何行为。 */
+export type BudgetModel = { provider: string; inputLimits?: { maxRequestBytes?: number | undefined } | undefined };
 
 export type AppliedImageBudget = {
   budget: Budget;

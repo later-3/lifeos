@@ -133,9 +133,13 @@ export function PeerPanel({ target, liveEvents, onClose }: {
         </div>
       </div>
 
-      {/* 由发起方驱动：这里不提供输入框（服务端同样拒绝，避免"看起来能发"） */}
+      {/*
+        抽屉是**旁观视角**，不提供输入框（发言在左侧主聊天里做）。
+        旧文案写"此处不能发言"，与 Task 0014 之后的事实不符——那条会话现在完全可以在左侧继续，
+        理由是服务端已经不再按"会话来源"拒绝发言（02-design L3）。
+      */}
       <footer className="border-t border-line px-3 py-2 text-micro text-ink-300">
-        这条对话由对方 Agent 发起，此处不能发言。
+        这里只是旁观对端的过程；要继续这条会话，回到左侧列表点开它发消息即可。
       </footer>
     </aside>
   );

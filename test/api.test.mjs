@@ -926,8 +926,9 @@ test("重开会话（跨进程重启）：没被 /model 覆盖过的一律跟随
   } finally { server.server.close(); }
 });
 
-test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务端强制，不只靠前端禁用）", async () => {
-  // 用 start() 的家目录与实例（与其他 api 用例同源），避免自建进程级全局状态。
+// Task 0014 · T22：对话会话**空闲**时用户可以直接发言（旧行为是永久 409，已推翻）。
+// 这条用例替换掉原来的 `peer_conversation_readonly` 断言：会话来源不决定发言权。
+test("对话会话（Agent↔Agent）空闲时，用户可以直接发言：202（不再是 409）", async () => {
   const { server, base, home } = await start();
   try {
     const created = await fetch(`${base}/api/agents`, {
@@ -939,12 +940,65 @@ test("对话会话拒绝直接发言：409 peer_conversation_readonly（服务�
     assert.ok(peer.ok, "对话会话应当能建出来");
 
     const response = await fetch(`${base}/api/agents/${target.id}/sessions/${peer.conversation.sessionId}/messages`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "我能插话吗" }),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "我来接着说" }),
     });
-    assert.equal(response.status, 409, "必须被拦下");
+    assert.equal(response.status, 202, "空闲的对话会话必须接受用户发言");
     const body = await response.json();
-    assert.equal(body.error.code, "peer_conversation_readonly");
-    assert.match(body.error.message, /lifeosagent/, "错误里要点名是谁发起的");
+    assert.equal(body.accepted, true);
+    assert.equal(typeof body.turnId, "string", "202 要带回 turnId（回流绑定与排查都要它）");
+  } finally { server.close(); }
+});
+
+// Task 0014 · T23：同一条会话**在跑**时拒绝新回合 —— 与普通会话完全同一条规则。
+// 这里让模型不可用来造"在跑"：`prompt` 是打桩的（不联网），回合会停在我们控制的位置。
+test("同一会话在跑时再发新回合：409 session_running（对话会话与普通会话同一条规则）", async () => {
+  const { server, base, home } = await start();
+  try {
+    const created = await fetch(`${base}/api/agents`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Peer Busy Target" }),
+    });
+    const target = (await created.json()).agent;
+    const peer = await peerConversation("lifeosagent", target.id, "workspace", home);
+    assert.ok(peer.ok);
+    const sid = peer.conversation.sessionId;
+
+    // 打桩：把这一轮挂住（不调模型），这样"在跑"是确定的
+    const { getSession } = await import("../src/agent-host.ts");
+    const { sessionBusyOf } = await import("../src/agent-host.ts");
+    const state = await getSession(target.id, sid, home);
+    assert.ok(state !== undefined);
+    // 打桩：把这一轮挂住（不调模型）。`promptCalled` 用来**确定它真的进去了**——
+    // 只按时间轮询会让这条用例偶发红（实测：`prompt` 还没被调到就发了第二轮，
+    // 有时刚好仍在占位窗口里 → 409，有时占位已释放 → 202，见 log.md 的 flaky 记录）。
+    let release;
+    let promptCalled = false;
+    state.session.prompt = async () => {
+      promptCalled = true;
+      await new Promise((resolve) => { release = resolve; });
+    };
+    Object.defineProperty(state.session, "model", { value: undefined, configurable: true });
+
+    const first = await fetch(`${base}/api/agents/${target.id}/sessions/${sid}/messages`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "第一轮" }),
+    });
+    assert.equal(first.status, 202, `空闲时第一轮应被受理（实际 ${first.status}：${await first.text()}）`);
+
+    // 等到"这一轮确实在跑"：占位在、且 prompt 已被调用（两个条件都成立才算确定）
+    for (let i = 0; i < 250 && !(promptCalled && sessionBusyOf(target.id, sid)); i += 1) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(promptCalled, true, "打桩的 prompt 必须已被调用（否则这一轮还没真正开始）");
+    assert.equal(sessionBusyOf(target.id, sid), true, "第一轮应当处于在跑");
+
+    const second = await fetch(`${base}/api/agents/${target.id}/sessions/${sid}/messages`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "第二轮" }),
+    });
+    assert.equal(second.status, 409, "在跑时必须拒绝新回合");
+    const body = await second.json();
+    assert.equal(body.error.code, "session_running");
+    assert.match(body.error.message, /等它跑完|插话|停止/, "提示要给出三种出口（review §4 交付四问）");
+
+    release?.();
+    // 等回合收尾（打桩的 prompt 返回后，runTurn 会走完）
+    for (let i = 0; i < 250 && sessionBusyOf(target.id, sid); i += 1) await new Promise((r) => setTimeout(r, 20));
   } finally { server.close(); }
 });
 

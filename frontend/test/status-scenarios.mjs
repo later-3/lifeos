@@ -179,9 +179,12 @@ const nums = (badges) => {
   check("2 开跑前无呼吸数字", before.running === 0);
   check("2 开跑 → 助手行呼吸1", nums(p.agentBadges).running === 1, JSON.stringify(nums(p.agentBadges)));
   check("2 开跑 → 项目行呼吸1", nums(p.projectBadges).running === 1, JSON.stringify(nums(p.projectBadges)));
-  check("2 呼吸徽标在动（animate-pulse）", await app.page.evaluate(() => {
+  check("2 呼吸徽标在动（动画名非 none）", await app.page.evaluate(() => {
     const el = document.querySelector('[data-state-count="running"]');
-    return el !== null && getComputedStyle(el).animationName !== "none";
+    if (el === null) return false;
+    // 断的是"有动画"，不是具体哪条 keyframes —— 改版后呼吸从 animate-pulse 换成
+    // badge-dot（圆点缩放），写死 pulse 会让断言假红（C173 坑：断言写成实现细节）。
+    return getComputedStyle(el).animationName !== "none";
   }));
   check("2 会话行有呼吸点", p.rowDots.some((d) => d.title === "生成中" && d.visible));
   await app.close();
@@ -299,6 +302,35 @@ const nums = (badges) => {
   await app.snapshot({ seq: 20, aggregate: [] });   // 服务端说没有在跑的
   check("10 快照重建后归零（以服务端为准）", nums((await readPanels(app.page)).agentBadges).running === 0,
     JSON.stringify(nums((await readPanels(app.page)).agentBadges)));
+  await app.close();
+}
+
+// —— 场景 11：点开一个**正在跑**的会话 → 不能清掉 running 数字（2026-11-05 用户实测 bug） ——
+//
+// 复现：用户点开正在跑的会话 → 服务端 focus → markSessionViewed → 推 { unread: null }
+// → 前端原来一律 setSlot(..., undefined)，把 running 槽位一起删了。
+// 现象：行上蓝点在呼吸，项目行/助手行**没有数字**。
+{
+  const app = await openApp({ rows: [row("sess-1")] });
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", projectId: "workspace", type: "row", patch: { running: { since: new Date().toISOString() } } });
+  check("11 开跑后助手行有呼吸 1", nums((await readPanels(app.page)).agentBadges).running === 1);
+  // 点开它（服务端现在会先判断"有没有未读"，没有就不推 —— 这里直接模拟最坏情况：推了）
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", projectId: "workspace", type: "row", patch: { unread: null } });
+  const after = await readPanels(app.page);
+  check("11 收到 {unread:null} 后助手行仍显示 1（不是 0）", nums(after.agentBadges).running === 1, JSON.stringify(nums(after.agentBadges)));
+  check("11 项目行也仍显示 1", nums(after.projectBadges).running === 1, JSON.stringify(nums(after.projectBadges)));
+  check("11 会话行的蓝点还在", after.rowDots.some((d) => d.title === "生成中" && d.visible), JSON.stringify(after.rowDots));
+  await app.close();
+}
+
+// —— 场景 12：补丁不带 projectId → 数字不能从项目行掉到"无项目桶" ——
+{
+  const app = await openApp({ rows: [row("sess-1")] });
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", projectId: "workspace", type: "row", patch: { running: { since: new Date().toISOString() } } });
+  // 再推一条**不带 projectId** 的补丁（历史上 focus 端点就是这样）
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", type: "row", patch: { running: { since: new Date().toISOString(), phase: "thinking" } } });
+  const p = await readPanels(app.page);
+  check("12 不带 projectId 的补丁不丢项目归属", nums(p.projectBadges).running === 1, JSON.stringify(nums(p.projectBadges)));
   await app.close();
 }
 

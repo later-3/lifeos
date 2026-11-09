@@ -182,26 +182,42 @@ assistant message B（contentIndex 又从 0 开始：thinking/toolCall/text）�
 ChatColumn
 ├─ ChatHeader（标题、模型/思考级别）
 ├─ MessageScroll（消息列表；自动跟随）
-├─ TurnStatusBar（固定；步骤/计时/usage/speed/model）
-└─ Composer（输入框）
+│   └─ MessageView（每条）
+│       ├─ 头部（头像 · 名字 · HH:MM）
+│       ├─ ResponseBar（仅 assistant；正文**上方**，过程块在 bar 内部）
+│       ├─ 正文（AnnotatedTextBlock；高亮 + 拖选建批注 + 单击高亮展开）
+│       └─ MarkBar（仅 assistant 且有批注；正文**下方**，6 列表格，默认折叠）
+└─ ComposerDock
+    ├─ SessionBar（会话**累计**事实：轮次/工具/耗时/tokens/速度 + 添加图片）
+    └─ Composer（输入框）
 ```
 
-- `TurnStatusBar` 内部用 `useNow(1000)` 只更新自己；
+**这一版与早先结构的差别（Task 0008，2026-11-06 已合 main `7be80dd`）**：
+
+| 早先 | 现在 | 原因 |
+|---|---|---|
+| `TurnStatusBar`（固定，在输入框上方，**回合级**） | **拆成两层**：回合级 → `ResponseBar`（属于那条回复，在正文上方）；会话累计 → `SessionBar`（仍在输入框上方） | 用户 2026-11-05：回复的过程入口要贴着回复自己（"就跟我们当前的主线的页面一样"），累计数字只有一处口径 |
+| 无 MarkBar | `MarkBar`：被批注的回复底部，6 列表格（序号/原文/用户的话/语气/发送的信息/✕），默认折叠 | 用户 2026-11-04：标注信息 bar 放到被批注的那个信息上 |
+| 无批注呈现层 | `AnnotatedTextBlock`：CSS Highlight API 上色（名按块隔离）、拖选建批注、单击高亮展开批注框、hover 不弹卡 | 用户 2026-11-05 裁决；详见 `knowledge/design/chat.md` 与任务的 `02-design.md` |
+
+- `SessionBar` 内部用 `useNow(1000)` 只更新自己；口径纯函数 `session-totals.ts`（8 条单测）；
+- `ResponseBar` 的折叠态按 session 持久（`lifeos.response.<sessionId>`）；
 - `useTurnStatus` reducer 消费发送/202/SSE/done；
 - 消息列表按 message 引用 memo；
-- 状态条内容：
-  - 左：`3/4 · 模型处理 · 执行 read…`
-  - 中：`16s`（不写“本轮”；工具耗时由工具块 durationMs 表达）
-  - 右：`⚡73.7 tok/s · ↑1.2k ↓3.4k · ◔42%`（符号均有 tooltip；`↑` 输入、`↓` 输出、`◔` 上下文、`⚡` 速度）
-  - 组件：`TurnStatusBar` 容器 + `WorkingRow`（左侧本轮状态）+ 右侧 meta（速度/会话累计/上下文）；同一个 bar 内分组，不做多条独立状态栏。参考 Codex/Claude/Gemini status line 与 LobeHub TokenTag 的“符号 + 数字 + tooltip/详情”。
-  - 间距层级：图标↔数值 4px；`↑/↓` 同组 8px；不同指标组 12px；不用平均 gap。
+- 状态条内容（**现在分两处，不得重复**）：
+  - `ResponseBar`（回合级）：`3/4 · 模型处理 · 执行 read…`、`16s`、`14 次工具 · 2 分 31 秒 · 38.2k tokens`、回合结论；
+  - `SessionBar`（会话累计）：轮次 / 工具调用 / 生成耗时 / `↑` 输入 / `↓` 输出 / 平均速度 / 请求体 / 上下文；
+  - 符号均有 tooltip（`↑` 输入、`↓` 输出、`◔` 上下文、`⚡` 速度）；同一个 bar 内分组，不做多条独立状态栏；
+  - 间距层级：图标↔数值 4px；`↑/↓` 同组 8px；不同指标组 12px；不用平均 gap；
   - 窄屏：两行；tokens 可省略 cost/cache。
 
 ### 完成态
 
-- 4/4 完成后保留一行摘要：`4/4 · 完成 · 19s · ⚡73.7 tok/s`；会话累计 `↑1.2k ↓3.4k ◔42%` 在右侧；
+- 回合完成：`ResponseBar` 保留一行摘要 `4/4 · 完成 · 19s · ⚡73.7 tok/s`（**这一轮**），
+  会话累计 `3 轮 · 12 工具 · ↑1.2k ↓3.4k` 在 `SessionBar`（输入框上方）——
+  两处不得重复同一份数字（Task 0008）；
 - 失败：`4/4 · 失败 · 类别`，原始错误在消息/展开区；
-- 切换会话时重置，不残留。
+- 切换会话时 `SessionBar` 按新会话重算（`session-totals.ts`），不残留上一个会话的数字。
 
 ## 6 消息类型与颜色
 

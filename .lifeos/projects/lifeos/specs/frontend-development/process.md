@@ -165,7 +165,7 @@ Life OS 当前情况：
 - 同一对象的信息、状态、动作放在同一区域/同一组件；
 - 内部可以分组、左右布局，但不能把同一对象的动作拆到不相邻的区域，变成“这里一个按钮、那里一个按钮”。
 
-例：`TurnStatusBar` 是“这一轮”的一个整体；步骤、耗时、重试、tokens、速度可以分左右/分组，但用户应该一眼看出它们属于同一轮。
+例：`ResponseBar` 是“这一轮”的一个整体；步骤、耗时、重试、tokens 可以分左右/分组，但用户应该一眼看出它们属于同一轮。会话**累计**的数字（轮次/工具总数/总 tokens/平均速度）不是这一轮的，归输入框上方的 `SessionBar`——同一份数字不得两处出现（Task 0008）。
 
 #### Pi TUI 基线
 
@@ -198,14 +198,16 @@ Pi TUI 的 `↓ Jump to latest message` / 回到底部已作为手机与桌面�
 
 ## 3. 参考代码库
 
-源码参考统一放在仓库外的本机目录（建议 `~/Code/reference/`，不进 Life OS Git）：
+源码参考统一放在**唯一根** `~/Code/reference/`（不进 Life OS Git）。**清单只有一份**：
+`~/.lifeos/projects/workspace/knowledge/reference-projects.md`（所有 Agent 共用，逐项记 repo / 分支 / commit / 日期 / 定位 / 用在哪；例外项与原因也在那里）。
 
-- 每个条目记录 repo、branch、当前 commit、用途、最后核对日期；
+- 要参考什么 → 先读那份索引；不在里面的，按索引里的"新增流程"拉进来再引用；
+- 版本以索引里的 commit 为准，不看"目录当前检出"；
 - 只作为阅读/对照，不把参考代码复制进 Life OS；
 - 更新前先看 `git status`，不覆盖本地改动；不自动 pull 脏工作区；
 - 开源参考优先；闭源产品只保留截图/录屏/官方文档。
 
-具体参考项目按场景写入 `reference-baseline.md`，不在这里复制第二份清单。
+具体场景"借什么/不借什么"写入 `reference-baseline.md`，不在这里复制第二份清单。
 
 ## 4. Agent 模拟验收
 

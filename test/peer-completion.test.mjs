@@ -88,3 +88,46 @@ test("去重表可手动标记（TTL 语义由实现保证；这里只验接口�
   assert.equal(completionAlreadySent("coder", "s", "turn-10"), false, "不同回合互不影响");
   assert.equal(completionAlreadySent("coder", "s2", "turn-9"), false, "不同会话互不影响");
 });
+
+// ── Task 0014 · L4：回流只认自己发起的那一轮 ────────────────────────
+// 场景：用户在同一条对话会话里插一手跑了一轮，那一轮结束**不能**冒充成 send 的回执。
+
+test("T21 回流只认自己那一轮：用户跑的轮次不投递、不消耗登记；绑定的那轮才投递", async () => {
+  const sessionId = "019a0000-0000-7000-8000-000000000021";
+  const { bindPendingPeerTurn } = await import("../src/peer-completion.ts");
+  registerPendingPeer("coder", sessionId, entry);
+  const seen = [];
+  setPeerDeliverer(async (input) => { seen.push(input.turnId); return true; });
+
+  // send 起的那一轮：占位后绑定
+  bindPendingPeerTurn("coder", sessionId, "turn-send");
+  assert.equal(pendingPeerOf("coder", sessionId)?.turnId, "turn-send", "绑上 send 那一轮");
+
+  // 用户插一手跑完的一轮：不匹配 → 不投递，且**不清登记**
+  assert.equal(await notifyPeerTurnFinished("coder", sessionId, "turn-user", "done"), false, "用户那一轮不能冒充回执");
+  assert.equal(seen.length, 0, "一条都不能发");
+  assert.deepEqual(pendingPeerOf("coder", sessionId)?.turnId, "turn-send", "登记必须留着（还要等它自己那轮）");
+
+  // 它自己那一轮结束：投递并清登记
+  assert.equal(await notifyPeerTurnFinished("coder", sessionId, "turn-send", "done"), true);
+  assert.deepEqual(seen, ["turn-send"]);
+  assert.equal(pendingPeerOf("coder", sessionId), undefined);
+});
+
+test("T21b 老登记没有 turnId：保持旧行为（按会话投递一次）", async () => {
+  const sessionId = "019a0000-0000-7000-8000-000000000022";
+  registerPendingPeer("coder", sessionId, entry);   // 没有 turnId
+  let called = 0;
+  setPeerDeliverer(async () => { called += 1; return true; });
+  assert.equal(await notifyPeerTurnFinished("coder", sessionId, "turn-any", "done"), true, "老数据不能被新规则挡住");
+  assert.equal(called, 1);
+});
+
+test("T21c 已绑定的登记不被后续轮次抢走", async () => {
+  const sessionId = "019a0000-0000-7000-8000-000000000023";
+  const { bindPendingPeerTurn } = await import("../src/peer-completion.ts");
+  registerPendingPeer("coder", sessionId, entry);
+  bindPendingPeerTurn("coder", sessionId, "turn-send");
+  bindPendingPeerTurn("coder", sessionId, "turn-user-later");   // 后来的轮次不该改写
+  assert.equal(pendingPeerOf("coder", sessionId)?.turnId, "turn-send");
+});

@@ -108,24 +108,39 @@ test("对端段（Agent↔Agent）：显示 `agent ↔ peer`，用户↔Agent �
   assert.equal(same.some((s) => s.id === "peer"), false);
 });
 
-// ---- isPeerSessionOf（2026-11-04 修的 bug：批注在全站被禁用）----
-import { isPeerSessionOf } from "../frontend/src/header-strip.ts";
 
-test("peer 会话判断：普通会话的 peer 是 null，不能当成 peer", () => {
-  // 后端 src/session-rows.ts:53 的类型是 `peer: RowPeer | null`
-  // 曾经写成 `peer !== undefined`，而 `null !== undefined` 恒为 true → 全站批注被禁用
-  const sessions = [
-    { sessionId: "s1", peer: null },
-    { sessionId: "s2", peer: { id: "a", name: "B" } },
-  ];
-  assert.equal(isPeerSessionOf("s1", sessions), false, "peer=null 是普通会话");
-  assert.equal(isPeerSessionOf("s2", sessions), true, "peer 有对象才是 peer 会话");
+// ---- 头部大字标题（2026-11-05 修的 bug：标题显示成 "Life OS"）----
+//
+// 现象：跨项目点开一条会话，聊天区顶部大字变成产品名 "Life OS"。
+// 根因：标题是从「选中项目」的分组里找「当前会话」，两者不一致时找不到 → 空 → 回落产品名。
+// 规则：标题只能来自**会话自己**（与列表同一份派生 displayTitleOf），缺名回落 `会话 <id8>`。
+import { findSessionRow, headerTitleOf } from "../frontend/src/header-strip.ts";
+
+test("头部标题：有会话时用会话显示名，不回落产品名", () => {
+  const title = headerTitleOf({ sessionId: "01a1aa92-9b5d", displayTitle: "修复会话标题" });
+  assert.equal(title, "修复会话标题");
+  assert.ok(!title.includes("Life OS"));
 });
 
-test("peer 会话判断：字段缺失 / 无会话 / 无 id 都算普通", () => {
-  assert.equal(isPeerSessionOf("s1", [{ sessionId: "s1" }]), false, "字段缺失");
-  assert.equal(isPeerSessionOf("s1", [{ sessionId: "s1", peer: undefined }]), false, "undefined");
-  assert.equal(isPeerSessionOf(undefined, [{ sessionId: "s1", peer: {} }]), false, "没有当前会话 id");
-  assert.equal(isPeerSessionOf("s1", undefined), false, "会话列表还没加载");
-  assert.equal(isPeerSessionOf("nope", [{ sessionId: "s1", peer: {} }]), false, "id 不匹配");
+test("头部标题：会话没名字时回落 `会话 <id8>`（与列表同一份兜底），不是产品名", () => {
+  const title = headerTitleOf({ sessionId: "01a1aa92-9b5d-7086", displayTitle: "" });
+  assert.equal(title, "会话 01a1aa92");
+  assert.ok(!title.includes("Life OS"));
+});
+
+test("头部标题：没有会话（草稿）显示「新会话」，不受 displayTitle 影响", () => {
+  assert.equal(headerTitleOf({ sessionId: undefined, displayTitle: "" }), "新会话");
+  assert.equal(headerTitleOf({ sessionId: undefined, displayTitle: "别的名字" }), "新会话");
+});
+
+test("会话查找：跨项目找得到（不能只在「选中项目」的分组里找）", () => {
+  const groups = [
+    { project: { id: "workspace" }, sessions: [{ sessionId: "s-ws", title: "ws 会话" }] },
+    { project: { id: "lifeos" }, sessions: [{ sessionId: "s-life", title: "lifeos 会话" }] },
+  ];
+  assert.equal(findSessionRow(groups, "s-life")?.title, "lifeos 会话", "选中 workspace 时也要找得到 lifeos 的会话");
+  assert.equal(findSessionRow(groups, "s-ws")?.title, "ws 会话");
+  assert.equal(findSessionRow(groups, "不存在"), undefined);
+  assert.equal(findSessionRow(groups, undefined), undefined);
+  assert.equal(findSessionRow(undefined, "s-ws"), undefined);
 });

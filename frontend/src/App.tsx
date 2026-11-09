@@ -13,6 +13,7 @@ import type { Annotation, AnnotationAuthor } from "./annotations";
 import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
 import { addCommentRef, attachableComment, commentRefLabel, commentRefPreview, removeCommentRef, type CommentRef } from "./composer-comment-refs";
 import { commentsToText } from "./review-comment-copy";
+import { groupAnnotationsByReply } from "./anno-groups";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -23,7 +24,11 @@ import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
+import { processOpenOf } from "./response-fold";
+import { SessionBar, type SessionBarTurn } from "./session-bar";
+import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
+import { lastUserAtMs, turnWallMsOf } from "./turn-duration";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
@@ -37,7 +42,6 @@ import {
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
-import { TurnStatusBar } from "./turn-status";
 import { MobileNav, type Level } from "./mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
@@ -49,9 +53,13 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
-import { buildHeaderSegments, headerTaskOf, isPeerSessionOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
+import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
+import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
+import { useCopyOnSelect } from "./use-copy-on-select";
+import { CopyFeedbackToast } from "./copy-toast";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -99,13 +107,27 @@ type UsageSummary = { input: number; output: number; cacheRead: number; cacheWri
  * 正常结束（绿）与异常结束（红），**规则完全相同：看过就消失，不持久记录**。
  * 所以徽标回答「有几件事要你看」，与**会话行的点永远同步**：点进去了，点和数字一起减。
  *
- * ## 为什么"正在跑"要和"已完成"用不同底色
+ * ## 样式（用户 2026-11-05 选定：P1 配色 + 薄底药丸 + 圆点缩放呼吸）
  *
- * 两个都是绿色会混淆。区分靠**色系深浅 + 动效**，不靠新增色相：
- *   · 正在跑 → 实心 `success` 底 + 白字 + 呼吸（最抢眼：它是活的）
- *   · 已完成 → `success-soft` 底 + `success` 字（安静：它只是等你点一下）
- *   · 异常   → `danger-soft` 底 + `danger` 字
- * 零值不渲染（pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
+ * 三种状态**三个色相**，全部「薄底 + 同色深字」：
+ *   · 正在跑 → `running` 蓝（#1d4ed8 / #eef2ff）← 换了色相，理由见下
+ *   · 已完成 → `success` 绿（#067647 / #ecfdf3）
+ *   · 失败   → `danger` 红（#b42318 / #fef3f2）
+ *
+ * 为什么换掉"实心绿 + 白字"（用户两次指出）：
+ *   ① 结构不协调 —— 另外两个是彩色字，只有它是白字，并排看"白 1"和"绿 3"不像一套东西；
+ *   ② 颜色撞车 —— 在跑与完成都是绿，实测两个 14px 色块 ΔRGB = **0**，
+ *      只靠"在不在呼吸"区分；关掉动画（prefers-reduced-motion）就彻底分不出。
+ *   换蓝后 ΔRGB：run↔done 152、run↔err 248、done↔err 198 —— 两两都远。
+ *   全套对比度 ≥5.4:1（WCAG AA 正文达标）。
+ *
+ * 为什么是蓝而不是橙/灰：橙与 danger 红 ΔRGB 只有 32（13px 上几乎一样）；
+ * 灰不表达"进行中"。蓝是全行业「进行中」的默认色（进度条 / 加载）。
+ *
+ * 呼吸：**圆点缩放**（`animate-badge-dot`），不是整体明暗 —— 实心色块整体变淡会让人
+ * 以为数字要消失了；只让圆点缩放，数字始终清晰。光环（halo）留给未来的角标形态。
+ *
+ * 零值不渲染（照 pi-web `SessionSidebar.tsx:2009`）；>99 显示 `99+`（`design-language.md:217`）。
  */
 function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "unreadDone" | "unreadError"; unit: "会话" }) {
   if (count <= 0) return null;
@@ -115,17 +137,21 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     : kind === "unreadDone"
       ? `${count} 个${unit}已完成待查看`
       : `${count} 个${unit}失败待查看`;
+  // 薄底 + 同色深字（三态结构一致）；只有"在跑"加圆点缩放的呼吸。
   const tone = kind === "running"
-    ? "bg-success text-white animate-pulse"
+    ? "bg-running-soft text-running animate-badge-breathe"
     : kind === "unreadDone"
       ? "bg-success-soft text-success"
       : "bg-danger-soft text-danger";
   return (
     // 状态徽标是动态数据：截图基线遮掉，只比骨架（testing 2.9）
-    // 尺寸：单数字用正方形（14×14），双数字靠 px-1 自然撑开 —— 之前 min-w-4(16px) + px-1.5(12px)
-    // 让一个字符的水滴宽到 19px，视觉上像一块色块，用户反馈"绿色底太宽，很丑"。
-    // 现在用更紧的 min-w-3.5 + px-1；>9 时宽度自然增长，不需要另设规则。
-    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
+    // 尺寸：16×16（h-4 min-w-4 px-1）。14px 时字几乎顶满色块（用户："像色块"），
+    // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
+    // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
+    //
+    // `--badge-ring`：扩散环的颜色跟着状态走（写死蓝色会让"失败"的红色徽标闪蓝光）。
+    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
+      style={kind === "running" ? { "--badge-ring": "rgba(29, 78, 216, .40)" } as React.CSSProperties : undefined}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -218,8 +244,19 @@ type RowPatchPayload = {
   task?: { id: string; title: string; status: string; type: string } | null;
 };
 type TaskItem = { id: string; title: string; status: string; type: string; category: string; date?: string; isDefault?: boolean };
+/**
+ * 这一条 user 消息是谁说的（Task 0014 · D8′）。
+ *
+ * 后端 `messagesOf()` 从会话里的 `lifeos_turn_origin` 配对得出；没有记录的老会话回落 `{kind:"user"}`。
+ * 为什么需要它：Pi 只有 role 级身份（`pi/packages/ai/src/types.ts:564-568` 的 `UserMessage` 无 author），
+ * 所以 Agent↔Agent 会话里那条 user 消息会被界面当成"我说的话"——LobeHub 的注释把同一个错误写得很清楚：
+ * 「instead of hard-coding the viewer's own avatar」（`packages/types/src/message/ui/chat.ts:320-331`）。
+ */
+type MessageSpeaker = { kind: "user" } | { kind: "agent"; agentId: string; name?: string; via?: string };
 type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[]; streaming?: boolean; at?: number; error?: string; failure?: FailureKind;
+  /** 仅 `role === "user"` 时有值：这一轮是谁发起的（见上面 `MessageSpeaker`）。 */
+  speaker?: MessageSpeaker;
   /** ★ 消息身份（Task 0003 · P1）：后端 messagesOf 透出的 session entry id。
    *  历史消息必有；客户端刚推送的流式消息还没有（下一轮 loadMessages 才补上）。 */
   id?: string;
@@ -239,6 +276,18 @@ type AgentEvent = { seq: number; agentId?: string; sessionId?: string } & (Strea
 
 const LAST_AGENT = "lifeos.lastAgent";
 const DRAFT_PREFIX = "lifeos.draft.";   // 草稿归属会话（切会话换草稿、刷新不丢）
+/**
+ * ResponseBar 过程区折叠态，**按 session 持久**（Task 0008 · P3，用户定案：
+ * "只要折叠了就一直折叠……不要一会儿开一会儿关"）。
+ * 值："open" | "folded"；没写过 = undefined（默认：生成中展开、完成后折叠）。
+ */
+const RESPONSE_PREF_PREFIX = "lifeos.response.";
+
+/** 读 ResponseBar 的 per-session 折叠偏好。 */
+function readResponsePref(sessionId: string | undefined): "open" | "folded" | undefined {
+  if (sessionId === undefined) return undefined;
+  try { const v = localStorage.getItem(`${RESPONSE_PREF_PREFIX}${sessionId}`); return v === "open" || v === "folded" ? v : undefined; } catch { return undefined; }
+}
 const lastSessionKey = (agentId: string) => `lifeos.lastSession.${agentId}`;
 
 function readLast(key: string): string | undefined {
@@ -475,20 +524,14 @@ export default function App() {
    */
   const pendingAnnoRestore = useRef<readonly Annotation[] | undefined>(undefined);
   /**
-   * 本次发送带走的批注 id（发送成功后要打 consumedBy）。
-   * 与 `pendingAnnoRestore` 配套：失败用前者回滚内容，成功用这个标状态。
-   */
-  const pendingConsumeRef = useRef<readonly string[] | undefined>(undefined);
-  /**
-   * 本次发送的一次性标识，作为 `consumedBy` 的值。
+   * 等待打标记的批注 id：发送受理成功后记下，等 `loadMessages` 拉回**带 id 的用户消息**
+   * 再用它的 id 作 `consumedBy`。
    *
-   * **为什么不用"用户消息 id"**：后端 `runTurn()` 是 `Promise<void>`，不返回新建消息的 id
-   * （`src/agent-host.ts:818`），要拿到得改它。而 `consumedBy` 的全部用途只有两处——
-   * ① 判断这条批注是不是 pending（非空即已发）；② 面板显示"已发送"。
-   * **没有任何地方需要拿它反查那条消息**。所以用一个客户端生成的一次性 id 足够，
-   * 语义也更直白："这批发给了哪一次发送动作"。
+   * 为什么不能用一次性随机 id：consumedBy 还承担**归属**——已发送的批注要显示在
+   * "它被发送的那一轮"的 MarkBar 里（用户 2026-11-04 规则 2）。随机 id 无法反查轮次，
+   * 只有落盘的用户消息 id 能。
    */
-  const pendingSendIdRef = useRef<string | undefined>(undefined);
+  const pendingConsumeIdsRef = useRef<readonly string[] | undefined>(undefined);
 
   /** 批注面板折叠态（默认展开）。 */
 
@@ -531,9 +574,13 @@ export default function App() {
     if (target === undefined) return;
     const wasPinned = target.ui.pinned;
     anno.togglePinned(id);
-    if (wasPinned) return;                 // 取消钉住：到此为止
+    if (wasPinned) {
+      // 取消钉住 = 收卡（Task 0008）：hover 收起已删，否则卡片永不退场。
+      window.dispatchEvent(new CustomEvent("lifeos:annotation-close", { detail: { id } }));
+      return;
+    }
     anno.open(id);
-    // 通知渲染层"打开并保持一会儿"（否则鼠标还在表格上，220ms 后就被收掉）
+    // 打开并定位到原文（MarkBar 行点击是卡片唯一的打开入口，用户 2026-11-05 裁决）
     window.dispatchEvent(new CustomEvent("lifeos:annotation-locate", { detail: { id } }));
     window.requestAnimationFrame(() => {
       const host = document.querySelector(
@@ -542,6 +589,27 @@ export default function App() {
       if (host instanceof HTMLElement) host.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   }, [anno]);
+
+  /**
+   * ResponseBar 过程区的 per-session 展开态（用户手动点过的才记；没记过的用默认规则）。
+   * `undefined` = 该 session 用户从未点过。
+   */
+  const [responsePrefs, setResponsePrefs] = useState<Record<string, "open" | "folded">>(() => ({}));
+  /**
+   * 切换过程区的展开态（Task 0015 · P2）。
+   *
+   * **参数是用户眼前看到的那个值**（`processOpenOf(...)` 的渲染结果），不再自己拿
+   * `busyRef` 推一遍——以前两处 live 不同源（渲染用 `messageLive`、点击用 `busyRef`），
+   * 两者不一致时点一下会算出与预期相反的 next（"点了没反应"）。
+   */
+  const toggleResponseProcess = useCallback((currentOpen: boolean) => {
+    if (sessionId === undefined) return;
+    const next = currentOpen ? "folded" : "open";
+    // 副作用放在 updater **外面**：updater 必须是纯函数（StrictMode 会双调用，
+    // 写在里面会写两次盘，实测得到与界面相反的值）
+    try { localStorage.setItem(`${RESPONSE_PREF_PREFIX}${sessionId}`, next); } catch { /* 忽略 */ }
+    setResponsePrefs((prev) => ({ ...prev, [sessionId]: next }));
+  }, [sessionId]);
 
   /** 这条批注当前是否钉住（列表行据此高亮，也让"再点一次取消"可被看见）。 */
   const annoPinnedOf = useCallback(
@@ -572,8 +640,15 @@ export default function App() {
   const submittingRef = useRef(false);    // 防快速连按 Enter 重复提交
   const lastEventAtRef = useRef(0);       // 心跳：最近一次流事件时间（判断"跑丢了"）
   const lostCheckRef = useRef(false);    // 判丢检查互斥（异步查 running 时不要重入）
-  const sentHistoryRef = useRef<string[]>([]);   // 输入历史（↑/↓ 浏览，本进程内）
-  const historyIndexRef = useRef(-1);
+  /**
+   * 输入历史（↑/↓ 浏览）的游标 —— Task 0012。
+   *
+   * 历史**不在这里存**：它由当前会话的消息派生（`inputHistoryOf(messages)`，见下面 `inputHistory`）。
+   * 这里只存"浏览到第几条"，并且**带上它属于哪个作用域**（会话或草稿键）：
+   * 作用域一变（切会话/切 Agent/发首条消息从草稿变会话），游标自动作废，
+   * 不依赖 React effect 的执行时机去"记得清"（那正是老实现漏清的原因）。
+   */
+  const historyCursorRef = useRef<HistoryCursor>(NO_HISTORY_CURSOR);
   // 补发必须走 ref 里的最新 sendText：SSE 订阅只建一次（deps 不含 sessionId），
   // 直接调用闭包里的 sendText 会拿订阅那一帧的 sessionId（实测：内容被静默丢弃／发去旧会话）。
   const sendTextRef = useRef<(raw: string) => void>(() => {});
@@ -613,12 +688,23 @@ export default function App() {
   const [retriedTimes, setRetriedTimes] = useState<number | undefined>();
   /** 左侧本轮槽的"结果/中断"说明：属于这一轮（不属于用户消息） */
   const [turnStatus, setTurnStatus] = useState<{ text: string } | undefined>();
+  /**
+   * 发送失败的**可见残留**（Task 0014 · S11）。
+   *
+   * 为什么不能放进 `messages`：`fail()` 之后会 `loadMessages()` 用服务端事实整体替换 `messages`，
+   * 而"发送被拒"这条在服务端根本不存在（后端没受理），于是刚塞进去的错误气泡会被**立刻冲掉**。
+   * 实测现场：用户连点 5 次 409，界面全程无提示，只能来问"为什么发不出去"。
+   *
+   * 所以错误放独立状态：只有用户发起下一个动作（再发一条 / 切会话）才清。
+   * 参考：LibreChat `steer` 的拒绝码要告诉客户端**怎么降级**（`request.ts:384-387`），
+   * 我们的 toast 直接用服务端的 `message`（它已写明三种出口）。
+   */
+  const [tailError, setTailError] = useState<string | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
-  const [turnMetrics, setTurnMetrics] = useState<{ output: number; ttftSeconds: number; tokPerSecond: number }>();
+
   const turnStartedAtRef = useRef(0);
-  const turnFirstTokenAtRef = useRef(0);
-  const turnUsageStartRef = useRef<UsageSummary | undefined>(undefined);
-  const turnMetricsPendingRef = useRef(false);
+
+
   const [meta, setMeta] = useState<SessionMeta | undefined>();
   // 没有会话时，头部也要显示「这个 Agent 的默认模型」；配置保存后由 agents_changed 刷新。
   const [agentDefaultModel, setAgentDefaultModel] = useState<{ provider: string; id: string }>();
@@ -628,6 +714,16 @@ export default function App() {
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({});
   /** 项目默认 Task 缓存（key = taskTitleKey(agent, project, "default")）：无会话时头部显示它 */
   const [projectDefaultTasks, setProjectDefaultTasks] = useState<Record<string, { id: string; title: string }>>({});
+  /**
+   * 已经**请求过**任务清单的 key（Task 0008 修复）。
+   *
+   * 守卫不能用"缓存里有值"：清单里没有该 taskId（task.md 缺字段、项目搬过）或项目
+   * 连默认 Task 都没有时，缓存永远补不上 → effect 每次渲染都重发一次。
+   * 实测：`{"items":[]}` 的应答让页面 **3 秒发了 2664 次** /tasks。
+   * 规则与单测见 `frontend/src/task-title-cache.ts` / `test/task-title-cache.test.mjs`。
+   */
+  const requestedTaskTitles = useRef<Set<string>>(new Set());
+  const requestedDefaultTasks = useRef<Set<string>>(new Set());
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
@@ -722,6 +818,12 @@ export default function App() {
   const activeTurnIdRef = useRef<string | null>(null);
   const streaming = useRef(false);
   const scrollRef = useRef<HTMLElement>(null);
+  /**
+   * 选中即复制（Task 0013 · 用户 2026-11-07 拍板）：
+   * 对话区域（`<main>`）里拖选/双击/三击，松手即写剪贴板，并在选区上方显示「已复制 · N 字」1000ms。
+   * 判据与几何都在纯函数里（`copy-on-select.ts`），这里只挂事件与渲染提示。
+   */
+  const copyFeedback = useCopyOnSelect(scrollRef, (message) => toast(message, "error"));
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -787,6 +889,18 @@ export default function App() {
     setInputState(text);
     writeDraftFor(draftKey, text);
   }
+
+  /**
+   * 本会话的输入历史（最近一条在前）—— Task 0012。
+   *
+   * **派生，不自记**：事实源是服务端会话消息（`messages` 由 `GET …/sessions/:id` 或流事件重建），
+   * 所以切会话天然隔离、刷新也不丢，不需要"发送时往一个数组里塞"这条第二事实源。
+   * 为什么不用 localStorage：Pi TUI 是在打开会话时用该会话消息 `populateHistory` 重置，
+   * pi-web 直接派生（`ChatWindow.tsx:822-833`）；三家都不额外持久化一份发送流水（见 01-background 行业参考）。
+   */
+  const inputHistory = useMemo(() => inputHistoryOf(messages), [messages]);
+  /** 历史的作用域：有会话 = 会话 id；草稿 = agent/项目。切作用域即换历史（游标随 scope 作废）。 */
+  const historyScope = draftKey ?? "";
 
   // 只在"贴底"时跟随；流式期间直接设 scrollTop（smooth 会追不上 delta，产生抖动）。
   useLayoutEffect(() => {
@@ -1079,6 +1193,25 @@ export default function App() {
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+
+    /**
+     * 批注生命周期（Task 0008）：发送受理成功后挂起的批注，在这里补打 `consumedBy`。
+     *
+     * 锚点 = **这条用户消息的真实 id**：现在消息已从服务端拉回、带着落盘的 entry id。
+     * 为什么等到这里：乐观插入的那条 user 消息没有 id（App 不知道后端生成的 id），
+     * 而锚点必须落盘、可反查轮次（已发送的批注要显示在"被发送那一轮"的 MarkBar）。
+     */
+    const waitingIds = pendingConsumeIdsRef.current;
+    if (waitingIds !== undefined && waitingIds.length > 0) {
+      const lastUser = [...(data.messages ?? [])].reverse().find((m) => m.role === "user" && m.id !== undefined);
+      pendingConsumeIdsRef.current = undefined;
+      if (lastUser?.id !== undefined) {
+        anno.markConsumed(waitingIds, lastUser.id);
+        persistConsume(waitingIds, lastUser.id, sid);
+      }
+      // 找不到 user 消息（异常）：保持挂起，下次 loadMessages 再试——不丢、也不会误标到别轮
+    }
+
     // 批注存在会话 custom entry 里，不在 messages 投影中 → 单独拉一次（Task 0003 · P5）
     void fetch(`/api/agents/${id}/sessions/${sid}/annotations`)
       .then((r) => (r.ok ? r.json() : undefined))
@@ -1092,14 +1225,6 @@ export default function App() {
       })
       .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
-    if (turnMetricsPendingRef.current && current.current === sid && data.meta?.usage !== undefined && turnUsageStartRef.current !== undefined) {
-      const output = Math.max(0, data.meta.usage.output - turnUsageStartRef.current.output);
-      const started = turnFirstTokenAtRef.current === 0 ? turnStartedAtRef.current : turnFirstTokenAtRef.current;
-      const seconds = Math.max(0.1, (Date.now() - started) / 1000);
-      const ttft = turnFirstTokenAtRef.current === 0 ? 0 : Math.max(0, (turnFirstTokenAtRef.current - turnStartedAtRef.current) / 1000);
-      turnMetricsPendingRef.current = false;
-      setTurnMetrics({ output, ttftSeconds: ttft, tokPerSecond: output / seconds });
-    }
     return data;
   }
 
@@ -1186,8 +1311,6 @@ export default function App() {
    *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
   function resetChatState() {
     setHistory(undefined);
-    setTurnMetrics(undefined);
-    turnMetricsPendingRef.current = false;
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -1205,6 +1328,7 @@ export default function App() {
 
   async function openSession(a: Agent, sid: string) {
     resetChatState();
+    setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
     const data = await loadMessages(a.id, sid);
@@ -1468,9 +1592,38 @@ export default function App() {
         next.delete(sessionId);
         return next;
       }
-      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === projectId) return previous;
+      // **projectId 只增不减**（2026-11-05）：有些补丁不带 projectId（例如 focus 端点
+      // 历史上传的是 undefined），若直接覆盖，这条会话的数字会从"某个项目"掉进
+      // "该 Agent 的无项目桶"——项目行上的数字就消失了，用户看到"项目后面没有状态"。
+      const effective = projectId ?? current?.projectId;
+      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === effective) return previous;
       const next = new Map(previous);
-      next.set(sessionId, { agentId, ...(projectId !== undefined ? { projectId } : {}), slot });
+      next.set(sessionId, { agentId, ...(effective !== undefined ? { projectId: effective } : {}), slot });
+      return next;
+    });
+  }
+
+  /**
+   * **只清"未读"，不动"在跑"**（2026-11-05 修，用户实测的 bug）。
+   *
+   * 症状（用户截图）：一个正在跑的会话，行上蓝点在呼吸，但项目行/助手行**没有数字**。
+   *
+   * 根因：点开一个正在跑的会话会触发 focus → 服务端 `markSessionViewed()` →
+   * 推 `{ unread: null }`；这里原来一律 `setSlot(..., undefined)`，
+   * 把这条会话的槽位**整个删掉** —— 包括它正在跑的 running 态。
+   * 于是"行上有蓝点（applyRowPatch 只删 unread、running 没动），上级没有数字"。
+   *
+   * `{ unread: null }` 的语义只能是"这条不再有未读"，不是"这条不再有任何状态"。
+   * 在跑的会话本来就没有未读可清，收到这种补丁应当**什么都不做**。
+   */
+  function clearUnreadSlot(sessionId: string, agentId: string): void {
+    setSessionSlots((previous) => {
+      const current = previous.get(sessionId);
+      if (current === undefined) return previous;
+      if (current.slot === "running") return previous;   // 在跑的不受"已读"影响
+      void agentId;
+      const next = new Map(previous);
+      next.delete(sessionId);
       return next;
     });
   }
@@ -1488,8 +1641,8 @@ export default function App() {
       // 终态：带 failure 就是失败待看，否则完成待看
       setSlot(sessionId, agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone");
     } else if ("unread" in patch && patch.unread === null) {
-      // 用户点开 / 已读 → 清 0
-      setSlot(sessionId, agentId, projectId, undefined);
+      // 用户点开 / 已读 → **只清未读**，在跑的保持不动（见 clearUnreadSlot 注释）
+      clearUnreadSlot(sessionId, agentId);
     } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
       setSlot(sessionId, agentId, projectId, "running");
     } else if ("running" in patch && patch.running === null) {
@@ -1648,7 +1801,6 @@ export default function App() {
   /** 细节事件（delta/thinking/tool_* …）：焦点会话的消息管道（一条助手消息里的块有序，交给 stream-blocks 归并）。 */
   function applyStreamMessage(payload: AgentEvent): void {
     lastEventAtRef.current = Date.now();
-    if (turnFirstTokenAtRef.current === 0) turnFirstTokenAtRef.current = Date.now();
     const tailIsStreaming = streaming.current;
     if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
     const next = applyStreamEvent(streamRef.current, payload as never);
@@ -1965,11 +2117,6 @@ export default function App() {
     if (!busyRef.current) {
       setTurnStep(1);
       turnStartedAtRef.current = Date.now();
-      turnFirstTokenAtRef.current = 0;
-      // 新会话没有 meta：从 0 起算；已有会话从当前累计起算。
-      turnUsageStartRef.current = meta?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0 };
-      turnMetricsPendingRef.current = true;
-      setTurnMetrics(undefined);
     }   // 1/4：用户发送（steer 不新起一轮，不改步骤）
     // 还没有会话（新 Agent / 空项目）：**直接输入发送 = 建会话 + 发送**，不必先点"新建会话"
     // （参照 Pi Web 的 new session draft：输入框在无会话时可用，首条消息落地时才真正建会话）
@@ -2021,6 +2168,7 @@ export default function App() {
     }
     if (submittingRef.current) return;
     submittingRef.current = true;
+    setTailError(undefined);             // 用户发起新动作：清掉上一次的失败残留（tailError 的唯一清理点之一）
     activeTurnIdRef.current = null;      // C119：新回合等 turn(running) 事件来认领 turnId
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
     setAttachments([]); attachmentsRef.current = [];
@@ -2039,7 +2187,10 @@ export default function App() {
     setAtBottom(true);
     setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }, { role: "assistant", text: "", blocks: [], streaming: true }]);
     const fail = (message: string) => {
-      setMessages((list) => [...list.slice(0, -1), { role: "assistant", text: message, blocks: [{ type: "text", text: message }] }]);
+      // 错误放独立状态（不进 messages）：否则紧接着的 loadMessages 会把它整体冲掉（见 tailError 注释）
+      setTailError(message);
+      toast(message, "error");           // 立刻可见，用户马上知道"没发出去"以及为什么
+      setMessages((list) => list.slice(0, -1));   // 撤掉乐观插入的那条空 assistant，不伪造一条假回复
       setInput(text);                   // 失败回填草稿
       // 批注也要回填：否则"发送失败"等于把用户刚写的一批批注也弄丢了
       const snapshot = pendingAnnoRestore.current;
@@ -2052,7 +2203,6 @@ export default function App() {
       busySessionRef.current = undefined;
       setBusy(false);
       setTurnStep(4);
-      turnMetricsPendingRef.current = false;
       // 失败后重新拉一次消息：让"消息列表 / 批注渲染层"回到服务端事实。
       // 不这么做的话，上面那次乐观插入 + 回滚会让批注渲染层重建在 DOM 尚未稳定时发生，
       // 高亮不会重画（实测：批注数据回来了，但文字上没有颜色）。
@@ -2095,15 +2245,9 @@ export default function App() {
          * 后端一旦 202，消息就进了模型上下文；回合后续失败也不该重发这批批注
          * （重发等于让 Agent 收到两遍同样的意见）。
          */
-        const consumed = pendingConsumeRef.current;
-        const sendId = pendingSendIdRef.current;
-        pendingConsumeRef.current = undefined;
-        pendingSendIdRef.current = undefined;
-        pendingAnnoRestore.current = undefined;   // 已发出，不需要回滚快照了
-        if (consumed !== undefined && consumed.length > 0 && sendId !== undefined) {
-          anno.markConsumed(consumed, sendId);
-          persistConsume(consumed, sendId, sid);
-        }
+        // consume 推迟到 loadMessages 之后：consumedBy 需要**这条用户消息的真实 id**，
+        // 而 id 只有在服务端落盘、前端重新拉取后才知道（乐观插入的那条没有 id）。
+        // 推迟期间：批注既不清空也不标记（失败仍会带上，符合用户规则 3）。
       }
     } catch {
       fail("[出错] 网络错误");
@@ -2356,9 +2500,6 @@ export default function App() {
      */
     const pendingRefs = commentRefsRef.current;
     const refsText = pendingRefs.length === 0 ? "" : commentsToText(pendingRefs.map((ref) => ({ ...ref, replies: ref.replies ?? [] })));
-    /** 发送成功后清空 chip；失败要回填（与图片/批注同一套补偿） */
-    const clearRefs = () => { setCommentRefs([]); commentRefsRef.current = []; };
-    const restoreRefs = () => { setCommentRefs(pendingRefs); commentRefsRef.current = pendingRefs; };
 
     /**
      * 只发**待发送**的批注（用户 2026-11-04 定案）。
@@ -2384,41 +2525,40 @@ export default function App() {
       // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
       // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
       if (annosText === "") {
-        if (raw !== "" || refsText !== "") {
-          if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
-          void sendText(composeText(raw));
-        }
+        if (raw !== "" || refsText !== "") void sendText(composeText(raw));
         return;
       }
       const merged = composeText(raw === "" ? annosText : `${annosText}\n${raw}`);
-      if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-      historyIndexRef.current = -1;
       // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
       pendingAnnoRestore.current = [...anno.annotations];
-      pendingConsumeRef.current = pendingAnnos.map((a) => a.id);
-      pendingSendIdRef.current = `send-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingConsumeIdsRef.current = pendingAnnos.map((a) => a.id);
       // 不再 die 掉全部批注：它们要保留（MarkBar 常驻），只是下面打上"已消费"
       void sendText(merged);
       return;
     }
 
-    if (raw !== "" || refsText !== "") {
-      if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
-      void sendText(composeText(raw));
-    }
+    if (raw !== "" || refsText !== "") void sendText(composeText(raw));
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
   /**
-   * 当前会话是不是"与其他 Agent 的对话"。
-   * 这类会话由对端 Agent 驱动，`POST /messages` 会 409（`src/server.ts`），
-   * 所以批注在这里**先禁用**（用户 2026-11-03 决定；"Agent 互相标注"留给待办 C4）。
+   * 当前打开的会话：**跨项目扁平查找**，不是从「选中项目」的分组里找。
+   *
+   * 为什么（Task 0011 的根因）：`selectedProjectId` 与 `sessionId` 是两份独立状态 ——
+   * 点另一个项目的会话行、或点另一个项目的分组头，两者就会不一致；从选中项目的分组里
+   * `find` 当前会话必然落空，头部大字标题于是变成空、回落产品名「Life OS」。
+   * 会话自带项目归属（session ∈ Agent × Project），查它不需要先知道"当前项目"。
    */
-  // 判断逻辑抽到 header-strip.ts 的 isPeerSessionOf（纯函数 + 单测），
-  // 因为它是"批注能不能用"的总开关，算错一次就是全站失效（2026-11-04 实际发生过）。
-  const isPeerSession = isPeerSessionOf(sessionId, currentGroup?.sessions);
-  // 任务 0005：头部标题用 `title.display`（与列表同一份派生），避免"列表一个名字、头部另一个名字"
-  const sessionTitle = currentGroup?.sessions.find((item) => item.sessionId === sessionId)?.title.display ?? "";
+  const currentSessionItem = findSessionRow(groups, sessionId);
+  /**
+   * 头部大字标题（`header h1`）：**只来自会话自己**，与列表同一份派生（Task 0011）。
+   *
+   * 改前的写法是 `sessionTitle !== "" ? sessionTitle : "Life OS"` —— 产品名兜底。
+   * 产品名不是这条会话的任何信息：一旦出现，就说明"选中项目 ≠ 会话所属项目"，
+   * 用户看到的却是一个像标题的假名字。规则已抽进 `headerTitleOf()`（纯函数，单测锁住）。
+   */
+  const sessionTitle = currentSessionItem?.title.display ?? "";
+  const headerTitle = headerTitleOf({ sessionId, displayTitle: sessionTitle });
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
   const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
@@ -2440,17 +2580,17 @@ export default function App() {
     const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
     const key = taskTitleKey(aid, pid, taskId);
     if (taskTitles[key] !== undefined) return;
+    if (!shouldRequest(requestedTaskTitles.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
+        // 200 就算请求过（哪怕清单里没有这个 key）：这正是"永远补不上"的那个 key。
         if (cancelled || data?.items === undefined) return;
-        setTaskTitles((previous) => ({
-          ...previous,
-          ...Object.fromEntries(data.items!.map((task) => [taskTitleKey(aid, pid, task.id), task.title])),
-        }));
+        requestedTaskTitles.current.add(key);
+        setTaskTitles((previous) => mergeTaskTitles(previous, (id) => taskTitleKey(aid, pid, id), data.items!));
       })
-      .catch(() => { /* 失败可见性：task 段回退为只显示 ID，不打断会话 */ });
+      .catch(() => { /* 失败可见性：task 段回退为只显示 ID；没记 attempted，依赖变化时会重试 */ });
     return () => { cancelled = true; };
   }, [agent?.id, meta?.activeTaskId, currentGroup?.project.id, selectedProjectId, taskTitles]);
 
@@ -2462,16 +2602,19 @@ export default function App() {
     if (aid === undefined || pid === undefined || sessionId !== undefined) return;
     const key = taskTitleKey(aid, pid, "default");
     if (projectDefaultTasks[key] !== undefined) return;
+    if (!shouldRequest(requestedDefaultTasks.current, key)) return;
     let cancelled = false;
     void fetch(`/api/agents/${aid}/projects/${pid}/tasks`)
       .then((response) => response.ok ? response.json() as Promise<{ items?: TaskItem[] }> : undefined)
       .then((data) => {
         if (cancelled || data?.items === undefined) return;
+        // 200 就算请求过：项目还没有默认 Task 时缓存也补不上，不记就是死循环。
+        requestedDefaultTasks.current.add(key);
         const fallback = data.items.find((task) => task.isDefault === true);
         if (fallback === undefined) return;   // 项目还没有默认 Task：该段缺席，不编造
         setProjectDefaultTasks((previous) => ({ ...previous, [key]: { id: fallback.id, title: fallback.title } }));
       })
-      .catch(() => { /* 失败可见性：该段缺席即可，不打断 */ });
+      .catch(() => { /* 失败可见性：该段缺席即可；没有默认 Task 时也不重发 */ });
     return () => { cancelled = true; };
   }, [agent?.id, currentGroup?.project.id, selectedProjectId, sessionId, projectDefaultTasks]);
 
@@ -2498,10 +2641,7 @@ export default function App() {
   };
   /** 这一行是不是"没有名字、只能显示 id"（决定要不要加等宽/弱色）。 */
   const isIdFallback = (item?: SessionItem) => (item?.title.raw ?? "").trim() === "";
-  /** 当前打开的会话（用于头部显示对端、以及会话行的参与者判断）。 */
-  const currentSessionItem = sessionId === undefined
-    ? undefined
-    : groups.flatMap((group) => group.sessions).find((item) => item.sessionId === sessionId);
+  /** 当前打开的会话：上面 `findSessionRow(groups, sessionId)` 已算好（跨项目查找，唯一一处）。 */
 
   /**
    * 会话列表里的"我"这一方（Task 0015 · T17）：用户本人。
@@ -2738,7 +2878,7 @@ export default function App() {
                                 </>
                               }
                               status={runNow
-                                ? <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" data-state-dot="running" title="生成中" />
+                                ? <span className="h-1.5 w-1.5 rounded-full bg-running animate-dot-breathe" data-state-dot="running" title="生成中" />
                                 : failure !== undefined
                                   // 失败优先于未读：同一槽位一种含义，失败是更需要处理的那个（§5.2 四态互斥）
                                   ? <span className="h-1.5 w-1.5 rounded-full bg-danger" title={`失败：${failureLabel(failure.kind)}`} />
@@ -2790,6 +2930,46 @@ export default function App() {
    */
   const renderStatus = outcomeNotice ?? turnStatus;
   /**
+   * 当前回合（Task 0015 · P3/P5）：用户 2026-11-07 要求"在 session bar 里面添加"，
+   * 并要求**动态状态只在这一处**（"放在 session bar 里面，这样也别做两套了"）。
+   *
+   * 只在**焦点会话正在跑**时给出（`busy` 已带归属守卫：`busySessionRef` 必须是当前会话），
+   * 空闲时不传 —— `SessionBar` 整段不渲染，不留空行。
+   *
+   * `startedAtMs` 的优先级（**锚点必须与完成后摘要同一个**，否则数字会跳）：
+   * 1. 本轮用户消息的 `at`（`lastUserAtMs`）—— `turnWallMsOf()` 的起点就是它，
+   *    所以"进行中最后一秒看到的数"与"完成后摘要里的数"能对上；
+   * 2. 服务端 `running[].startedAt` —— 刚受理、user 消息还没落盘（`at` 缺失）时兜底；
+   * 3. 不传 —— `WorkingRow` 回落到自己的挂载时刻（最后兜底，正常路径不会走到）。
+   */
+  const sessionTurn: SessionBarTurn | undefined = useMemo(() => {
+    const live = busy && sessionId !== undefined && busySessionRef.current === sessionId;
+    if (!live) return undefined;
+    const anchor = lastUserAtMs(messages) ?? startedAtOf(runFacts, sessionId);
+    const startedAtMs = anchor ?? (turnStartedAtRef.current > 0 ? turnStartedAtRef.current : undefined);
+    return {
+      step: turnStep,
+      phase,
+      ...(activeTool !== undefined ? { activeTool } : {}),
+      ...(retry !== undefined ? { retry } : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+    };
+    // runFacts.startedAt 每次快照/事件都会换新对象；只取这一个字段作依赖，避免无关变化触发重算
+  }, [busy, sessionId, turnStep, phase, activeTool, retry, runFacts.startedAt, messages]);
+
+  /**
+   * 会话累计事实（Task 0008 · P3 修订）：轮次/工具调用/生成耗时/token/平均速度。
+   *
+   * 口径与来源写在 `session-totals.ts` 的文档注释里（那边有单测锁住）。
+   * 这里只在 messages / meta 变化时重算——它是随消息增长的线性统计，别放进每次渲染里裸跑。
+   */
+  const sessionTotals = useMemo(
+    () => sessionTotalsOf(messages, meta?.usage !== undefined
+      ? { input: meta.usage.input, output: meta.usage.output, totalTokens: meta.usage.totalTokens }
+      : undefined),
+    [messages, meta?.usage],
+  );
+  /**
    * 头部显示的模型 = **实际运行模型**（Task 0017）。
    *
    * 旧规则（2026-10-22）是：用过 `/model` → 显示覆盖模型；没用过 → 显示 Agent 的有效默认。
@@ -2813,6 +2993,9 @@ export default function App() {
       {/* 左三列：宽窗口并列；窄窗口改浮层抽屉（聊天保底不被压破） */}
       {!isMobile && !box.overlayLeft && leftColumns}
 
+      {/* 选中即复制的提示（Task 0013）：fixed 定位，不参与任何列布局 */}
+      <CopyFeedbackToast feedback={copyFeedback} />
+
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
         <header className="flex h-11 shrink-0 items-center gap-2 px-4 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
@@ -2823,7 +3006,7 @@ export default function App() {
           ))}
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
-            <h1 className="truncate text-body font-semibold text-ink-900">{loaded && sessionId === undefined ? "新会话" : sessionTitle !== "" ? sessionTitle : "Life OS"}</h1>
+            <h1 className="truncate text-body font-semibold text-ink-900">{headerTitle}</h1>
             <p className="truncate text-micro text-ink-500" data-testid="header-meta">
               {joinHeaderSegments(buildHeaderSegments({
                 agentName: agent?.name ?? "",
@@ -2916,7 +3099,54 @@ export default function App() {
                   if (span.userIndex >= 0) spanByIndex.set(span.userIndex, span);
                   for (const reply of span.replyIndexes) spanByIndex.set(reply, span);
                 }
+
                 const folded = new Set<number>();   // 已被上面某一轮的过程条收进去的回复下标
+                /**
+                 * 批注按**轮**分组（Task 0008 · P2 修订，用户 2026-11-04 规则）：
+                 *
+                 *  - **未发送**（pending）→ 全部显示在【最新一轮】Agent 回复的 MarkBar 下，
+                 *    不管它标的是哪一轮的文字——它们语义上属于"下一次要发出的消息"；
+                 *  - **已发送**（consumedBy = 该轮用户消息 id）→ 显示在**被发送那一轮**的 MarkBar，
+                 *    历史不动。
+                 *
+                 *  这样每条 Agent 回复下面最多一个 MarkBar；一个对话里多个轮次各有各的。
+                 */
+                const latestReplyId = (() => {
+                  const last = spans[spans.length - 1];
+                  if (last === undefined) return undefined;
+                  const replies = last.replyIndexes.map((i) => messages[i]).filter((m): m is Message => m !== undefined && m.role === "assistant" && m.id !== undefined);
+                  return replies[replies.length - 1]?.id;    // 最新轮最后一条回复（占位回复也算）
+                })();
+                // 各轮"MarkBar 挂点"：轮末回复若被过程条折叠，改挂**该轮第一条可见回复**。
+                //
+                // 为什么是第一条：过程条挂在轮的第一条回复上，同轮其余回复全部被收进去不渲染
+                //（见渲染循环里的 `folded.add`——它在循环里才执行，这里必须**独立复算同一规则**，
+                //  否则 MarkBar 会挂到一条不渲染的消息上跟着消失，2026-11-04 实测）。
+                // 折叠条件与循环里一致：`process.stats.tools > 0 || thinking > 0` 且该轮不是首条。
+                const visibleLastReplyByUserMessageId = new Map<string, string>();
+                for (const span of spans) {
+                  if (span.userIndex < 0) continue;
+                  const user = messages[span.userIndex];
+                  if (user?.id === undefined) continue;
+                  const replyMsgs = span.replyIndexes.map((i) => messages[i]).filter((m): m is Message => m !== undefined);
+                  if (replyMsgs.length === 0) continue;
+                  const hasProcess = (m: Message): boolean => {
+                    const blocks = m.blocks ?? [];
+                    return blocks.some((b) => b.type === "toolCall" || b.type === "thinking");
+                  };
+                  // 首条回复永远可见（过程条宿主）；只有当"轮内存在其他可见回复"时轮末才算可见。
+                  // 规则：若轮内任何一条非首条回复**没有**过程块（单独渲染的最终正文），轮末可见；
+                  //      否则（全部折叠）可见轮末 = 首条回复。
+                  const anchorable = replyMsgs.some((m, i) => i > 0 && !hasProcess(m));
+                  const anchor = anchorable ? replyMsgs[replyMsgs.length - 1] : replyMsgs[0];
+                  if (anchor.id !== undefined) visibleLastReplyByUserMessageId.set(user.id, anchor.id);
+                }
+                const annoGroups = groupAnnotationsByReply(anno.annotations, messages, latestReplyId, visibleLastReplyByUserMessageId);
+                // ResponseBar 的过程区展开态（本 session 用户点过则听用户的，否则按 live 定）
+                const responsePref = responsePrefs[sessionId ?? ""] ?? readResponsePref(sessionId);
+                // 会话级指标挂哪一条：最后一条 assistant（全列表唯一，避免重复）
+                let lastAssistantIndex = -1;
+                messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
                 return messages.map((message, index) => {
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
@@ -2931,15 +3161,24 @@ export default function App() {
                   let process: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] } | undefined;
                   let mergedBlocks: Block[] | undefined;
                   const isFirstReply = replies.length > 0 && replies[0] === index;
+                  /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
+                  const replyLive = replyMessages.some((m) => m.streaming === true);
                   if (!isUser && isFirstReply) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
-                    const durationMs = replyMessages.reduce((sum, m) => sum + (m.durationMs ?? 0), 0);
+                    // 时长（Task 0015 · P4）：**墙钟**，与 SessionBar 的累计口径、以及「当前回合」
+                    // 进行中那个秒数是同一个函数（`turnWallMsOf`）算出来的。
+                    // 以前这里用 Σassistant.durationMs（纯模型时间），跑完会比跑的时候小，
+                    // 数字往回跳（实测 sleep 6 的回合：墙钟 34417ms vs ΣdurationMs 28323ms，案例 C004）。
+                    // **进行中不算时长**：那一刻的墙钟由 SessionBar 的「当前回合」在显示（它每秒在走）。
+                    // 这里只在**完成后**给一个定值，避免同一个数在两个地方各说一套（案例 C004）。
+                    const span = spanByIndex.get(index);
+                    const wallMs = replyLive || span === undefined ? undefined : turnWallMsOf(messages, span);
                     const tokens = replyMessages.reduce((sum, m) => sum + (m.tokens ?? 0), 0);
                     const stats = statsOf(allBlocks, {
-                      ...(durationMs > 0 ? { durationMs } : {}),
-                      ...(tokens > 0 ? { tokens } : {}),
+                      ...(wallMs !== undefined && wallMs > 0 ? { durationMs: wallMs } : {}),
+                      ...(tokens > 0 && !replyLive ? { tokens } : {}),
                     });
-                    const live = replyMessages.some((m) => m.streaming === true);
+                    const live = replyLive;
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
                     const failed = replyMessages.some((m) => m.failure !== undefined || m.error !== undefined);
                     if (hasProcess(stats) && !failed) {
@@ -2962,42 +3201,94 @@ export default function App() {
                       for (const i of replies) if (i !== index) folded.add(i);
                     }
                   }
-                  // 头像与名字：用户 = 你本人（/api/profile），助手 = 当前 Agent
+                  // 头像与名字（Task 0014 · D8′）：user 消息看后端给的 `speaker`——
+                  // 用户本人 → 你的档案头像；"某个 Agent 发起的" → 那个 Agent 的头像与名字。
+                  // 助手侧一律是当前 Agent。左右对齐不变（D10：保持现状，只换头像名字）。
                   // 头像尺寸随字号缩放（用户 2026-11-02：字号变大而头像不变会畸形）
                   const avatarSize = avatarSizeOf(22, prefs.font.scale);
-                  const avatarNode = isUser
-                    ? (profile === undefined ? undefined : <UserAvatar profile={profile} size={avatarSize} />)
-                    : (agent === undefined ? undefined : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={avatarSize} />);
-                  const authorName = isUser ? profile?.name : agent?.name;
+                  // 先取出 agent 分支的 speaker（TS 窄化：`speaker?.kind === "agent"` 在闭包里会丢，所以提前落到局部常量）
+                  const agentSpeaker = isUser && message.speaker?.kind === "agent" ? message.speaker : undefined;
+                  const speakerAgent = agentSpeaker === undefined ? undefined : (() => {
+                    const known = agents.find((item) => item.id === agentSpeaker.agentId);
+                    // 发起方可能已被归档/删除：有 id 就够画头像（AgentAvatar 由 id 推导色阶 + 首字母）
+                    return { id: agentSpeaker.agentId, name: known?.name ?? agentSpeaker.name ?? agentSpeaker.agentId, avatar: known?.avatar };
+                  })();
+                  const avatarNode = speakerAgent !== undefined
+                    ? <AgentAvatar id={speakerAgent.id} name={speakerAgent.name} {...(speakerAgent.avatar !== undefined ? { avatar: speakerAgent.avatar } : {})} size={avatarSize} />
+                    : isUser
+                      ? (profile === undefined ? undefined : <UserAvatar profile={profile} size={avatarSize} />)
+                      : (agent === undefined ? undefined : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={avatarSize} />);
+                  const authorName = speakerAgent !== undefined ? speakerAgent.name : (isUser ? profile?.name : agent?.name);
 
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
 
                   /**
-                   * MarkBar 的数据（Task 0008 · P2）：这条消息自己的批注。
-                   *
-                   * **只挂到 assistant 消息上**（批注只标 Agent 最终回复，D7）。
-                   * peer 会话不显示（没有操作意义）。
-                   * 注意 `anno.ofMessage` 内部有缓存，按 messageId 查是 O(1)。
+                   * MarkBar 的数据（Task 0008 · P2 修订）：按**轮**分组后挂在本回复下的批注。
+                   * - pending 全部挂在最新一轮（不管标在哪个轮次的文字上）；
+                   * - consumed 挂在被发送那一轮；
+                   * 分组逻辑见 `anno-groups.ts`（纯函数 + 单测）。
                    */
-                  const messageMarkBar = !isPeerSession && message.role === "assistant" && message.id !== undefined
+                  /**
+                   * ResponseBar 的数据（Task 0008 · P3 修订）。
+                   *
+                   * 只说**这一轮**：过程统计 + 进行中状态 + 回合结论文案。
+                   * 会话累计指标（轮次/工具/耗时/token/平均速度/上下文/请求体）归输入框上方的
+                   * `SessionBar`（用户 2026-11-05："turnstat bar 把一些信息换为累计的信息"），
+                   * 不再挂在回复上——两处都显示同一份数字就是重复。
+                   */
+                  const isThisStreaming = message.streaming === true;
+                  /**
+                   * 这一轮是否还在跑（**轮级**，不是"这条消息在跑"）。
+                   *
+                   * 为什么分开：一轮可能有多个 assistant 段，过程块只挂在**第一段**上（`isFirstReply`），
+                   * 而流式标志常在后来的段上。用"这条在流式"判断，会让挂着过程的 bar 在生成期间
+                   * 一直是折叠的（实测：工具跑起来了，bar 还显示"查看过程"）。
+                   * 老 ProcessBar 用的就是轮级 live（`process.live`），这里保持一致。
+                   */
+                  const messageLive = isThisStreaming || replyLive;
+                  /** 过程区**当前是否展开**（渲染与点击共用这一个值，Task 0015 · P2）：
+                   *  以前点击自己拿 `busyRef` 再算一遍，两处 live 不同源时点一下会算出相反的 next。 */
+                  const messageProcessOpen = processOpenOf(responsePref, messageLive);
+                  const messageResponseBar = message.role === "assistant"
                     ? {
-                        annotations: anno.ofMessage(message.id),
-                        messageOrder: messageOrderForAnnos,
-                        onRowClick: onAnnoRowClick,
-                        pinnedOf: annoPinnedOf,
-                        onRemove: annoActions.remove,
-                        onRemoveAll: () => {
-                          // 与旧"清空全部"同一条纪律：走持久化 remove，不能只改内存
-                          for (const a of anno.ofMessage(message.id as string)) annoActions.remove(a.id);
-                        },
+                        // 进行中：轮在跑 → live（等待过渡 / 过程块展开）；占位（无 blocks）→ 等待过渡
+                        ...(messageLive ? { live: true, waiting: (message.blocks?.length ?? 0) === 0 } : {}),
+                        // **动态状态不在这里**（Task 0015 · P5，用户 2026-11-07）：
+                        // "关于动态的东西……直接放到 session bar 里面，这样也别做两套了。只是每一次
+                        //  response bar 完成之后，他自己的信息自己给他那儿展示，在正在完成的过程当中，
+                        //  就还是显示在 session bar"。
+                        // 所以 step / phase / activeTool / retry / 秒数全部只由 SessionBar 的「当前回合」显示，
+                        // 这里只在**完成后**给出过程摘要（stats，见 process）。
+                        // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
+                        ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
+                        // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
+                        processOpen: messageProcessOpen,
+                        onToggleProcess: () => toggleResponseProcess(messageProcessOpen),
                       }
+                    : undefined;
+
+                  const messageMarkBar = message.role === "assistant" && message.id !== undefined
+                    ? (() => {
+                        const list = annoGroups.get(message.id) ?? [];
+                        return list.length === 0 ? undefined : {
+                          annotations: list,
+                          messageOrder: messageOrderForAnnos,
+                          onRowClick: onAnnoRowClick,
+                          pinnedOf: annoPinnedOf,
+                          onRemove: annoActions.remove,
+                          onRemoveAll: () => {
+                            for (const a of list) annoActions.remove(a.id);
+                          },
+                        };
+                      })()
                     : undefined;
 
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
-                      annotationActions={isPeerSession ? undefined : annoActions}
+                      annotationActions={annoActions}
+                      {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
                         // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
@@ -3033,35 +3324,36 @@ export default function App() {
 
         <footer className="shrink-0 px-4 pb-safe sm:px-6 sm:pb-4">
           <div className="mx-auto w-full max-w-reading">
-            {/* composer dock：一张卡两个分区（用户拍板 Task 0002 2026-10-26）。
-                左区=回合事实（TurnStatusBar 数据对象不变，只是渲染进卡）；右区=输入工具注册槽（可扩展）。
-                手机上工具钮回 composer 底行，且左区无内容时整张 dock 隐藏（避免空卡耗空间）。 */}
-            {/* composer dock：一行共享、不带壳（2026-10-26 用户反馈“框框丑”“——裸行才是低位状态条该有的样子）。
-                左区=回合事实（TurnStatusBar 数据对象不变）；右区=输入工具注册槽。
-                手机上工具钮回 composer 底行，且左区无内容时整行隐藏。 */}
-            <div data-testid="composer-dock"
-              className={`${!(isMobile && !busy && renderStatus === undefined && turnMetrics === undefined && (meta?.usage === undefined || meta.usage.totalTokens === 0)) ? "" : "hidden"} flex min-h-7 items-center gap-3 px-1 pb-1`}>
-              <div className="min-w-0 flex-1" data-testid="turn-status-bar">
-                <TurnStatusBar busy={busy} step={turnStep} phase={phase}
-                  {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
-                  {...(activeTool !== undefined ? { activeTool } : {})}
-                  {...(retry !== undefined ? { retry } : {})}
-                  {...(renderStatus !== undefined ? { status: renderStatus } : {})}
-                  {...(turnMetrics !== undefined ? { metrics: turnMetrics } : {})}
-                  {...(meta?.usage !== undefined ? { usage: meta.usage } : {})}
-                  {...(meta?.context !== undefined ? { context: meta.context } : {})}
-                  {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})} />
-              </div>
-              {!isMobile && (
-                <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
-                  <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
-                    data-testid="attach-image" className="shrink-0">
-                    <IconPhoto size={16} />
-                  </IconButton>
-                </div>
-              )}
+            {/* SessionBar（Task 0008 · P3 修订）：输入框上方的**会话累计**事实条 + 添加图片。
+                用户 2026-11-05："turnstat bar 把一些信息换为累计的信息……图片那个可以融入到
+                turnstatusbar 了，或不叫 turnstatusbar？换一个名字" → 改名 SessionBar，图片并进来。
+                手机上仍回 composer 底行（那里已有添加图片）。
+                **Task 0015 · P3**：用户 2026-11-07 要求把"当前回合"加回来——
+                "这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样，
+                 而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
+                所以 `turn` 只在生成中传（空闲时整段不渲染）；ResponseBar 那边一行不改。 */}
+            <div data-testid="composer-dock" className={`${isMobile ? "hidden" : ""} px-1 pb-1`}>
+              <SessionBar totals={sessionTotals}
+                {...(meta?.context !== undefined ? { context: meta.context } : {})}
+                {...(meta?.payload !== undefined ? { payload: { estimated: meta.payload.effective ?? meta.payload.estimated, limit: meta.payload.limit } } : {})}
+                {...(runFacts.lastTurn[sessionId ?? ""] !== undefined ? { turnId: runFacts.lastTurn[sessionId ?? ""]!.turnId } : {})}
+                {...(sessionTurn !== undefined ? { turn: sessionTurn } : {})}
+                onAttachImage={() => fileInputRef.current?.click()} />
             </div>
             {/* 模型 A：单容器 composer（chat.md §3.5）；palette 与未来横幅都属于这个对象。 */}
+            {/* 失败残留（Task 0014 · S11）：发送被拒/网络错误时留在这里，不被随后的重新拉取冲掉。
+                与排队区同一容器（"输入区是一个对象"，frontend-spec §5）；下一次发送或切会话才清。 */}
+            {tailError !== undefined && (
+              <div data-testid="send-error" role="alert"
+                className="mb-1 flex items-start gap-2 rounded-panel bg-danger-soft px-3 py-2 text-micro text-danger ring-1 ring-danger/30">
+                <IconInfoCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1">{tailError}</span>
+                <button type="button" aria-label="关闭提示" onClick={() => setTailError(undefined)}
+                  className="shrink-0 rounded p-0.5 text-danger transition-colors hover:bg-danger/10">
+                  <IconX size={12} />
+                </button>
+              </div>
+            )}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
             {sessionId !== undefined && (runFacts.queue[sessionId] ?? []).length > 0 && (
               <div data-testid="run-queue" className="mb-1 space-y-1">
@@ -3160,6 +3452,10 @@ export default function App() {
                   placeholder={isMobile ? "输入消息" : "输入消息 · Enter 发送 · Esc 打断 · / 命令"}
                 onChange={(event) => {
                   const next = event.target.value;
+                  // 用户一打字就退出历史浏览（Pi TUI 里每个编辑动作都调 exitHistoryBrowsing）。
+                  // 只认 textarea 的 change（只有用户输入会触发它，程序 setInput 不会），
+                  // 不用"文字是否等于历史某条"去猜（规范 2.1：禁止靠值比较猜语义）。
+                  historyCursorRef.current = NO_HISTORY_CURSOR;
                   setInput(next);
                   if (next.startsWith("/") && !next.includes(" ") && !next.includes("\n")) {
                     const items = COMMANDS.filter((item) => item.key.startsWith(next.trim()));
@@ -3200,15 +3496,26 @@ export default function App() {
                     }
                     if (event.key === "Escape") { event.preventDefault(); setPalette(undefined); return; }
                   }
-                  // 输入历史：空输入时 ↑/↓ 浏览（对齐 Pi CLI 的 historyPrevious/Next）
-                  if ((event.key === "ArrowUp" || event.key === "ArrowDown") && input === "" && sentHistoryRef.current.length > 0) {
-                    event.preventDefault();
-                    // ↑ 走向更早历史（索引 +1），↓ 走回更新/清空（索引 -1）。
-                    const delta = event.key === "ArrowUp" ? 1 : -1;
-                    const next = Math.max(-1, Math.min(sentHistoryRef.current.length - 1, historyIndexRef.current + delta));
-                    historyIndexRef.current = next;
-                    setInput(next === -1 ? "" : sentHistoryRef.current[next] ?? "");
-                    return;
+                  // 输入历史：↑/↓ 浏览**本会话**发过的消息（chat.md §3.5）——Task 0012。
+                  // 规则全在纯函数里（frontend/src/input-history.ts，逐条契约见 test/input-history.test.mjs）：
+                  //   · 历史从当前会话消息派生，切会话即换（不再有"整页一份、切换忘了清"的问题）；
+                  //   · ↑ = 更旧、↓ = 更新，方向与"最近一条在前"的数组同向（Pi TUI editor.ts:456-486）；
+                  //   · 已在浏览时输入框非空也继续走（`input === ""` 只是**进入**浏览的条件，
+                  //     老实现把它当成每一次按键的前提，于是第一下之后再也按不动）。
+                  if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                    const step = historyNavigate({
+                      cursor: historyCursorRef.current,
+                      scope: historyScope,
+                      history: inputHistory,
+                      direction: event.key === "ArrowUp" ? "older" : "newer",
+                      inputEmpty: input === "",
+                    });
+                    if (step !== undefined) {
+                      event.preventDefault();
+                      historyCursorRef.current = step.cursor;
+                      setInput(step.text);
+                      return;
+                    }
                   }
                   if (event.key !== "Enter" || event.shiftKey) return;
                   const native = event.nativeEvent;
@@ -3413,7 +3720,7 @@ function IconArrowUpIcon() {
   );
 }
 import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped } from "./run-facts";
+import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./run-facts";
 import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
