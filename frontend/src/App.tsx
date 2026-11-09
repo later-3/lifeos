@@ -2887,7 +2887,7 @@ export default function App() {
         <>
           {/* 列自己画右缘 1px 边（Task 0006）：不再由把手盒子充当分界。
               `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
-          <ResizeColumn resizeKey="c1" width={box.c1} onStart={(event) => beginDrag("c1", event)}
+          <ResizeColumn resizeKey="c1" width={box.c1} ariaLabel="助手列" onStart={(event) => beginDrag("c1", event)}
             className="flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
@@ -2927,7 +2927,7 @@ export default function App() {
       {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
       {!folded.groups && (
         <>
-          <ResizeColumn resizeKey="c2" width={box.c2} onStart={(event) => beginDrag("c2", event)}
+          <ResizeColumn resizeKey="c2" width={box.c2} ariaLabel="会话列" onStart={(event) => beginDrag("c2", event)}
             testId="groups-panel" className="flex-col border-r border-nav-line bg-nav-bg">
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
@@ -3740,7 +3740,7 @@ export default function App() {
       {/* 完整历史 · 右侧并列列 */}
       {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.history}
+          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} ariaLabel="完整历史" width={isMobile ? "100%" : box.history}
             onStart={(event) => beginDrag("c5", event)}
             className={`border-l border-nav-line ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer} bg-surface` : ""}`}>
             <div className="flex min-w-0 flex-1 overflow-hidden">
@@ -3754,7 +3754,7 @@ export default function App() {
       {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
       {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
-          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.panel}
+          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} ariaLabel="文件面板" width={isMobile ? "100%" : box.panel}
             onStart={(event) => beginDrag("c4", event)}
             className={`border-l border-nav-line bg-surface ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer}` : ""}`}>
             {peerTarget !== undefined ? (

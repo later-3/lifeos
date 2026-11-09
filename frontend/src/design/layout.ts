@@ -245,6 +245,24 @@ export function clampWidth(key: keyof Widths, value: number, limit?: number): nu
 }
 
 /**
+ * 嵌套关系：内层可拖区域属于哪个外层列（**唯一来源**）。
+ *
+ * 为什么需要它（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」）：
+ * 文件树（`c4t`）长在文件面板（`c4`）里面。旧实现给 `c4t` 的上限是「面板 − 查看器最小宽」，
+ * 而面板本身又被视口钳住 —— 1440 窗口上面板只有 444，于是 `c4t` 的可动范围只剩
+ * **160–238**（默认就是 240，等于**根本拖不动**）；1280 上更彻底：面板放不下 → 一个把手都没有。
+ *
+ * 用户要的不是"把 238 改大一点"（那是单点修补），而是**一类问题的解法**：
+ * 内层拖动到外层边界时，外层跟着一起长（VS Code 的 sash 也是这样：拖 explorer 的分隔条，
+ * 整个侧栏一起变宽，而不是"到头就卡住"）—— 下面 `dragCascade()` 就是这条规则的唯一实现。
+ *
+ * 以后新增嵌套可拖区域（比如"面板里的预览区也可以拖"）只需在这里登记一行。
+ */
+export const RESIZE_PARENT: Partial<Record<keyof Widths, keyof Widths>> = {
+  c4t: "c4",   // 文件树 ⊂ 文件面板
+};
+
+/**
  * 某一列在给定视口下的**真实可视上限**（Task 0006）：把手拖到哪儿就该在哪儿停。
  *
  * 为什么需要它：旧实现只有常量表（c2≤440），而实际能放多少由视口算：
@@ -261,13 +279,21 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
   const c2 = folded.groups ? 0 : widths.c2;
   const other = key === "c1" ? 0 : c1;
   const otherRight = key === "c2" ? 0 : c2;
+  /*
+   * **上限公式必须与 `layout()` 的预算公式逐项一致**（2026-11-09 又抓到一次漂移）。
+   *
+   * `layout()` 算的是 `视口 − 左侧成本 − MIN_CHAT`，而这里原来多减了 `HANDLE_HIT(8)` ——
+   * 于是 1440 窗口上面板实际能渲染到 444，拖动却只允许到 436：**拖到 436 就停，空间还剩 8px**。
+   * `HANDLE` 是**布局占宽**（Task 0006 起是 0，把手改成浮层），`HANDLE_HIT` 只是鼠标命中区厚度，
+   * 两者都不该出现在宽度预算里。这是同一类缺陷的第二次（第一次是 c1 的 440 常量）。
+   */
   if (key === "c1" || key === "c2") {
-    // 左列上限：视口 − 图标轨 − 另一列 − 右侧最小占用（MIN_CHAT） − 把手厚度
-    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT - HANDLE_HIT);
+    // 左列上限：视口 − 图标轨 − 另一列 − 聊天保底
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT);
   }
   if (key === "c4" || key === "c5") {
-    // 右侧列上限：视口 − 左侧全部 − MIN_CHAT − 把手厚度
-    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+    // 右侧列上限：视口 − 左侧全部 − 聊天保底
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT);
   }
   if (key === "c4t") {
     /*
@@ -279,9 +305,106 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
      * 这一条与 MaxWidthOf 的其它分支同一思路：**拖动上限 = 该列的真实可视上限**，
      * 不是视口一档、也不是常量一档。
      */
-    const panelLimit = Math.max(0, viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
-    const panel = Math.min(widths.c4, Math.max(MIN_PANEL, panelLimit));
+    /*
+     * **必须与 `layout()` 用同一个算法**（2026-11-09 用户第二次报「文件树拖动很垃圾」）：
+     * 旧实现在这里自己又算了一遍 panelLimit，与 layout 的公式差一档 ——
+     * 1440 窗口上：树默认 240，而这里算出上限 230 → **一按下去就被夹到 230 然后纹丝不动**
+     * （实测拖 400px，宽度取值只有 1 个）。用户看到的就是"拖不动"。
+     * 现在直接问 `layout()` 要它的 panel，两处公式不可能再漂移。
+     */
+    const panel = layout({ viewport, widths, requested: folded, panelOpen: true }).panel;
     return Math.max(WIDTH_LIMITS.c4t[0], panel - MIN_VIEWER);
   }
   return WIDTH_LIMITS[key][1];
+}
+
+/**
+ * 拖动一个（可能嵌套的）列时，**一次算出所有要变的宽度**（纯函数，可穷举单测）。
+ *
+ * 语义（每条都对应一个用户可见的行为）：
+ *  1. 内层拖动 = 移动"内层与查看器之间"的分界：内层变大，查看器变小（外层总宽不变）；
+ *  2. 内层顶到查看器最小宽时**不再卡住**：外层跟着一起长（缺多少长多少），
+ *     直到外层自己的视口上限（`maxWidthOf`）为止 —— 这就是"拖到头还能继续拖"的解法；
+ *  3. 往回拖时，先缩内层，外层保持（不回弹、不跳）；
+ *  4. 没有外层关系的列（c1/c2/c5）就是普通的单列拖动。
+ *
+ * 返回的是**补丁**（只含变化的键），调用方把它合进 widths 即可 —— 这样"哪些列会动"
+ * 这件事只在这个函数里决定，`useColumnWidth` 不再写第二套判断。
+ *
+ * `viewport`/`folded` 只用于算外层上限；`deltaX` 是鼠标位移（已经含方向，
+ * 方向由 `HANDLE_SIGN` 决定，见 `dragWidth`）。
+ */
+export function dragCascade(
+  key: keyof Widths,
+  start: Widths,
+  deltaX: number,
+  viewport: number,
+  folded: Folded,
+): Partial<Widths> {
+  const parent = RESIZE_PARENT[key];
+
+  // 没有外层：单列拖动（与 dragWidth 完全一致）
+  if (parent === undefined) {
+    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
+  }
+
+  /*
+   * 一切以**实际渲染宽**为基准，不以存储值为基准。
+   *
+   * 1440 上「拖了没反应」的根因就在这里：存储里 `c4=600`（用户以前拖过），
+   * 但面板被视口钳到 444；若拿 600 判断"还有余量"，会得出"不需要变宽" → 拖了也不动。
+   * 用户看到的是渲染宽度，计算就必须用渲染宽度。
+   */
+  const box = layout({ viewport, widths: start, requested: folded, panelOpen: true });
+  const panelReal = box.panel;
+  const treeReal = box.tree;
+  const viewer = Math.max(0, panelReal - treeReal);
+
+  const sign = HANDLE_SIGN[key];
+  const desiredTree = treeReal + sign * deltaX;
+  const minTree = WIDTH_LIMITS[key][0];
+  const patch: Partial<Widths> = {};
+
+  // 空间从三处找，按"代价最小"的顺序：① 面板已有余量 → ② 面板可以长 → ③ 从左边借宽
+  const wantedPanel = desiredTree + viewer;
+  let panelNext = panelReal;
+
+  const panelLimitNow = maxWidthOf(parent, viewport, start, folded);
+  if (wantedPanel <= panelReal) {
+    panelNext = panelReal;                                     // ① 面板本来就有余量
+  } else if (wantedPanel <= panelLimitNow) {
+    panelNext = wantedPanel;                                   // ② 面板还能长
+    patch[parent] = panelNext;
+  } else {
+    /*
+     * ③ 面板已到视口上限（1440 + 左两列展开：面板卡在 444、树卡在 238）。
+     *    这是「文件树拖动很垃圾」的真正根因 —— 不是上限数字小，而是**没有空间可给**。
+     *
+     *    解法：**从左边借宽** —— 先借 c2（会话列，下限 240），不够再借 c1（助手列，下限 180）。
+     *    借宽而不是折叠列：借宽用户看得见（左列变窄）、也能再拖回去，不会被静默改状态。
+     *    （`openHistory` 在窗口放不下时也是"从左边借"的同一思路。）
+     */
+    let borrow = wantedPanel - panelLimitNow;
+    let nextC2 = start.c2;
+    let nextC1 = start.c1;
+    if (!folded.groups) {
+      const take = Math.min(borrow, Math.max(0, nextC2 - WIDTH_LIMITS.c2[0]));
+      nextC2 -= take; borrow -= take;
+    }
+    if (!folded.nav && borrow > 0) {
+      const take = Math.min(borrow, Math.max(0, nextC1 - WIDTH_LIMITS.c1[0]));
+      nextC1 -= take; borrow -= take;
+    }
+    if (nextC2 !== start.c2) patch.c2 = nextC2;
+    if (nextC1 !== start.c1) patch.c1 = nextC1;
+    const widthsAfterBorrow = { ...start, ...patch };
+    const panelLimitAfter = maxWidthOf(parent, viewport, widthsAfterBorrow, folded);
+    panelNext = Math.min(panelLimitAfter, wantedPanel);
+    if (panelNext > panelReal) patch[parent] = panelNext;
+  }
+
+  // 内层按"实际拿到多少空间"收敛：拖到哪停到哪（不存超出值，否则松手会被 layout 弹回）
+  const treeMax = Math.max(minTree, panelNext - MIN_VIEWER);
+  patch[key] = Math.min(Math.max(Math.round(desiredTree), minTree), treeMax);
+  return patch;
 }

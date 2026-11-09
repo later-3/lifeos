@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceClass, surfaceStyle } from "../frontend/src/design/surface.ts";
-import { calculatePalette, clampState, elevationOf, THEME_PRESETS } from "../frontend/src/design/theme.ts";
+import { calculatePalette, clampState, contrastOf, elevationOf, THEME_PRESETS } from "../frontend/src/design/theme.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = join(ROOT, "frontend/src");
@@ -225,6 +225,22 @@ test("设计 token 都真的被用上（颜色/容器查工具类，其余查变
   });
 
   assert.deepEqual(unused, [], `这些 token 声明了但没人用（接上，或写进 ALLOW_UNUSED 说明理由）：\n${unused.join("\n")}`);
+});
+
+test("辅助文字 ink-500 在 4 个底 × 5 预设 × 深浅色下都 ≥4.5（axe 审计抓到的真缺陷）", () => {
+  // 2026-11-09 axe 审计：`ink500` 写死 L*42（浅色的解），深色底 #292828 上只有 **2.45:1** ——
+  // 深色下头部副标题/空态提示/行内说明全部发灰看不清，axe 报了 30 次 color-contrast。
+  // 这条断言把"辅助文字必须按深浅色分开给"锁住：4 个可能出现的底（surface / hover / line / sunken）
+  // 都要 ≥4.5，任何一个不达标就红。
+  for (const preset of Object.keys(THEME_PRESETS)) {
+    for (const mode of ["light", "dark"]) {
+      const p = calculatePalette(clampState({ ...THEME_PRESETS[preset], preset, mode }));
+      for (const [label, bg] of [["surface", p.surface], ["hover", p.hover], ["line", p.line], ["sunken", p.sunken]]) {
+        const ratio = contrastOf(p.ink500, bg);
+        assert.ok(ratio >= 4.5, `${preset}/${mode}: ink-500 on ${label} = ${ratio.toFixed(2)} < 4.5`);
+      }
+    }
+  }
 });
 
 test("状态强度关系在 5 个预设 × 深浅色下都成立（hover 比选中浅、选中≈hover×2）", () => {

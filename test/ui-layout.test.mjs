@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL,
-  clampWidth, dragWidth, layout, maxWidthOf, reviewPxOfRatio, reviewRatioOfPx,
+  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL, WIDTH_LIMITS,
+  clampWidth, dragCascade, dragWidth, layout, maxWidthOf, reviewPxOfRatio, reviewRatioOfPx,
 } from "../frontend/src/design/layout.ts";
 
 /**
@@ -132,10 +132,12 @@ test("两列的可用上限都由视口算（同一套规则，不靠各自的�
 test("列宽的真实上限由视口算（Task 0006）：c2 不该停在 440", () => {
   const folded = { nav: false, groups: false };
   const widths = { ...DEFAULT_WIDTHS, c2: 300 };
-  // 1280 宽：44 + 232 + 420 + 8 = 704 → 最多可给 c2 576；旧常量 440 会提前卡住
-  assert.equal(maxWidthOf("c2", 1280, widths, folded), 1280 - 44 - 232 - 420 - 8);
+  // 1280 宽：44 + 232 + 420 = 696 → 最多可给 c2 584。
+  // **不再减 HANDLE_HIT(8)**（2026-11-09 又抓到一次漂移）：`layout()` 的预算里没有它，
+  // 多减 8 会让"拖到 576 就停，而面板实际能到 584"—— 同一类缺陷的第二次。
+  assert.equal(maxWidthOf("c2", 1280, widths, folded), 1280 - 44 - 232 - 420);
   // 1440 宽：算式同样成立，且大于旧常量上限 440
-  assert.equal(maxWidthOf("c2", 1440, widths, folded), 1440 - 44 - 232 - 420 - 8);
+  assert.equal(maxWidthOf("c2", 1440, widths, folded), 1440 - 44 - 232 - 420);
   assert.ok(maxWidthOf("c2", 1440, widths, folded) > 440, "1440 上必须能超过旧的 440");
   // 1024 宽：几何上限比常量更小，夹紧后不会触发 overlay（拖到头也不丢列）
   const limit1024 = maxWidthOf("c2", 1024, widths, folded);
@@ -173,19 +175,18 @@ test("把手方向由位置决定，不由 key 名决定（右侧停靠面板反
   assert.equal(dragWidth("c5", 440, 9999), 360);
 });
 
-test("c4t（文件树）的上限是「面板 − 查看器最小宽」，不是视口", () => {
-  // 2026-11-09 实测：拖 c4t 到 300，松手回弹到 270 —— 存进去的超出面板能给的，
-  // layout() 再钳回来（tree = min(widths.c4t, panel − MIN_VIEWER)）。
-  // 拖到哪就该停在哪：上限必须是这条真实可视上限。
+test("c4t（文件树）的上限与 layout 的 panel 同源，不是视口", () => {
+  // 2026-11-09 第二次修：旧实现在这里自己又算了一遍 panelLimit，与 layout 的公式差一档
+  // → 1440 上树默认 240、这里算出上限 230，一按下去就被夹到 230 然后纹丝不动。
+  // 现在上限直接由 layout 的 panel 推出，两处公式不可能再漂移。
   const folded = { nav: false, groups: false };
-  const widths = { ...DEFAULT_WIDTHS, c4: 600 };
-  const limit = maxWidthOf("c4t", 1600, widths, folded);
-  const panel = Math.min(widths.c4, 1600 - RAIL - widths.c1 - widths.c2 - MIN_CHAT - 8);
-  assert.equal(clampWidth("c4t", 9999, limit), panel - MIN_VIEWER,
-    "c4t 拖到头应停在 panel − MIN_VIEWER，不是更宽的视口上限");
-  // 窄面板时同样成立
-  const narrow = maxWidthOf("c4t", 1600, { ...widths, c4: MIN_PANEL }, folded);
-  assert.equal(clampWidth("c4t", 9999, narrow), Math.max(160, MIN_PANEL - MIN_VIEWER));
+  for (const viewport of [1440, 1600, 1920]) {
+    const widths = { ...DEFAULT_WIDTHS, c4: 600 };
+    const box = layout({ viewport, widths, requested: folded, panelOpen: true });
+    assert.equal(maxWidthOf("c4t", viewport, widths, folded), Math.max(WIDTH_LIMITS.c4t[0], box.panel - MIN_VIEWER),
+      `${viewport}: 上限必须等于 panel − MIN_VIEWER（panel=${box.panel}）`);
+    assert.ok(maxWidthOf("c4t", viewport, widths, folded) >= box.tree, `${viewport}: 上限不能低于当前渲染宽（否则拖不动）`);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -281,4 +282,102 @@ test("检视宽度没有绝对像素上限：只受右侧预算约束（2026-11-
   assert.equal(wider.review, Math.min(wider.reviewBudget, Math.round(3200 * 0.9)), "预算与比例的较小者");
   assert.equal(wider.reviewBudget, 3200 - leftCost - 420);
   assert.ok(wider.chat >= MIN_CHAT, "封顶后对话仍保底");
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 嵌套列的拖动（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」）
+ *
+ * 事实：文件树 c4t 长在文件面板 c4 里面。旧上限是「面板 − 查看器最小宽」，
+ * 而面板本身被视口钳住 → 1440 窗口上 c4t 只剩 160–238 的可动范围（默认 240 = 拖不动），
+ * 1280 上面板放不下 → 连把手都没有。
+ * 用户要的是**一类问题的解法**：内层顶到边界时外层跟着长（VS Code 的 sash 同款），
+ * 而不是把 238 改成 300 这种单点修补。
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/*
+ * 嵌套拖动（c4t ⊂ c4）—— 2026-11-09 用户第二次报「文件树区域的拖动很垃圾」。
+ *
+ * 断言的是**用户能看到的结果**（渲染后的 tree / panel / chat），不是内部补丁的形状
+ * ——补丁长什么样是实现细节，改实现时不该让这些测试跟着改。
+ */
+function dragTree(startWidths, deltaX, viewport) {
+  const folded = { nav: false, groups: false };
+  const patch = dragCascade("c4t", startWidths, deltaX, viewport, folded);
+  const widths = { ...startWidths, ...patch };
+  return { patch, box: layout({ viewport, widths, requested: folded, panelOpen: true }) };
+}
+
+test("嵌套拖动：往回拖只缩内层，外层不动（不回弹）", () => {
+  const start = { ...DEFAULT_WIDTHS, c4: 700, c4t: 400 };
+  const folded = { nav: false, groups: false };
+  // 基准是**渲染宽**（1600 上面板被钳到 604 → 树 398），不是存储的 400
+  const rendered = layout({ viewport: 1600, widths: start, requested: folded, panelOpen: true }).tree;
+  const { patch } = dragTree(start, -100, 1600);
+  assert.equal(patch.c4, undefined, "外层不该缩小（否则表现为「一拖就弹回」）");
+  assert.equal(patch.c4t, rendered - 100, `内层从渲染宽 ${rendered} 缩 100`);
+});
+
+test("嵌套拖动：内层不低于它的下限", () => {
+  const start = { ...DEFAULT_WIDTHS, c4: 600, c4t: 240 };
+  const { patch } = dragTree(start, -9999, 1600);
+  assert.equal(patch.c4t, WIDTH_LIMITS.c4t[0], "夹到下限 160");
+});
+
+test("嵌套拖动：内层变大时一定真的变大（1440 也能拖，不被上限吃掉）", () => {
+  // 反例（修前）：1440 + 左两列展开 → 面板 444、树 240，而上限按 444−206=238 算 →
+  // 一按下去就夹到 238，拖 400px 宽度取值只有 1 个（用户看到的是"拖不动"）。
+  for (const viewport of [1440, 1600, 1920]) {
+    const start = { ...DEFAULT_WIDTHS };
+    const { box } = dragTree(start, 120, viewport);
+    assert.ok(box.tree > 240, `${viewport}: 拖 +120 后树应变宽（实际 ${box.tree}）`);
+    assert.ok(box.chat >= MIN_CHAT, `${viewport}: 聊天保底不能破（实际 ${box.chat}）`);
+  }
+});
+
+test("嵌套拖动：内层顶到边界后，面板跟着长；面板到顶才从左列借宽", () => {
+  const start = { ...DEFAULT_WIDTHS };
+  // 1920 +80：面板还有余量，左列不该被动
+  const wide = dragTree(start, 80, 1920);
+  assert.ok(wide.box.panel > 600, "面板应变宽");
+  assert.equal(wide.box.c1, start.c1, "空间足够时不该借左列的宽");
+  // 1440：面板到顶，从左列借（c2 先借到 240，再借 c1）
+  const narrow = dragTree(start, 400, 1440);
+  assert.ok(narrow.box.tree > 240, "内层必须真的变宽");
+  assert.ok(narrow.box.c2 <= start.c2, "应从会话列借宽");
+  assert.equal(narrow.box.chat, MIN_CHAT, "借到底时聊天正好是保底");
+  // 借宽不能让任何列低于它的下限
+  assert.ok(narrow.box.c1 >= 180 && narrow.box.c2 >= 240, `左列不能低于下限：c1=${narrow.box.c1} c2=${narrow.box.c2}`);
+});
+
+test("嵌套拖动：拖到最远后，查看器保底仍成立（内层不会吃掉整个面板）", () => {
+  for (const viewport of [1440, 1600, 1920]) {
+    const start = { ...DEFAULT_WIDTHS };
+    const { box } = dragTree(start, 9999, viewport);
+    assert.ok(box.panel - box.tree >= MIN_VIEWER, `${viewport}: 查看器保底 ${MIN_VIEWER}（实际 ${box.panel - box.tree}）`);
+    assert.ok(box.chat >= MIN_CHAT, `${viewport}: 聊天保底`);
+  }
+});
+
+test("嵌套拖动：多帧连续拖（模拟真实手势）时单调变宽、不回跳", () => {
+  const folded = { nav: false, groups: false };
+  let widths = { ...DEFAULT_WIDTHS };
+  const trees = [];
+  for (let step = 0; step < 12; step += 1) {
+    widths = { ...widths, ...dragCascade("c4t", widths, 20, 1440, folded) };
+    trees.push(layout({ viewport: 1440, widths, requested: folded, panelOpen: true }).tree);
+  }
+  for (let index = 1; index < trees.length; index += 1) {
+    assert.ok(trees[index] >= trees[index - 1], `第 ${index} 帧不该变小：${trees.join(",")}`);
+  }
+  assert.ok(trees[trees.length - 1] > trees[0], `整体必须变宽：${trees.join(",")}`);
+});
+
+test("普通列（无嵌套）的拖动结果与 dragWidth 完全一致", () => {
+  const folded = { nav: false, groups: false };
+  for (const key of ["c1", "c2", "c5"]) {
+    const start = { ...DEFAULT_WIDTHS };
+    const limit = maxWidthOf(key, 1440, start, folded);
+    assert.equal(dragCascade(key, start, 40, 1440, folded)[key], dragWidth(key, start[key], 40, limit),
+      `${key} 应与单列拖动一致`);
+  }
 });

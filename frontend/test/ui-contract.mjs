@@ -673,6 +673,58 @@ async function auditResizeColumns(page, sceneSetup) {
   await phonePage.close();
 }
 
+// 嵌套列的拖动（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」）
+//
+// 断言的是**用户能看到的结果**：拖文件树时它真的变宽、面板跟着长、必要时从左列借宽，
+// 且任何一列都不低于它的下限、聊天保底不破。不枚举实现细节（补丁形状会随实现变）。
+{
+  const treePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await treePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await treePage.waitForTimeout(500);
+  await treePage.evaluate(() => { localStorage.removeItem("lifeos.columnWidths"); localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
+  await treePage.reload({ waitUntil: "networkidle" });
+  await treePage.waitForTimeout(700);
+  const handle = treePage.locator('[data-resize-key="c4t"] > [role=separator]').first();
+  if (await handle.count() === 0) {
+    check("嵌套拖动：文件树可拖（面板放得下时）", false, "找不到 c4t 把手");
+  } else {
+    const read = async () => await treePage.evaluate(() => {
+      const width = (key) => {
+        const el = document.querySelector(`[data-resize-key="${key}"]`);
+        return el === null ? 0 : Math.round(el.getBoundingClientRect().width);
+      };
+      return { tree: width("c4t"), panel: width("c4"), c1: width("c1"), c2: width("c2"),
+        chat: Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0) };
+    });
+    const box = await handle.boundingBox();
+    const before = await read();
+    const widths = [];
+    await treePage.mouse.move(box.x + box.width / 2, box.y + 400);
+    await treePage.mouse.down();
+    for (let step = 1; step <= 25; step += 1) {
+      await treePage.mouse.move(box.x + box.width / 2 + step * 8, box.y + 400);
+      await treePage.waitForTimeout(16);
+      widths.push((await read()).tree);
+    }
+    await treePage.mouse.up();
+    await treePage.waitForTimeout(400);
+    const after = await read();
+    const distinct = new Set(widths).size;
+    check("嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
+      after.tree > before.tree + 40, `${before.tree} → ${after.tree}`);
+    check("嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
+      distinct >= Math.floor(widths.length / 2), `${distinct}/${widths.length} 个不同值`);
+    check("嵌套拖动：面板跟着长（内层变大时有空间给它）",
+      after.panel > before.panel, `面板 ${before.panel} → ${after.panel}`);
+    check("嵌套拖动：任何列都不低于下限（c1≥180 c2≥240）",
+      after.c1 >= 180 && after.c2 >= 240, JSON.stringify(after));
+    check("嵌套拖动：聊天保底不破（≥420）", after.chat >= 420, `${after.chat}px`);
+    check("嵌套拖动：查看器保底不破（面板−树 ≥206）",
+      after.panel - after.tree >= 206, `${after.panel - after.tree}`);
+  }
+  await treePage.close();
+}
+
 // 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
 // （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
 {
@@ -2195,6 +2247,11 @@ const REQUIRED = [
   "头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
   "头部快捷显示设置：Esc 关闭且焦点回到锚点",
   "头部快捷显示设置：手机不渲染（头部不再增加图标）",
+  "嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
+  "嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
+  "嵌套拖动：面板跟着长（内层变大时有空间给它）",
+  "嵌套拖动：任何列都不低于下限（c1≥180 c2≥240）",
+  "嵌套拖动：聊天保底不破（≥420）",
   "正文表格：最窄一列不被压到逐字竖排（宽列下）",
   "正文表格：正文列变窄后依然不压字（可横向滚动）",
   "[默认（两列）] 每个可拖区域都能抓住把手",

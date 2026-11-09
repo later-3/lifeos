@@ -290,9 +290,19 @@ export function calculatePalette(state: ThemeState): Palette {
       : [96.5, accentC * 0.16, hue],
     ink900: [ink[900], 0.01, nH],
     ink700: [ink[700], 0.008, nH],
-    // ink-500 压在最深的交互底（hover/line）上也要 ≥4.5：L*48→42（hover 4.96 / line 4.57 / surface 6.01）。
-    // 依据：/tmp 实测 + `knowledge/design/theme-systems/comparison.md` §3.2（底加深必须联动文字）
-    ink500: [42, 0.006, nH],
+    /**
+     * ink-500（辅助文字：元信息、副行、说明）。
+     *
+     * **必须按深浅色分开给！** 2026-11-09 的 axe 审计抓到：这里原来写死 `L* 42`，
+     * 那是**浅色**的解（白底上 6.01:1），深色底 #292828 上只有 **2.45:1** —— 远低于 AA 4.5。
+     * 现象是深色下头部副标题、空态提示、行内说明全都发灰看不清（axe 报了 30 次 color-contrast）。
+     *
+     * 两侧都取"在**最深的交互底**（hover/line）上也 ≥4.5"的 L*：
+     *   浅色：L*42 → surface 6.01 / hover 4.96 / line 4.57；
+     *   深色：L*68 → surface 6.02 / hover 4.72 / line 4.71（深色底越亮，辅助文字必须越亮）。
+     * 机器检查：`test/design-system.test.mjs`（4 个底 × 5 预设 × 深浅色全矩阵 ≥4.5）。
+     */
+    ink500: [dark ? 68 : 42, 0.006, nH],
     ink300: [ink[300], 0.004, nH],
     success: dark ? [72, 0.16, 158] : [45, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],

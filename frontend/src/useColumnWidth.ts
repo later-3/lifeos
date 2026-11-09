@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DEFAULT_WIDTHS, dragWidth, layout, maxWidthOf, type Folded, type Widths } from "./design/layout";
+import { DEFAULT_WIDTHS, dragCascade, dragWidth, layout, maxWidthOf, type Folded, type Widths } from "./design/layout";
 
 // 列宽与拖拽（数值全部走 design/layout.ts 的唯一计算入口）：
 // - 持久化；旧格式（无 c4t）整体重置为默认，避免历史坏值把树钳死；
@@ -64,50 +64,83 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
   function beginDrag(key: keyof Widths, event: ReactMouseEvent) {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = widths[key];
-    // 上限从视口算（`maxWidthOf`）：常量表只当下限/硬顶，实际能拖到哪由「不压破聊天」决定。
-    // 旧实现只看常量表（c2≤440），1280 宽上明明能到 572 却停在 440，用户以为拖不动了。
-    const limit = maxWidthOf(key, viewport, widths, input.folded);
     /*
-     * 拖动目标**不靠一张手写映射表**找（2026-11-09 用户："每个区域都需要我单独点出来吗？
-     * 以后新增是不是也不会按丝滑的方案？"）。
+     * **拖动是「一次算全部」而不是「自己改自己的宽度」**（2026-11-09 用户第二次报
+     * 「文件树区域的拖动很垃圾」，并明确要求"从架构层面解决，不是单点"）：
      *
-     * 旧写法是一张 `{ c1: "agents", c2: "sessions" }` 的映射，只有左两列登记了，
-     * 于是完整历史（c5）、文件面板（c4）、文件树（c4t）**三处都被漏掉**：
-     * 实测这三个把手拖动时宽度全程不变、松手才跳一下 —— 手感与左边两列完全不同。
+     *   拖内层（文件树 c4t）时，外层（文件面板 c4）要跟着长、必要时还要从左列借宽 ——
+     *   这些决定全部在纯函数 `dragCascade()` 里（可穷举单测），组件只负责"把结果画出来"。
      *
-     * 现在改成**通用约定**：任何可拖宽的区域，在自己的根元素上写 `data-resize-key="cX"`，
-     * 拖动就自动是"逐帧跟手"的。新加区域只要写这一个属性，不需要改这里的任何代码。
-     * 机器检查（ui-contract）：「把手数 = 可拖区域数」，且每个把手拖动都必须逐帧变化。
+     * 所以手里握的是**一份 widths 草稿**（draft），每帧算一次补丁、把**所有变化的元素**都写一遍；
+     * 松手才提交一次 React 状态。新加嵌套可拖区域只需在 `RESIZE_PARENT` 登记一行，
+     * 这里与 DOM 侧都不用改。
      */
-    const target = document.querySelector<HTMLElement>(`[data-resize-key="${key}"]`) ?? undefined;
+    /*
+     * **基准**与**草稿**必须分开（2026-11-09 实测踩到：树跟着鼠标多走了 70px）。
+     *
+     * `dragCascade` 的 `deltaX` 是从**按下那一刻**算起的累计位移，所以它的基准必须是
+     * "按下时的 widths"（`base`，永远不变）；`draft` 只是"这一帧要画出来的样子"。
+     * 如果拿 draft 当基准又把累计位移喂进去，位移会被重复累加 ——
+     * 鼠标移 200px，树长了 270px，手感立刻不对。
+     */
+    const base: Widths = { ...widths };
+    let draft: Widths = { ...base };
+    const targets = new Map<keyof Widths, HTMLElement>();
+    const targetOf = (name: keyof Widths): HTMLElement | undefined => {
+      const cached = targets.get(name);
+      if (cached !== undefined) return cached;
+      const found = document.querySelector<HTMLElement>(`[data-resize-key="${name}"]`) ?? undefined;
+      if (found !== undefined) targets.set(name, found);
+      return found;
+    };
 
-    let latest = startWidth;
     let frame = 0;
+    let dirty: Array<keyof Widths> = [];
     const paint = () => {
       frame = 0;
-      if (target !== undefined && target !== null) target.style.width = `${latest}px`;
+      for (const name of dirty) {
+        const element = targetOf(name);
+        if (element !== undefined) element.style.width = `${draft[name]}px`;
+      }
     };
-    // 方向来自把手位置（design/layout.ts HANDLE_SIGN），不在调用处判断
+
     const move = (moveEvent: MouseEvent) => {
-      latest = dragWidth(key, startWidth, moveEvent.clientX - startX, limit);
+      // 每帧都从 base + 累计位移重算（幂等）：同一鼠标位置永远得到同一个结果，不会漂移
+      const patch = dragCascade(key, base, moveEvent.clientX - startX, viewport, input.folded);
+      dirty = Object.keys(patch) as Array<keyof Widths>;
+      draft = { ...base, ...patch };
       if (frame !== 0) return;                       // 一帧只写一次（mousemove 可能高于帧率）
       frame = window.requestAnimationFrame(paint);
     };
+
     const stop = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", stop);
       if (frame !== 0) { window.cancelAnimationFrame(frame); frame = 0; }
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      if (target !== undefined && target !== null) target.style.width = "";   // 交还给 React
-      setWidths((prev) => (prev[key] === latest ? prev : { ...prev, [key]: latest }));
+      // 交还给 React（内联宽度清掉，否则会盖住新的存储值）
+      for (const name of targets.keys()) {
+        const element = targets.get(name);
+        if (element !== undefined) element.style.width = "";
+      }
+      // 一次性提交：所有被改动的列（内层 + 外层 + 被借的左列）
+      setWidths((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const name of Object.keys(draft) as Array<keyof Widths>) {
+          if (prev[name] !== draft[name]) { next[name] = draft[name]; changed = true; }
+        }
+        return changed ? next : prev;
+      });
     };
+
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", stop);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }
+
 
   return { widths, viewport, box, beginDrag };
 }

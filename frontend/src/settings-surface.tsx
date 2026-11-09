@@ -224,7 +224,9 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
             value={sliderFromWidth(prefs.width, viewport)} aria-label={widthLabel(prefs.width)}
             onChange={(e) => onChange({ ...prefs, width: widthFromSlider(Number(e.currentTarget.value), viewport) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
-          <div className="flex justify-between text-micro text-ink-300"><span>专注</span><span>铺满</span></div>
+          {/* 端点提示是**文本**：tokens.css 头注明令 `ink-300` 只做分隔线/图标/装饰、禁止承载文本
+              （对比度 2.6:1）。这里原来用 ink-300，axe 审计报了 color-contrast。 */}
+          <div className="flex justify-between text-micro text-ink-500"><span>专注</span><span>铺满</span></div>
         </Card>
 
         <Card title="字号" hint="整组字阶等比缩放（micro 到 title 一起变），不改单个 px">
@@ -238,7 +240,7 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
             value={sliderFromFont(prefs.font)} aria-label={fontLabel(prefs.font)}
             onChange={(e) => onChange({ ...prefs, font: fontFromSlider(Number(e.currentTarget.value)) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
-          <div className="flex justify-between text-micro text-ink-300"><span>85%</span><span>200%</span></div>
+          <div className="flex justify-between text-micro text-ink-500"><span>85%</span><span>200%</span></div>
         </Card>
 
         <div>

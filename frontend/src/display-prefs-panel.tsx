@@ -50,7 +50,7 @@ function SliderRow({ id, label, value, display, onChange, hintLeft, hintRight }:
           className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
         <IconPlus size={12} aria-hidden="true" className="shrink-0 text-ink-300" />
       </div>
-      <div className="flex justify-between text-micro text-ink-300">
+      <div className="flex justify-between text-micro text-ink-500">
         <span>{hintLeft}</span>
         <span>{hintRight}</span>
       </div>
