@@ -1698,6 +1698,9 @@ const SHOTS = [
   ["viewport-1280.png", 1280, undefined],
   ["viewport-1600.png", 1600, undefined],
   ["folded.png", 1600, async (shotPage) => {
+    // 2026-11-09：这条基线在合并 main 后报 0.02% 差异。人眼对比发现**旧基线本身是坏的**
+    // ——它截到的是一张空白页（当时消息还没到），所以"没变化"其实是"没内容"。
+    // 教训：基线红先看"是不是基线本身错了"，不要直接刷；这次是确认旧基线是空白页之后才更新的。
     const buttons = shotPage.locator('[aria-label="收起此列"]');
     while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
   }],
@@ -2220,6 +2223,27 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     meta: { thinkingLevel: "off", running: false, context: null },
   };
   let sendRejects = true;
+  /*
+   * **夹具必须自带发言人名**（2026-11-09 合并后修）。
+   *
+   * 原实现只 mock 了会话列表与详情，发言人名字走 `agents.find(id === "coder")?.name`
+   * → 取的是**真实家目录里那个 agent 的显示名**（本机叫 `coder` 小写），
+   * 于是断言 `includes("Coder")` 红。同一份代码在"家目录里没有 coder"的机器上反而是绿的 ——
+   * 这就是环境耦合：门禁红绿取决于用户家目录里恰好有什么。
+   *
+   * 修法：把 agents 列表一起定住（testing 2.15「夹具跟实现走」，实现读的是 agents 列表，
+   * 夹具就要给 agents 列表）。
+   */
+  await page.route(/\/api\/agents$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const res = await route.fetch();
+    const body = await res.json().catch(() => ({ items: [] }));
+    const items = Array.isArray(body.items) ? body.items : [];
+    const withCoder = items.some((item) => item.id === "coder")
+      ? items.map((item) => (item.id === "coder" ? { ...item, name: "Coder" } : item))
+      : [...items, { id: "coder", name: "Coder", description: "", defaultProjectId: "workspace" }];
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: withCoder }) });
+  });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
     const res = await route.fetch();
     const body = await res.json();
