@@ -11,6 +11,11 @@ import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining }
 import { sessionRowsOf, sessionsByTask } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
+import { computeReviewDiff, locateSources, readReviewBlob, type ReviewError } from "./review.ts";
+import { clearComments, readComments, removeComment, removeReply, addReply, upsertReply, setCommentAwaiting, setCommentState, toCommentInput, upsertComment } from "./review-comments.ts";
+import { clearViewed, readViewed, setFileViewed, setFilesViewed } from "./review-viewed.ts";
+import { listCandidates } from "./review-candidates.ts";
+import { resolveTaskDir } from "./tasks.ts";
 import {
   abortRetryOf, abortSession, annotationsOf, appendAnnotation, consumeAnnotations, toStoredAnnotation,
   applyAgentDefaultModel, broadcast, compactSession, createSession, deleteSession, getSession, messagesOf, sessionImageBytesOf, pendingSessions,
@@ -143,7 +148,7 @@ function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
   return undefined;
 }
 
-function problem(code: string, message: string, status: 400 | 404 | 409 | 413 | 422 | 503) {
+function problem(code: string, message: string, status: 400 | 403 | 404 | 409 | 413 | 422 | 503) {
   return { body: { error: { code, message } }, status } as const;
 }
 
@@ -948,6 +953,362 @@ app.use(async (c, next) => {
   // —— 文件浏览器（.lifeos/projects/lifeos/knowledge/design/file-browser.md P1）：根白名单；browse 仅选择器专用（只列目录）。 ——
   const fsError = (c: Context, error: { code: string; message: string; status: number }) =>
     c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
+
+  // ── 检视模式（Task 0010 · P1）：只读，零 git 写操作（D6）─────────────────
+
+  /** resolveTaskDir 复用（tasks.ts），失败形状与 /tasks 端点一致。 */
+  app.get("/api/agents/:id/projects/:pid/tasks/:taskId/review-sources", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const pid = c.req.param("pid");
+    const taskId = c.req.param("taskId");
+    if (pid === undefined || pid === "" || taskId === undefined || taskId === "") {
+      const error = problem("invalid_request", "需要 pid 与 taskId", 400); return c.json(error.body, error.status);
+    }
+    const project = await resolveProject(agent, pid);
+    if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
+    const taskDir = await resolveTaskDir({ agentId: agent.id, projectId: project.id }, taskId);
+    if (taskDir === undefined) { const error = problem("task_not_found", "找不到这个 task", 404); return c.json(error.body, error.status); }
+    const items = await locateSources(taskDir);
+    return c.json({ items });
+  });
+
+  /**
+   * 检视候选（D31）：列某个 agent × project 下**哪些 Task 有东西可检视**。
+   *
+   * 为什么按 agent×project 而不是一次列全库：Task 本就是 per agent×project 的（协议 §3.7），
+   * 且实测 15 个 Task 约 0.93s / 83 个 1.24s——按层列，单次都在 1s 内。
+   *
+   * 三个字段体现 C2 分层：`worktreeChanged` / `docChangedFiles` / `docOnlyDaily`；
+   * `substantive` 是汇总（worktree 变了 或 文档有非 daily 改动）。
+   */
+  app.get("/api/agents/:id/projects/:pid/review-candidates", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const pid = c.req.param("pid");
+    const project = await resolveProject(agent, pid);
+    if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
+    const result = await listCandidates(agent.id, project.id);
+    log.info("review-candidates", "list", "列检视候选", {
+      details: {
+        agentId: agent.id, projectId: project.id, total: result.items.length,
+        substantive: result.items.filter((item) => item.substantive).length,
+        pendingForUser: result.items.reduce((sum, item) => sum + item.pendingForUser, 0),
+        elapsedMs: result.elapsedMs,
+      },
+    });
+    return c.json({
+      items: result.items.map((item) => ({
+        taskId: item.taskId, title: item.title, type: item.type, status: item.status,
+        taskDir: item.taskDir, hasWorktree: item.hasWorktree, worktreeChanged: item.worktreeChanged,
+        docChangedFiles: item.docChangedFiles, docOnlyDaily: item.docOnlyDaily, substantive: item.substantive,
+        commentsTotal: item.commentsTotal, openComments: item.openComments, pendingForUser: item.pendingForUser,
+      })),
+      elapsedMs: result.elapsedMs,
+    });
+  });
+
+  /**
+   * 检视 diff：body { taskDir }（由 sources 端点给出的路径——不接受任意目录，防越权）。
+   * 单源失败不拖垮整体（degraded）；错误可见（console.error + 响应里带 degraded）。
+   */
+  app.post("/api/review/diff", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { taskDir?: unknown } | undefined;
+    if (body === undefined || typeof body.taskDir !== "string" || body.taskDir.trim() === "") {
+      const error = problem("invalid_request", "需要 taskDir 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const result = await computeReviewDiff(body.taskDir);
+    if ("error" in result && result.error !== undefined) {
+      const e = result.error as ReviewError;
+      return c.json({ error: { code: e.code, message: e.message } }, e.status);
+    }
+    return c.json({ items: result.items });
+  });
+
+  /**
+   * 取某个文件在某一侧的全文（S1·G1a）：折叠未改行「展开更多」时调用。
+   * 查询：taskDir / source(worktree|lifeos) / path / side(old|new)。失败形状同 /api/review/diff。
+   */
+  app.get("/api/review/blob", async (c) => {
+    const taskDir = c.req.query("taskDir");
+    const source = c.req.query("source");
+    const path = c.req.query("path");
+    const side = c.req.query("side");
+    if (taskDir === undefined || taskDir.trim() === "" || source === undefined || path === undefined || side === undefined) {
+      const error = problem("invalid_request", "需要 taskDir、source、path、side 四个参数", 400); return c.json(error.body, error.status);
+    }
+    const result = await readReviewBlob({ taskDir, source, path, side });
+    if ("error" in result) {
+      const e = result.error as ReviewError;
+      return c.json({ error: { code: e.code, message: e.message } }, e.status);
+    }
+    return c.json(result);
+  });
+
+  /**
+   * 检视评论（S4-b）：**独立于对话**——只要给 taskDir 就能读写，不带 sessionId/agentId。
+   *
+   * 为什么按 taskDir 而不是会话：评论绑"检视对象（taskId）"，见 `src/review-comments.ts` 头注
+   * （Gerrit 的 Change-Id 范式：代码重写/变基后评论不丢）。
+   *
+   * 列表统一包 `{ items }`（api 规范 2.1）；错误统一 `{ error: { code, message } }`。
+   */
+  app.get("/api/review/comments", async (c) => {
+    const taskDir = c.req.query("taskDir");
+    if (taskDir === undefined || taskDir.trim() === "") {
+      const error = problem("invalid_request", "需要 taskDir 查询参数（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const items = await readComments(taskDir);
+    log.info("review-comments", "list", "读取评论", { details: { taskDir: basename(taskDir), count: items.length } });
+    return c.json({ items });
+  });
+
+  /**
+   * 写评论：`{ taskDir, op: "add"|"update"|"remove", comment?, id? }`。
+   *
+   * - `add` / `update` 语义相同（同键覆盖 = 编辑），返回 201 + 落盘后的记录；
+   * - `remove` 只需 `id`，幂等（第二次 `removed: false`）；
+   * - 字段不合法 → 400（不落盘，避免脏数据进 state 文件）。
+   */
+  app.post("/api/review/comments", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as {
+      taskDir?: unknown; op?: unknown; comment?: unknown; id?: unknown;
+    } | undefined;
+    const taskDir = typeof body?.taskDir === "string" ? body.taskDir.trim() : "";
+    if (taskDir === "") {
+      const error = problem("invalid_request", "需要 taskDir 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const op = body?.op;
+    if (op !== "add" && op !== "update" && op !== "remove" && op !== "clear" && op !== "state"
+      && op !== "reply" && op !== "reply-update" && op !== "reply-remove" && op !== "awaiting") {
+      const error = problem("invalid_request", "op 必须是 add / update / remove / clear / state / reply / reply-update / reply-remove / awaiting", 400); return c.json(error.body, error.status);
+    }
+
+    /**
+     * reply / reply-update / reply-remove（S4-h）：线程里的回复。
+     * body：`{ taskDir, op:"reply", id, reply:{ author, body } }`
+     *       `{ taskDir, op:"reply-update", id, reply:{ id, author, body } }`
+     *       `{ taskDir, op:"reply-remove", id, replyId, by }`
+     * 权限：回复的**作者本人或用户**能改/删；已关闭的线程不能新增回复（要回复先重开）。
+     */
+    if (op === "reply" || op === "reply-update" || op === "reply-remove") {
+      const id = typeof body?.id === "string" ? body.id : "";
+      if (id === "") {
+        const error = problem("invalid_request", `${op} 需要 id（评论 id）`, 400); return c.json(error.body, error.status);
+      }
+      const asActor = (raw: unknown): { kind: "user" | "agent"; id: string } | undefined => {
+        if (typeof raw !== "object" || raw === null) return undefined;
+        const r = raw as { kind?: unknown; id?: unknown };
+        if ((r.kind !== "user" && r.kind !== "agent") || typeof r.id !== "string" || r.id === "") return undefined;
+        return { kind: r.kind, id: r.id };
+      };
+      try {
+        if (op === "reply-remove") {
+          const replyId = typeof (body as { replyId?: unknown }).replyId === "string" ? String((body as { replyId?: unknown }).replyId) : "";
+          if (replyId === "") {
+            const error = problem("invalid_request", "reply-remove 需要 replyId", 400); return c.json(error.body, error.status);
+          }
+          const by = asActor((body as { by?: unknown }).by);
+          if (by === undefined) {
+            const error = problem("invalid_request", "reply-remove 需要 by { kind, id }", 400); return c.json(error.body, error.status);
+          }
+          const updated = await removeReply(taskDir, id, replyId, by);
+          log.info("review-comments", "reply-remove", "删除回复", { details: { taskDir: basename(taskDir), id, replyId, by: `${by.kind}:${by.id}` } });
+          return c.json({ comment: updated });
+        }
+        const replyRaw = (body as { reply?: unknown }).reply;
+        const replyObj = typeof replyRaw === "object" && replyRaw !== null ? replyRaw as { id?: unknown; author?: unknown; body?: unknown } : undefined;
+        if (replyObj === undefined || typeof replyObj.body !== "string") {
+          const error = problem("invalid_request", `${op} 需要 reply:{ author, body }`, 400); return c.json(error.body, error.status);
+        }
+        const author = asActor(replyObj.author);
+        if (author === undefined) {
+          const error = problem("invalid_request", "reply.author 需要 kind=user|agent 与非空 id", 400); return c.json(error.body, error.status);
+        }
+        if (op === "reply") {
+          const updated = await addReply(taskDir, id, { author, body: replyObj.body });
+          log.info("review-comments", "reply", "追加回复", { details: { taskDir: basename(taskDir), id, author: `${author.kind}:${author.id}`, replies: updated.replies.length, awaiting: updated.awaiting } });
+          return c.json({ comment: updated }, 201);
+        }
+        const replyId = typeof replyObj.id === "string" ? replyObj.id : "";
+        if (replyId === "") {
+          const error = problem("invalid_request", "reply-update 需要 reply.id", 400); return c.json(error.body, error.status);
+        }
+        const updated = await upsertReply(taskDir, id, { id: replyId, author, body: replyObj.body });
+        log.info("review-comments", "reply-update", "编辑回复", { details: { taskDir: basename(taskDir), id, replyId } });
+        return c.json({ comment: updated });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // “找不到”与“没权限”要分开：404 与 403 语义不同（api 规范 2.3）
+        const notFound = problem("comment_not_found", message, 404);
+        return /找不到/.test(message) ? c.json(notFound.body, notFound.status) : c.json(problem("forbidden", message, 403).body, 403);
+      }
+    }
+
+    /**
+     * awaiting（S4-h · G1）：“这条现在等谁”的手动设置（交棒）。
+     * body：`{ taskDir, id, awaiting: "user"|"agent"|null, by:{kind,id} }`
+     */
+    if (op === "awaiting") {
+      const id = typeof body?.id === "string" ? body.id : "";
+      if (id === "") {
+        const error = problem("invalid_request", "awaiting 需要 id", 400); return c.json(error.body, error.status);
+      }
+      const raw = (body as { awaiting?: unknown }).awaiting;
+      if (raw !== "user" && raw !== "agent" && raw !== null) {
+        const error = problem("invalid_request", "awaiting 必须是 user / agent / null", 400); return c.json(error.body, error.status);
+      }
+      const byRaw = (body as { by?: unknown }).by;
+      const by = typeof byRaw === "object" && byRaw !== null ? byRaw as { kind?: unknown; id?: unknown } : undefined;
+      const actor: { kind: "user" | "agent"; id: string } | undefined = by !== undefined && (by.kind === "user" || by.kind === "agent") && typeof by.id === "string" && by.id !== ""
+        ? { kind: by.kind, id: by.id }
+        : undefined;
+      if (actor === undefined) {
+        const error = problem("invalid_request", "awaiting 需要 by { kind, id }", 400); return c.json(error.body, error.status);
+      }
+      const updated = await setCommentAwaiting(taskDir, id, raw, actor);
+      if (updated === undefined) {
+        const error = problem("comment_not_found", "找不到这条评论", 404); return c.json(error.body, error.status);
+      }
+      log.info("review-comments", "awaiting", "改等待方", { details: { taskDir: basename(taskDir), id, awaiting: raw, by: `${actor.kind}:${actor.id}` } });
+      return c.json({ comment: updated });
+    }
+
+    /**
+     * state：改评论状态（S4-e · A18/A19）。body 需要 `id`、`state`、`by { kind, id }`。
+     * 权限在 `setCommentState` 里校验（只有提出者或用户本人能关闭）——
+     * 403 而不是 400：这是"没权限"，不是"参数错"（api 规范 2.3）。
+     */
+    if (op === "state") {
+      const id = typeof body?.id === "string" ? body.id : "";
+      const state = (body as { state?: unknown } | undefined)?.state;
+      const by = (body as { by?: unknown } | undefined)?.by;
+      if (id === "") {
+        const error = problem("invalid_request", "state 需要 id（非空字符串）", 400); return c.json(error.body, error.status);
+      }
+      if (state !== "draft" && state !== "open" && state !== "resolved") {
+        const error = problem("invalid_request", "state 必须是 draft / open / resolved", 400); return c.json(error.body, error.status);
+      }
+      if (typeof by !== "object" || by === null) {
+        const error = problem("invalid_request", "state 需要 by { kind, id }（谁在改）", 400); return c.json(error.body, error.status);
+      }
+      const actor = by as { kind?: unknown; id?: unknown };
+      if ((actor.kind !== "user" && actor.kind !== "agent") || typeof actor.id !== "string" || actor.id === "") {
+        const error = problem("invalid_request", "by 需要 kind=user|agent 与非空 id", 400); return c.json(error.body, error.status);
+      }
+      try {
+        const updated = await setCommentState(taskDir, id, state, { kind: actor.kind, id: actor.id });
+        if (updated === undefined) {
+          const error = problem("comment_not_found", "找不到这条评论", 404); return c.json(error.body, error.status);
+        }
+        log.info("review-comments", "state", "改评论状态", { details: { taskDir: basename(taskDir), id, state, by: `${actor.kind}:${actor.id}` } });
+        return c.json({ comment: updated });
+      } catch (error) {
+        // 权限不足：403 + 原因（不掩盖成 400）
+        const message = error instanceof Error ? error.message : String(error);
+        const denied = problem("forbidden", message, 403);
+        return c.json(denied.body, denied.status);
+      }
+    }
+
+    // clear：清空该 Task 的全部评论（用户"清空这个 Task 的检视意见"，也是测试隔离需要）
+    if (op === "clear") {
+      await clearComments(taskDir);
+      log.info("review-comments", "clear", "清空评论", { details: { taskDir: basename(taskDir) } });
+      return c.json({ cleared: true });
+    }
+
+    if (op === "remove") {
+      const id = body?.id;
+      if (typeof id !== "string" || id === "") {
+        const error = problem("invalid_request", "remove 需要 id（非空字符串）", 400); return c.json(error.body, error.status);
+      }
+      const removed = await removeComment(taskDir, id);
+      log.info("review-comments", "remove", "删除评论", { details: { taskDir: basename(taskDir), id, removed } });
+      return c.json({ removed });
+    }
+
+    // taskId：请求里给了就用（Agent/脚本可能显式指定），否则从 taskDir 目录名推断（`0010-标题` → `0010`）
+    const declaredTaskId = typeof (body?.comment as Record<string, unknown> | undefined)?.taskId === "string"
+      ? String((body!.comment as Record<string, unknown>).taskId)
+      : /^(\d{4})/.exec(basename(taskDir))?.[1] ?? basename(taskDir);
+    const input = toCommentInput(body?.comment, declaredTaskId);
+    if (input === undefined) {
+      const error = problem("invalid_request", "comment 字段不合法（需要 author/anchor{source,path,side,start,end}/body）", 400);
+      return c.json(error.body, error.status);
+    }
+    const saved = await upsertComment(taskDir, input);
+    log.info("review-comments", "upsert", "写入评论", {
+      details: {
+        taskDir: basename(taskDir), id: saved.id, author: `${saved.author.kind}:${saved.author.id}`,
+        path: saved.anchor.path, range: `${saved.anchor.start}-${saved.anchor.end}`, state: saved.state,
+      },
+    });
+    return c.json({ comment: saved }, 201);
+  });
+
+  /**
+   * 检视「已看」进度（G10）：`GET ?taskDir=` → `{ items }`；`POST` → 见下。
+   *
+   * 为什么存服务端而不是 localStorage（difit 的做法）：换设备/换浏览器仍保留，且 Agent 可读
+   * （"哪些文件用户已经看过"是检视状态的合法一部分，与评论同一取舍）。记录带 diff 内容哈希，
+   * 文件改了之后前端会显示"变了，需要重看"——不会骗人。
+   *
+   * POST body：
+   *  - `{ taskDir, op:"set", paths:[{ path, hash }], viewed:boolean }` —— 批量标记/取消（勾选目录用它）
+   *  - `{ taskDir, op:"clear" }` —— 清空该 Task 的进度
+   */
+  app.get("/api/review/viewed", async (c) => {
+    const taskDir = c.req.query("taskDir");
+    if (taskDir === undefined || taskDir.trim() === "") {
+      const error = problem("invalid_request", "需要 taskDir 查询参数（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const items = await readViewed(taskDir);
+    log.info("review-viewed", "list", "读取已看进度", { details: { taskDir: basename(taskDir), count: items.length } });
+    return c.json({ items });
+  });
+
+  app.post("/api/review/viewed", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as {
+      taskDir?: unknown; op?: unknown; paths?: unknown; viewed?: unknown;
+    } | undefined;
+    const taskDir = typeof body?.taskDir === "string" ? body.taskDir.trim() : "";
+    if (taskDir === "") {
+      const error = problem("invalid_request", "需要 taskDir 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const taskId = /^(\d{4})/.exec(basename(taskDir))?.[1] ?? basename(taskDir);
+
+    if (body?.op === "clear") {
+      await clearViewed(taskDir);
+      log.info("review-viewed", "clear", "清空已看进度", { details: { taskDir: basename(taskDir) } });
+      return c.json({ cleared: true });
+    }
+    if (body?.op !== "set") {
+      const error = problem("invalid_request", "op 必须是 set / clear", 400); return c.json(error.body, error.status);
+    }
+    if (!Array.isArray(body.paths) || body.paths.length === 0) {
+      const error = problem("invalid_request", "set 需要非空的 paths 数组（每项 { path, hash }）", 400); return c.json(error.body, error.status);
+    }
+    const entries: Array<{ path: string; hash: string }> = [];
+    for (const raw of body.paths) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const item = raw as { path?: unknown; hash?: unknown };
+      if (typeof item.path !== "string" || item.path === "") continue;
+      if (typeof item.hash !== "string" || item.hash === "") continue;
+      entries.push({ path: item.path, hash: item.hash });
+    }
+    if (entries.length === 0) {
+      const error = problem("invalid_request", "paths 里没有任何合法项（需要 path 与非空 hash）", 400); return c.json(error.body, error.status);
+    }
+    const viewed = body.viewed !== false;
+    const items = entries.length === 1
+      ? await setFileViewed(taskDir, taskId, entries[0]!.path, entries[0]!.hash, viewed)
+      : await setFilesViewed(taskDir, taskId, entries, viewed);
+    log.info("review-viewed", "set", "标记已看", {
+      details: { taskDir: basename(taskDir), count: entries.length, viewed, total: items.length },
+    });
+    return c.json({ items });
+  });
 
   app.get("/api/fs/roots", async (c) => c.json({ roots: await readRoots() }));
 

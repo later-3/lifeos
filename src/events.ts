@@ -21,6 +21,16 @@ export type AgentEventPayload =
   // 助手/项目列表变了（写操作在共享实现里广播）：前端收到后重取，无需手动刷新
   | { type: "agents_changed" }
   /**
+   * Agent 请求打开检视（D32）：`lifeos_review_open(taskId)` 工具写这条，
+   * 前端收到就把检视面板打开并切到该 Task。
+   *
+   * 为什么用事件而不是让工具直接改前端状态：工具跑在服务端，界面在浏览器；
+   * 这条事件让 Agent 与用户走**同一条路径**（都通过"选某个 Task 的检视对象"进入），
+   * 不做第二套语义。参考基线：difit 的对象在进 UI 前就定了、opencode 绑定当前会话，
+   * 两家都没有"Agent 主动开面板"，所以这是我们新增的能力（不是"抄来的"）。
+   */
+  | { type: "review_open"; taskId: string; taskDir: string; agentId: string; projectId: string }
+  /**
    * 一行的局部补丁（任务 0005）：只带变了的字段，前端**只更新那一行**，不重取整个列表。
    *
    * 为什么新增事件而不是复用 `turn`：`turn` 已有语义（回合生命周期），塞 phase 会让它变成
@@ -64,7 +74,7 @@ export type RowPatch = {
 export type AgentEvent = AgentEventPayload & { seq: number; agentId?: string };
 
 /** 回合级事件类型：发给所有连接，不做焦点过滤。 */
-const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed", "row"]);
+const TURN_LEVEL = new Set(["turn", "done", "error", "agents_changed", "row", "review_open"]);
 export const isDetailEvent = (type: string): boolean => !TURN_LEVEL.has(type);
 
 /**
@@ -175,7 +185,7 @@ export function publish(agentId: string, event: AgentEventPayload): AgentEvent {
 }
 
 /** 全局广播（不绑定某个会话）：助手/项目是跨 Agent 的实体。 */
-export function broadcast(event: { type: "agents_changed" }): AgentEvent {
+export function broadcast(event: { type: "agents_changed" } | { type: "review_open"; taskId: string; taskDir: string; agentId: string; projectId: string }): AgentEvent {
   const full = { ...event, seq: ++seq } as AgentEvent;
   dispatch(full);
   return full;
