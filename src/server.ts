@@ -753,8 +753,19 @@ app.use(async (c, next) => {
     // 从"某个项目"挪到"该 Agent 的无项目桶"，项目行上的数字就消失了。
     // 这里多一次 `projectIdOfSession()`（先查内存 pending、再查落盘，命中即返回），
     // 实测 <1ms，且只在用户切会话时发生，不在热路径上。
-    if (focus !== undefined && focus.visible) {
+    // **不看 `visible`**（2026-11-08 用户裁决）：「停在哪个会话」= 看过。
+    // 用户切走/切回、标签页可见性，都不改变"我此刻所在的是这个会话"这个事实。
+    // 原来要求 visible 为真，于是"回合结束时标签页恰好不可见 → 记未读 → 切走也不清"。
+    if (focus !== undefined) {
       const projectId = await projectIdOfSession(focus.agentId, focus.sessionId);
+      // 每次焦点上报都记一行（用户切会话时发生，频率=人手速，不刷屏）。
+      // 排"为什么切走了绿点还在"时，把这份日志与 `recordCompletion` 的 onSession 对起来看：
+      // 没有这条 = 前端根本没上报（切走时 sendFocus 没触发）；
+      // 有这条但 sessionId 是旧的 = 上报了但传的还是旧会话。
+      void log.info("server", "events/focus", "焦点上报", {
+        sessionId: focus.sessionId, agentId: focus.agentId, projectId,
+        details: { visible: focus.visible, watching: focus.watching?.length ?? 0 },
+      });
       markSessionViewed(focus.agentId, focus.sessionId, new Date().toISOString(), projectId);
     }
     return c.json({ ok: true });

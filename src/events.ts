@@ -168,11 +168,31 @@ export function setFocusOf(connectionId: string, focus: Focus | undefined): bool
   return true;
 }
 
-/** 此刻是否有连接正在可见地查看这个会话（完成时据此决定要不要记为未读）。 */
-export function isFocusedVisible(agentId: string, sessionId: string): boolean {
+/**
+ * 此刻是否有连接**停在这个会话上**（完成时据此决定要不要记为未读）。
+ *
+ * **不看 `visible`**（2026-11-08 用户裁决）：
+ *
+ * > 他只要当前在这个 session 上，你就不要管他去干嘛了，我们只做我们自己的逻辑，
+ * > 他自然说他看没看得到，那是他自己的问题。我们只能保证当前页面上是什么状态、
+ * > 怎么去流转，我们的状态机该怎么去转，你不可能管到他到底看没看呀。
+ *
+ * 我们只负责状态机：**页面停在哪个会话，那个会话的回合结束就算已读**。
+ * 用户是不是真的在盯着屏幕（切了标签页 / 去泡咖啡 / 屏幕锁了），不是我们能管的，
+ * 也不该由一布尔值假装能判断。
+ *
+ * 原来这里要求 `f.visible === true`，于是出现一个真实的坏状态：
+ * 回合结束时标签页恰好不可见 → 记成未读 → 用户切走 → **服务端再也不会清**
+ * （只有切回去才触发 focus 上报去清）→ "我明明在这个会话里，绿点却一直挂着，
+ * 还非得再切回去再切出来才消失"（用户 2026-11-08 实测）。
+ *
+ * `visible` 仍然上报、仍然有用：它决定**细节事件要不要投给这个连接**
+ * （见 `matchesFocus`），那是"要不要往你屏幕上推 token"的问题，与"看没看过"无关。
+ */
+export function isOnSession(agentId: string, sessionId: string): boolean {
   for (const reg of registry.values()) {
     const f = reg.sub.focus;
-    if (f !== undefined && f.visible && f.agentId === agentId && f.sessionId === sessionId) return true;
+    if (f !== undefined && f.agentId === agentId && f.sessionId === sessionId) return true;
   }
   return false;
 }
