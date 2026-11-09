@@ -16,6 +16,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "animlab/**/*.tsx",
+    "dev/**/*.tsx",
     "vite.config.ts"
   ]
 }

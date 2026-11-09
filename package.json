@@ -36,7 +36,9 @@
     "test:review": "node frontend/test/review-contract.mjs",
     "state": "node scripts/session-state.mjs",
     "state:no-ui": "node scripts/session-state.mjs --no-ui",
-    "trace": "node scripts/session-trace.mjs"
+    "trace": "node scripts/session-trace.mjs",
+    "audit:a11y": "node scripts/a11y-audit.mjs",
+    "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs"
   },
   "type": "module",
   "devDependencies": {
