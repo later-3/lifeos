@@ -2358,6 +2358,140 @@ async function openReview(page, options = {}) {
   await context.close();
 }
 
+// ── 3.29 检视面板里的「选中即复制」+ 不接管时保留选区 + 只挂 chip 也能发 ──────────
+//
+// 三个都是 2026-11-09 实测出来的真缺陷（用户报"用户直接复制也会比较方便"）：
+//  ① 检视面板是 `<main>` 的**兄弟节点**，而 copy-on-select 只认 `<main>` → 面板里一个字都复制不了；
+//  ② `ReviewPanel` 的拖选监听**无条件** `selection.removeAllRanges()`，而"单行内"
+//     是设计上**不接管**的出口 → 用户拖选一段文字，松手后选区消失、评论没建、剪贴板空（三空）；
+//  ③ 发送按钮只看批注不看评论 chip → 只挂 chip 时按钮是灰的，用户必须再打一个字才能发。
+//
+// 每条都断言到**用户可验证的结果**（选区还在 / 剪贴板有内容 / 按钮可点），不看实现细节。
+{
+  const context = await browser.newContext({ viewport: { width: 1680, height: 1000 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await context.newPage();
+  page.on("pageerror", (error) => check(`无页面崩溃（${String(error).slice(0, 60)}）`, false));
+  await page.route(/\/api\/review\/diff$/, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(FIXTURE) }));
+  await page.route(/\/review-sources$/, (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ kind: "worktree", path: "/tmp/demo-worktree" }, { kind: "lifeos", path: "/tmp/demo-lifeos" }] }) }));
+  await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => localStorage.clear());
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2200);
+  const opened = await openReview(page);
+  check("copy·面板出现", opened);
+  if (opened) {
+    /**
+     * ③ 需要一个**已有评论**（否则面板里没有「全部发送」按钮，这条断言等于没测）。
+     * 先通过服务端接口种一条，再重载面板（`clean: false` 不把刚种的那条清掉）。
+     */
+    await page.evaluate(async () => {
+      const taskDir = document.querySelector("[data-review-task-dir]")?.value ?? "";
+      if (taskDir === "") return;
+      await fetch("/api/review/comments", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskDir, op: "add", comment: {
+          taskId: "0010", author: { kind: "user", id: "xu-later" },
+          anchor: { source: "worktree", path: "src/demo.ts", side: "new", start: 2, end: 2, snapshot: "const b = 22;" },
+          body: "这一行合并一下？", marks: ["query"], state: "open",
+        } }),
+      });
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1600);
+    const reopened = await openReview(page, { clean: false });
+    check("copy·种评论后重开面板", reopened);
+    await ensureAllOpen(page);
+    await waitForComments(page, (list) => list.length >= 1);
+    await page.waitForTimeout(700);
+
+    /**
+     * 用**真实鼠标**拖（不是程序化选区）：缺陷②只在 mouseup 的接管逻辑里。
+     * 拖之前**先清空剪贴板**——否则上一条用例留下的旧内容会让“复不复制”变成假绿。
+     */
+    const dragOver = async (selector, inset = 5) => {
+      const box = await page.locator(selector).first().boundingBox();
+      if (box === null) return false;
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      await page.evaluate(() => navigator.clipboard.writeText("<<清空>>").catch(() => undefined));
+      await page.mouse.move(box.x + inset, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width - inset, box.y + box.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await page.waitForTimeout(450);
+      return true;
+    };
+    /** 读剪贴板；`"<<清空>>"` 是哨兵值，表示“没被写过” */
+    const clipNow = async () => {
+      const text = await page.evaluate(() => navigator.clipboard.readText().catch(() => ""));
+      return text === "<<清空>>" ? "" : text;
+    };
+
+    // ① 检视对象条（纯文本、不可批注的区域）→ 选区留下 + 进了剪贴板
+    const draggedPath = await dragOver('[data-review-target-path="worktree"]');
+    check("copy·检视对象条可以拖选（找得到目标）", draggedPath);
+    if (draggedPath) {
+      const after = await page.evaluate(() => ({
+        sel: window.getSelection()?.toString() ?? "",
+        clip: "",
+      }));
+      const clip = await clipNow();
+      check("copy·检视对象条：拖选后选区**还在**（不被清掉）", after.sel.length > 0, `${after.sel.length} 字符`);
+      check("copy·检视对象条：松手即复制（剪贴板拿到那段路径）",
+        clip.length > 0 && after.sel.includes(clip.trim()), JSON.stringify({ clip: clip.slice(0, 40), sel: after.sel.slice(0, 40) }));
+      check("copy·检视对象条：面板算可复制区域（否则上面两条恒失败）", clip.length > 0, clip.slice(0, 30));
+    }
+
+    // ② diff 代码行里**单行内**拖选（设计上不接管）→ 选区留下 + 复制 + **不建草稿**
+    //
+    // 行直接用通配找（不依赖具体行号：夹具的行内容长短不一，按行号写死会“测试自己错”）。
+    const rowBox = await page.evaluate(() => {
+      for (const anchor of document.querySelectorAll("[data-review-line-anchor]")) {
+        const row = anchor.parentElement?.parentElement;
+        const r = row?.getBoundingClientRect();
+        if (r !== undefined && r.width > 300 && r.height > 8) {
+          return { key: anchor.getAttribute("data-review-line-anchor"), x: r.x, y: r.y, width: r.width, height: r.height };
+        }
+      }
+      return null;
+    });
+    check("copy·找到一行可拖的 diff 行", rowBox !== null, JSON.stringify(rowBox));
+    if (rowBox !== null) {
+      const before = await page.locator("[data-review-draft]").count();
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      await page.evaluate(() => navigator.clipboard.writeText("<<清空>>").catch(() => undefined));
+      await page.mouse.move(rowBox.x + 130, rowBox.y + rowBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(rowBox.x + Math.min(330, rowBox.width - 10), rowBox.y + rowBox.height / 2, { steps: 12 });
+      await page.mouse.up();
+      await page.waitForTimeout(600);
+      const sel = await page.evaluate(() => window.getSelection()?.toString() ?? "");
+      const clip = await clipNow();
+      const after = await page.locator("[data-review-draft]").count();
+      check("copy·单行内拖选：选区不被清掉（不接管的出口必须原样保留）", sel.length > 0, `${sel.length} 字符`);
+      check("copy·单行内拖选：剪贴板拿到那段文字", clip.length > 0, clip.slice(0, 40));
+      check("copy·单行内拖选：不建草稿（单行批注走行号/＋）", after === before, `${before} → ${after}`);
+    }
+
+    // ③ 只挂 chip（不写字、不批注）→ 发送按钮可点
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    const sendAllBtn = page.locator("[data-review-send-all]");
+    check("copy·前置：面板里有「全部发送」（否则 ③ 等于没测）", (await sendAllBtn.count()) > 0);
+    if ((await sendAllBtn.count()) > 0) {
+      await sendAllBtn.first().click();
+      await page.waitForTimeout(600);
+      const shape = await page.evaluate(() => {
+        const chips = document.querySelectorAll("[data-comment-ref]").length;
+        const ta = document.querySelector('textarea[aria-label="输入消息"]');
+        const btn = [...document.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "") === "发送");
+        return { chips, input: ta?.value ?? null, disabled: btn?.disabled ?? null };
+      });
+      check("copy·前置：chip 挂上了、输入框是空的", shape.chips > 0 && shape.input === "", JSON.stringify(shape));
+      check("copy·只挂 chip 时发送按钮可点（不用再打一个字）", shape.disabled === false, JSON.stringify(shape));
+    }
+  }
+  await context.close();
+}
+
 // ── 4. 窄窗口：放不下时要有提示，不静默消失 ──────────────────────────────────────
 {
   const page = await openPage({ width: 1280, height: 900 });

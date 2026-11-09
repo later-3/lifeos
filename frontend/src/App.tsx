@@ -860,12 +860,20 @@ export default function App() {
   const activeTurnIdRef = useRef<string | null>(null);
   const streaming = useRef(false);
   const scrollRef = useRef<HTMLElement>(null);
+  /** 检视面板的容器（可复制区域之一；与 `<main>` 是兄弟节点，必须单独列）。 */
+  const reviewRef = useRef<HTMLElement>(null);
   /**
    * 选中即复制（Task 0013 · 用户 2026-11-07 拍板）：
-   * 对话区域（`<main>`）里拖选/双击/三击，松手即写剪贴板，并在选区上方显示「已复制 · N 字」1000ms。
+   * 对话区域（`<main>`）与检视面板里拖选/双击/三击，松手即写剪贴板，并在选区上方显示「已复制 · N 字」1000ms。
    * 判据与几何都在纯函数里（`copy-on-select.ts`），这里只挂事件与渲染提示。
+   *
+   * 检视面板 2026-11-09 加进来：它的内容（路径、行号、代码、评论）同样需要能直接复制，
+   * 而它是 `<main>` 的**兄弟节点**，旧判据（落在 `<main>` 里）对它恒为 false。
    */
-  const copyFeedback = useCopyOnSelect(scrollRef, (message) => toast(message, "error"));
+  const copyFeedback = useCopyOnSelect(
+    useMemo(() => [scrollRef, reviewRef], []),
+    (message) => toast(message, "error"),
+  );
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3689,7 +3697,7 @@ export default function App() {
                       <IconPlayerStopIcon />
                     </ComposerButton>
                   ) : (
-                    <ComposerButton label="发送" disabled={(input.trim() === "" && !hasSendableAnnotation(anno.annotations)) || selectedProjectId === undefined}
+                    <ComposerButton label="发送" disabled={(input.trim() === "" && !hasSendableAnnotation(anno.annotations) && commentRefs.length === 0) || selectedProjectId === undefined}
                       onClick={() => void send()}>
                       <IconArrowUpIcon />
                     </ComposerButton>
@@ -3795,7 +3803,7 @@ export default function App() {
       {reviewOpen && !isMobile && box.review > 0 && (
         <>
           <DragHandle onStart={(event) => beginReviewDrag(event)} />
-          <aside style={{ width: box.review }} data-testid="review-aside" className="flex shrink-0 overflow-hidden">
+          <aside ref={reviewRef} style={{ width: box.review }} data-testid="review-aside" className="flex shrink-0 overflow-hidden">
             <ReviewPanel taskDir={reviewCtx.current?.taskDir ?? ""} data={reviewData}
               loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewCtx.current !== undefined) void loadReview(reviewCtx.current.taskDir); }}
               onClose={closeReview}

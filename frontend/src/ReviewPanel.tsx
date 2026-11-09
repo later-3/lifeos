@@ -2423,11 +2423,10 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         key: el.getAttribute("data-review-line-anchor") ?? "",
         contains: (node: Node) => el.parentElement?.parentElement?.contains(node) === true,
       }));
-      // **先取端点再清选区**（removeAllRanges 会把 anchorNode 置 null）
+      // **先取端点**（后面清选区会把 anchorNode 置 null）
       const anchorNode = selection.anchorNode;
       const focusNode = selection.focusNode;
       const range = rangeFromSelection(rows, anchorNode, focusNode);
-      selection.removeAllRanges();
       if (range === undefined) return;
       /**
        * **只接管"跨行"的文字选区**。单行内拖字最常见的意图是**复制一段文字**，
@@ -2445,6 +2444,16 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
       const filePath = card?.getAttribute("data-review-file");
       if (filePath === null || filePath === undefined) return;
       const sourceKind: ReviewSourceKind = card?.closest("[data-review-source]")?.getAttribute("data-review-source") === "lifeos" ? "lifeos" : "worktree";
+      /**
+       * **确定要接管了才清选区**。
+       *
+       * 原来这行写在最前面（拿到 range 就清），于是"不接管"的三条出口
+       *（不在行内 / 单行内 / 找不到文件卡）也把用户的选区清掉了 —— 用户拖选一段文字，
+       *松手后选区消失、评论没建、剪贴板也是空的（2026-11-09 实测：拖动中 30 字符 → 松手 0）。
+       * 那三条出口必须**原样保留选区**，让「选中即复制」（`use-copy-on-select.ts`）和
+       * 浏览器自己的 Cmd+C 还能用。
+       */
+      selection.removeAllRanges();
       onAddDraft(filePath, sourceKind, range.side, range.start, range.end, undefined);
     };
     // 用捕获阶段：先于其它 mouseup 处理器看到真实选区

@@ -4,7 +4,12 @@
  * 为什么挂在 **document** 而不是每个消息块上：
  * 现有批注的拖选监听只挂在 assistant 文本块（`AnnotatedTextBlock`，唯一使用者 `Message.tsx:425`），
  * 用户气泡 / 思考块 / 工具块都没有监听。用户 2026-11-07 拍板的范围是"对话区域的所有内容"，
- * 所以判据只能是"选区落没落在 `<main>` 里"。
+ * 所以判据只能是"选区落没落在允许复制的区域里"。
+ *
+ * **哪些区域算**（`zones`）：对话区 `<main>` + 检视面板 `<aside data-testid="review-aside">`。
+ * 两者是兄弟节点，所以必须显式列举，不能靠"在 main 里"推断 —— 2026-11-09 实测：
+ * 检视面板里拖选时 `insideZone` 为 false，一个字符都复制不了（用户报"用户直接复制也会比较方便"）。
+ * 新增可复制区域就加一个 ref，判据与几何都不变（纯函数 `shouldCopy` 收的仍是 `insideZone` 布尔）。
  *
  * 为什么不是 `pointerup` / `click`：
  * 实测（真实 Chrome + pbpaste）鼠标松手时 `mouseup` 里 `navigator.clipboard.writeText`
@@ -29,7 +34,7 @@ function inFormField(node: Node | null): boolean {
   return element.closest("[contenteditable='true']") !== null;
 }
 
-export function useCopyOnSelect(zoneRef: { current: HTMLElement | null }, onError: (message: string) => void): CopyFeedback | null {
+export function useCopyOnSelect(zones: ReadonlyArray<{ current: HTMLElement | null }>, onError: (message: string) => void): CopyFeedback | null {
   const [feedback, setFeedback] = useState<CopyFeedback | null>(null);
   const seq = useRef(0);
   const timer = useRef<number | undefined>(undefined);
@@ -54,6 +59,9 @@ export function useCopyOnSelect(zoneRef: { current: HTMLElement | null }, onErro
    * 只判②不够：重复拖选同一段文字时选区也不变，但那是用户明确要复制（应重新复制并重新计时）。
    */
   const pressAt = useRef<{ text: string; x: number; y: number } | null>(null);
+  /** `zones` 数组本身每次渲染都是新的，但元素引用只在挂载/卸载时变；用 ref 转一手避免反复重挂监听。 */
+  const zonesRefRef = useRef(zones);
+  zonesRefRef.current = zones;
 
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
@@ -70,11 +78,17 @@ export function useCopyOnSelect(zoneRef: { current: HTMLElement | null }, onErro
       const range = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
       const node = range === null ? null : range.commonAncestorContainer;
       const host = node instanceof Element ? node : (node?.parentElement ?? null);
-      const zone = zoneRef.current;
+      /**
+       * 在**任一**允许区域里就算（对话区 / 检视面板）。
+       * ref 每次渲染都可能是新的（`[a, b]` 字面量），所以不能进依赖数组 —— 用 `zones` 的
+       * freeze：监听只在挂载时建一次，读取时现取 `ref.current`（与旧实现同思路）。
+       */
+      const zonesRef = zonesRefRef.current;
+      const insideZone = host !== null && zonesRef.some((zone) => zone.current?.contains(host) === true);
 
       const text = selection === null ? "" : selection.toString();
       const facts = {
-        insideZone: zone !== null && host !== null && zone.contains(host),
+        insideZone,
         collapsed: selection === null || selection.isCollapsed || range === null,
         text,
         // 目标元素优先用松手点：落点在 input 里时 commonAncestorContainer 可能是外层
@@ -110,7 +124,7 @@ export function useCopyOnSelect(zoneRef: { current: HTMLElement | null }, onErro
       document.removeEventListener("mouseup", onUp);
       if (timer.current !== undefined) window.clearTimeout(timer.current);
     };
-  }, [zoneRef, show]);
+  }, [show]);
 
   return feedback;
 }
