@@ -7,6 +7,7 @@
  * 两者共用同一套视觉（圆形、尺寸、首字母色块），但**数据源严格分开**——不引入"用户 Agent"。
  */
 import { useEffect, useState } from "react";
+import { avatarBoxStyle } from "./avatar-style";
 
 /**
  * 用户档案（Task 0015 · T9）：用户是**实体**，有 id。
@@ -31,7 +32,7 @@ export function UserAvatar({ profile, size = 24, className = "" }: {
   size?: number;
   className?: string;
 }) {
-  const style = { width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.42)) };
+  const style = avatarBoxStyle(size);   // 尺寸与首字母字号唯一实现在 avatar-style.ts
   // 图片加载失败（文件被删/损坏）→ 回落到首字母，不显示破图标
   const [broken, setBroken] = useState(false);
   useEffect(() => { setBroken(false); }, [profile.avatar?.revision]);

@@ -8,6 +8,7 @@ import { regionOf } from "./prompt-regions";
 import { applySectionPatch, type Sections } from "./prompt-patches";
 import { useIsMobile } from "./use-mobile";
 import { useDialogFocus } from "./design/overlay";
+import { TREE_INDENT_BASE_COMPACT, TREE_INDENT_STEP_COMPACT } from "./avatar-style";
 
 /**
  * 完整历史 = 回合检查器（与对话区**并排**，不覆盖）。
@@ -259,7 +260,7 @@ function BlockHeader({ open, label, tag, sub, meta, depth = 0, strong = false, o
   return (
     <button type="button" onClick={onToggle}
       className={`flex w-full items-center gap-1.5 rounded-control pr-1 text-left transition-colors hover:bg-hover max-sm:min-h-11 ${sub === undefined ? "h-7" : "py-1"}`}
-      style={{ paddingLeft: 4 + depth * 10 }}>
+      style={{ paddingLeft: TREE_INDENT_BASE_COMPACT + depth * TREE_INDENT_STEP_COMPACT }}>
       <IconChevronRight size={12} className={`shrink-0 self-start text-ink-500 transition-transform ${open ? "rotate-90" : ""} ${sub === undefined ? "" : "mt-1"}`} />
       <span className="min-w-0 flex-1">
         <span className={`flex items-baseline gap-1.5 ${sub === undefined ? "text-micro" : "text-meta"}`}>

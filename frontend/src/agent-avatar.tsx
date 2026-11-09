@@ -1,4 +1,5 @@
 /** 头像：图片优先，否则 id 推导色阶 + 首字母（列表与配置面板共用）。 */
+import { avatarBoxStyle } from "./avatar-style";
 
 export type AgentAvatarSpec = { kind?: string; file?: string; revision?: number };
 
@@ -13,7 +14,7 @@ export function avatarTone(id: string): string {
 export function AgentAvatar({ id, name, avatar, size = 24, className = "" }: {
   id: string; name: string; avatar?: AgentAvatarSpec; size?: number; className?: string;
 }) {
-  const style = { width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.42)) };
+  const style = avatarBoxStyle(size);   // 尺寸与首字母字号唯一实现在 avatar-style.ts
   if (avatar?.kind === "image" && typeof avatar.file === "string") {
     return (
       <img src={`/api/agents/${id}/avatar?v=${avatar.revision ?? 0}`} alt={name} style={style}

@@ -22,6 +22,7 @@ import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconPen
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar } from "./user-avatar";
 import { Button, IconButton, Label } from "./design/ui";
+import { avatarBoxStyle, avatarOverlapOffset } from "./avatar-style";
 
 /** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数。 */
 export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onRemove, actions }: {
@@ -149,11 +150,11 @@ export function ParticipantToken({ me, them, showMe, size = 16, ringClass }: {
     );
   }
   // 叠放：第二个左移 60%，描边随行底色（避免两层圆叠死）
-  const gap = Math.round(size * 0.6);
+  const gap = avatarOverlapOffset(size);
   return (
     <span className="relative shrink-0" style={{ width: size + gap, height: size }} aria-hidden>
       <span className="absolute left-0 top-0"><MeAvatar spec={me} size={size} /></span>
-      <span className={`absolute top-0 ${ringClass}`} style={{ left: gap, borderRadius: 999 }}>
+      <span className={`absolute top-0 ${ringClass}`} style={{ left: gap, borderRadius: "var(--radius-full)" }}>
         <ThemAvatar id={them.id} name={them.name} {...(them.avatar !== undefined ? { avatar: them.avatar } : {})} size={size} />
       </span>
     </span>
@@ -163,7 +164,7 @@ export function ParticipantToken({ me, them, showMe, size = 16, ringClass }: {
 function MeAvatar({ spec, size }: { spec: { id: string; name: string; kind: "user" | "agent" }; size: number }) {
   if (spec.kind === "user") return <UserAvatar profile={{ id: spec.id, name: spec.name, avatar: null }} size={size} />;
   return <span className="flex shrink-0 items-center justify-center rounded-full bg-accent font-medium text-white"
-    style={{ width: size, height: size, fontSize: Math.max(10, Math.round(size * 0.42)) }}>{spec.name.slice(0, 1)}</span>;
+    style={avatarBoxStyle(size)}>{spec.name.slice(0, 1)}</span>;
 }
 
 function ThemAvatar({ id, name, avatar, size }: { id: string; name: string; avatar?: AgentAvatarSpec; size: number }) {

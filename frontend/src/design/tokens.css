@@ -144,6 +144,9 @@
   --radius-panel: 10px;
   --radius-bubble: 14px;
   --radius-anno: 12px;
+  /* 胶囊/圆形（头像、徽标、状态点、指示条）。用 `--radius-full` 而不是内联 `999px`：
+     审计脚本按圆角种类计数，内联写死会多出一档"3.35544e+07px"这种噪音值。 */
+  --radius-full: 9999px;
 
   /* composer 自适应高度上限（8 行）；App 的 auto-grow 只读这里，不写字面量 */
   --composer-max-height: 11rem;
