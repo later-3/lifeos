@@ -35,7 +35,7 @@ function loadWidths(): Widths {
   }
 }
 
-export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; historyOpen?: boolean }) {
+export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; historyOpen?: boolean; reviewOpen?: boolean; reviewRatio?: number }) {
   const [widths, setWidths] = useState<Widths>(loadWidths);
   const [viewport, setViewport] = useState(() => window.innerWidth);
 
@@ -46,7 +46,7 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
   }, []);
   useEffect(() => { localStorage.setItem(WIDTH_KEY, JSON.stringify({ version: WIDTH_VERSION, widths })); }, [widths]);
 
-  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true });
+  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true, reviewOpen: input.reviewOpen === true, reviewRatio: input.reviewRatio });
 
   function beginDrag(key: keyof Widths, event: ReactMouseEvent) {
     event.preventDefault();

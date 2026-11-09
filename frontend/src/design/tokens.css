@@ -28,6 +28,70 @@
   --color-success-soft: #ecfdf3;
 
   /*
+   * diff 专用色（Task 0010 · 检视模式）：增/删行底 + 行标记条。
+   *
+   * 与批注五色同理**命名隔离**（tokens.css 头注 D1 用词纪律）：
+   * 语义色是"界面自己的状态"，diff 色是"系统标出的改动"，批注色是"用户标的语气"——
+   * 三套不能混用，否则用户分不清"这行绿是系统说改了"还是"我标了同意"。
+   *
+   * 值取自语义色系：add 用 success 系、del 用 danger 系；行底比 soft 再浅一档
+   * （diff 是大面积铺色，要最浅才不吵——DESIGN-FUSION §2.1，opencode 实测同构）。
+   */
+  --color-diff-add: #067647;
+  --color-diff-add-soft: #f2faf5;
+  --color-diff-del: #b42318;
+  --color-diff-del-soft: #fef4f3;
+  /*
+   * M（修改）专用：**琥珀**，不是中性灰也不是蓝。
+   * 依据（两家独立同判）：
+   *  - VS Code git 扩展 `contributes.colors` 的 `gitDecoration.modifiedForeground`：light `#895503`（dark `#E2C08D`）
+   *  - pi-web `FileExplorer.tsx:120-127` `GIT_STATUS_COLORS.modified = '#d6a84b'`
+   * soft 底 = 同色 8% 叠在白底上（与 add/del 的 soft 同构造，不是另选一个色）——
+   * 深色值用 light 那一套，因为我们的面板是浅色主题。
+   */
+  --color-diff-mod: #895503;
+  --color-diff-mod-soft: #f6f1eb;
+
+  /*
+   * 语法高亮色（G8）：Prism token 类型 → 颜色。
+   *
+   * **命名隔离**（与 diff 色、批注色都不同族），因为语义不同：
+   * diff 色是"这行被改了"，批注色是"我标的语气"，语法色是"这是什么词法单元"。
+   *
+   * 取色依据（不是凑数）：
+   *  - 全部**在三种底色上达 WCAG AA（≥4.5）**：白底 / diff-add-soft(#f2faf5) / diff-del-soft(#fef4f3)。
+   *    实测对比度见每行注释（脚本：把色值代入 WCAG 相对亮度公式算，2026-11-08）。
+   *  - 色相分工沿用业界惯例（keywords 紫、strings 绿、comments 灰、numbers 橙、functions 蓝、types 青），
+   *    但每个都往深处压到 AA 以上——**不抄 diffit 的 vsDark 主题**：那是深色底配色，
+   *    直接搬到我们浅色底上 comment 会掉到 3.1（不达标）。
+   */
+  --color-syn-keyword: #5b21b6;  /* 白 8.98 / add 8.46 / del 8.32 */
+  --color-syn-string: #166534;   /* 白 7.13 / add 6.71 / del 6.60 */
+  --color-syn-comment: #5b6270;  /* 白 6.13 / add 5.77 / del 5.68 */
+  --color-syn-number: #9a3412;   /* 白 7.31 / add 6.88 / del 6.77 */
+  --color-syn-function: #1d4ed8; /* 白 6.70 / add 6.31 / del 6.21 */
+  --color-syn-type: #155e75;     /* 白 7.27 / add 6.84 / del 6.73 */
+  --color-syn-constant: #86198f; /* 白 8.24 / add 7.75 / del 7.63 */
+  --color-syn-punctuation: #52525b; /* 白 7.73 / add 7.28 / del 7.16 */
+
+  /*
+   * 词级 diff 的**改动段底色**（G12）。与 diff 行底同色系、更深一档：
+   * 行底说"这行改了"，词底说"这几个词改了"——层次必须一眼区分。
+   *
+   * 取值依据（本机实测，2026-11-08，见 `review-word-diff.ts` 头注）：
+   *  - 用 `--color-diff-add / --color-diff-del` 直接**不透明叠底**（不是 alpha 混合）：
+   *    alpha 方案实测要把强度压到 0.14 以内才保住语法色的 AA（4.53），
+   *    那样和行底几乎看不出差别（实测 alpha=0.1 时与行底对比只有 1.1）；
+   *  - 不透明叠底后底色与行底对比度 **1.67 / 1.82**（可感知），
+   *    且改动段内文字用 `ink-900`（对比 **10.60 / 9.59**）——词级段内**不用语法色**，
+   *    因为要同时满足"与词底 4.5+ 对比"和"与行底区分"，两者在 8 个语法色上无法兼得。
+   * 参考：difit `global.css:244-266` 用 `rgba(63,185,80,0.5)`（浅色主题）——那是深色主题配套，
+   *   搬到我们浅底上同样过不了 AA（实测 alpha 0.45 时 comment 只有 2.58）。
+   */
+  --color-diff-word-add: #9fccb8;
+  --color-diff-word-del: #e4aba6;
+
+  /*
    * 批注色（Task 0003 · P2）：用户对 Agent 回复做批注的**五种语气**。
    *
    * 与上面那组语义色（accent/danger/success）**命名隔离**：

@@ -2,8 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX,
-} from "@tabler/icons-react";
+  IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconTrash, IconX, IconGitCompare, IconSelector } from "@tabler/icons-react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
   CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
@@ -12,6 +11,8 @@ import { useFold } from "./design/fold";
 import { useAnnotations } from "./annotation-store";
 import type { Annotation, AnnotationAuthor } from "./annotations";
 import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
+import { addCommentRef, attachableComment, commentRefLabel, commentRefPreview, removeCommentRef, type CommentRef } from "./composer-comment-refs";
+import { commentsToText } from "./review-comment-copy";
 import { rebuildHighlightStyles } from "./annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
@@ -27,6 +28,8 @@ import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
 import { FileTree } from "./FileTree";
 import { FilePanel } from "./FilePanel";
+import { ReviewPanel, type ReviewData, type TaskCandidateView } from "./ReviewPanel";
+import { DEFAULT_REVIEW_RATIO, MIN_REVIEW, reviewRatioOfPx } from "./design/layout";
 import { useColumnWidth } from "./useColumnWidth";
 import {
   AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken, SessionRow,
@@ -550,6 +553,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
   const [attachments, setAttachments] = useState<PendingImage[]>([]);
+  /**
+   * 检视评论引用（A8 + G3）：**结构化条目**，不是拼进正文的文本。
+   * 发送时由 `commentsToText()` 合成（同一条实现，不新造格式）；发送成功清空、失败回填。
+   */
+  const [commentRefs, setCommentRefs] = useState<CommentRef[]>([]);
+  const commentRefsRef = useRef<CommentRef[]>([]);
   const attachmentsRef = useRef<PendingImage[]>([]);
   const attachmentSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -631,6 +640,10 @@ export default function App() {
    */
   const [showGroups, setShowGroups] = useFold("groups", legacyGroupsOpen());
   const restoreFolds = useRef<{ nav: boolean; groups: boolean } | undefined>(undefined);
+  /** 检视面板打开时临时收起的左列（关闭时恢复，与 openHistory 的 restoreFolds 同构） */
+  const restoreReviewFolds = useRef<{ nav: boolean; groups: boolean } | undefined>(undefined);
+  /** 检视"放不下"只提示一次，避免 resize 时反复弹 toast */
+  const reviewWarned = useRef(false);
   const [showTree, setShowTree] = useFold("tree");
   /**
    * 分组折叠（Task 0015 · T15）：`{ [projectId]: true }` = 该组收起。
@@ -651,10 +664,30 @@ export default function App() {
   // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
   const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
+  // 检视模式（Task 0010 · P2）：用户指名 Task（D15c）→ 打开面板加载两组 diff。
+  // 比例存 localStorage（D12：存比例不存 px）；与文件面板并存不互斥（D10）。
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewRatio, setReviewRatio] = useState<number>(() => {
+    const raw = Number(localStorage.getItem("lifeos.reviewRatio"));
+    return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : DEFAULT_REVIEW_RATIO;
+  });
+  const reviewCtx = useRef<{ taskDir: string } | undefined>(undefined);
+  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewFailed, setReviewFailed] = useState<string | null>(null);
+  const [reviewTaskPaths, setReviewTaskPaths] = useState<Record<string, string>>({});
+  /**
+   * D31：检视候选（哪些 Task 有东西可检视）。
+   * 懒加载——只在**打开面板时**拉一次（实测 15 个 Task 0.93s；不打开面板不付这个钱）。
+   */
+  const [reviewCandidates, setReviewCandidates] = useState<readonly TaskCandidateView[]>([]);
+  const [reviewCandidatesLoading, setReviewCandidatesLoading] = useState(false);
   const { box, beginDrag, viewport, widths } = useColumnWidth({
     folded: { nav: !showNav, groups: !showGroups },
     panelOpen,
     historyOpen: history !== undefined,
+    reviewOpen,
+    reviewRatio,
   });
 
   const current = useRef<string | undefined>(undefined);
@@ -869,6 +902,118 @@ export default function App() {
     }
     setHistory({ sessionId: sid, title: name });
   }
+  /**
+   * 检视面板的宽度拖拽：比例制（D12）——拖动改 `reviewRatio`（不存 px）。
+   *
+   * 关键（2026-11-05 修）：比例与像素用**同一对纯函数**换算（`reviewPxOfRatio` / `reviewRatioOfPx`），
+   * 且上限取 `box.reviewBudget`（layout 算出的右侧预算）——拖动与布局共用一把尺子，
+   * 不会出现"拖到头还在存更大的比例"（旧实现导致 163px 死区 + 换屏跳变）。
+   */
+  function beginReviewDrag(event: ReactMouseEvent) {
+    event.preventDefault();
+    // 锚点会随夹紧**重设**：拖过上下限后立刻重设，回拖 1px 面板就跟着动（无死区）。
+    // 比例与像素共用 layout 的 `reviewRatioOfPx`（分母 = 视口，上限 = box.reviewBudget），
+    // 与布局同源——旧实现分母是"视口 − 聊天保底"，拖起来只跟手一半（用户报的“拖动有问题”）。
+    let anchorX = event.clientX;
+    let anchorWidth = box.review;
+    const budget = box.reviewBudget;
+    const startViewport = viewport;
+    const move = (moveEvent: MouseEvent) => {
+      // 把手在检视面板左缘 → 右拉=面板变小（与 c4/c5 同号语义）
+      const raw = anchorWidth - (moveEvent.clientX - anchorX);
+      const clamped = Math.min(budget, Math.max(MIN_REVIEW, raw));
+      if (clamped !== raw) { anchorX = moveEvent.clientX; anchorWidth = clamped; }
+      const next = reviewRatioOfPx(startViewport, clamped, budget);
+      setReviewRatio(next);
+      localStorage.setItem("lifeos.reviewRatio", String(next));
+    };
+    const stop = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", stop);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", stop);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
+
+  async function loadReview(taskDir: string) {
+    setReviewLoading(true);
+    setReviewFailed(null);
+    try {
+      const response = await fetch("/api/review/diff", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskDir }),
+      });
+      const body = await response.json().catch(() => undefined) as { items?: ReviewData["items"]; error?: { message?: string } } | undefined;
+      if (!response.ok || body?.items === undefined) {
+        setReviewFailed(body?.error?.message ?? `加载失败（HTTP ${response.status}）`);
+        setReviewData(null);
+        return;
+      }
+      setReviewData({ items: body.items });
+    } catch (error) {
+      setReviewFailed(error instanceof Error ? error.message : String(error));
+      setReviewData(null);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  /** 进入检视：用户指名 Task 目录（D15c）。Agent 代开（D16a）走工具→同此函数的语义。 */
+  /**
+   * D31：拉检视候选。只在打开面板时调（懒加载），失败静默降级（选择器退化成"只有当前 Task"，
+   * 检视本身仍然可用——候选列表是"方便"，不是"必需"）。
+   */
+  function loadReviewCandidates() {
+    const aid = ctx.current.agentId;
+    const pid = currentGroup?.project.id ?? selectedProjectId;
+    if (aid === undefined || pid === undefined) return;
+    setReviewCandidatesLoading(true);
+    void fetch(`/api/agents/${aid}/projects/${pid}/review-candidates`)
+      .then((response) => response.ok ? response.json() as Promise<{ items?: TaskCandidateView[] }> : undefined)
+      .then((data) => { if (data?.items !== undefined) setReviewCandidates(data.items); })
+      .catch(() => { /* 失败静默：选择器留空，检视功能不受影响 */ })
+      .finally(() => setReviewCandidatesLoading(false));
+  }
+
+  function openReview(taskDir: string) {
+    reviewCtx.current = { taskDir };
+    setReviewOpen(true);
+    void loadReview(taskDir);
+    loadReviewCandidates();
+  }
+
+  function closeReview() {
+    setReviewOpen(false);
+    reviewCtx.current = undefined;
+    setReviewData(null);
+    setReviewFailed(null);
+    const previous = restoreReviewFolds.current;
+    if (previous !== undefined) {
+      restoreReviewFolds.current = undefined;
+      setShowNav(previous.nav); setShowGroups(previous.groups);
+    }
+  }
+
+  // 检视放不下时（窄屏 / 文件面板 + 历史同时开）：先收左列（同 openHistory 的降级），
+  // 仍放不下就**明确提示**，不静默消失（2026-11-05 实测：1366 + 文件面板时点了没反应）。
+  useEffect(() => {
+    if (!reviewOpen || box.reviewFits) { reviewWarned.current = false; return; }
+    if (showNav || showGroups) {
+      restoreReviewFolds.current ??= { nav: showNav, groups: showGroups };
+      setShowNav(false); setShowGroups(false);
+      return;
+    }
+    if (!reviewWarned.current) {
+      reviewWarned.current = true;
+      toast("右侧放不下检视面板：先关掉文件面板或完整历史，或把窗口放宽", "error");
+    }
+  }, [reviewOpen, box.reviewFits, showNav, showGroups, setShowNav, setShowGroups, toast]);
+
   function closeHistory() {
     dismissMobile(() => {
       setHistory(undefined);
@@ -1470,6 +1615,22 @@ export default function App() {
       case "agents-changed":
         void onAgentsChanged();
         return;
+      case "review-open": {
+        /**
+         * D32：Agent 请求打开检视面板。
+         * **只在"我现在待的这个 agent×project"上生效**——否则用户在 A 项目里会被 B 项目的请求把面板抢走。
+         * 不在当前项目时给一条提示（用户要知道"别处有东西找我看"），但不强切上下文。
+         */
+        const hereAgent = ctx.current.agentId;
+        const hereProject = currentGroup?.project.id ?? selectedProjectId;
+        if (hereAgent === action.agentId && (hereProject === undefined || hereProject === action.projectId)) {
+          openReview(action.taskDir);
+        } else {
+          // 不在当前项目：提示但**不强切上下文**（切项目会打断用户手上的事）
+          toast(`Agent 想让你检视 Task ${action.taskId} 的改动（在另一个项目里）`);
+        }
+        return;
+      }
     }
   }
 
@@ -1777,6 +1938,7 @@ export default function App() {
    */
   // 附件状态与 ref 同步：sendText 可能从跨渲染的回调（sendTextRef）进来，读 ref 才不会拿到旧值
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  useEffect(() => { commentRefsRef.current = commentRefs; }, [commentRefs]);
 
   /** 把用户选的/粘贴的/拖入的文件逐个变成附件；超限或非法时提示并跳过。 */
   async function collectImages(files: readonly File[]) {
@@ -1883,6 +2045,9 @@ export default function App() {
       const snapshot = pendingAnnoRestore.current;
       if (snapshot !== undefined) { anno.restore(snapshot); pendingAnnoRestore.current = undefined; }
       if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
+      // 评论引用也回填：否则"发送失败"等于把用户刚挑的几条评论弄丢了
+      const refsSnapshot = commentRefsRef.current;
+      if (refsSnapshot.length > 0) { setCommentRefs(refsSnapshot); commentRefsRef.current = refsSnapshot; }
       busyRef.current = false;
       busySessionRef.current = undefined;
       setBusy(false);
@@ -1919,6 +2084,8 @@ export default function App() {
         fail(`[出错] ${error.error?.message ?? "请求失败"}`);
       } else {
         setTurnStep(2);   // 2/4：后端受理（202）
+        // 评论引用已被这次发送消费 → 清空（失败路径不动它，用户还能重发）
+        setCommentRefs([]); commentRefsRef.current = [];
         window.setTimeout(() => { if (busyRef.current) setTurnStep(3); }, 250);   // 3/4：模型处理（含等待/思考/工具/输出）
 
         /**
@@ -2183,6 +2350,17 @@ export default function App() {
     if (raw.startsWith("/")) { void runSlash(raw); return; }
 
     /**
+     * 检视评论引用（A8/G3）：发送时**在这里**合成文本（同一条 `commentsToText`），
+     * 与批注共用"一次模型调用"的原则（N 条合一条消息，不 N 次调用）。
+     * 合成顺序：评论 → 批注 → 用户自己写的话（越靠近用户输入越"新"，与批注同一套约定）。
+     */
+    const pendingRefs = commentRefsRef.current;
+    const refsText = pendingRefs.length === 0 ? "" : commentsToText(pendingRefs.map((ref) => ({ ...ref, replies: ref.replies ?? [] })));
+    /** 发送成功后清空 chip；失败要回填（与图片/批注同一套补偿） */
+    const clearRefs = () => { setCommentRefs([]); commentRefsRef.current = []; };
+    const restoreRefs = () => { setCommentRefs(pendingRefs); commentRefsRef.current = pendingRefs; };
+
+    /**
      * 只发**待发送**的批注（用户 2026-11-04 定案）。
      *
      * `consumedBy` 有值 = 这条记录已经完成生命周期，**永不重发**；
@@ -2192,6 +2370,12 @@ export default function App() {
      * 即使文字和旧记录一模一样，它也是 pending，必须能再发。
      * 所以这里只判 id/状态，**不做任何内容比对**。
      */
+    /** 三路内容合成：评论引用 + 批注 + 用户输入，最终只发**一条**消息 */
+    const composeText = (base: string): string => {
+      const parts = [refsText, base].filter((part) => part.trim() !== "");
+      return parts.join("\n");
+    };
+
     const pendingAnnos = annoOrdered.filter((a) => a.consumedBy === undefined && a.supersededBy === undefined);
     if (pendingAnnos.length > 0) {
       const annosText = annotationsMessage(pendingAnnos, {
@@ -2200,14 +2384,13 @@ export default function App() {
       // 全是"功能"标记（存档/待办）时 annosText 为空：它们不发给 Agent（用户 2026-11-03）。
       // 这时若用户也没写字，就没有可发的内容——不发，也不清空批注（清空等于把用户的分类丢了）。
       if (annosText === "") {
-        if (raw !== "") {
-          sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
-          historyIndexRef.current = -1;
-          void sendText(raw);
+        if (raw !== "" || refsText !== "") {
+          if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
+          void sendText(composeText(raw));
         }
         return;
       }
-      const merged = raw === "" ? annosText : `${annosText}\n${raw}`;
+      const merged = composeText(raw === "" ? annosText : `${annosText}\n${raw}`);
       if (raw !== "") sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw];
       historyIndexRef.current = -1;
       // 失败要能重发：记下这一批的 id 与当时的内容（回滚用）。
@@ -2219,8 +2402,10 @@ export default function App() {
       return;
     }
 
-    if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
-    void sendText(raw);
+    if (raw !== "" || refsText !== "") {
+      if (raw !== "") { sentHistoryRef.current = [...sentHistoryRef.current.slice(-49), raw]; historyIndexRef.current = -1; }
+      void sendText(composeText(raw));
+    }
   }
 
   const currentGroup = groups.find((group) => group.project.id === selectedProjectId);
@@ -2658,6 +2843,43 @@ export default function App() {
             onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
             <IconHistory size={16} />
           </IconButton>
+          <IconButton label="检视当前 Task 的改动" size="lg" active={reviewOpen}
+            onClick={() => {
+              const aid = agent?.id;
+              const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+              const taskId = meta?.activeTaskId ?? projectDefaultTasks[taskTitleKey(aid ?? "", pid, "default")]?.id;
+              if (aid === undefined || taskId === undefined) { toast("当前没有可检视的 Task", "error"); return; }
+              const key = taskTitleKey(aid, pid, taskId);
+              const known = reviewTaskPaths[key];
+              if (known !== undefined) { if (!reviewOpen) openReview(known); else closeReview(); return; }
+              void fetch(`/api/agents/${aid}/projects/${pid}/tasks/${taskId}/review-sources`)
+                .then((response) => response.ok ? response.json() as Promise<{ items?: Array<{ kind: string; path: string }> }> : undefined)
+                .then((data) => {
+                  const lifeos = data?.items?.find((item) => item.kind === "lifeos");
+                  if (lifeos === undefined) { toast("拿不到这个 Task 的目录", "error"); return; }
+                  setReviewTaskPaths((prev) => ({ ...prev, [key]: lifeos.path }));
+                  if (!reviewOpen) openReview(lifeos.path); else closeReview();
+                })
+                .catch(() => toast("检视面板打开失败", "error"));
+            }}>
+            <IconGitCompare size={18} />
+          </IconButton>
+          {/*
+            A3 的「箭头」：主按钮看当前 Task，这个按钮打开面板并把焦点放到"检视对象"选择器上。
+            为什么不做真正的 split button 下拉：面板里已经有原生 `<select>`（键盘可达、无自绘成本），
+            再自绘一个下拉等于同一类 UI 两套实现（frontend-spec 2.3）。
+          */}
+          <IconButton label="选择要检视的 Task" size="lg"
+            onClick={() => {
+              const current = reviewCtx.current?.taskDir;
+              if (current === undefined) { toast("先点左边的检视按钮打开面板"); return; }
+              openReview(current);
+              window.setTimeout(() => {
+                document.querySelector<HTMLSelectElement>("[data-review-switcher-select]")?.focus();
+              }, 350);
+            }}>
+            <IconSelector size={16} />
+          </IconButton>
           <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
             onClick={() => {
               if (!panelOpen && history !== undefined) closeHistory();
@@ -2887,6 +3109,25 @@ export default function App() {
                   })}
                 </div>
               )}
+              {/* 检视评论引用 chip（A8/G3）：一条一个，可单独移除；发送时才合成文本 */}
+              {commentRefs.length > 0 && (
+                <div data-testid="composer-comment-refs" className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-1.5">
+                  {commentRefs.map((ref) => (
+                    <span key={ref.id} data-comment-ref={ref.id}
+                      className="group/ref relative flex max-w-full items-center gap-1 rounded-inner bg-anno-query-soft px-1.5 py-0.5 text-micro text-anno-query ring-1 ring-anno-query-soft">
+                      <span className="shrink-0 font-mono" data-comment-ref-label>{commentRefLabel(ref)}</span>
+                      <span className="min-w-0 truncate text-ink-700" data-comment-ref-preview>{commentRefPreview(ref)}</span>
+                      <button type="button" aria-label={`移除评论引用 ${commentRefLabel(ref)}`}
+                        onClick={() => setCommentRefs((prev) => removeCommentRef(prev, ref.id))}
+                        data-comment-ref-remove
+                        className="shrink-0 rounded-full p-0.5 text-anno-query hover:bg-hover hover:text-danger">
+                        <IconX size={10} />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="pb-0.5 text-micro text-ink-500">{commentRefs.length} 条评论引用（发送时一并带上）</span>
+                </div>
+              )}
               {/* 附件托盘：只有有图时出现，所以无图的基线不变 */}
               {attachments.length > 0 && (
                 <div data-testid="composer-attachments" className="flex flex-wrap items-end gap-2 border-b border-line px-3 py-2">
@@ -3070,6 +3311,30 @@ export default function App() {
                 </div>
               </>
             )}
+          </aside>
+        </>
+      )}
+
+      {/* 检视面板（Task 0010）：与文件面板并存不互斥（D10）；手机上走全屏表面（mobile 模型，D17a 本期不做手机——这段只在桌面渲染） */}
+      {reviewOpen && !isMobile && box.review > 0 && (
+        <>
+          <DragHandle onStart={(event) => beginReviewDrag(event)} />
+          <aside style={{ width: box.review }} data-testid="review-aside" className="flex shrink-0 overflow-hidden">
+            <ReviewPanel taskDir={reviewCtx.current?.taskDir ?? ""} data={reviewData}
+              loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewCtx.current !== undefined) void loadReview(reviewCtx.current.taskDir); }}
+              onClose={closeReview}
+              /* D31：换检视对象（候选由 App 拉，面板不认识 agentId/projectId） */
+              onSwitchTask={(taskDir) => openReview(taskDir)}
+              candidates={reviewCandidates}
+              candidatesLoading={reviewCandidatesLoading}
+              currentTaskId={reviewCandidates.find((item) => item.taskDir === (reviewCtx.current?.taskDir ?? ""))?.taskId}
+              /* A8/G3：把评论作为**结构化引用**挂到输入框（chip 可逐条移除）；发送时才合成文本，不自动发 */
+              onAttachComments={(refs) => {
+                const usable = refs.filter((ref) => attachableComment(ref));
+                if (usable.length === 0) return;
+                setCommentRefs((prev) => usable.reduce((list, ref) => addCommentRef(list, ref), prev));
+                inputRef.current?.focus();
+              }} />
           </aside>
         </>
       )}
