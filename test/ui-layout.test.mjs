@@ -334,19 +334,32 @@ test("嵌套拖动：内层变大时一定真的变大（1440 也能拖，不被
   }
 });
 
-test("嵌套拖动：内层顶到边界后，面板跟着长；面板到顶才从左列借宽", () => {
+test("嵌套拖动（2026-11-10 重写）：树变宽时面板、左列一概不动（拖哪条边哪条边跟手）", () => {
+  // 用户报「我往右拖呢，它在往左边扩张」后重写：旧版树长多少、面板往左长多少，
+  // 分隔条全程不动（实测 1600 拖 +100 把手 x 恒 1237、面板左缘 1000→900），
+  // 顶到上限后还从左列借宽、借走不还。现在：树吃查看器的宽，其余一概不动。
+  for (const viewport of [1440, 1600, 1920]) {
+    const start = { ...DEFAULT_WIDTHS };
+    const { patch, box } = dragTree(start, 120, viewport);
+    assert.equal(patch.c4, undefined, "外层面板宽度不得被内层拖动改写");
+    assert.equal(box.c1, start.c1, "助手列不得被自动借宽");
+    assert.equal(box.c2, start.c2, "会话列不得被自动借宽");
+    assert.ok(box.tree > DEFAULT_WIDTHS.c4t, `树应变宽（实际 ${box.tree}）`);
+    assert.ok(box.panel - box.tree >= MIN_VIEWER, `查看器保底 ${MIN_VIEWER}`);
+    assert.ok(box.chat >= MIN_CHAT, `${viewport}: 聊天保底`);
+  }
+});
+
+test("嵌套拖动：内层顶到面板上限就停，且把手位置就是「面具右缘 −查看器保底」", () => {
+  // 1440：树的上限 = 面板 444 − MIN_VIEWER —— Sail 面板右缘贴视口右缘，
+  // 把手 x = 视口 − 查看器宽。拖得再远也不会从左列挪出空间来。
   const start = { ...DEFAULT_WIDTHS };
-  // 1920 +80：面板还有余量，左列不该被动
-  const wide = dragTree(start, 80, 1920);
-  assert.ok(wide.box.panel > 600, "面板应变宽");
-  assert.equal(wide.box.c1, start.c1, "空间足够时不该借左列的宽");
-  // 1440：面板到顶，从左列借（c2 先借到 240，再借 c1）
-  const narrow = dragTree(start, 400, 1440);
-  assert.ok(narrow.box.tree > 240, "内层必须真的变宽");
-  assert.ok(narrow.box.c2 <= start.c2, "应从会话列借宽");
-  assert.equal(narrow.box.chat, MIN_CHAT, "借到底时聊天正好是保底");
-  // 借宽不能让任何列低于它的下限
-  assert.ok(narrow.box.c1 >= 180 && narrow.box.c2 >= 240, `左列不能低于下限：c1=${narrow.box.c1} c2=${narrow.box.c2}`);
+  const folded = { nav: false, groups: false };
+  const { patch, box } = dragTree(start, 400, 1440);
+  const base = layout({ viewport: 1440, widths: start, requested: folded, panelOpen: true });
+  assert.equal(box.tree, base.panel - MIN_VIEWER, `树顶到上限 ${base.panel - MIN_VIEWER}（实际 ${box.tree}）`);
+  assert.equal(box.c2, start.c2, "左列不被动（旧版从这里借宽）");
+  assert.equal(box.panel, base.panel, "面板总宽不变");
 });
 
 test("嵌套拖动：拖到最远后，查看器保底仍成立（内层不会吃掉整个面板）", () => {
@@ -370,6 +383,33 @@ test("嵌套拖动：多帧连续拖（模拟真实手势）时单调变宽、�
     assert.ok(trees[index] >= trees[index - 1], `第 ${index} 帧不该变小：${trees.join(",")}`);
   }
   assert.ok(trees[trees.length - 1] > trees[0], `整体必须变宽：${trees.join(",")}`);
+});
+
+// 「跟手」的本质断言（2026-11-10 用户报「往右拖它在往左边扩张」）：
+// 分隔条在屏幕上的位置 = 面板右缘 − 查看器宽。拖动语义正确 ⇔ 查看器真的在变窄、面板不动。
+test("嵌套拖动：查看器真的在变窄（分隔条跟手的几何等价物）", () => {
+  const folded = { nav: false, groups: false };
+  const start = { ...DEFAULT_WIDTHS };
+  const boxA = layout({ viewport: 1600, widths: start, requested: folded, panelOpen: true });
+  const drag = dragTree(start, 100, 1600);
+  // 面板不动 → 查看器 = 面板 − 树 必须恰好少 100（树吃查看器，不是吃面板也不是借左列）
+  const viewerBefore = boxA.panel - boxA.tree;
+  const viewerAfter = drag.box.panel - drag.box.tree;
+  assert.equal(viewerBefore - viewerAfter, 100, `查看器应恰好变窄 100（实际 ${viewerBefore}→${viewerAfter}）`);
+  assert.equal(drag.box.panel, boxA.panel, "面板总宽不变");
+});
+
+test("嵌套拖动：同一鼠标位置永远同一结果（往返无累计漂移）", () => {
+  const folded = { nav: false, groups: false };
+  const start = { ...DEFAULT_WIDTHS };
+  const first = dragCascade("c4t", start, 60, 1600, folded);
+  // 从拖过 60 的状态再拖 +60：基准是渲染宽，所以再长 60；再 -60 应回到原值
+  const mid = { ...start, ...first };
+  const more = dragCascade("c4t", mid, 60, 1600, folded);
+  const back = dragCascade("c4t", { ...mid, ...more }, -120, 1600, folded);
+  const final = { ...mid, ...more, ...back };
+  assert.equal(final.c4t, start.c4t, "往返后必须回到原值（无漂移）");
+  assert.equal(final.c4, mid.c4 ?? start.c4, "外层全程不被改写");
 });
 
 test("普通列（无嵌套）的拖动结果与 dragWidth 完全一致", () => {

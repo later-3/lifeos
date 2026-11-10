@@ -673,10 +673,13 @@ async function auditResizeColumns(page, sceneSetup) {
   await phonePage.close();
 }
 
-// 嵌套列的拖动（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」）
+// 嵌套列的拖动（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」；
+// 2026-11-10 用户报「我往右拖呢，它在往左边扩张」→ 重写拖动语义）
 //
-// 断言的是**用户能看到的结果**：拖文件树时它真的变宽、面板跟着长、必要时从左列借宽，
-// 且任何一列都不低于它的下限、聊天保底不破。不枚举实现细节（补丁形状会随实现变）。
+// 断言的是**用户能看到的结果**（testing 规 2.15：几何断言，不是宽度断言）：
+// ① 抓着的分隔条每帧都贴着鼠标（拖哪条边哪条边跟手）；
+// ② 树变宽时面板总宽/左列一概不动（旧版整块面板反向扩张 + 从左列借宽不还）；
+// ③ 各列下限与聊天/查看器保底不破。不枚举实现细节。
 {
   const treePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   await treePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
@@ -689,38 +692,55 @@ async function auditResizeColumns(page, sceneSetup) {
     check("嵌套拖动：文件树可拖（面板放得下时）", false, "找不到 c4t 把手");
   } else {
     const read = async () => await treePage.evaluate(() => {
-      const width = (key) => {
+      const geom = (key) => {
         const el = document.querySelector(`[data-resize-key="${key}"]`);
-        return el === null ? 0 : Math.round(el.getBoundingClientRect().width);
+        if (el === null) return null;
+        const b = el.getBoundingClientRect();
+        return { x: Math.round(b.x), w: Math.round(b.width) };
       };
-      return { tree: width("c4t"), panel: width("c4"), c1: width("c1"), c2: width("c2"),
+      return { tree: geom("c4t"), panel: geom("c4"), c1: geom("c1"), c2: geom("c2"),
         chat: Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0) };
     });
     const box = await handle.boundingBox();
+    const startX = box.x + box.width / 2;
     const before = await read();
     const widths = [];
-    await treePage.mouse.move(box.x + box.width / 2, box.y + 400);
+    const dividerXs = [];
+    await treePage.mouse.move(startX, box.y + 400);
     await treePage.mouse.down();
     for (let step = 1; step <= 25; step += 1) {
-      await treePage.mouse.move(box.x + box.width / 2 + step * 8, box.y + 400);
+      await treePage.mouse.move(startX + step * 8, box.y + 400);
       await treePage.waitForTimeout(16);
-      widths.push((await read()).tree);
+      const frame = await read();
+      widths.push(frame.tree.w);
+      // 把手中心的屏幕坐标：跟手 = 它与鼠标起点之差 ≈ 鼠标位移（树右缘在把手上）
+      dividerXs.push(frame.tree.x + frame.tree.w - (before.tree.x + before.tree.w));
     }
     await treePage.mouse.up();
     await treePage.waitForTimeout(400);
     const after = await read();
     const distinct = new Set(widths).size;
+    // 200px 拖动（树 240 + 空间）：树可长到「面板右缘 − 查看器保底 160」，
+    // 分隔条一路跟到那里为止；本场景全程在区间内（树 240→440、查看器 360→160）。
     check("嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
-      after.tree > before.tree + 40, `${before.tree} → ${after.tree}`);
+      after.tree.w > before.tree.w + 40, `${before.tree.w} → ${after.tree.w}`);
     check("嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
       distinct >= Math.floor(widths.length / 2), `${distinct}/${widths.length} 个不同值`);
-    check("嵌套拖动：面板跟着长（内层变大时有空间给它）",
-      after.panel > before.panel, `面板 ${before.panel} → ${after.panel}`);
-    check("嵌套拖动：任何列都不低于下限（c1≥180 c2≥240）",
-      after.c1 >= 180 && after.c2 >= 240, JSON.stringify(after));
+    const mouseDx = (i) => (i + 1) * 8;
+    const offTrack = dividerXs.findIndex((dx, i) => Math.abs(dx - mouseDx(i)) > 4);
+    check("嵌套拖动：分隔条跟手（x 位移 ≈ 鼠标位移，不是反向被面板扩张抵消）",
+      offTrack === -1,
+      offTrack === -1
+        ? `25 帧内分隔条位移 8..200 与鼠标 1:1（面板/左列不动）`
+        : `第 ${offTrack + 1} 帧起偏移：分隔条位移=${JSON.stringify(dividerXs)} 鼠标位移=8/帧`);
+    check("嵌套拖动：面板总宽不动（旧版整块面板反向扩张）",
+      after.panel.w === before.panel.w, `面板 ${before.panel.w} → ${after.panel.w}`);
+    check("嵌套拖动：左列未被自动让位（旧版从 c2/c1 借宽不还）",
+      after.c1.w === before.c1.w && after.c2.w === before.c2.w,
+      `c1 ${before.c1.w}→${after.c1.w} c2 ${before.c2.w}→${after.c2.w}`);
     check("嵌套拖动：聊天保底不破（≥420）", after.chat >= 420, `${after.chat}px`);
-    check("嵌套拖动：查看器保底不破（面板−树 ≥206）",
-      after.panel - after.tree >= 206, `${after.panel - after.tree}`);
+    check("嵌套拖动：查看器保底不破（面板−树 ≥160）",
+      after.panel.w - after.tree.w >= 160, `${after.panel.w - after.tree.w}`);
   }
   await treePage.close();
 }
@@ -2255,8 +2275,9 @@ const REQUIRED = [
   "头部快捷显示设置：手机不渲染（头部不再增加图标）",
   "嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
   "嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
-  "嵌套拖动：面板跟着长（内层变大时有空间给它）",
-  "嵌套拖动：任何列都不低于下限（c1≥180 c2≥240）",
+  "嵌套拖动：分隔条跟手",
+  "嵌套拖动：面板总宽不动",
+  "嵌套拖动：左列未被自动让位",
   "嵌套拖动：聊天保底不破（≥420）",
   "正文表格：最窄一列不被压到逐字竖排（宽列下）",
   "正文表格：正文列变窄后依然不压字（可横向滚动）",

@@ -58,6 +58,8 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
    *
    * 现在：拖动只改 DOM（`el.style.width`），一帧最多写一次（rAF 合并）；松手才 `setWidths`。
    * 聊天列是 `flex-1`，会自然跟着变宽变窄，不需要一起重算。
+   * 注意：**不要**在松手时清 inline 宽度——被钳住（状态无变化）时 React 不重渲染，
+   * 清掉后列会跌回 content 宽度（2026-11-10 实测出现 444→527），见 `stop()` 注释。
    * 这样既不牺牲"拖到哪停到哪"的准确度，也不需要在消息层引入 memo 的复杂度
    * （消息层的 props 里有十几个每帧重建的回调，memo 反而容易漏更新）。
    */
@@ -119,12 +121,16 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
       if (frame !== 0) { window.cancelAnimationFrame(frame); frame = 0; }
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      // 交还给 React（内联宽度清掉，否则会盖住新的存储值）
-      for (const name of targets.keys()) {
-        const element = targets.get(name);
-        if (element !== undefined) element.style.width = "";
-      }
-      // 一次性提交：所有被改动的列（内层 + 外层 + 被借的左列）
+      /*
+       * 只提交、**不清 inline 宽度**（2026-11-10 修）。
+       *
+       * 旧版在这里对每个被碰过的元素 `style.width = ""`（"交还给 React"）——
+       * 但拖动被钳住、状态无变化时 React **不重渲染**，inline 清空后列宽跌回
+       * min-content：实测 1440 拖外层 120px，松手后面板被文件内容从 444 顶到 527。
+       * 现在保留 inline（它的值就是最后一次拖到的真实宽度，判断上仍与 React 一致），
+       * 状态有变化时 React 重渲染会直接覆写 inline；无变化时也停留在正确的值。
+       */
+      // 一次性提交：所有被改动的列（嵌套拖动现在只可能是一个键，但保持通用）
       setWidths((prev) => {
         let changed = false;
         const next = { ...prev };

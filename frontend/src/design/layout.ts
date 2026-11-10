@@ -29,7 +29,16 @@ export const MIN_CHAT = 420;
 export const MIN_HISTORY = 360;
 export const DEFAULT_HISTORY = 440;
 export const MIN_PANEL = 320;
-export const MIN_VIEWER = 206;
+/**
+ * 查看「器」保底 = 面板 − 树的剩余空间下限（2026-11-10 调整 206 → 160）。
+ *
+ * 依据（协议 §3.13：不是拍出来的数）：
+ * - **受压实测**：查看器的页签行/工具栏都是 `overflow-x-auto`，正文自动换行——
+ *   实测把查看器压到 160/140/120，出的是滚动条而不是内容溢出（FilePanel 的极限内容宽 ~69 + 可滚正文）；
+ * - **对称**：树的自身下限就是 160（`WIDTH_LIMITS.c4t[0]`），两栏同一档；
+ * - **收益**：树的可拖行程 = `面板 − MIN_VIEWER − 树宽`，206→160 在 1600 上从 354 行程升到 400。
+ */
+export const MIN_VIEWER = 160;
 /**
  * 检视面板（Task 0010）：与文件面板/完整历史**并存不互斥**（D10）。
  * 宽度走比例（D7/D12）：用户拖出的 `reviewRatio` 是"检视区占右侧可用宽度的份额"，
@@ -252,9 +261,12 @@ export function clampWidth(key: keyof Widths, value: number, limit?: number): nu
  * 而面板本身又被视口钳住 —— 1440 窗口上面板只有 444，于是 `c4t` 的可动范围只剩
  * **160–238**（默认就是 240，等于**根本拖不动**）；1280 上更彻底：面板放不下 → 一个把手都没有。
  *
- * 用户要的不是"把 238 改大一点"（那是单点修补），而是**一类问题的解法**：
- * 内层拖动到外层边界时，外层跟着一起长（VS Code 的 sash 也是这样：拖 explorer 的分隔条，
- * 整个侧栏一起变宽，而不是"到头就卡住"）—— 下面 `dragCascade()` 就是这条规则的唯一实现。
+ * 嵌套列的拖动语义见 `dragCascade()`：**拖哪条边，哪条边跟手**。
+ * （2026-11-10 删除了当初配套的「顶到上限后从左列借宽」：
+ *  ① 它让树把手全程不动，面板在用户拖动的反方向扩张（用户原话「我往右拖呢，它在往左边扩张」）；
+ *  ② 从 c2/c1 借走的宽度不归还，拖完左列悄悄变窄；
+ *  ③「拖树」与「拖面板」两套语义串场。
+ *  想让面板整体更宽，拖**外层** `c4` 的把手 —— 那才是动面板宽度的正确入口。）
  *
  * 以后新增嵌套可拖区域（比如"面板里的预览区也可以拖"）只需在这里登记一行。
  */
@@ -321,10 +333,10 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
 /**
  * 拖动一个（可能嵌套的）列时，**一次算出所有要变的宽度**（纯函数，可穷举单测）。
  *
- * 语义（每条都对应一个用户可见的行为）：
+ * 语义（每条都对应一个用户可见的行为；2026-11-10 按用户裁决修正第 2 条）：
  *  1. 内层拖动 = 移动"内层与查看器之间"的分界：内层变大，查看器变小（外层总宽不变）；
- *  2. 内层顶到查看器最小宽时**不再卡住**：外层跟着一起长（缺多少长多少），
- *     直到外层自己的视口上限（`maxWidthOf`）为止 —— 这就是"拖到头还能继续拖"的解法；
+ *  2. 内层顶到边界就停（拖哪条边哪条边跟手；面板总宽是**外层** c4 把手的事，
+ *     不串场——旧版曾在这里从左列借宽，把手不动、面板反向扩张，见 `dragCascade` 注释）；
  *  3. 往回拖时，先缩内层，外层保持（不回弹、不跳）；
  *  4. 没有外层关系的列（c1/c2/c5）就是普通的单列拖动。
  *
@@ -341,70 +353,26 @@ export function dragCascade(
   viewport: number,
   folded: Folded,
 ): Partial<Widths> {
-  const parent = RESIZE_PARENT[key];
-
-  // 没有外层：单列拖动（与 dragWidth 完全一致）
-  if (parent === undefined) {
+  /*
+   * **拖动的唯一语义：拖哪条边，哪条边跟手**（2026-11-10 重写）。
+   *
+   * 旧嵌套实现把「树变宽」实现成「整块面板变宽」：树长多少、面板往左长多少，
+   * 两者在屏幕上正好抵消——用户抓着的分隔条**从头到尾一动不动**，
+   * 看到的是另一条边在反向移动（实测 1600 拖 +100：把手 x 恒 1237，
+   * 面板左缘 x 反而 1000→900——用户原话「我往右拖呢，它在往左边扩张」）。
+   * 顶到上限后还从左列借宽，借走不还。
+   *
+   * 现在：树变宽 = 查看器变窄（面板总宽、左缘、左列一概不动），跟手到
+   * 「面板 − MIN_VIEWER」为止；想让面板整体更宽，拖**外层**（c4）的把手。
+   */
+  if (RESIZE_PARENT[key] === undefined) {
     return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
   }
-
-  /*
-   * 一切以**实际渲染宽**为基准，不以存储值为基准。
-   *
-   * 1440 上「拖了没反应」的根因就在这里：存储里 `c4=600`（用户以前拖过），
-   * 但面板被视口钳到 444；若拿 600 判断"还有余量"，会得出"不需要变宽" → 拖了也不动。
-   * 用户看到的是渲染宽度，计算就必须用渲染宽度。
-   */
+  // 嵌套列：以**渲染宽**为基准（存储值可能被 layout 钳小过，拿它当基准会"拖了先不动"）。
+  // 每帧都从「基准 + 累计位移」重算 → 同一鼠标位置永远同一结果（幂等，无累计漂移）。
   const box = layout({ viewport, widths: start, requested: folded, panelOpen: true });
-  const panelReal = box.panel;
-  const treeReal = box.tree;
-  const viewer = Math.max(0, panelReal - treeReal);
-
-  const sign = HANDLE_SIGN[key];
-  const desiredTree = treeReal + sign * deltaX;
-  const minTree = WIDTH_LIMITS[key][0];
-  const patch: Partial<Widths> = {};
-
-  // 空间从三处找，按"代价最小"的顺序：① 面板已有余量 → ② 面板可以长 → ③ 从左边借宽
-  const wantedPanel = desiredTree + viewer;
-  let panelNext = panelReal;
-
-  const panelLimitNow = maxWidthOf(parent, viewport, start, folded);
-  if (wantedPanel <= panelReal) {
-    panelNext = panelReal;                                     // ① 面板本来就有余量
-  } else if (wantedPanel <= panelLimitNow) {
-    panelNext = wantedPanel;                                   // ② 面板还能长
-    patch[parent] = panelNext;
-  } else {
-    /*
-     * ③ 面板已到视口上限（1440 + 左两列展开：面板卡在 444、树卡在 238）。
-     *    这是「文件树拖动很垃圾」的真正根因 —— 不是上限数字小，而是**没有空间可给**。
-     *
-     *    解法：**从左边借宽** —— 先借 c2（会话列，下限 240），不够再借 c1（助手列，下限 180）。
-     *    借宽而不是折叠列：借宽用户看得见（左列变窄）、也能再拖回去，不会被静默改状态。
-     *    （`openHistory` 在窗口放不下时也是"从左边借"的同一思路。）
-     */
-    let borrow = wantedPanel - panelLimitNow;
-    let nextC2 = start.c2;
-    let nextC1 = start.c1;
-    if (!folded.groups) {
-      const take = Math.min(borrow, Math.max(0, nextC2 - WIDTH_LIMITS.c2[0]));
-      nextC2 -= take; borrow -= take;
-    }
-    if (!folded.nav && borrow > 0) {
-      const take = Math.min(borrow, Math.max(0, nextC1 - WIDTH_LIMITS.c1[0]));
-      nextC1 -= take; borrow -= take;
-    }
-    if (nextC2 !== start.c2) patch.c2 = nextC2;
-    if (nextC1 !== start.c1) patch.c1 = nextC1;
-    const widthsAfterBorrow = { ...start, ...patch };
-    const panelLimitAfter = maxWidthOf(parent, viewport, widthsAfterBorrow, folded);
-    panelNext = Math.min(panelLimitAfter, wantedPanel);
-    if (panelNext > panelReal) patch[parent] = panelNext;
+  if (key === "c4t") {
+    return { c4t: dragWidth("c4t", box.tree, deltaX, maxWidthOf("c4t", viewport, start, folded)) };
   }
-
-  // 内层按"实际拿到多少空间"收敛：拖到哪停到哪（不存超出值，否则松手会被 layout 弹回）
-  const treeMax = Math.max(minTree, panelNext - MIN_VIEWER);
-  patch[key] = Math.min(Math.max(Math.round(desiredTree), minTree), treeMax);
-  return patch;
+  return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
 }
