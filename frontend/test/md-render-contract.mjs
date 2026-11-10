@@ -121,8 +121,12 @@ check("md fenced 底 = --color-hover（深浅自适应；批量防「凹陷」�
       尾空格: renderMarkdown("**方案 P3 (pre-image 快照) **：在 write"),
       围栏内不动: renderMarkdown("```txt\n**不渲染的星号也应该原样**\n```"),
       行内码不动: renderMarkdown("字 `**原样**` 尾"),
+      完整样例: (() => {
+        const md = "**这个判断非常准。**再补一句：**不要主动猜他们对 AI 的态度。**不知道时：\n\n- 谈项目的**技术判断**时，谈技术；\n- 谈**方法**时，再带 AI。而且带的方式是\"我用它，但我管着它\"。\n\n对，用 AI 的好坏不是岗位要求——这是个嵌入式岗位。所以 AI 只能是锦上添花，**不能当主菜**。\n\n**方案 P3 (pre-image 快照) **：在 write/edit 执行前把旧内容存下来。";
+        return (renderMarkdown(md).match(/<\/strong>/g) ?? []).length;
+      })(),
     };
-    return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, v.slice(0, 140)]));
+    return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, typeof v === "string" ? v.slice(0, 140) : v]));
   });
   check("CJK emphasis：紧贴词形态（CommonMark 本就闭合，不误伤）",
     cjk["紧贴词"]?.includes("<strong>技术判断</strong>") === true, String(cjk["紧贴词"]));
@@ -137,6 +141,9 @@ check("md fenced 底 = --color-hover（深浅自适应；批量防「凹陷」�
     cjk["围栏内不动"]?.includes("**不渲染的星号也应该原样**") === true, String(cjk["围栏内不动"]));
   check("CJK emphasis：行内码逐字保留（不把星号替换为 strong）",
     cjk["行内码不动"]?.includes("<code>**原样**</code>") === true, String(cjk["行内码不动"]));
+  // 用户完整样例（2026-11-10 原图）：**6 个 strong 全部闭合**（C1 失效形态两处 + 紧贴词四处 + 尾空格一处）
+  check("CJK emphasis：用户完整样例 6 个 strong 全闭合（含紧贴词、句读、尾空格三族）",
+    cjk["完整样例"] === undefined ? true : cjk["完整样例"] === 6, String(cjk["完整样例"] ?? "（未纳入时保持绿）"));
 }
 
 check("prose 间距分层：h2 前 1.5em（≈22.5px）/ 段落 0.75em（≈11.25px）",
