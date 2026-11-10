@@ -27,9 +27,16 @@ html, body, button, input, textarea, select {
 .md-inverse li::marker { color: rgba(255, 255, 255, 0.7); }
 .md-body li { margin: 0.2em 0; }
 .md-body li > ul, .md-body li > ol { margin: 0.15em 0; }
-/* md 字号谱系全部走相对 em（随「显示/字号」偏好整组缩放；禁止 px 硬值——
-   2026-11-10 用户报「字号不统一」的实证：pre code 12px 硬值拖滑块时正文变大、代码块不动）
-   谱系：正文 15(1em) · 表格 0.94 · 行内码 0.88 · 代码块 0.8 → 15 / 14.1 / 13.2 / 12 默认 */
+/*
+ * md 字号谱系全部走相对 em（随「显示/字号」偏好整组缩放；禁止 px 硬值——
+ * 2026-11-10 用户报「字号不统一」的实证：pre code 12px 硬值拖滑块时正文变大、代码块不动）。
+ * 谱系：正文 15(1em) · 表格 0.94 · 行内码 0.88 · 代码块 0.8 → 15 / 14.1 / 13.2 / 12 默认。
+ * 对照（全部源码可核，依据挂 frontend-spec §2.1）：LobeChat `style.css:57` 行内码 0.875em、
+ * 行高 1.8；koharu `theme/markdown.css:20-21` 正文 1rem/1.8 且由用户偏好驱动；
+ * butterfly `var.styl:51` 代码块行高独立 1.6；Tailwind Typography `styles.js:33-63`
+ * 每档 fontSize+lineHeight 成对（p 14/24）——本谱系是「同族比例」结构（倍数制），
+ * 行内码/表格在 0.875–0.9 与 0.94 区间中位。用户偏好驱动 = koharu 同构（store/settings.ts）。
+ */
 .md-body code { background: var(--color-hover); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
 .md-body pre { background: var(--color-sunken); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
 .md-body pre code { background: none; padding: 0; font-size: 0.8em; line-height: 1.6; }
