@@ -278,3 +278,23 @@ open-webui `ResizableSidePanel.svelte`（`dx` 直接换算宽）；详细对比�
   `knowledge/reference-baseline.md`「文字选区」行（Gitea `base.css:269` /
   `codeeditor.css:177`、Rocket.Chat `codeBlockStyles.ts:13`、LobeChat `chatPanel.css.ts:544`）。
 - 机器检查：`test/design-system.test.mjs`（tokens.css 结构断言 + 白字 × accent-solid 5 预设 × 深浅色 ≥4.5 矩阵）。
+
+### 2.30 「明面容器」在深色下必须比所在底更亮（必须）
+
+- 场景：一切"平铺在页面/卡片上、自身有底色的内容容器"——md 的 fenced/th/行内码、思考块、
+  工具块（运行/成功/失败）、用户气泡、状态徽标 soft、失败横幅、引用块等。
+- 规则：
+  - **必须** 这些容器在深色模式有**显式的深色边界**（`[data-theme-mode="dark"]` 覆盖或主题引擎派生）；
+    **必须不** 让深色沿用浅色静态 hex——thinking/tool 块曾有 #fafafa/#f4f4f5（白色块） such 病（2026-11-10 实测修掉）；
+  - **必须** 深色底**不得比其所在页面底更暗**（方向向上：`#292828` 页面上的容器 ≥ hover `#2f2e2d`）；
+    同向回归锁在 `md-render-contract`（语义块三项 + th 一项）;
+  - **必须** 引用既有体系而不是新造值：中性块用 `--color-hover`（深色亮/浅色暗的双向 token）、
+    语义块用 `*-soft` 的深色派生（规范 2.26）、用户气泡用 `--color-accent-solid`（白字 AA 由 token 语义保证）。
+- 依据：① C213（badge soft 底比页面暗）/ C215（fenced 底 sunken 深色凹陷）——同一族，病根是
+  "浅色静态值深色沿用"的系统性缺口（2006-11-10 实测清单：五个 `--color-message-*` 全部无深色值）；
+  ② 方向参照（标注级别：观察，非 A 级）：GitHub dark 的 fenced 相对页面上**抬一档**
+  （页面 #0d1117 → fenced #161b22）；LobeChat dark 的 message 容器同向。
+  koharu 的深色代码面下游走黑（card×80%+black）是它自身主题色系的取向 ——
+  **方向类自身别做争议**：本条文的执行依据是我们自己的 C213/C215 实测家族 +
+  probe 全清（`evidence/ui-round10/semantic-{dark,light}.png`）；参考方向只作背景，不作条文。
+- 机器检查：`pnpm test:md`（语义块换挡断言）、`pnpm audit:a11y`（深色块的对比度）、视觉矩阵。

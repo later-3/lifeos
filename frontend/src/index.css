@@ -93,6 +93,8 @@ html, body, button, input, textarea, select {
    真要更宽的表格（内容本身就长）才走 overflow-x 滚动，那是内容决定，不是压缩决定。 */
 .md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; min-width: 4.5em; }
 .md-body th { background: var(--color-sunken); font-weight: 600; }
+/* 表头也是"明面容器"（spec 2.30）：深色下比所在底**亮**（hover），浅色保留 sunken */
+[data-theme-mode="dark"] .md-body th { background: var(--color-hover); }
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
@@ -224,4 +226,18 @@ html, body, button, input, textarea, select {
   --color-danger-soft: #413130;
   --color-success-soft: #2b3f36;
   --color-running-soft: #273d46;
+  /*
+   * 状态/内容块的深色映射（2026-11-10，线 B 第 1 项）
+   * —— 这五个 token 此前**没有任何深色重算**（tokens.css 只有浅色静态值）：
+   * 深色下思考块/工具块 = **白色块**（#fafafa/#f4f4f5），是用户截图「黑色模式下不行」的主要观感。
+   * 映射遵守「明面容器深色方向」（spec 2.30）：明面层上的内容容器底**必须比页面底亮**；
+   * 语义块（done/error）直接走对应 `*-soft`（它们已有符合方向的深色派生，规范 2.26）；
+   * 用户气泡换成 `accent-solid`（Telegram/Discord dark 的主力气泡同构：主色底 + 白字，
+   * 且该 token 的白字 AA 由主题引擎保证——浅色气泡保留既有黑底白字，见 tokens.css）。
+   */
+  --color-message-thinking: var(--color-hover);
+  --color-message-tool: var(--color-hover);
+  --color-message-tool-done: var(--color-success-soft);
+  --color-message-tool-error: var(--color-danger-soft);
+  --color-message-user: var(--color-accent-solid);
 }

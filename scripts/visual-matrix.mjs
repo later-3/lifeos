@@ -123,6 +123,24 @@ async function installFixtures(page) {
 
 /* ── 场景矩阵 ─────────────────────────────────────────────────────────── */
 
+/*
+ * md-rich（2026-11-10 线 B 第 3 项）：**把 md 内容的渲染面层纳入固定基线** ——
+ * 标题/列表/表格/代码块（含高亮 span）/引用/思考/工具成功/失败块一次截图，
+ * 深浅色各两视口 = 4 张；这些在此前 20 张里只有"轻量正文"，md 元素从来没有基线。
+ * 注意：fixture 的文本必须含恰好一段代码（bash+ts），防止依赖真实数据。
+ */
+const MD_RICH_MESSAGES = [
+  { role: "user", id: "md-u1", text: "跑表与代码都给我看一眼", blocks: [{ type: "text", text: "跑表与代码都给我看一眼" }], speaker: { kind: "user" } },
+  {
+    role: "assistant", id: "md-a1", stopReason: "stop", text: "好的",
+    blocks: [
+      { type: "thinking", text: "先梳理要展示的 md 元素：标题、列表、表格、代码块、引用。" },
+      { type: "toolCall", name: "run_tests", state: "done", callId: "md-t1" },
+      { type: "text", text: "## md-rich 夹具\n\n- 列表项一（含 `行内码`）\n- 列表项二\n\n| 用例 | 状态 | 耗时 |\n| --- | --- | --- |\n| 登录 | 通过 | 32ms |\n\n> 引用块：保持克制的 md 排版。\n\n```ts\nexport function retry(taskId: string, n = 3): void {\n  // 指数退避，最多 n 次\n  setTimeout(() => retry(taskId, n + 1), n * 100);\n}\n```" },
+    ],
+  },
+];
+
 const SCENES = [
   { name: "chat", enter: async () => {} },
   {
@@ -149,6 +167,18 @@ const SCENES = [
     enter: async (page) => {
       await page.locator('header button[aria-label="显示设置"]').click();
       await page.waitForSelector('[data-testid="popover"]', { timeout: 8000 });
+    },
+  },
+  {
+    name: "md-rich",
+    // 上面已用 route mock 的 SESSION_DETAIL（fx-1）由 installFixtures 打 —— 改打 md-r-response 单独路由：
+    enter: async (page) => {
+      await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, async (route) => {
+        await route.fulfill({ status: 200, contentType: "application/json",
+          body: JSON.stringify({ sessionId: "fx-1", messages: MD_RICH_MESSAGES, meta: { thinkingLevel: "off", running: false, context: null } }) });
+      });
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(700);
     },
   },
   {

@@ -44,6 +44,11 @@ const browser = await playwright.chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
 await page.goto(APP_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(800);
+if (process.argv.includes("--dark")) {
+  await page.evaluate(() => { localStorage.setItem("lifeos.theme", JSON.stringify({ mode: "dark", preset: "neutral" })); });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
+}
 
 const probe = await page.evaluate(async () => {
   const { renderMarkdown } = await import("/src/message-markdown.tsx");
@@ -116,6 +121,33 @@ check("prose 间距分层：h2 前 1.5em（≈22.5px）/ 段落 0.75em（≈11.2
   })(),
   `h2-mt=${probe.spacing?.h2mt} p-mb=${probe.spacing?.pmb}`);
 
+// 语义块深浅换挡（spec 2.30）—— 追加在 browser 关闭前的第二段探针
+{
+  const semantic = await page.evaluate(() => {
+    const mk = (cls) => {
+      const el = document.createElement("div");
+      el.className = cls;
+      document.body.appendChild(el);
+      const bg = getComputedStyle(el).backgroundColor;
+      el.remove();
+      return bg;
+    };
+    return {
+      mode: document.documentElement.dataset.themeMode,
+      thinking: mk("bg-message-thinking"),
+      toolDone: mk("bg-message-tool-done"),
+      user: mk("bg-message-user"),
+    };
+  });
+  check("语义块：thinking/tools 深色不再沿用浅色静态值（#fafafa/#f4f4f5 已派生）",
+    !(semantic.mode === "dark" && semantic.thinking === "rgb(250, 250, 250)"),
+    `${semantic.mode}: thinking=${semantic.thinking} done=${semantic.toolDone}`);
+  const channels = semantic.user.match(/\d+/g)?.map(Number) ?? [];
+  check("语义块：user 气泡深色 = accent-solid（主题派生）、浅色保持黑",
+    semantic.mode === "dark" ? channels.every((v) => v > 40) : channels.every((v) => v < 40),
+    `${semantic.mode}: user=${semantic.user}`);
+}
+
 await browser.close();
 
 const failed = results.filter((r) => !r.ok);
@@ -123,3 +155,4 @@ console.log(failed.length === 0
   ? `\nmd 渲染契约通过（${results.length} 项）`
   : `\nmd 渲染契约 ${failed.length} 项失败`);
 process.exitCode = failed.length === 0 ? 0 : 1;
+
