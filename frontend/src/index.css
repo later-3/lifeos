@@ -27,9 +27,12 @@ html, body, button, input, textarea, select {
 .md-inverse li::marker { color: rgba(255, 255, 255, 0.7); }
 .md-body li { margin: 0.2em 0; }
 .md-body li > ul, .md-body li > ol { margin: 0.15em 0; }
+/* md 字号谱系全部走相对 em（随「显示/字号」偏好整组缩放；禁止 px 硬值——
+   2026-11-10 用户报「字号不统一」的实证：pre code 12px 硬值拖滑块时正文变大、代码块不动）
+   谱系：正文 15(1em) · 表格 0.94 · 行内码 0.88 · 代码块 0.8 → 15 / 14.1 / 13.2 / 12 默认 */
 .md-body code { background: var(--color-hover); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
 .md-body pre { background: var(--color-sunken); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
-.md-body pre code { background: none; padding: 0; font-size: 12px; line-height: 1.6; }
+.md-body pre code { background: none; padding: 0; font-size: 0.8em; line-height: 1.6; }
 .md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
 /* 引用块里的内联代码：保持正文色（继承的弱化色叠在代码底色上对比度不足 4.5，UI 契约 2026-10-25 实测） */
 .md-body blockquote code { color: var(--color-ink-900); }

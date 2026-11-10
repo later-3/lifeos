@@ -100,7 +100,7 @@ export function ResponseBar({
                 onClick={onToggleProcess}
                 /* 命中区 ≥28（闸 3）：文字行只有 18px，靠 min-h-7 顶到 28；触屏 44 保底同旧 ProcessBar */
                 className="group flex min-h-7 items-center gap-1.5 text-left text-meta text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
-                <IconChevronRight size={13} aria-hidden="true"
+                <IconChevronRight size={14} aria-hidden="true"
                   className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
                 <span data-testid="response-summary" className="min-w-0 truncate tabular-nums">{summary}</span>
                 <span className="shrink-0 whitespace-nowrap text-micro text-ink-500 group-hover:text-ink-700">
