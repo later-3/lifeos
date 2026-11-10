@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef } from "react";
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { decorateCodeBlocks } from "./md-highlight";
+import { fixCjkEmphasis } from "./md-cjk";
 
 /** marked v18 的 code renderer 收**对象**参数；HTML 全部 `escaped`，不做原始透传。 */
 function codeRenderer({ text, lang }: { text: string; lang?: string }): string {
@@ -28,7 +29,8 @@ function codeRenderer({ text, lang }: { text: string; lang?: string }): string {
 const marked = new Marked({ renderer: { code: codeRenderer } });
 
 export function renderMarkdown(text: string): string {
-  return DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { USE_PROFILES: { html: true } });
+  // CJK 边界修正先于 marked（这层处理只插零宽连接符，先于 sanitize；见 md-cjk.ts 的规范摘录）
+  return DOMPurify.sanitize(marked.parse(fixCjkEmphasis(text), { async: false }) as string, { USE_PROFILES: { html: true } });
 }
 
 export function Markdown({ text, inverse = false, className = "" }: { text: string; inverse?: boolean; className?: string }) {
