@@ -324,3 +324,25 @@ test("头像三档底色在 5 预设 × 深浅色下都 ≥4.5 于白字（视�
     }
   }
 });
+
+test("文字选区：普通文本 = accent-solid + 白字 ≥4.5；代码区用 alpha 档（2026-11-10）", () => {
+  // 用户 2026-11-10（暗色模式）："鼠标选中拖一段文字，那个背景高亮我基本上看不到。"
+  // 旧值是 accent-soft：深色下 L*≤30，与页面底（L*≈29）几乎同亮度 → 选区隐形。
+  // 参考产品（普通文本都是实心主色 + 反色字）：Gitea base.css:269-272、
+  // 代码区 alpha + currentcolor：gitea codeeditor.css:177-181（light 30%/dark 50%）、
+  // LobeChat chatPanel.css.ts:544（22%）、Rocket.Chat codeBlockStyles.ts:13。
+  // tokens.css 只有 accent-solid 引用（测试锁结构而不是具体数值）。
+  const css = readFileSync(join(SRC, "design/tokens.css"), "utf8");
+  assert.ok(/::selection\s*{[^}]*--color-accent-solid/.test(css.replace(/\n/g, " ")),
+    "全局 ::selection 必须用 accent-solid（实心、白字可达 AA）");
+  assert.ok(/pre ::selection[^}]*color-mix/.test(css.replace(/\n/g, " ")),
+    "代码区（pre）选区必须是 alpha 档，语法 token 色不能被盖死");
+  // accent-solid 与白字的 AA 由 maxLforWhiteText 语义保证；这里锁矩阵（同头像一案的写法）
+  for (const preset of Object.keys(THEME_PRESETS)) {
+    for (const mode of ["light", "dark"]) {
+      const p = calculatePalette(clampState({ ...THEME_PRESETS[preset], preset, mode }));
+      const ratio = contrastOf(p.accentSolid, [100, 0, 0]);
+      assert.ok(ratio >= 4.5, `${preset}/${mode}: 选区白字 vs accent-solid = ${ratio.toFixed(2)} < 4.5`);
+    }
+  }
+});

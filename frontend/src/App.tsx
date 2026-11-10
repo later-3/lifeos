@@ -2895,6 +2895,7 @@ export default function App() {
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}
+                  status={<StatusMarks status={derived.agents[item.id]} unit="会话" />}
                   actions={
                     <>
                       <IconButton label={`配置 ${item.name}`} size="sm" onClick={() => setConfigAgent(item)}>
@@ -2917,19 +2918,18 @@ export default function App() {
                   {/*
                     * **不能再嵌套 button**（2026-11-09 axe：`nested-interactive` 34 次）：
                     * 行本身已经是 `role="button"`，里面再放一个真 `<button>` 是非法结构，
-                    * 读屏与键盘都会出现"两个可点目标叠在一起"。
+                    * 读屏与键盘都会出现“两个可点目标叠在一起”。
                     * 改成语义化 span：`role="button"` + tabIndex + Enter/Space，行为不变，
                     * 但不构成嵌套交互元素。
                     */}
                   {/*
                     * 头像**不做交互元素**（2026-11-09 axe `nested-interactive`）：
-                    * 行本身就是 role=button，行内再放任何可聚焦/可点的东西都构成"交互元素嵌套"。
-                    * 配置入口移到行尾的 actions 区（hover 出现）—— 与"删除助手"同一处，
-                    * 两个动作在同一区域，也不再用"点头像"这种隐藏入口。
+                    * 行本身就是 role=button，行内再放任何可聚焦/可点的东西都构成“交互元素嵌套”。
+                    * 配置入口移到行尾的 actions 区（hover 才出现）—— 与“删除助手”同一处，
+                    * 两个动作在同一区域，也不再用“点头像”这种隐藏入口。
                     */}
                   <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
                   <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
                 </Row>
               ))}
             </div>

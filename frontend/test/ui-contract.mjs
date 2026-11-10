@@ -45,6 +45,17 @@ async function loadPlaywright() {
 }
 
 const results = [];
+
+/*
+ * hover-only 行动作（2026-11-10）：助手行的「配置/删除」与行尾状态叠在同一格，
+ * hover 才可见/可点。测试的点击点因此必须**先 hover 所在行**——
+ * 否则按钮是 pointer-events:none，Playwright 的 actionability 会一直等（30s 超时）。
+ */
+async function clickRowAction(page, locator) {
+  await locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]").hover();
+  await locator.click();
+}
+
 async function measureHistory(target) {
   return await target.evaluate(({ MIN_CONTRAST }) => {
     const main = document.querySelector("main");
@@ -1076,10 +1087,70 @@ if (await sessionRow.count() === 0) {
   await page.evaluate(() => document.activeElement?.blur?.());
 }
 
+// 助手行的「配置/删除」同样 hover-only（2026-11-10 用户："不要固定显示占用空间，
+// 和会话列表里那个一样：移开什么都看不到，移上去才出现"）。
+// 同款五条：默认隐藏不可点 / hover 出现 / 移开消失 / 隐藏不可误点 / 键盘可达。
+const agentActionState = () => page.evaluate(() => {
+  const row = document.querySelector('[data-shot-mask="agent-rows"] [role="button"]');
+  const btn = row === null ? null : row.parentElement?.querySelector('[aria-label^="配置 "]');
+  if (row === null || btn === null) return null;
+  const wrap = btn.closest('[class*="pointer-events-none"]') ?? btn.parentElement;
+  const box = btn.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  // 淡出是套在槽内容外层的容器上（opacity 不继承，徽标自己的 computed 永远是 1）；
+  // 该行若没有徽标（零值不渲染），status 为 null，读不到 opacity 时返回 null 让断言自己判断。
+  const status = row.parentElement?.querySelector('[data-state-count]')?.closest('[class*="col-start-1"]');
+  return {
+    opacity: wrap === null ? null : getComputedStyle(wrap).opacity,
+    pointer: wrap === null ? null : getComputedStyle(wrap).pointerEvents,
+    hitIsAction: hit !== null && (hit === btn || btn.contains(hit)),
+    statusOpacity: status == null ? null : getComputedStyle(status).opacity,
+  };
+});
+const agentRow = page.locator('[data-shot-mask="agent-rows"] [role="button"]').first();
+if (await agentRow.count() === 0) {
+  check("助手行动作区：默认隐藏且不可点", false, "找不到助手行样本");
+  check("助手行动作区：悬停出现", false, "找不到助手行样本");
+  check("助手行动作区：移开鼠标即隐藏", false, "找不到助手行样本");
+  check("助手行动作区：隐藏时不可误点", false, "找不到助手行样本");
+  check("助手行动作区：键盘 Tab 进入时可见", false, "找不到助手行样本");
+} else {
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(280);
+  const idle = await agentActionState();
+  check("助手行动作区：默认隐藏且不可点", idle?.opacity === "0" && idle?.pointer === "none", JSON.stringify(idle));
+
+  await agentRow.hover();
+  await page.waitForTimeout(280);
+  const hovered = await agentActionState();
+  check("助手行动作区：悬停出现（状态徽标同步让位）",
+    hovered?.opacity === "1" && hovered?.pointer === "auto"
+      && (hovered?.statusOpacity === null || hovered?.statusOpacity === "0"),
+    JSON.stringify(hovered));
+
+  await page.mouse.move(900, 500);
+  await page.waitForTimeout(320);
+  const away = await agentActionState();
+  check("助手行动作区：移开鼠标即隐藏", away?.opacity === "0" && away?.pointer === "none", JSON.stringify(away));
+  check("助手行动作区：隐藏时不可误点", away?.hitIsAction === false, `命中动作钮=${away?.hitIsAction}`);
+
+  // 键盘：行获得焦点 → Tab 进动作区（focus-visible）→ 显现
+  await page.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="agent-rows"] [role="button"]');
+    row?.focus();
+  });
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(280);
+  const kbState = await agentActionState();
+  check("助手行动作区：键盘 Tab 进入时可见",
+    kbState !== null && kbState.opacity === "1", JSON.stringify(kbState));
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
 // 模态：语义 + Esc + 焦点归位
 const avatarTrigger = page.locator('[aria-label^="配置 "]').first();
 if (await avatarTrigger.count() > 0) {
-  await avatarTrigger.click();
+  await clickRowAction(page, avatarTrigger);
   await page.waitForTimeout(500);
   const opened = await measure(page);
   check("模态具备 role=dialog + aria-modal", opened.dialogCount === 1, `dialog=${opened.dialogCount}`);
@@ -1295,7 +1366,7 @@ check("消息类型背景可区分（按语义族，不按 kind 逐个）",
   messageKinds.map((item) => `${item.kind}:${item.bg}`).join(" / "));
 
 // 对话框里同样要成立（配置弹窗是控件最密的地方）
-await page.locator('[aria-label^="配置 "]').first().click();
+await clickRowAction(page, page.locator('[aria-label^="配置 "]').first());
 await page.waitForTimeout(400);
 const unnamedDialog = await noName();
 check("可见按钮都有可访问名（配置对话框）", unnamedDialog.length === 0, `${unnamedDialog.length} 个未命名`);
@@ -1372,7 +1443,7 @@ await page.waitForTimeout(250);
   });
   await configPage.goto(page.url(), { waitUntil: "networkidle" });
   await configPage.waitForTimeout(400);
-  await configPage.locator('[aria-label^="配置 "]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   const footerSave = configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first();
   check("配置 footer primary 写「保存全部」", (await footerSave.textContent() ?? "").includes("保存全部"), await footerSave.textContent() ?? "");
@@ -1394,7 +1465,7 @@ await page.waitForTimeout(250);
   }
 
   // 基础信息走同一个 footer primary：改名 → 保存全部 → 关闭，也不应误报。
-  await configPage.locator('[aria-label^="配置 "]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("saved-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first().click();
@@ -1404,7 +1475,7 @@ await page.waitForTimeout(250);
   check("保存基础信息后关闭不再提示未保存", await configPage.locator('[role="dialog"]').count() === 0);
 
   // 真正有未保存基础信息时，提示必须说清楚是哪个保存域。
-  await configPage.locator('[aria-label^="配置 "]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("dirty-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
@@ -1882,7 +1953,7 @@ const SHOTS = [
         source: "agent",
       }) });
     });
-    await shotPage.locator('[aria-label^="配置 "]').first().click();
+    await clickRowAction(shotPage, shotPage.locator('[aria-label^="配置 "]').first());
     await shotPage.waitForTimeout(400);
   }, '[role="dialog"]', async (shotPage) => {
     // 模态里的名字/描述/头像/身份/模型清单都是用户数据：用户新建或改一个助手，截图就漂
@@ -2273,6 +2344,9 @@ const REQUIRED = [
   "头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
   "头部快捷显示设置：Esc 关闭且焦点回到锚点",
   "头部快捷显示设置：手机不渲染（头部不再增加图标）",
+  "助手行动作区：默认隐藏且不可点",
+  "助手行动作区：悬停出现（状态徽标同步让位）",
+  "助手行动作区：键盘 Tab 进入时可见",
   "嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
   "嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
   "嵌套拖动：分隔条跟手",

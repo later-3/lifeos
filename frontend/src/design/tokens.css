@@ -434,9 +434,35 @@
     outline-offset: 2px;
     border-radius: 4px;
   }
+  /*
+   * 文字选区（2026-11-10 深色重做；用户："鼠标选中拖一段文字，背景高亮基本看不见"）。
+   *
+   * 旧：`background: accent-soft` —— 深色下 accent-soft 是 L*≤30 的近页面底色
+   *（#292828 ≈ L*29），选区等于隐形；这是“把浅色的淡色选区直接搬进深色”的同一类病
+   *（同规范 2.26 的 soft 底问题）。
+   *
+   * 现在（参考产品，都是实心主色底 + 反色字，深浅色各发各的）：
+   * - **Gitea** `web_src/css/base.css:269-272`：`::selection { background: --color-primary-light-1; color: --color-white }`；
+   * - **Rocket.Chat** 代码块不在主色系内用中性一档（`codeBlockStyles.ts:13-15`），
+   *   **Gitea 编辑器** 用主色 alpha 档 + `currentcolor`（`web_src/css/modules/codeeditor.css:177-181`；
+   *   light alpha 30%（theme-gitea-light.css:242）、dark alpha 50%（theme-gitea-dark.css:242）——
+   *   语法 token 色要能透出来，不能拿实心底盖；
+   * - **LobeChat desktop** `chatPanel.css.ts:544-546`：主色 22% 透明（輸入区）。
+   *
+   * 落地：普通文本 = `accent-solid`（与白字 AA 的语义 token，深浅色都有保证）+ 白字；
+   * 代码/源码区（`pre`）= accent-solid alpha 档（light 30% / dark 50%，取 Gitea 的两档）+ `currentcolor`。
+   * 机器检查：`test/design-system.test.mjs`（白字 × accent-solid 全矩阵 ≥4.5）。
+   */
   ::selection {
-    background: var(--color-accent-soft);
-    color: var(--color-ink-900);
+    background: var(--color-accent-solid);
+    color: #ffffff;
+  }
+  pre ::selection {
+    background: color-mix(in srgb, var(--color-accent-solid) 30%, transparent);
+    color: currentcolor;
+  }
+  [data-theme-mode="dark"] pre ::selection {
+    background: color-mix(in srgb, var(--color-accent-solid) 50%, transparent);
   }
   /* 细滚动条（macOS 默认覆盖式太粗，面板里会压内容） */
   * {

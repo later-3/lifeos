@@ -215,3 +215,10 @@
 | 社媒式的"已读回执""在线状态" | 不借 | 单人系统无此语义（同 §2 既有结论） |
 
 **复核触发**：出现**群聊**（多个 Agent 同屏）→ 分侧规则要重评（"只有自己发的话在右"该扩展到"每个 Agent 一个固定侧"）；出现 **Agent 间对话的 drawer** → 过程折叠要确认是否两处共用（当前共用 `MessageView`）；单轮工具数分布变化（例如以后普遍 < 10）→ "不逐条列工具"这个结论要重评。
+
+## 文字选区（::selection）与行尾动作（2026-11-10 补，Task 0009 第四轮）
+
+| 场景 / 需求 | 参考（来源 + 版本为什么可靠） | 为什么这样设计 | 好处 | 适用条件与代价 | Life OS 当前情况 | 当前倾向 |
+|---|---|---|---|---|---|---|
+| **文字选区**（用户 2026-11-10：暗色模式拖选"背景高亮基本看不见"） | **Gitea**（A 级，本机 `~/Code/reference/gitea`，`web_src/css/base.css:269-272`：`::selection { background: var(--color-primary-light-1); color: var(--color-white) }`，深浅主题各有值 `theme-gitea-{light,dark}.css:17`）；**Gitea 编辑器**（`codeeditor.css:177-181`：alpha 档 + `currentcolor`，light 30% / dark 50%）；**Rocket.Chat**（A 级，`codeBlockStyles.ts:13-15`：代码块 neutral 档）；**LobeChat desktop**（A 级，`chatPanel.css.ts:544-546`：主色 22% alpha） | 选区是"把文字从页面里抬出来"的临时层：实心主色 + 反色字让边界立刻清楚；代码区不能盖死语法色，于是退为 alpha + currentcolor | 深浅色都可见、与主题主色同源（皮肤换色不需要新决策）；alpha 档让代码选中仍可读 | 代价：页面主色弱（neutral 预设）时选区是"亮灰块"而不是彩色——与主题语义一致但偏淡 | 旧实现 `tokens.css:437` 用 `accent-soft`：深色下 L*≤30 与页面底（L*≈29）同亮度 → 隐形（与规范 2.26 的 soft 底同病） | **采用 Gitea 分档**：普通文本 = `accent-solid` + 白字（白字 AA 由 token 语义保证）；代码区（`pre`）= accent-solid alpha（light 30% / dark 50%，抄 Gitea 两档）+ `currentcolor`。**复核触发**：换主题引擎或 accent 语义变化时重算 |
+| **行尾动作（配置/删除）hover 才出现**（用户点名"与会话行一致，不占常驻空间"） | 内部先例 **SessionRow**（Task 0015 已验收的槽位模型：动作区与状态叠在同一格、hover 换内容不换几何、键盘 `group-has-[:focus-visible]`、触屏 `@media(hover:none)`） + 参考 **GitHub Copilot 会话行**（动作条 hover 出现，§4 既有行） | 常驻按钮污染扫描线：列表里每行都带两个图标时，扫名字的效率下降 | 行在静止时只有内容；hover 一格之内完成状态↔动作切换 | 代价：按钮不可见 = 可发现性下降（触屏由 focus 覆盖，键盘由 Tab 覆盖） | `Row` 是行容器的**唯一通用实现**（规范 2.3 的容器），-agent 行是唯一传 actions 的使用点 | **上移进 Row**：`status` 槽 + actions 覆盖层；使用点只传数据，不写可见性分支 |

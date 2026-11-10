@@ -249,3 +249,32 @@
 参考：参考实现语义对齐：opencode `session-panel-width.ts`（只保对侧最小宽）、
 open-webui `ResizableSidePanel.svelte`（`dx` 直接换算宽）；详细对比与删借宽的取舍见
 `knowledge/design/layout-model.md` §6。
+
+### 2.28 行尾动作必须走容器的槽位（hover 出现，不占常驻空间）（必须）
+
+- 场景：列表行尾的图标动作（助手行的「配置/删除」、会话行的「历史/重命名/删除」，以及未来的树/文件行）。
+- 规则：
+  - **必须** 用 `design/ui.tsx` `Row` 的 `status` + `actions`（状态与动作叠在同一栅格格，隐藏不塌、显示不抖）；
+  - **必须不** 在使用点自己写 hover 分支（`opacity-0 group-hover:*` 之类只许存在于 Row / SessionRow 容器内部）——
+    2026-11-10 起 SessionRow 的手写版保留运行；**新增**带动作的行**必须**走 Row，不得复制第二份；
+  - 动作隐藏时状态徽标必须可见（`StatusMarks` 挂 `status` 槽），hover 两者换位 —— 不要出现"格里悬空一段空白"；
+  - 键盘可达（`group-has-[:focus-visible]` 强制显现）与触屏分支（`@media(hover:none)`）由容器统一提供。
+- 依据：2026-11-10 用户（助手行两按钮常驻把列表拉长，"和会话列表里那个一样，鼠标移上去才显示"）。
+  上移前的形态见 `evidence/ui-round8/`（idle 一行干干净净、hover 右端两钮）。
+- 机器检查：`frontend/test/ui-contract.mjs`（助手行五条：默认隐藏 / hover 出现 / 移开隐藏 / 不可误点 / Tab 可见）。
+
+### 2.29 文字选区必须分档：正文实心、代码区 alpha（必须）
+
+- 场景：`::selection`（消息正文、文件树、Markdown、源码、diff 的拖选高亮）。
+- 规则：
+  - **必须** 全局 `::selection` = `--color-accent-solid` 底 + 白字（token 在深浅色下都保证白字 AA ——
+    它的语义就是"白字底"）；
+  - **必须** `pre ::selection` = alpha 档（light `30%` / dark `50%`，`color-mix` 透明化）+ `color: currentcolor`，
+    **必须不** 用实心底盖住代码块的语法色；
+  - **必须不** 用 `*-soft` 一类"底色需要随模式重算"的 token 当选区底 —— 2026-11-10 的实测缺陷：
+    `accent-soft` 深色档 L*≤30 与页面底（L*≈29）同亮度，深色下选区=隐形；
+  - 百分比数只允许写在 `tokens.css::selection` 注释引用的行号处（Gitea light/dark 两档），不在组件里。
+- 依据：2026-11-10 用户（暗色拖选不可见）；参考与数值出自
+  `knowledge/reference-baseline.md`「文字选区」行（Gitea `base.css:269` /
+  `codeeditor.css:177`、Rocket.Chat `codeBlockStyles.ts:13`、LobeChat `chatPanel.css.ts:544`）。
+- 机器检查：`test/design-system.test.mjs`（tokens.css 结构断言 + 白字 × accent-solid 5 预设 × 深浅色 ≥4.5 矩阵）。
