@@ -4,6 +4,7 @@ import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { useDialogFocus } from "./design/overlay";
 import { useInstallPrompt } from "./use-mobile";
 import { Button, Row } from "./design/ui";
+import { LAYER_CLASS } from "./design/surface";
 
 type AgentLite = { id: string; name: string; avatar?: AgentAvatarSpec };
 type ProjectLite = { id: string; name: string; isDefault?: boolean };
@@ -54,7 +55,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
 
   return (
     <div ref={panel} role="dialog" aria-modal="true" aria-label="导航"
-      className="fixed inset-0 z-50 flex flex-col bg-surface sm:hidden" data-testid="mobile-nav"
+      className={`fixed inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:hidden`} data-testid="mobile-nav"
       data-mobile-level={level} style={{ height: "var(--app-height, 100dvh)" }}>
       <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-4 pt-safe">
         {level !== "agents" ? (

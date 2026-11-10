@@ -29,7 +29,16 @@ export const MIN_CHAT = 420;
 export const MIN_HISTORY = 360;
 export const DEFAULT_HISTORY = 440;
 export const MIN_PANEL = 320;
-export const MIN_VIEWER = 206;
+/**
+ * 查看「器」保底 = 面板 − 树的剩余空间下限（2026-11-10 调整 206 → 160）。
+ *
+ * 依据（协议 §3.13：不是拍出来的数）：
+ * - **受压实测**：查看器的页签行/工具栏都是 `overflow-x-auto`，正文自动换行——
+ *   实测把查看器压到 160/140/120，出的是滚动条而不是内容溢出（FilePanel 的极限内容宽 ~69 + 可滚正文）；
+ * - **对称**：树的自身下限就是 160（`WIDTH_LIMITS.c4t[0]`），两栏同一档；
+ * - **收益**：树的可拖行程 = `面板 − MIN_VIEWER − 树宽`，206→160 在 1600 上从 354 行程升到 400。
+ */
+export const MIN_VIEWER = 160;
 /**
  * 检视面板（Task 0010）：与文件面板/完整历史**并存不互斥**（D10）。
  * 宽度走比例（D7/D12）：用户拖出的 `reviewRatio` 是"检视区占右侧可用宽度的份额"，
@@ -245,6 +254,27 @@ export function clampWidth(key: keyof Widths, value: number, limit?: number): nu
 }
 
 /**
+ * 嵌套关系：内层可拖区域属于哪个外层列（**唯一来源**）。
+ *
+ * 为什么需要它（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」）：
+ * 文件树（`c4t`）长在文件面板（`c4`）里面。旧实现给 `c4t` 的上限是「面板 − 查看器最小宽」，
+ * 而面板本身又被视口钳住 —— 1440 窗口上面板只有 444，于是 `c4t` 的可动范围只剩
+ * **160–238**（默认就是 240，等于**根本拖不动**）；1280 上更彻底：面板放不下 → 一个把手都没有。
+ *
+ * 嵌套列的拖动语义见 `dragCascade()`：**拖哪条边，哪条边跟手**。
+ * （2026-11-10 删除了当初配套的「顶到上限后从左列借宽」：
+ *  ① 它让树把手全程不动，面板在用户拖动的反方向扩张（用户原话「我往右拖呢，它在往左边扩张」）；
+ *  ② 从 c2/c1 借走的宽度不归还，拖完左列悄悄变窄；
+ *  ③「拖树」与「拖面板」两套语义串场。
+ *  想让面板整体更宽，拖**外层** `c4` 的把手 —— 那才是动面板宽度的正确入口。）
+ *
+ * 以后新增嵌套可拖区域（比如"面板里的预览区也可以拖"）只需在这里登记一行。
+ */
+export const RESIZE_PARENT: Partial<Record<keyof Widths, keyof Widths>> = {
+  c4t: "c4",   // 文件树 ⊂ 文件面板
+};
+
+/**
  * 某一列在给定视口下的**真实可视上限**（Task 0006）：把手拖到哪儿就该在哪儿停。
  *
  * 为什么需要它：旧实现只有常量表（c2≤440），而实际能放多少由视口算：
@@ -261,13 +291,21 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
   const c2 = folded.groups ? 0 : widths.c2;
   const other = key === "c1" ? 0 : c1;
   const otherRight = key === "c2" ? 0 : c2;
+  /*
+   * **上限公式必须与 `layout()` 的预算公式逐项一致**（2026-11-09 又抓到一次漂移）。
+   *
+   * `layout()` 算的是 `视口 − 左侧成本 − MIN_CHAT`，而这里原来多减了 `HANDLE_HIT(8)` ——
+   * 于是 1440 窗口上面板实际能渲染到 444，拖动却只允许到 436：**拖到 436 就停，空间还剩 8px**。
+   * `HANDLE` 是**布局占宽**（Task 0006 起是 0，把手改成浮层），`HANDLE_HIT` 只是鼠标命中区厚度，
+   * 两者都不该出现在宽度预算里。这是同一类缺陷的第二次（第一次是 c1 的 440 常量）。
+   */
   if (key === "c1" || key === "c2") {
-    // 左列上限：视口 − 图标轨 − 另一列 − 右侧最小占用（MIN_CHAT） − 把手厚度
-    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT - HANDLE_HIT);
+    // 左列上限：视口 − 图标轨 − 另一列 − 聊天保底
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - other - otherRight - MIN_CHAT);
   }
   if (key === "c4" || key === "c5") {
-    // 右侧列上限：视口 − 左侧全部 − MIN_CHAT − 把手厚度
-    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
+    // 右侧列上限：视口 − 左侧全部 − 聊天保底
+    return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT);
   }
   if (key === "c4t") {
     /*
@@ -279,9 +317,62 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
      * 这一条与 MaxWidthOf 的其它分支同一思路：**拖动上限 = 该列的真实可视上限**，
      * 不是视口一档、也不是常量一档。
      */
-    const panelLimit = Math.max(0, viewport - rail - c1 - c2 - MIN_CHAT - HANDLE_HIT);
-    const panel = Math.min(widths.c4, Math.max(MIN_PANEL, panelLimit));
+    /*
+     * **必须与 `layout()` 用同一个算法**（2026-11-09 用户第二次报「文件树拖动很垃圾」）：
+     * 旧实现在这里自己又算了一遍 panelLimit，与 layout 的公式差一档 ——
+     * 1440 窗口上：树默认 240，而这里算出上限 230 → **一按下去就被夹到 230 然后纹丝不动**
+     * （实测拖 400px，宽度取值只有 1 个）。用户看到的就是"拖不动"。
+     * 现在直接问 `layout()` 要它的 panel，两处公式不可能再漂移。
+     */
+    const panel = layout({ viewport, widths, requested: folded, panelOpen: true }).panel;
     return Math.max(WIDTH_LIMITS.c4t[0], panel - MIN_VIEWER);
   }
   return WIDTH_LIMITS[key][1];
+}
+
+/**
+ * 拖动一个（可能嵌套的）列时，**一次算出所有要变的宽度**（纯函数，可穷举单测）。
+ *
+ * 语义（每条都对应一个用户可见的行为；2026-11-10 按用户裁决修正第 2 条）：
+ *  1. 内层拖动 = 移动"内层与查看器之间"的分界：内层变大，查看器变小（外层总宽不变）；
+ *  2. 内层顶到边界就停（拖哪条边哪条边跟手；面板总宽是**外层** c4 把手的事，
+ *     不串场——旧版曾在这里从左列借宽，把手不动、面板反向扩张，见 `dragCascade` 注释）；
+ *  3. 往回拖时，先缩内层，外层保持（不回弹、不跳）；
+ *  4. 没有外层关系的列（c1/c2/c5）就是普通的单列拖动。
+ *
+ * 返回的是**补丁**（只含变化的键），调用方把它合进 widths 即可 —— 这样"哪些列会动"
+ * 这件事只在这个函数里决定，`useColumnWidth` 不再写第二套判断。
+ *
+ * `viewport`/`folded` 只用于算外层上限；`deltaX` 是鼠标位移（已经含方向，
+ * 方向由 `HANDLE_SIGN` 决定，见 `dragWidth`）。
+ */
+export function dragCascade(
+  key: keyof Widths,
+  start: Widths,
+  deltaX: number,
+  viewport: number,
+  folded: Folded,
+): Partial<Widths> {
+  /*
+   * **拖动的唯一语义：拖哪条边，哪条边跟手**（2026-11-10 重写）。
+   *
+   * 旧嵌套实现把「树变宽」实现成「整块面板变宽」：树长多少、面板往左长多少，
+   * 两者在屏幕上正好抵消——用户抓着的分隔条**从头到尾一动不动**，
+   * 看到的是另一条边在反向移动（实测 1600 拖 +100：把手 x 恒 1237，
+   * 面板左缘 x 反而 1000→900——用户原话「我往右拖呢，它在往左边扩张」）。
+   * 顶到上限后还从左列借宽，借走不还。
+   *
+   * 现在：树变宽 = 查看器变窄（面板总宽、左缘、左列一概不动），跟手到
+   * 「面板 − MIN_VIEWER」为止；想让面板整体更宽，拖**外层**（c4）的把手。
+   */
+  if (RESIZE_PARENT[key] === undefined) {
+    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
+  }
+  // 嵌套列：以**渲染宽**为基准（存储值可能被 layout 钳小过，拿它当基准会"拖了先不动"）。
+  // 每帧都从「基准 + 累计位移」重算 → 同一鼠标位置永远同一结果（幂等，无累计漂移）。
+  const box = layout({ viewport, widths: start, requested: folded, panelOpen: true });
+  if (key === "c4t") {
+    return { c4t: dragWidth("c4t", box.tree, deltaX, maxWidthOf("c4t", viewport, start, folded)) };
+  }
+  return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
 }

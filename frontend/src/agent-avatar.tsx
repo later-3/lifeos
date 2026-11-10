@@ -3,7 +3,17 @@ import { avatarBoxStyle } from "./avatar-style";
 
 export type AgentAvatarSpec = { kind?: string; file?: string; revision?: number };
 
-const AVATAR_TONES = ["bg-accent", "bg-ink-700", "bg-ink-900"];
+/**
+ * 头像底色（按 id 派生，同一个助手永远同色）。
+ *
+ * **不能用 `ink-700` / `ink-900`**（2026-11-09 视觉矩阵抓到的缺陷）：
+ * 这两个 token 在深色模式下是**近白**（L\*82 / L\*96），而首字母固定用白字
+ * → 深色下变成"白底白字"，头像只剩一个空白圆（矩阵图 chat-dark-1280 一眼可见）。
+ *
+ * 换成语义色后深浅两侧都成立：accent-solid / success / danger / running 都是
+ * "深底 + 白字"（它们本身就是为白字设计的，见 theme.ts 的 accentSolid 说明）。
+ */
+const AVATAR_TONES = ["bg-avatar-1", "bg-avatar-2", "bg-avatar-3"];
 
 export function avatarTone(id: string): string {
   let hash = 0;

@@ -23,7 +23,11 @@ import {
   fontFromSlider, fontLabel, sliderFromFont, sliderFromWidth, widthFromSlider, widthLabel,
   type DisplayPrefs,
 } from "./display-prefs";
+import {
+  badgePeriodS, badgeBreatheMax, dotBreatheMax, BADGE_DEFAULTS, type BadgePrefs, type BadgeStrength,
+} from "./badge-prefs";
 import { Button, IconButton } from "./design/ui";
+import { LAYER_CLASS } from "./design/surface";
 
 /* ── 分区注册表（数据驱动；新板块加一条即可）── */
 type SectionKey = "appearance" | "display" | "motion" | "language" | "models" | "notify" | "about";
@@ -205,12 +209,13 @@ function rgbHex(lstar: number, c: number, hDeg: number): string {
  * 2026-11-09 自审：上一版这里是一路裸列表，而同页的主题分区是卡 —— 同页两种结构是缺陷。
  * 契约保留：`data-testid="display-prefs"`、`#width` / `#font`、恢复默认按钮。
  */
-function DisplaySection({ prefs, viewport, onChange, onReset }: {
-  prefs: DisplayPrefs; viewport: number;
+function DisplaySection({ prefs, badges, viewport, onBadges, onChange, onReset, onBadgesReset }: {
+  prefs: DisplayPrefs; badges?: BadgePrefs; viewport: number;
   onChange: (next: DisplayPrefs) => void; onReset: () => void;
+  onBadges?: (next: BadgePrefs) => void; onBadgesReset?: () => void;
 }) {
   return (
-    <Section title="显示" desc="内容宽度与字号，立即生效、自动保存。数值写入 CSS 变量，不产生第二份数。">
+    <Section title="显示" desc="内容宽度、字号与状态徽标，立即生效、自动保存。数值写入 CSS 变量，不产生第二份数。">
       <div className="flex flex-col gap-4" data-testid="display-prefs">
         <Card title="内容宽度" hint="最左为专注（约 1/3 屏），最右为铺满">
           <div className="flex items-baseline justify-between gap-2">
@@ -223,7 +228,9 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
             value={sliderFromWidth(prefs.width, viewport)} aria-label={widthLabel(prefs.width)}
             onChange={(e) => onChange({ ...prefs, width: widthFromSlider(Number(e.currentTarget.value), viewport) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
-          <div className="flex justify-between text-micro text-ink-300"><span>专注</span><span>铺满</span></div>
+          {/* 端点提示是**文本**：tokens.css 头注明令 `ink-300` 只做分隔线/图标/装饰、禁止承载文本
+              （对比度 2.6:1）。这里原来用 ink-300，axe 审计报了 color-contrast。 */}
+          <div className="flex justify-between text-micro text-ink-500"><span>专注</span><span>铺满</span></div>
         </Card>
 
         <Card title="字号" hint="整组字阶等比缩放（micro 到 title 一起变），不改单个 px">
@@ -237,9 +244,65 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
             value={sliderFromFont(prefs.font)} aria-label={fontLabel(prefs.font)}
             onChange={(e) => onChange({ ...prefs, font: fontFromSlider(Number(e.currentTarget.value)) })}
             className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
-          <div className="flex justify-between text-micro text-ink-300"><span>85%</span><span>200%</span></div>
+          <div className="flex justify-between text-micro text-ink-500"><span>85%</span><span>200%</span></div>
         </Card>
 
+        {badges !== undefined && onBadges !== undefined && (
+          <Card title="状态徽标（运行 / 未读 / 失败）" hint="会话行与助手行的数字徽标、绿点红点与呼吸动画">
+            {/* 预览一行三态：调下面的参数，这里的就是「当前会话里的实际样式」 */}
+            <div data-testid="badge-preview" className="flex items-center gap-3 py-1">
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 bg-running-soft text-running text-micro font-medium leading-none tabular-nums animate-badge-breathe">1</span>
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 bg-success-soft text-success text-micro font-medium leading-none tabular-nums">3</span>
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 bg-danger-soft text-danger text-micro font-medium leading-none tabular-nums">1</span>
+              <span className="h-1.5 w-1.5 rounded-full bg-running animate-dot-breathe" data-state-dot="running" />
+              <span className="h-1.5 w-1.5 rounded-full bg-success" />
+              <span className="h-1.5 w-1.5 rounded-full bg-danger" />
+            </div>
+            <div data-testid="set-row-badge-speed">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-meta text-ink-700">动画速率</span>
+                <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-badge-speed">
+                  {badges.speed.toFixed(1)}×（{badgePeriodS(badges.speed).toFixed(2)}s）
+                </span>
+              </div>
+              <input id="badge-speed" data-testid="pref-slider-badge-speed" type="range" min={0.5} max={2.5} step={0.1}
+                value={badges.speed} aria-label="动画速率"
+                onChange={(e) => onBadges({ ...badges, speed: Number(e.currentTarget.value) })}
+                className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
+            </div>
+            <div data-testid="set-row-badge-amp">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-meta text-ink-700">呼吸幅度</span>
+                <span className="text-micro tabular-nums text-ink-500" data-testid="pref-value-badge-amp">
+                  {Math.round(badges.amplitude * 100)}%（徽标 {badgeBreatheMax(badges.amplitude).toFixed(2)} · 点 {dotBreatheMax(badges.amplitude).toFixed(2)}）
+                </span>
+              </div>
+              <input id="badge-amp" data-testid="pref-slider-badge-amp" type="range" min={0} max={100} step={1}
+                value={Math.round(badges.amplitude * 100)} aria-label="呼吸幅度"
+                onChange={(e) => onBadges({ ...badges, amplitude: Number(e.currentTarget.value) / 100 })}
+                className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
+              <div className="flex justify-between text-micro text-ink-500"><span>静止</span><span>v5（默认）</span></div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="配色强度">
+              {(["soft", "standard", "vivid"] as const).map((strengthValue) => (
+                <button key={strengthValue} type="button" role="radio" aria-checked={badges.strength === strengthValue}
+                  data-testid={`badge-strength-${strengthValue}`}
+                  onClick={() => onBadges({ ...badges, strength: strengthValue as BadgeStrength })}
+                  className={`h-7 rounded-control px-2.5 text-meta transition-colors ${
+                    badges.strength === strengthValue
+                      ? "bg-nav-selected font-semibold text-ink-900"
+                      : "text-ink-700 hover:bg-nav-accent"}`}>
+                  {strengthValue === "soft" ? "柔和" : strengthValue === "standard" ? "标准" : "鲜明"}
+                </button>
+              ))}
+            </div>
+            <div>
+              <Button variant="ghost" size="sm" onClick={onBadgesReset}>
+                <IconRefresh size={14} /> 徽标恢复默认
+              </Button>
+            </div>
+          </Card>
+        )}
         <div>
           <Button variant="ghost" size="sm" onClick={onReset}><IconRefresh size={14} /> 恢复默认</Button>
         </div>
@@ -249,10 +312,11 @@ function DisplaySection({ prefs, viewport, onChange, onReset }: {
 }
 
 /* ── 表面 ── */
-export function SettingsSurface({ section, onSection, theme, onTheme, prefs, viewport, onPrefs, onPrefsReset, onClose }: {
+export function SettingsSurface({ section, onSection, theme, onTheme, prefs, badges, viewport, onPrefs, onPrefsReset, onBadges, onBadgesReset, onClose }: {
   section: SectionKey; onSection: (k: SectionKey) => void;
   theme: ThemeState; onTheme: (next: ThemeState) => void;
   prefs: DisplayPrefs; viewport: number; onPrefs: (next: DisplayPrefs) => void; onPrefsReset: () => void;
+  badges?: BadgePrefs; onBadges?: (next: BadgePrefs) => void; onBadgesReset?: () => void;
   onClose: () => void;
 }) {
   // Esc 关闭（与模态同规）
@@ -267,7 +331,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
     language: <IconLanguage size={16} />, models: <IconPlug size={16} />, notify: <IconBell size={16} />, about: <IconInfoCircle size={16} />,
   };
   return (
-    <div className="absolute inset-0 z-30 flex flex-col bg-surface sm:flex-row"
+    <div className={`absolute inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:flex-row`}
       data-testid="settings-surface" role="region" aria-label="设置">
       {/*
         * 手机顶部条：**必须有可见的关闭入口**（2026-11-09 审核发现：手机上既没有图标轨、
@@ -291,7 +355,9 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
                 <button key={it.k} type="button"
                   className={`relative flex h-9 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
                     section === it.k
-                      ? "font-semibold text-accent max-sm:bg-surface"
+                      // 选中态文字用 ink-900（accent 在 nav-bg 上只有 4.33，不到 AA 4.5）；
+                      // 强调交给左侧 2px 指示条 —— 颜色是稀缺信号，不该由文字颜色承担
+                      ? "font-semibold text-ink-900 max-sm:bg-surface"
                       : "text-ink-700 hover:bg-nav-accent"} sm:w-full`}
                   aria-current={section === it.k ? "page" : undefined}
                   onClick={() => onSection(it.k)}>
@@ -316,7 +382,8 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, vie
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8" style={{ maxWidth: "var(--container-settings)" }}>
           {section === "appearance" && <AppearanceSection theme={theme} onChange={onTheme} />}
-          {section === "display" && <DisplaySection prefs={prefs} viewport={viewport} onChange={onPrefs} onReset={onPrefsReset} />}
+          {section === "display" && <DisplaySection prefs={prefs} badges={badges} viewport={viewport}
+            onChange={onPrefs} onReset={onPrefsReset} onBadges={onBadges} onBadgesReset={onBadgesReset} />}
         </div>
       </div>
     </div>

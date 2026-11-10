@@ -86,3 +86,50 @@ frontend/src/
   `textColorCount` 在 6/7 之间跳，现在按 `data-state-count` / `role=status` 排除计数（仍查对比度）。
   第一次修的时候用 `data-shot-mask` 排除，结果只剩 2 种颜色 —— **等于把真正的风格词汇也漏掉了**，
   已改成精确匹配动态元素。
+
+## 6 工具链（2026-11-09 建立，五道闸）
+
+用户原话：「我们的细节不能比参考项目差……可能搞一些工具，还有就是代码层面、架构层面下功夫，
+保证当前的效果和后续的效果。」
+
+### 6.1 已落地
+
+| 工具 | 命令 | 防住什么 | 抓到过的真缺陷 |
+|---|---|---|---|
+| **T1 设计系统契约** | `pnpm test:design` | 浮层再分裂（5 套→1 套）、层级顺序错、token 写了没人用、深浅色只做一半、状态强度关系倒退 | 头像"白底白字"、`ink-500` 深色 2.45:1 |
+| **T2 视觉矩阵** | `pnpm test:visual` | 用户数据进基线、深色缺陷看不见、基线不入库 | 头像空白圆（chat-dark-1280 一眼可见） |
+| **T3 axe 审计** | `pnpm audit:a11y` | 补上规范写了从未实现的「axe 无 serious/critical」 | `ink-500` 对比度 30 次、`ink-300` 承载文本、aside 无可访问名 |
+| **T4 样板间** | `frontend/dev/design-system.html` | 新页面"照抄对象"缺失 | —（10 section / 25 卡，深浅色可切） |
+| T5 视觉体检（既有） | `pnpm audit:ui` | 字号/圆角/色/图标/命中区种类超上限 | 状态徽标让色数在 6/7 间跳（口径已修） |
+
+### 6.2 为什么不是"引入 taste-skill 一类的东西"
+
+外部 skill 的价值是把审美写成**可检查的约束**。我们有更好的原料：**参考项目的源码事实**
+（LobeHub 13 阶色阶、LibreChat `semanticTokens.spec.ts`、novu 的 18 条 `.grit` 自定义规则）。
+所以我们的做法是把这些"约束"直接写成我们自己的断言（T1），而不是再包一层别人的规则集。
+
+参考项目里值得抄的机制（都已核过源码）：
+- LibreChat `semanticTokens.spec.ts`：**把 token 的语义关系写成断言**
+  （dark dialog 必须 gray-875、composer hover 必须 gray-200/600、破坏性文字必须 red-400
+  且不能等于 status-error）→ 我们的 T1 就是同一思路；
+- novu `biome-plugins/*.grit`：18 条自定义 lint，把团队约定变成编译期报错 → 我们的 2.22/2.23 条文；
+- LobeHub `ui.lobehub.com`：活文档样板间 → 我们的 T4。
+
+### 6.3 差距（诚实）
+- 没有 CI（门禁都在本地跑）；接 CI 是独立 Task；
+- `App.tsx` 3501 行未拆（已进 todo，需独立 Task）；
+- 视觉矩阵只覆盖 5 个场景，检视面板/文件树详情页还没进矩阵。
+
+## 7 axe 审计抓到的三处真缺陷（2026-11-09，都已修）
+
+| 缺陷 | axe 报了几次 | 根因 | 修法 |
+|---|---|---|---|
+| `ink-500` 深色 2.45:1 | 30 | 写死 `L*42`（浅色的解），深色底不够亮 | `dark ? 68 : 42` + 4 底 × 5 预设 × 深浅色矩阵断言 |
+| `ink-300` 承载文本 | 设置页 2 / 批注卡 / PeerPanel / ReviewPanel 行号 | tokens.css 头注"只做分隔线"，但代码里当正文色用 | 全部改 `ink-500` |
+| `nested-interactive` | 34 | 行是 `role="button"`，里面又放真 `<button>` | `Row` 拆「主点击区 + 动作区（兄弟）」，新增 `actions` 槽位；页面不再往 children 塞按钮 |
+| `color-contrast`（失败块） | 11 | 用固定的 `--color-message-failure`（浅粉），深色下配浅红字 1.5:1 | 改 `bg-danger-soft` + 深色重算 `*-soft` 三档 |
+| `accent` 在 nav 底 4.33 | 19 | `accent` 是按"对 surface 达 AA"反解的，没算 nav 底 | 设置导航选中态文字改 `ink-900`，强调交给指示条 |
+| `landmark-unique` | 30 | 助手列/会话列两个 `aside` 都无可访问名 | `ResizeColumn` 加 `ariaLabel` |
+
+**共同点**：全都是"一次写成、之后没人量过"的地方。这一轮之后，`pnpm audit:a11y`
+把它们变成可回归的（38 次运行：4 视口 × 2 模式 × 5 场景）。

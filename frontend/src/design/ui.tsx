@@ -110,20 +110,70 @@ export const controlClass =
  * 底色来自 `colorFillSecondary` / `colorFillTertiary`）。
  * 不用阴影（D18），也不加第二通道（左色条）—— 选中的底色差已经比旧实现强 2.9 倍。
  */
-export function Row({ selected = false, className = "", children, onClick, testId }: {
+export function Row({ selected = false, className = "", children, onClick, testId, actions, status }: {
   selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
+  /**
+   * 行内动作（hover 出现的图标按钮）。
+   *
+   * **必须**通过这个 prop 传，由 Row 把它们渲染成"主点击区的**兄弟**"而不是子节点 ——
+   * 行本身是 `role="button"`，里面再放 `<button>` 是非法结构（axe `nested-interactive`：
+   * 读屏与键盘会出现两个可点目标叠在一起）。2026-11-09 axe 审计一次报了 34 处。
+   *
+   * **hover 才出现，不占常驻空间**（2026-11-10 用户：助手行的「配置/删除」两钮常驻显示，
+   * 「整个 Agent 的列表显得莫名其妙地有点长」）：动作区与 `status` 叠在同一个栅格格里，
+   * hover 时状态淡出、动作淡入——与会话行同款（`groups-panel.tsx SessionRow`）。
+   * 键盘焦点与触屏有覆盖分支（`group-has-[:focus-visible]` / `@media(hover:none)`），
+   * 不需要在自己的使用点重复写任何可见性分支（规范 2.3：同类第二次出现 → 容器统一）。
+   */
+  actions?: ReactNode;
+  /**
+   * 行尾常驻的槽内容（数量徽标、时间这类“状态”）。
+   * 与 actions 叠在同一格：hover 时淡出给动作区让位，不与动作争位。
+   */
+  status?: ReactNode;
 }) {
+  const interactive = onClick !== undefined;
   return (
-    <div role={onClick !== undefined ? "button" : undefined} tabIndex={onClick !== undefined ? 0 : undefined}
-      onClick={onClick}
-      onKeyDown={onClick === undefined ? undefined : (event) => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); }
-      }}
-      data-testid={testId} aria-current={selected ? "true" : undefined}
-      className={`group flex h-11 w-full cursor-pointer items-center gap-2 rounded-row px-2 text-body transition-colors sm:h-8 ${
-        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
-      } ${className}`}>
-      {children}
+    <div className={`group/row relative flex h-11 w-full items-center rounded-row text-body transition-colors sm:h-8 ${
+      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700"
+    } ${className}`}>
+      <div
+        {...(interactive
+          ? {
+            role: "button" as const,
+            tabIndex: 0,
+            onClick,
+            onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick?.(); }
+            },
+          }
+          : {})}
+        data-testid={testId}
+        aria-current={selected ? "true" : undefined}
+        className={`flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 ${
+          selected ? "" : "hover:bg-nav-accent"
+        }`}>
+        {children}
+      </div>
+      {/* 动作是主点击区的**兄弟**：不嵌套、不抢行的点击（各自 stopPropagation 也不再必需） */}
+      {actions !== undefined && (
+        // 槽 + 覆盖层（与 SessionRow 同款）：状态与动作叠在同一格，格宽 = 两者较宽者 ——
+        // 状态和按钮都不会“额外占一个固定空间”；hover 时状态淡出、动作淡入。
+        <span className="relative grid justify-items-end">
+          {status !== undefined && (
+            <span className="col-start-1 row-start-1 flex min-w-0 items-center pr-1 transition-opacity
+              group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0
+              [@media(hover:none)]:group-focus-within/row:opacity-0">{status}</span>
+          )}
+          <span className={`relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 rounded-control opacity-0 pointer-events-none transition-opacity
+            group-hover/row:opacity-100 group-hover/row:pointer-events-auto
+            group-has-[:focus-visible]/row:opacity-100 group-has-[:focus-visible]/row:pointer-events-auto
+            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto
+            ${selected ? "bg-nav-selected" : "bg-nav-accent"}`}>
+            {actions}
+          </span>
+        </span>
+      )}
     </div>
   );
 }

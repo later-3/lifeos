@@ -354,7 +354,7 @@ export function AnnotationDraft({ quote, rects, hostRect, onCommit, onCancel, on
         style={{ userSelect: "text" }}
       />
       <div className="mt-2 flex items-center gap-2">
-        <span className="text-micro text-ink-300">Enter 确认 · Esc 取消</span>
+        <span className="text-micro text-ink-500">Enter 确认 · Esc 取消</span>
         <span className="flex-1" />
         <button type="button" data-testid="draft-commit" onClick={commit} disabled={picked.length === 0}
           className="rounded-control bg-success px-3 py-1 text-meta font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40 hover:enabled:opacity-90">

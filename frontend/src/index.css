@@ -14,11 +14,19 @@ html, body, button, input, textarea, select {
 .md-body { font-size: var(--text-content); line-height: 1.72; color: var(--color-ink-900); word-break: break-word; }
 .md-body > *:first-child { margin-top: 0; }
 .md-body > *:last-child { margin-bottom: 0; }
-.md-body h1, .md-body h2 { font-weight: 600; margin: 1.1em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--color-line); }
+/*
+ * 块间距分层（2026-11-10，线 B 第一刀）：
+ * 旧版全部 0.6em —— 标题、段落、列表同样的空隙，「段落与段落之间没有层级」。
+ * 参考像素（Tailwind Typography `styles.js` 的层级 margin-top 结构与
+ * LobeChat `Markdown/style.css` 的 margin-multiple 模型，行号见 frontend-spec §2.1）：
+ * 标题**前距大于后距**（它宣告一个新单元的开始），段落间距一律相等。
+ * 对话多短段落，整体乘数比长文阅读收敛一档（蝴蝶家的阅读 line-height=2 更松，不照抄）。
+ */
+.md-body h1, .md-body h2 { font-weight: 600; margin: 1.5em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--color-line); }
 .md-body h1 { font-size: 1.25em; }
 .md-body h2 { font-size: 1.12em; }
-.md-body h3, .md-body h4 { font-weight: 600; margin: 0.95em 0 0.35em; font-size: 1.02em; }
-.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.6em 0; }
+.md-body h3, .md-body h4 { font-weight: 600; margin: 1.2em 0 0.35em; font-size: 1.02em; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.75em 0; }
 .md-body ul, .md-body ol { padding-left: 1.45em; }
 /* Tailwind preflight 会把 list-style 清成 none —— 这里显式恢复，否则列表没有圆点/序号 */
 .md-body ul { list-style: disc outside; }
@@ -27,9 +35,41 @@ html, body, button, input, textarea, select {
 .md-inverse li::marker { color: rgba(255, 255, 255, 0.7); }
 .md-body li { margin: 0.2em 0; }
 .md-body li > ul, .md-body li > ol { margin: 0.15em 0; }
+/*
+ * md 字号谱系全部走相对 em（随「显示/字号」偏好整组缩放；禁止 px 硬值——
+ * 2026-11-10 用户报「字号不统一」的实证：pre code 12px 硬值拖滑块时正文变大、代码块不动）。
+ * 谱系：正文 15(1em) · 表格 0.94 · 行内码 0.88 · 代码块 0.8 → 15 / 14.1 / 13.2 / 12 默认。
+ * 对照（全部源码可核，依据挂 frontend-spec §2.1）：LobeChat `style.css:57` 行内码 0.875em、
+ * 行高 1.8；koharu `theme/markdown.css:20-21` 正文 1rem/1.8 且由用户偏好驱动；
+ * butterfly `var.styl:51` 代码块行高独立 1.6；Tailwind Typography `styles.js:33-63`
+ * 每档 fontSize+lineHeight 成对（p 14/24）——本谱系是「同族比例」结构（倍数制），
+ * 行内码/表格在 0.875–0.9 与 0.94 区间中位。用户偏好驱动 = koharu 同构（store/settings.ts）。
+ */
 .md-body code { background: var(--color-hover); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
-.md-body pre { background: var(--color-sunken); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
-.md-body pre code { background: none; padding: 0; font-size: 12px; line-height: 1.6; }
+/*
+ * 代码块底（2026-11-10 深色适配）：旧值 `--color-sunken`——深色下它是页面**再往下 1 档**
+ * （页面已是最暗层），代码块在深色里「凹陷」；浅色下反而是对的（GitHub fence `#f6f8fa` 比白卡暗）。
+ * 改用 `--color-hover`：这个 token 的深浅方向天生就是「在卡片上更明显」（深色更亮 / 浅色更暗），
+ * 与行内 code 同一层、fenced 靠边框与 padding 区分（GitHub dark 的 inline 与 fenced 同族亦如此）。
+ * 深浅两套由主题引擎派生，不另写第二值。
+ */
+.md-body pre { background: var(--color-hover); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
+.md-body pre code { background: none; padding: 0; font-size: 0.8em; line-height: 1.6; }
+/* 高亮 token 色由 `--color-syn-*`（prism 类映射见 review-highlight-style.ts）——
+   浅色值已在 tokens.css；深色值由 index.css 的 [data-theme-mode=dark] 区补（见下）。 */
+/* 深色下的代码高亮派生（统一在 dark 组，浅色静态值见 tokens.css:89-96；
+   深色值 = 同色相的亮版：对比目标为深色代码底 var(--color-hover)（L*≈32））：
+   keyword 换最亮的紫蓝、comment 保持中位灰、其余各色相走 L*66–72 区间。 */
+[data-theme-mode="dark"] {
+  --color-syn-keyword: #c4b5fd;
+  --color-syn-string: #86efac;
+  --color-syn-comment: #9a9daa;  /* 注释灰在深色底上 5.0:1（4.43 不达标，实测调高） */
+  --color-syn-number: #fdba74;
+  --color-syn-function: #93c5fd;
+  --color-syn-type: #67e8f9;
+  --color-syn-constant: #f0abfc;
+  --color-syn-punctuation: #a1a1aa;
+}
 .md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
 /* 引用块里的内联代码：保持正文色（继承的弱化色叠在代码底色上对比度不足 4.5，UI 契约 2026-10-25 实测） */
 .md-body blockquote code { color: var(--color-ink-900); }
@@ -53,6 +93,8 @@ html, body, button, input, textarea, select {
    真要更宽的表格（内容本身就长）才走 overflow-x 滚动，那是内容决定，不是压缩决定。 */
 .md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; min-width: 4.5em; }
 .md-body th { background: var(--color-sunken); font-weight: 600; }
+/* 表头也是"明面容器"（spec 2.30）：深色下比所在底**亮**（hover），浅色保留 sunken */
+[data-theme-mode="dark"] .md-body th { background: var(--color-hover); }
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
@@ -149,3 +191,53 @@ html, body, button, input, textarea, select {
  * ══════════════════════════════════════════════════════════════ */
 .settings-nav { width: 100%; }
 @media (min-width: 640px) { .settings-nav { width: var(--container-settings-nav); } }
+
+/* ══════════════════════════════════════════════════════════════
+ * 层级语义（design/surface.ts 的 LAYER 是唯一来源，这里是它的 CSS 落点）
+ *
+ * 为什么不用 Tailwind 的 `z-30`：那是任意数字，写错了不报错、顺序错了也不报错。
+ * 现状审计：Toast 与 Modal 同为 z-50 → 模态打开时 Toast 被压在下面（顺序错了）。
+ *
+ * 值必须与 `design/surface.ts` 的 `LAYER` 一致；`test/design-system.test.mjs`
+ * 有一条断言比对这两处（改一处忘另一处会红）。
+ * ══════════════════════════════════════════════════════════════ */
+:root {
+  --z-rail: 10;
+  --z-popover: 30;
+  --z-drawer: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+.layer-rail { z-index: var(--z-rail); }
+.layer-popover { z-index: var(--z-popover); }
+.layer-drawer { z-index: var(--z-drawer); }
+.layer-modal { z-index: var(--z-modal); }
+.layer-toast { z-index: var(--z-toast); }
+
+/* ══════════════════════════════════════════════════════════════
+ * 语义 soft 底在深色下必须重算（2026-11-09 axe：失败块"浅粉底 + 浅红字"不达标）
+ *
+ * `--color-danger-soft / success-soft / running-soft` 在 tokens.css 里是**浅色**的固定值；
+ * 深色模式下如果把浅底原样搬过去，配浅色的 danger/success 文字就只有 1.5–2.5:1。
+ * 这里按深色重算：底变深（保留色相）、字仍用 danger/success（它们在深色下是亮的）。
+ * ══════════════════════════════════════════════════════════════ */
+[data-theme-mode="dark"] {
+  /* 首帧近似（neutral/palette standard 档的派生值）；React 起来后由徽标偏好层即时覆盖 */
+  --color-danger-soft: #413130;
+  --color-success-soft: #2b3f36;
+  --color-running-soft: #273d46;
+  /*
+   * 状态/内容块的深色映射（2026-11-10，线 B 第 1 项）
+   * —— 这五个 token 此前**没有任何深色重算**（tokens.css 只有浅色静态值）：
+   * 深色下思考块/工具块 = **白色块**（#fafafa/#f4f4f5），是用户截图「黑色模式下不行」的主要观感。
+   * 映射遵守「明面容器深色方向」（spec 2.30）：明面层上的内容容器底**必须比页面底亮**；
+   * 语义块（done/error）直接走对应 `*-soft`（它们已有符合方向的深色派生，规范 2.26）；
+   * 用户气泡换成 `accent-solid`（Telegram/Discord dark 的主力气泡同构：主色底 + 白字，
+   * 且该 token 的白字 AA 由主题引擎保证——浅色气泡保留既有黑底白字，见 tokens.css）。
+   */
+  --color-message-thinking: var(--color-hover);
+  --color-message-tool: var(--color-hover);
+  --color-message-tool-done: var(--color-success-soft);
+  --color-message-tool-error: var(--color-danger-soft);
+  --color-message-user: var(--color-accent-solid);
+}

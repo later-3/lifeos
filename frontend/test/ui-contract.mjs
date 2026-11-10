@@ -45,6 +45,17 @@ async function loadPlaywright() {
 }
 
 const results = [];
+
+/*
+ * hover-only 行动作（2026-11-10）：助手行的「配置/删除」与行尾状态叠在同一格，
+ * hover 才可见/可点。测试的点击点因此必须**先 hover 所在行**——
+ * 否则按钮是 pointer-events:none，Playwright 的 actionability 会一直等（30s 超时）。
+ */
+async function clickRowAction(page, locator) {
+  await locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]").hover();
+  await locator.click();
+}
+
 async function measureHistory(target) {
   return await target.evaluate(({ MIN_CONTRAST }) => {
     const main = document.querySelector("main");
@@ -308,6 +319,92 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
   check("rail 激活图标比未激活图标更重（互比 ≥1.8，不是更浅）", lightState.activeIconL !== null && lightState.idleIconL !== null
     && lightState.activeIconL < lightState.idleIconL - 8,
     `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
+}
+
+// 状态徽标可调（2026-11-10 用户："速率/幅度/颜色单独可调；深浅色都要适配"）。
+// 与"配置要落根节点变量并持久化"三条断言：滑速率 → --badge-motion-period 变；
+// 拉幅度 → --dot-breathe-max 变；切强度 → --color-running-soft 与 data-badge-strength 变。
+{
+  const badgePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await badgePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await badgePage.waitForTimeout(400);
+  await badgePage.evaluate(() => {
+    document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  const readRoot = () => badgePage.evaluate(() => ({
+    period: document.documentElement.style.getPropertyValue("--badge-motion-period").trim(),
+    breathe: document.documentElement.style.getPropertyValue("--badge-breathe-max").trim(),
+    dot: document.documentElement.style.getPropertyValue("--dot-breathe-max").trim(),
+    strength: document.documentElement.getAttribute("data-badge-strength"),
+    runningSoft: document.documentElement.style.getPropertyValue("--color-running-soft").trim(),
+    preview: (() => {
+      const chip = document.querySelector('[data-testid="badge-preview"]');
+      if (chip === null) return null;
+      const box = chip.getBoundingClientRect();
+      return chip.querySelectorAll("span").length > 0 && box.width > 0 && box.height > 0;
+    })(),
+  }));
+  const before = await readRoot();
+  check("状态徽标：设置页预览行渲染（三徽标 + 三圆点）", before?.preview === true, JSON.stringify(before));
+  check("状态徽标：root 变量已就位（周期/幅度/强度）",
+    before?.period !== "" && before?.breathe !== "" && before?.dot !== "" && before?.strength !== null, JSON.stringify(before));
+
+  // 速率 → period 变
+  await badgePage.locator("#badge-speed").fill("2");
+  await badgePage.locator("#badge-speed").dispatchEvent("change");
+  await badgePage.waitForTimeout(300);
+  const afterSpeed = await readRoot();
+  check("状态徽标：速率滑块 → 周期变量变化（3s → 1.5s）",
+    before?.period === "3s" && afterSpeed?.period !== "3s", `${before?.period} → ${afterSpeed?.period}`);
+
+  // 幅度 → dot 变
+  const dotBefore = afterSpeed?.dot;
+  await badgePage.locator("#badge-amp").fill("0");
+  await badgePage.locator("#badge-amp").dispatchEvent("change");
+  await badgePage.waitForTimeout(300);
+  const afterAmp = await readRoot();
+  check("状态徽标：幅度滑块 → 呼吸幅度变量变化（0 = 静止）",
+    dotBefore !== undefined && dotBefore !== afterAmp?.dot && Number(afterAmp?.dot) === 1,
+    `${dotBefore} → ${afterAmp?.dot}`);
+
+  // 强度 → running-soft 与 attr 变
+  const softBefore = afterAmp?.runningSoft;
+  await badgePage.locator('[data-testid="badge-strength-vivid"]').click();
+  await badgePage.waitForTimeout(300);
+  const afterStrength = await readRoot();
+  check("状态徽标：强度档 → 派生 soft 与 data-badge-strength 变化",
+    afterStrength?.strength === "vivid" && afterStrength?.runningSoft !== softBefore,
+    `${softBefore} → ${afterStrength?.runningSoft}`);
+
+  // 深色下同样生效（切主题 → soft 换深色值）
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("主题"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(300);
+  // 用 API 点深色按钮（appearance 分区的深浅切换）
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('[data-testid="settings-surface"] button')]
+      .find((b) => /深色/.test(b.innerText ?? "") && (b.getAttribute("aria-pressed") ?? b.getAttribute("aria-checked")) !== null);
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(500);
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  const darkState = await readRoot();
+  check("状态徽标：深色下 soft 派生自动换挡（色值不同于浅色档）",
+    darkState?.runningSoft !== undefined && darkState?.runningSoft !== afterStrength?.runningSoft,
+    JSON.stringify(darkState));
+  await badgePage.close();
 }
 
 // 设置表面（2026-11-09 审核修正，四条实测缺陷的回归契约）
@@ -606,6 +703,145 @@ async function auditResizeColumns(page, sceneSetup) {
   await capPage.close();
 }
 
+// 头部快捷显示设置（Popover primitive 的第一个使用者）
+//
+// 2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
+// 因为之前是改动配置，用户能实时看到工作区的改变的。"
+// 五条：入口在（桌面）→ 打开贴锚点 6px → 拖滑块正文实时变 → Esc 关闭且焦点归还 → 手机不渲染。
+{
+  const quickPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await quickPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await quickPage.waitForTimeout(500);
+  const anchor = quickPage.locator('header button[aria-label="显示设置"]');
+  check("头部快捷显示设置：入口存在（桌面）", await anchor.count() === 1, `count=${await anchor.count()}`);
+  if (await anchor.count() === 1) {
+    await anchor.click();
+    await quickPage.waitForSelector('[data-testid="popover"]', { timeout: 5000 });
+    const geom = await quickPage.evaluate(() => {
+      const panel = document.querySelector('[data-testid="popover"]');
+      const btn = document.querySelector('header button[aria-label="显示设置"]');
+      const panelBox = panel.getBoundingClientRect();
+      const anchorBox = btn.getBoundingClientRect();
+      return {
+        gap: Math.round(panelBox.top - anchorBox.bottom),
+        width: Math.round(panelBox.width),
+        inViewport: panelBox.right <= window.innerWidth && panelBox.bottom <= window.innerHeight,
+        z: Number(getComputedStyle(panel).zIndex),
+        shadow: getComputedStyle(panel).boxShadow,
+      };
+    });
+    check("头部快捷显示设置：贴锚点下方 6px 且不越出视口",
+      geom.gap === 6 && geom.inViewport === true, JSON.stringify(geom));
+    check("头部快捷显示设置：用的是 SURFACE.popover 的阴影（不是 Tailwind 裸值）",
+      /rgba\(25, 28, 33/.test(geom.shadow) || /rgba\(255, 255, 255/.test(geom.shadow), geom.shadow.slice(0, 40));
+
+    // 拖滑块 → 正文列宽实时变化（"边调边看"的实质）
+    const before = await quickPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim());
+    await quickPage.evaluate(() => {
+      const input = document.querySelector("#quick-width");
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      setter.call(input, "0");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await quickPage.waitForTimeout(300);
+    const after = await quickPage.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--container-reading-width").trim());
+    check("头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
+      Number.parseInt(before, 10) > Number.parseInt(after, 10), `${before} → ${after}`);
+
+    // Esc 关闭 + 焦点归还
+    await quickPage.keyboard.press("Escape");
+    await quickPage.waitForTimeout(200);
+    const closed = await quickPage.evaluate(() => document.querySelector('[data-testid="popover"]') === null);
+    const focused = await quickPage.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "");
+    check("头部快捷显示设置：Esc 关闭且焦点回到锚点", closed && focused === "显示设置", `closed=${closed} focus=${focused}`);
+  }
+  await quickPage.close();
+
+  // 手机：不渲染（手机头部已有 6 个图标、标题只剩 38px）
+  const phonePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  await phonePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await phonePage.waitForTimeout(500);
+  const phoneCount = await phonePage.locator('header button[aria-label="显示设置"]').count();
+  const phoneTitle = await phonePage.evaluate(() => {
+    const h1 = document.querySelector("header h1");
+    return h1 === null ? null : Math.round(h1.getBoundingClientRect().width);
+  });
+  check("头部快捷显示设置：手机不渲染（头部不再增加图标）", phoneCount === 0, `count=${phoneCount} 标题宽=${phoneTitle}`);
+  await phonePage.close();
+}
+
+// 嵌套列的拖动（2026-11-09 用户第二次报「文件树区域的拖动很垃圾」；
+// 2026-11-10 用户报「我往右拖呢，它在往左边扩张」→ 重写拖动语义）
+//
+// 断言的是**用户能看到的结果**（testing 规 2.15：几何断言，不是宽度断言）：
+// ① 抓着的分隔条每帧都贴着鼠标（拖哪条边哪条边跟手）；
+// ② 树变宽时面板总宽/左列一概不动（旧版整块面板反向扩张 + 从左列借宽不还）；
+// ③ 各列下限与聊天/查看器保底不破。不枚举实现细节。
+{
+  const treePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await treePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await treePage.waitForTimeout(500);
+  await treePage.evaluate(() => { localStorage.removeItem("lifeos.columnWidths"); localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
+  await treePage.reload({ waitUntil: "networkidle" });
+  await treePage.waitForTimeout(700);
+  const handle = treePage.locator('[data-resize-key="c4t"] > [role=separator]').first();
+  if (await handle.count() === 0) {
+    check("嵌套拖动：文件树可拖（面板放得下时）", false, "找不到 c4t 把手");
+  } else {
+    const read = async () => await treePage.evaluate(() => {
+      const geom = (key) => {
+        const el = document.querySelector(`[data-resize-key="${key}"]`);
+        if (el === null) return null;
+        const b = el.getBoundingClientRect();
+        return { x: Math.round(b.x), w: Math.round(b.width) };
+      };
+      return { tree: geom("c4t"), panel: geom("c4"), c1: geom("c1"), c2: geom("c2"),
+        chat: Math.round(document.querySelector("main")?.getBoundingClientRect().width ?? 0) };
+    });
+    const box = await handle.boundingBox();
+    const startX = box.x + box.width / 2;
+    const before = await read();
+    const widths = [];
+    const dividerXs = [];
+    await treePage.mouse.move(startX, box.y + 400);
+    await treePage.mouse.down();
+    for (let step = 1; step <= 25; step += 1) {
+      await treePage.mouse.move(startX + step * 8, box.y + 400);
+      await treePage.waitForTimeout(16);
+      const frame = await read();
+      widths.push(frame.tree.w);
+      // 把手中心的屏幕坐标：跟手 = 它与鼠标起点之差 ≈ 鼠标位移（树右缘在把手上）
+      dividerXs.push(frame.tree.x + frame.tree.w - (before.tree.x + before.tree.w));
+    }
+    await treePage.mouse.up();
+    await treePage.waitForTimeout(400);
+    const after = await read();
+    const distinct = new Set(widths).size;
+    // 200px 拖动（树 240 + 空间）：树可长到「面板右缘 − 查看器保底 160」，
+    // 分隔条一路跟到那里为止；本场景全程在区间内（树 240→440、查看器 360→160）。
+    check("嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
+      after.tree.w > before.tree.w + 40, `${before.tree.w} → ${after.tree.w}`);
+    check("嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
+      distinct >= Math.floor(widths.length / 2), `${distinct}/${widths.length} 个不同值`);
+    const mouseDx = (i) => (i + 1) * 8;
+    const offTrack = dividerXs.findIndex((dx, i) => Math.abs(dx - mouseDx(i)) > 4);
+    check("嵌套拖动：分隔条跟手（x 位移 ≈ 鼠标位移，不是反向被面板扩张抵消）",
+      offTrack === -1,
+      offTrack === -1
+        ? `25 帧内分隔条位移 8..200 与鼠标 1:1（面板/左列不动）`
+        : `第 ${offTrack + 1} 帧起偏移：分隔条位移=${JSON.stringify(dividerXs)} 鼠标位移=8/帧`);
+    check("嵌套拖动：面板总宽不动（旧版整块面板反向扩张）",
+      after.panel.w === before.panel.w, `面板 ${before.panel.w} → ${after.panel.w}`);
+    check("嵌套拖动：左列未被自动让位（旧版从 c2/c1 借宽不还）",
+      after.c1.w === before.c1.w && after.c2.w === before.c2.w,
+      `c1 ${before.c1.w}→${after.c1.w} c2 ${before.c2.w}→${after.c2.w}`);
+    check("嵌套拖动：聊天保底不破（≥420）", after.chat >= 420, `${after.chat}px`);
+    check("嵌套拖动：查看器保底不破（面板−树 ≥160）",
+      after.panel.w - after.tree.w >= 160, `${after.panel.w - after.tree.w}`);
+  }
+  await treePage.close();
+}
+
 // 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
 // （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
 {
@@ -646,12 +882,14 @@ async function auditResizeColumns(page, sceneSetup) {
   const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
   await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await rowPage.waitForTimeout(500);
+  // 结构（2026-11-09）：行容器 > [主点击区(role=button), 状态槽]。动作区在槽内绝对定位。
+  // 所以"行"取容器（带 data-testid 的那个 div），主点击区是它的**第一个**子元素。
   const probe = async () => await rowPage.evaluate(() => {
-    const row = document.querySelector('[data-shot-mask="session-rows"] [role=button]');
+    const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
     if (row === null) return null;
-    const inner = row.firstElementChild;
+    const inner = row.querySelector(':scope > [role="button"]') ?? row.firstElementChild;
     const slot = row.lastElementChild;
-    const actions = [...slot.children].find((child) => child.className.includes("absolute"));
+    const actions = slot === null ? undefined : [...slot.children].find((child) => child.className.includes("absolute"));
     if (inner === null || slot === null || actions === undefined) return null;
     const innerBox = inner.getBoundingClientRect();
     const actionBox = actions.getBoundingClientRect();
@@ -935,10 +1173,70 @@ if (await sessionRow.count() === 0) {
   await page.evaluate(() => document.activeElement?.blur?.());
 }
 
+// 助手行的「配置/删除」同样 hover-only（2026-11-10 用户："不要固定显示占用空间，
+// 和会话列表里那个一样：移开什么都看不到，移上去才出现"）。
+// 同款五条：默认隐藏不可点 / hover 出现 / 移开消失 / 隐藏不可误点 / 键盘可达。
+const agentActionState = () => page.evaluate(() => {
+  const row = document.querySelector('[data-shot-mask="agent-rows"] [role="button"]');
+  const btn = row === null ? null : row.parentElement?.querySelector('[aria-label^="配置 "]');
+  if (row === null || btn === null) return null;
+  const wrap = btn.closest('[class*="pointer-events-none"]') ?? btn.parentElement;
+  const box = btn.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+  // 淡出是套在槽内容外层的容器上（opacity 不继承，徽标自己的 computed 永远是 1）；
+  // 该行若没有徽标（零值不渲染），status 为 null，读不到 opacity 时返回 null 让断言自己判断。
+  const status = row.parentElement?.querySelector('[data-state-count]')?.closest('[class*="col-start-1"]');
+  return {
+    opacity: wrap === null ? null : getComputedStyle(wrap).opacity,
+    pointer: wrap === null ? null : getComputedStyle(wrap).pointerEvents,
+    hitIsAction: hit !== null && (hit === btn || btn.contains(hit)),
+    statusOpacity: status == null ? null : getComputedStyle(status).opacity,
+  };
+});
+const agentRow = page.locator('[data-shot-mask="agent-rows"] [role="button"]').first();
+if (await agentRow.count() === 0) {
+  check("助手行动作区：默认隐藏且不可点", false, "找不到助手行样本");
+  check("助手行动作区：悬停出现", false, "找不到助手行样本");
+  check("助手行动作区：移开鼠标即隐藏", false, "找不到助手行样本");
+  check("助手行动作区：隐藏时不可误点", false, "找不到助手行样本");
+  check("助手行动作区：键盘 Tab 进入时可见", false, "找不到助手行样本");
+} else {
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(280);
+  const idle = await agentActionState();
+  check("助手行动作区：默认隐藏且不可点", idle?.opacity === "0" && idle?.pointer === "none", JSON.stringify(idle));
+
+  await agentRow.hover();
+  await page.waitForTimeout(280);
+  const hovered = await agentActionState();
+  check("助手行动作区：悬停出现（状态徽标同步让位）",
+    hovered?.opacity === "1" && hovered?.pointer === "auto"
+      && (hovered?.statusOpacity === null || hovered?.statusOpacity === "0"),
+    JSON.stringify(hovered));
+
+  await page.mouse.move(900, 500);
+  await page.waitForTimeout(320);
+  const away = await agentActionState();
+  check("助手行动作区：移开鼠标即隐藏", away?.opacity === "0" && away?.pointer === "none", JSON.stringify(away));
+  check("助手行动作区：隐藏时不可误点", away?.hitIsAction === false, `命中动作钮=${away?.hitIsAction}`);
+
+  // 键盘：行获得焦点 → Tab 进动作区（focus-visible）→ 显现
+  await page.evaluate(() => {
+    const row = document.querySelector('[data-shot-mask="agent-rows"] [role="button"]');
+    row?.focus();
+  });
+  await page.keyboard.press("Tab");
+  await page.waitForTimeout(280);
+  const kbState = await agentActionState();
+  check("助手行动作区：键盘 Tab 进入时可见",
+    kbState !== null && kbState.opacity === "1", JSON.stringify(kbState));
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
 // 模态：语义 + Esc + 焦点归位
-const avatarTrigger = page.locator('button[aria-label^="配置 "]').first();
+const avatarTrigger = page.locator('[aria-label^="配置 "]').first();
 if (await avatarTrigger.count() > 0) {
-  await avatarTrigger.click();
+  await clickRowAction(page, avatarTrigger);
   await page.waitForTimeout(500);
   const opened = await measure(page);
   check("模态具备 role=dialog + aria-modal", opened.dialogCount === 1, `dialog=${opened.dialogCount}`);
@@ -1146,11 +1444,15 @@ const messageKinds = await page.evaluate(() => {
   }
   return [...kinds].map(([kind, bg]) => ({ kind, bg }));
 });
-check("消息类型背景可区分", new Set(messageKinds.map((item) => item.bg)).size === messageKinds.length,
+// 2026-11-09 调整口径：**同一语义的两类可以同色**（failure 与 tool-error 都是"错误"，
+// 都走 danger-soft），要求"每个 kind 都不同色"会把正常设计判成缺陷。
+// 现在要求：**不同语义族之间必须可区分**（成功/失败/中性/思考/用户 五族）。
+check("消息类型背景可区分（按语义族，不按 kind 逐个）",
+  new Set(messageKinds.map((item) => item.bg)).size >= Math.min(5, messageKinds.length),
   messageKinds.map((item) => `${item.kind}:${item.bg}`).join(" / "));
 
 // 对话框里同样要成立（配置弹窗是控件最密的地方）
-await page.locator('button[title="配置助手"]').first().click();
+await clickRowAction(page, page.locator('[aria-label^="配置 "]').first());
 await page.waitForTimeout(400);
 const unnamedDialog = await noName();
 check("可见按钮都有可访问名（配置对话框）", unnamedDialog.length === 0, `${unnamedDialog.length} 个未命名`);
@@ -1227,7 +1529,7 @@ await page.waitForTimeout(250);
   });
   await configPage.goto(page.url(), { waitUntil: "networkidle" });
   await configPage.waitForTimeout(400);
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   const footerSave = configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first();
   check("配置 footer primary 写「保存全部」", (await footerSave.textContent() ?? "").includes("保存全部"), await footerSave.textContent() ?? "");
@@ -1249,7 +1551,7 @@ await page.waitForTimeout(250);
   }
 
   // 基础信息走同一个 footer primary：改名 → 保存全部 → 关闭，也不应误报。
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("saved-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: /保存/ }).first().click();
@@ -1259,7 +1561,7 @@ await page.waitForTimeout(250);
   check("保存基础信息后关闭不再提示未保存", await configPage.locator('[role="dialog"]').count() === 0);
 
   // 真正有未保存基础信息时，提示必须说清楚是哪个保存域。
-  await configPage.locator('button[title="配置助手"]').first().click();
+  await clickRowAction(configPage, configPage.locator('[aria-label^="配置 "]').first());
   await configPage.waitForTimeout(700);
   await configPage.locator('input[name="agent-name"]').fill("dirty-name-probe");
   await configPage.locator('[role="dialog"] footer button').filter({ hasText: "关闭" }).click();
@@ -1737,7 +2039,7 @@ const SHOTS = [
         source: "agent",
       }) });
     });
-    await shotPage.locator('button[aria-label^="配置 "]').first().click();
+    await clickRowAction(shotPage, shotPage.locator('[aria-label^="配置 "]').first());
     await shotPage.waitForTimeout(400);
   }, '[role="dialog"]', async (shotPage) => {
     // 模态里的名字/描述/头像/身份/模型清单都是用户数据：用户新建或改一个助手，截图就漂
@@ -2115,7 +2417,39 @@ try {
 }
 
 // 门禁自检：防止某段检查被删掉却依然"全绿"（本次就发生过一次基线检查块被整体删掉）
-const REQUIRED = ["聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区", "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线", "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块", "显示设置：滑块真生效", "rail 三个按钮 hover 都有反馈", "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致", "正文表格：最窄一列不被压到逐字竖排（宽列下）", "正文表格：正文列变窄后依然不压字（可横向滚动）", "[默认（两列）] 每个可拖区域都能抓住把手", "[默认（两列）] 每个可拖区域拖动都逐帧跟手"];
+const REQUIRED = [
+  // 防"静默删除"：这些名字必须在结果里出现，删掉检查项会立刻红（testing 2.4）
+  "聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区",
+  "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线",
+  "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块",
+  "显示设置：滑块真生效",
+  "rail 三个按钮 hover 都有反馈",
+  "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致",
+  "头部快捷显示设置：入口存在（桌面）",
+  "头部快捷显示设置：贴锚点下方 6px 且不越出视口",
+  "头部快捷显示设置：拖滑块正文列实时变化（边调边看）",
+  "头部快捷显示设置：Esc 关闭且焦点回到锚点",
+  "头部快捷显示设置：手机不渲染（头部不再增加图标）",
+  "助手行动作区：默认隐藏且不可点",
+  "状态徽标：设置页预览行渲染（三徽标 + 三圆点）",
+  "状态徽标：root 变量已就位（周期/幅度/强度）",
+  "状态徽标：速率滑块 → 周期变量变化（3s → 1.5s）",
+  "状态徽标：幅度滑块 → 呼吸幅度变量变化（0 = 静止）",
+  "状态徽标：强度档 → 派生 soft 与 data-badge-strength 变化",
+  "状态徽标：深色下 soft 派生自动换挡（色值不同于浅色档）",
+  "助手行动作区：悬停出现（状态徽标同步让位）",
+  "助手行动作区：键盘 Tab 进入时可见",
+  "嵌套拖动：树真的变宽（不是按下去就被上限夹住）",
+  "嵌套拖动：树宽度逐帧跟手（≥ 一半采样点不同）",
+  "嵌套拖动：分隔条跟手",
+  "嵌套拖动：面板总宽不动",
+  "嵌套拖动：左列未被自动让位",
+  "嵌套拖动：聊天保底不破（≥420）",
+  "正文表格：最窄一列不被压到逐字竖排（宽列下）",
+  "正文表格：正文列变窄后依然不压字（可横向滚动）",
+  "[默认（两列）] 每个可拖区域都能抓住把手",
+  "[默认（两列）] 每个可拖区域拖动都逐帧跟手",
+];
 const missing = REQUIRED.filter((needle) => !results.some((item) => item.name.includes(needle)));
 check("门禁自检：所有检查项都在（防静默删除）", missing.length === 0 && results.length >= 30,
   missing.length > 0 ? `缺失 ${missing.join(" / ")}` : `共 ${results.length} 项`);

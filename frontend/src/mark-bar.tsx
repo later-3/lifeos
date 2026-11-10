@@ -83,7 +83,7 @@ export function MarkBar({
           className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
           title={folded ? "展开看这条回复上的批注" : "收起"}
         >
-          <IconChevronRight size={13} aria-hidden="true"
+          <IconChevronRight size={14} aria-hidden="true"
             className={`shrink-0 transition-transform duration-150 ${folded ? "" : "rotate-90"}`} />
           <span>标记</span>
           <span data-testid="mark-bar-count"

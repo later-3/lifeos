@@ -114,17 +114,17 @@ export function PeerPanel({ target, liveEvents, onClose }: {
           与 {target.agentName} 的对话
         </span>
         {running && <Spinner size={12} className="text-accent" />}
-        <span className="shrink-0 text-micro text-ink-300">{running ? "对方执行中" : "已完成"}</span>
+        <span className="shrink-0 text-micro text-ink-500">{running ? "对方执行中" : "已完成"}</span>
         <button type="button" onClick={onClose}
           className="shrink-0 rounded px-1.5 py-0.5 text-micro text-ink-500 hover:bg-sunken">关闭</button>
       </header>
 
       <div ref={scrollRef} onScroll={onScroll}
         className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto px-3 py-2" data-testid="peer-messages">
-        {loading && <div className="text-micro text-ink-300">读取中…</div>}
+        {loading && <div className="text-micro text-ink-500">读取中…</div>}
         {error !== undefined && <div className="text-micro text-danger">{error}</div>}
         {!loading && error === undefined && rows.length === 0 && (
-          <div className="text-micro text-ink-300">对方还没有输出。</div>
+          <div className="text-micro text-ink-500">对方还没有输出。</div>
         )}
         <div className="mx-auto flex w-full max-w-reading flex-col gap-4">
           {rows.map((row, index) => (
@@ -138,7 +138,7 @@ export function PeerPanel({ target, liveEvents, onClose }: {
         旧文案写"此处不能发言"，与 Task 0014 之后的事实不符——那条会话现在完全可以在左侧继续，
         理由是服务端已经不再按"会话来源"拒绝发言（02-design L3）。
       */}
-      <footer className="border-t border-line px-3 py-2 text-micro text-ink-300">
+      <footer className="border-t border-line px-3 py-2 text-micro text-ink-500">
         这里只是旁观对端的过程；要继续这条会话，回到左侧列表点开它发消息即可。
       </footer>
     </aside>

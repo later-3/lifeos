@@ -48,7 +48,7 @@ export function DragHandle({ onStart, side = "right" }: {
   );
 }
 
-export function ResizeColumn({ resizeKey, side = "right", width, onStart, className = "", children, testId, as = "aside" }: {
+export function ResizeColumn({ resizeKey, side = "right", width, onStart, className = "", children, testId, ariaLabel, as = "aside" }: {
   /** 布局里的宽度键（`design/layout.ts` 的 Widths）。拖动时按它找元素、松手按它提交。 */
   resizeKey: ResizeKey;
   /** 把手在哪条边：右缘（左侧列）= right，左缘（右侧停靠面板）= left。 */
@@ -60,6 +60,8 @@ export function ResizeColumn({ resizeKey, side = "right", width, onStart, classN
   className?: string;
   children: ReactNode;
   testId?: string;
+  /** 侧栏的可访问名（`aside` 必须有，否则同类 landmark 无法区分）。 */
+  ariaLabel?: string;
   /**
    * 语义标签。默认 `aside`（它确实是一条侧栏：`aside` 在 HTML 语义里就是"与主内容并列的
    * 补充区域"）；面板**内部**的子列（文件树）用 `div`，因为它不是与主内容并列的独立区域。
@@ -70,6 +72,9 @@ export function ResizeColumn({ resizeKey, side = "right", width, onStart, classN
   const Tag = as;
   return (
     <Tag
+      // 侧栏要有可访问名：axe 的 `landmark-unique` 要求同类 landmark 可区分
+      // （页面有助手列 + 会话列两个 aside，都无名时读屏只会念"complementary, complementary"）。
+      {...(as === "aside" ? { "aria-label": ariaLabel } : {})}
       data-resize-key={resizeKey}
       {...(testId !== undefined ? { "data-testid": testId } : {})}
       style={{ width }}

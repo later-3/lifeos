@@ -20,12 +20,15 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { loadPrefs, savePrefs } from "./display-prefs-panel";
+import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
+import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme } from "./ui-prefs-client";
 import { SettingsSurface } from "./settings-surface";
-import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
+import { applySurfaceTokens, applyTheme, calculatePalette, hex, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
+import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "./badge-prefs";
+import { cachedBadgePrefs } from "./ui-prefs-client";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
 import { processOpenOf } from "./response-fold";
 import { SessionBar, type SessionBarTurn } from "./session-bar";
@@ -153,9 +156,8 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
     // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
     //
-    // `--badge-ring`：扩散环的颜色跟着状态走（写死蓝色会让"失败"的红色徽标闪蓝光）。
+    // 扩散环颜色统一走 keyframes 的 color-mix(--color-running)（badge-prefs 层派生），不再逐元素写死。
     <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
-      style={kind === "running" ? { "--badge-ring": "rgba(29, 78, 216, .40)" } as React.CSSProperties : undefined}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
@@ -450,9 +452,19 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | undefined>();
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
+  /** 状态徽标偏好（2026-11-10 用户：速率/幅度/强度单独可调）：缓存先顶上，服务端真值随后覆盖。 */
+  const [badges, setBadges] = useState<BadgePrefs>(() => cachedBadgePrefs());
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * 头部「显示」快捷弹层（2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
+   * 因为之前是改动配置，用户能实时看到工作区的改变"）。
+   *
+   * 与设置页的关系：**这里是快捷入口，设置页是总入口**，两者读写同一份 prefs，不存在第二份状态。
+   * 只在桌面渲染（`hidden sm:inline-flex` 交给外层容器）：手机头部已有 6 个图标、标题只剩 38px。
+   */
+  const [displayPrefsOpen, setDisplayPrefsOpen] = useState(false);
   // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
   // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
   const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
@@ -461,8 +473,27 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
     applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
-    saveTheme(theme);
+    persistTheme(theme);              // 缓存 + 防抖同步到 ~/.lifeos/config/ui.json
   }, [theme]);
+  /**
+   * 启动时拉一次服务端偏好（2026-11-09 用户："是否重启就丢了配置？"）。
+   *
+   * 服务端是事实源（`~/.lifeos/config/ui.json`），localStorage 只是首屏缓存。
+   * **只在服务端有值时覆盖** —— 首次使用（服务端没存过）时保持本地已调过的值，
+   * 不拿默认值把用户刚才的调整盖掉（那是"重置"而不是"恢复"）。
+   * 失败静默：偏好丢了不该让界面打不开，本地缓存仍在。
+   */
+  useEffect(() => {
+    let alive = true;
+    void fetchUiPrefs().then((remote) => {
+      if (!alive || remote === undefined) return;
+      if (remote.theme !== undefined) setTheme(remote.theme);
+      if (remote.display !== undefined) setPrefs(remote.display);
+      if (remote.badges !== undefined) setBadges(remote.badges);
+    });
+    return () => { alive = false; };
+  }, []);
+
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
@@ -897,12 +928,30 @@ export default function App() {
     return () => { alive = false; };
   }, []);
   // —— 显示偏好：落盘 + 把字号与阅读宽度写到根节点（组件只用 token，不感知缩放） ——
-  useEffect(() => { savePrefs(prefs); }, [prefs]);
+  // 显示偏好：写缓存（刷新不丢）+ 防抖同步到服务端（换设备/换 origin 也在）
+  useEffect(() => { persistDisplayPrefs(prefs); }, [prefs]);
   useEffect(() => {
     const root = document.documentElement;
     for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);
     root.style.setProperty("--container-reading-width", widthVar(prefs.width));
   }, [prefs]);
+  // —— 状态徽标：动画周期/幅度变量 + 三个 soft 底（从语义色派生，深浅色方向都向上） ——
+  // soft 必须随 theme/gallery 同步：换主题（色相、深浅）后,徽标底的色相应与语义色同源。
+  useEffect(() => { persistBadgePrefs(badges); }, [badges]);
+  useEffect(() => {
+    const root = document.documentElement.style;
+    document.documentElement.dataset.badgeStrength = badges.strength;
+    const palette = calculatePalette(theme);
+    const toHex = (key: keyof typeof palette): string => hex(palette[key][0], palette[key][1], palette[key][2]);
+    const surfaceHex = toHex("surface");
+    for (const [name, value] of Object.entries(badgeVarsOf(badges))) root.setProperty(name, value);
+    root.setProperty("--color-running-soft",
+      badgeSoft("running", theme.mode, badges.strength, toHex("running"), surfaceHex));
+    root.setProperty("--color-success-soft",
+      badgeSoft("success", theme.mode, badges.strength, toHex("success"), surfaceHex));
+    root.setProperty("--color-danger-soft",
+      badgeSoft("danger", theme.mode, badges.strength, toHex("danger"), surfaceHex));
+  }, [badges, theme]);
   // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -2867,25 +2916,22 @@ export default function App() {
         <>
           {/* 列自己画右缘 1px 边（Task 0006）：不再由把手盒子充当分界。
               `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
-          <ResizeColumn resizeKey="c1" width={box.c1} onStart={(event) => beginDrag("c1", event)}
+          <ResizeColumn resizeKey="c1" width={box.c1} ariaLabel="助手列" onStart={(event) => beginDrag("c1", event)}
             className="flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
             <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
               {!loaded && <Skeleton rows={3} />}
               {agents.map((item) => (
-                <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}>
-                  <button aria-label={`配置 ${item.name}`} title="配置助手"
-                    onClick={(event) => { event.stopPropagation(); setConfigAgent(item); }}
-                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105">
-                    <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
-                  </button>
-                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                  <StatusMarks status={derived.agents[item.id]} unit="会话" />
-                  <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                    <IconButton label="删除助手" size="sm"
-                      onClick={(event) => {
-                        event.stopPropagation();
+                <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}
+                  status={<StatusMarks status={derived.agents[item.id]} unit="会话" />}
+                  actions={
+                    <>
+                      <IconButton label={`配置 ${item.name}`} size="sm" onClick={() => setConfigAgent(item)}>
+                        <IconSettings size={14} />
+                      </IconButton>
+                      <IconButton label="删除助手" size="sm"
+                      onClick={() => {
                         setConfirm({
                           title: "删除助手",
                           message: `归档「${item.name}」？它的会话与记录全部保留（可恢复），不会删除任何对话数据。`,
@@ -2894,9 +2940,25 @@ export default function App() {
                           run: () => void removeAgent(item),
                         });
                       }}>
-                      <IconTrash size={14} />
-                    </IconButton>
-                  </span>
+                        <IconTrash size={14} />
+                      </IconButton>
+                    </>
+                  }>
+                  {/*
+                    * **不能再嵌套 button**（2026-11-09 axe：`nested-interactive` 34 次）：
+                    * 行本身已经是 `role="button"`，里面再放一个真 `<button>` 是非法结构，
+                    * 读屏与键盘都会出现“两个可点目标叠在一起”。
+                    * 改成语义化 span：`role="button"` + tabIndex + Enter/Space，行为不变，
+                    * 但不构成嵌套交互元素。
+                    */}
+                  {/*
+                    * 头像**不做交互元素**（2026-11-09 axe `nested-interactive`）：
+                    * 行本身就是 role=button，行内再放任何可聚焦/可点的东西都构成“交互元素嵌套”。
+                    * 配置入口移到行尾的 actions 区（hover 才出现）—— 与“删除助手”同一处，
+                    * 两个动作在同一区域，也不再用“点头像”这种隐藏入口。
+                    */}
+                  <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={22} />
+                  <span className="min-w-0 flex-1 truncate">{item.name}</span>
                 </Row>
               ))}
             </div>
@@ -2907,7 +2969,7 @@ export default function App() {
       {/* 第2列 · 对话（项目分组 → 会话行）：Task 0015 · T15 合并后的一列 */}
       {!folded.groups && (
         <>
-          <ResizeColumn resizeKey="c2" width={box.c2} onStart={(event) => beginDrag("c2", event)}
+          <ResizeColumn resizeKey="c2" width={box.c2} ariaLabel="会话列" onStart={(event) => beginDrag("c2", event)}
             testId="groups-panel" className="flex-col border-r border-nav-line bg-nav-bg">
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
@@ -3161,6 +3223,13 @@ export default function App() {
             </p>
           </div>
           <span className="ml-auto" />
+          {/* 快捷显示设置（老位置）：桌面显示、手机隐藏（手机去设置页）。
+              className 里用 `hidden sm:inline-flex` 会让 IconButton 自带的 inline-flex 失效，
+              所以外面套一层条件渲染的容器 —— 与页面里其它"手机不渲染"的写法一致。 */}
+          {!isMobile && (
+            <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs}
+              open={displayPrefsOpen} onOpenChange={setDisplayPrefsOpen} />
+          )}
           <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
             onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
             <IconHistory size={16} />
@@ -3458,10 +3527,11 @@ export default function App() {
             </div>
           </main>}
           {!settingsOpen && !atBottom && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+            <div className={`pointer-events-none absolute inset-x-0 bottom-3 ${LAYER_CLASS.rail} flex justify-center`}>
               <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"
                 onClick={jumpToLatest}
-                className="pointer-events-auto rounded-full border border-line bg-surface shadow-md sm:h-9 sm:w-9">
+                className="pointer-events-auto rounded-full border border-line bg-surface sm:h-9 sm:w-9"
+                style={surfaceStyle("popover")}>
                 <IconArrowDown size={16} />
               </IconButton>
             </div>
@@ -3712,9 +3782,9 @@ export default function App() {
       {/* 完整历史 · 右侧并列列 */}
       {history !== undefined && (isMobile || box.history > 0) && (
         <>
-          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.history}
+          <ResizeColumn resizeKey="c5" side={isMobile ? "right" : "left"} ariaLabel="完整历史" width={isMobile ? "100%" : box.history}
             onStart={(event) => beginDrag("c5", event)}
-            className={`border-l border-nav-line ${isMobile ? "fixed inset-0 z-40 bg-surface" : ""}`}>
+            className={`border-l border-nav-line ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer} bg-surface` : ""}`}>
             <div className="flex min-w-0 flex-1 overflow-hidden">
               <TurnInspector agentId={agent?.id ?? ""} sessionId={history.sessionId} title={history.title}
                 agentName={agent?.name ?? "助手"} avatar={agent?.avatar} onClose={closeHistory} />
@@ -3726,9 +3796,9 @@ export default function App() {
       {/* 右侧面板：文件面板，或"与其他 Agent 对话"的详情（抽屉打开时强制显示） */}
       {(panelOpen || peerTarget !== undefined) && (isMobile || box.panel > 0) && (
         <>
-          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} width={isMobile ? "100%" : box.panel}
+          <ResizeColumn resizeKey="c4" side={isMobile ? "right" : "left"} ariaLabel="文件面板" width={isMobile ? "100%" : box.panel}
             onStart={(event) => beginDrag("c4", event)}
-            className={`border-l border-nav-line bg-surface ${isMobile ? "fixed inset-0 z-40" : ""}`}>
+            className={`border-l border-nav-line bg-surface ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer}` : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
                 <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
@@ -3781,20 +3851,22 @@ export default function App() {
       {/* 设置表面（Task 0009 · P1-3）：全页——覆盖除图标轨外的所有区域（含 composer）。
           参照 Twenty/LobeHub：设置是独立页面，不是叠在对话上的浮层。 */}
       {settingsOpen && !isMobile && (
-        <div className="absolute inset-y-0 right-0 left-11 z-40">
+        <div className={`absolute inset-y-0 right-0 left-11 ${LAYER_CLASS.drawer}`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
-            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onBadges={setBadges} onBadgesReset={() => setBadges(BADGE_DEFAULTS)}
             onClose={() => setSettingsOpen(false)} />
         </div>
       )}
       {settingsOpen && isMobile && (
-        <div className="fixed inset-0 z-40 bg-surface">
+        <div className={`fixed inset-0 ${LAYER_CLASS.drawer} bg-surface`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
-            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onBadges={setBadges} onBadgesReset={() => setBadges(BADGE_DEFAULTS)}
             onClose={() => setSettingsOpen(false)} />
         </div>
       )}
@@ -3845,8 +3917,9 @@ export default function App() {
       {/* 窄窗口：左三列浮层（点空白处收起全部；参照 Pi Web / 通用 AppShell 的 overlay 抽屉） */}
       {!isMobile && box.overlayLeft && anyLeftOpen && (
         <>
-          <div className="absolute inset-0 z-20 bg-ink-900/20" onClick={closeAllLeft} aria-hidden="true" />
-          <div className="absolute inset-y-0 left-11 right-0 z-30 flex overflow-x-auto shadow-lg">
+          <div className={`absolute inset-0 ${LAYER_CLASS.rail} ${SCRIM_CLASS}`} onClick={closeAllLeft} aria-hidden="true" />
+          <div className={`absolute inset-y-0 left-11 right-0 ${LAYER_CLASS.drawer} flex overflow-x-auto`}
+            style={surfaceStyle("popover")}>
             {leftColumns}
           </div>
         </>
@@ -3902,3 +3975,4 @@ import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type Rout
 import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./event-guards";
+import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";

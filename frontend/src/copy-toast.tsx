@@ -16,6 +16,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { copyFeedbackPosition, type RectLike } from "./copy-on-select";
+import { LAYER_CLASS } from "./design/surface";
 
 /** 展示请求：每次复制递增 `seq`（同一段文字连拖两次也要重新计时）。 */
 export type CopyFeedback = { text: string; rect: RectLike; seq: number };
@@ -56,7 +57,7 @@ export function CopyFeedbackToast({ feedback }: { feedback: CopyFeedback | null 
       role="status"
       aria-live="polite"
       style={{ visibility: visible ? "visible" : "hidden" }}
-      className="pointer-events-none fixed z-50 inline-flex select-none items-center gap-1.5 whitespace-nowrap rounded-full bg-ink-900 px-2.5 py-1 text-meta font-semibold text-surface shadow-anno"
+      className={`pointer-events-none fixed ${LAYER_CLASS.toast} inline-flex select-none items-center gap-1.5 whitespace-nowrap rounded-full bg-ink-900 px-2.5 py-1 text-meta font-semibold text-surface shadow-anno`}
     >
       <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2"
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -38,6 +38,7 @@ import { pairForSplit, splitAnchorOf, type SplitRow } from "./review-split";
 import type { WordDiff, WordSegment } from "./review-word-diff";
 import { ensureWordDiffLib, wordDiffOf } from "./review-word-diff-lib";
 import { awaitingOfComment, canCloseCommentBy, isClosedComment } from "./review-comment-state";
+import { LAYER_CLASS, SCRIM_CLASS, surfaceClass, surfaceStyle } from "./design/surface";
 
 /**
  * 检视面板（Task 0010 · P2）。
@@ -482,7 +483,7 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
           /* 稳定的 ref 回调（见 `usePlaceholderObserver` 的注释：内联函数每次渲染都会重建 observer） */
           ref={observePlaceholder}
         >
-          <div className="flex h-full items-center justify-center text-micro text-ink-300">正在准备这个文件的 diff…</div>
+          <div className="flex h-full items-center justify-center text-micro text-ink-500">正在准备这个文件的 diff…</div>
         </div>
       )}
       {open && body !== "placeholder" && needsLargeFileNotice({ expanded: open, changedLines: file.additions + file.deletions, forced: body === "mounted" }) && (
@@ -941,7 +942,7 @@ function HiddenBar({ count, region, canCollapseRows, onExpandUp, onExpandDown, o
   const btn = "rounded-inner px-2 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-ink-900 disabled:opacity-50";
   return (
     <div className="flex items-center gap-1 bg-sunken px-3 py-0.5 font-mono text-micro" data-review-hidden={region} data-hidden-count={count}>
-      <span className="text-ink-300">{label}</span>
+      <span className="text-ink-500">{label}</span>
       <span className="ml-auto flex items-center gap-1">
         {loading ? <Spinner size={12} /> : null}
         {/*
@@ -1147,7 +1148,7 @@ function SplitDiffRow({ row, wrap, oldTokens, newTokens, oldWords, newWords, vie
         {dragged ? (
           <span aria-hidden="true" data-review-drag-selected className="pointer-events-none absolute inset-0 border-l-2 border-accent-line bg-accent-soft/60" />
         ) : null}
-        <span className="w-10 shrink-0 select-none px-1 text-right text-ink-300 tabular-nums">{side === "old" ? (line?.oldNo ?? "") : (line?.newNo ?? "")}</span>
+        <span className="w-10 shrink-0 select-none px-1 text-right text-ink-500 tabular-nums">{side === "old" ? (line?.oldNo ?? "") : (line?.newNo ?? "")}</span>
         <span
           className="relative min-w-0 flex-1 px-1 pr-2"
           data-review-line-anchor={anchor === null ? undefined : `${side}:${anchor.no}`}
@@ -1236,7 +1237,7 @@ function DiffRow({ line, wrap, tokens, words, anchorSide, anchorNo, draftState, 
 }) {
   const bg = line.type === "added" ? "bg-diff-add-soft" : line.type === "removed" ? "bg-diff-del-soft" : "";
   const bar = line.type === "added" ? "bg-diff-add" : line.type === "removed" ? "bg-diff-del" : "";
-  const sign = line.type === "added" ? "text-diff-add" : line.type === "removed" ? "text-diff-del" : "text-ink-300";
+  const sign = line.type === "added" ? "text-diff-add" : line.type === "removed" ? "text-diff-del" : "text-ink-500";
   const drafted = draftState?.has === true;
   const blockStart = draftState?.blockStart === true;
   const blockEnd = draftState?.blockEnd === true;
@@ -1272,7 +1273,7 @@ function DiffRow({ line, wrap, tokens, words, anchorSide, anchorNo, draftState, 
         />
       ) : null}
       <span aria-hidden="true" className={`w-0.5 shrink-0 ${bar}`} />
-      <span className="w-10 shrink-0 select-none px-1 text-right text-ink-300 tabular-nums">{line.oldNo ?? ""}</span>
+      <span className="w-10 shrink-0 select-none px-1 text-right text-ink-500 tabular-nums">{line.oldNo ?? ""}</span>
       <span
         className={`relative w-10 shrink-0 select-none px-1 text-right tabular-nums ${anchorNo !== null && anchorNo !== undefined && onAddDraft !== undefined ? "cursor-ns-resize text-ink-500 hover:text-accent" : "text-ink-300"}`}
         onMouseDown={onSelectStart}
@@ -1292,7 +1293,7 @@ function DiffRow({ line, wrap, tokens, words, anchorSide, anchorNo, draftState, 
               event.stopPropagation();
               if (onSelectStart !== undefined) onSelectStart(event);
             }}
-            className={`absolute -right-1 top-1/2 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-control bg-surface text-ink-500 ring-1 ring-line transition-all hover:text-accent hover:ring-accent ${
+            className={`absolute -right-1 top-1/2 ${LAYER_CLASS.rail} flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-control bg-surface text-ink-500 ring-1 ring-line transition-all hover:text-accent hover:ring-accent ${
               draftState?.isStart === true ? "opacity-100" : "opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
             }`}
           >
@@ -2957,7 +2958,7 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         <div
           style={{ top: placed.top, left: placed.left }}
           data-review-pin-side={placed.side}
-          className="pointer-events-auto fixed z-50 w-72 rounded-panel bg-surface p-2 ring-1 ring-line shadow-lg"
+          className={`pointer-events-auto fixed ${LAYER_CLASS.popover} w-72 ${surfaceClass("popover")} p-2`}
           data-review-pin-preview={hoverPin.id}
           onMouseEnter={() => setHoverPin(hoverPin)}
           onMouseLeave={() => setHoverPin(undefined)}
@@ -2984,9 +2985,9 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
 
       {/* 快捷键帮助（G13）：内容就是代码里那张 `KEY_BINDINGS`，不手写第二份文案 */}
       {helpOpen && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-ink-900/20 p-4" role="dialog" aria-modal="true" aria-label="检视面板快捷键" data-review-help
+        <div className={`absolute inset-0 ${LAYER_CLASS.modal} flex items-center justify-center ${SCRIM_CLASS} p-4`} role="dialog" aria-modal="true" aria-label="检视面板快捷键" data-review-help
           onClick={() => setHelpOpen(false)}>
-          <div className="max-w-sm rounded-panel bg-surface p-3 shadow-lg ring-1 ring-line" onClick={(event) => event.stopPropagation()}>
+          <div className={`max-w-sm ${surfaceClass("modal")}`} onClick={(event) => event.stopPropagation()}>
             <div className="mb-2 flex items-center gap-2">
               <span className="text-body font-semibold text-ink-900">快捷键</span>
               <button type="button" className="ml-auto rounded-inner px-1.5 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-ink-900"

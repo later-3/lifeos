@@ -31,17 +31,31 @@ function oklchToRgb(lstar: number, c: number, hDeg: number): [number, number, nu
   return [f(r), f(g), f(bl)].map((v) => Math.max(0, Math.min(255, Math.round(v * 255)))) as [number, number, number];
 }
 
-function hex(lstar: number, c: number, hDeg: number): string {
+/** OKLCH(L*, C, H) → hex。导出给 `test/boot-theme.test.mjs` 用：
+ *  首屏脚本的取值必须与这里算的一致，测试不能自己另写一份转换。 */
+export function hex(lstar: number, c: number, hDeg: number): string {
   return "#" + oklchToRgb(lstar, c, hDeg).map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
-/** 相对亮度（WCAG）。入参与 hex 同口径。 */
-function relLum(lstar: number, c: number, hDeg: number): number {
-  const [r, g, b] = oklchToRgb(lstar, c, hDeg).map((v) => {
+/** sRGB(0-255) → WCAG 相对亮度（转换核心唯一：OKLCH 与直 RGB 两个入口共用它）。 */
+function relLumOfBytes([r, g, b]: readonly [number, number, number] | readonly number[]): number {
+  const [rr, gg, bb] = [r, g, b].map((v) => {
     const x = v / 255;
     return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }) as [number, number, number];
+  return 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+}
+
+/** 相对亮度（WCAG）。入参与 hex 同口径（OKLCH）。 */
+function relLum(lstar: number, c: number, hDeg: number): number {
+  return relLumOfBytes(oklchToRgb(lstar, c, hDeg));
+}
+
+/** RGB(0-255) 口径的 WCAG 对比度：hex 值之间的直接比对（2026-11-10 增加，徽标/选区断言用）。
+ *  与 `relLum`/`contrastOf` 共用同一个亮度核，不存在第二份数学。 */
+export function contrastRgb(a: readonly number[], b: readonly number[]): number {
+  const A = relLumOfBytes(a), B = relLumOfBytes(b);
+  return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
 }
 
 /** 对比度（WCAG）。供设置界面实时读数与测试断言。 */
@@ -154,6 +168,18 @@ export type Palette = {
   success: PaletteColor;
   danger: PaletteColor;
   running: PaletteColor;
+  /**
+   * 头像底色三档（按 id 派生，同一个助手永远同色）。
+   *
+   * 为什么单独给 token（2026-11-09 视觉矩阵抓到的缺陷）：头像首字母固定**白字**，
+   * 而 `ink-700/ink-900` 在深色模式下是近白（L*82/96）→ 深色下变成"白底白字"，
+   * 头像只剩空白圆。`success/danger/running` 深色下也是"浅底深字"的角色（配白字只有 2.0–2.5）。
+   * 唯一"白字底"的角色是 `accentSolid`（两侧都 ≥4.5），所以头像色从它派生：
+   * **同一个 L（因此同样达 AA）+ 三个色相**，既保证可读又有区分度。
+   */
+  avatar1: PaletteColor;
+  avatar2: PaletteColor;
+  avatar3: PaletteColor;
 };
 
 export function clampState(raw: Partial<ThemeState>): ThemeState {
@@ -288,11 +314,35 @@ export function calculatePalette(state: ThemeState): Palette {
       : [96.5, accentC * 0.16, hue],
     ink900: [ink[900], 0.01, nH],
     ink700: [ink[700], 0.008, nH],
-    // ink-500 压在最深的交互底（hover/line）上也要 ≥4.5：L*48→42（hover 4.96 / line 4.57 / surface 6.01）。
-    // 依据：/tmp 实测 + `knowledge/design/theme-systems/comparison.md` §3.2（底加深必须联动文字）
-    ink500: [42, 0.006, nH],
+    /**
+     * ink-500（辅助文字：元信息、副行、说明）。
+     *
+     * **必须按深浅色分开给！** 2026-11-09 的 axe 审计抓到：这里原来写死 `L* 42`，
+     * 那是**浅色**的解（白底上 6.01:1），深色底 #292828 上只有 **2.45:1** —— 远低于 AA 4.5。
+     * 现象是深色下头部副标题、空态提示、行内说明全都发灰看不清（axe 报了 30 次 color-contrast）。
+     *
+     * 两侧都取"在**最深的交互底**（hover/line）上也 ≥4.5"的 L*：
+     *   浅色：L*42 → surface 6.01 / hover 4.96 / line 4.57；
+     *   深色：L*68 → surface 6.02 / hover 4.72 / line 4.71（深色底越亮，辅助文字必须越亮）。
+     * 机器检查：`test/design-system.test.mjs`（4 个底 × 5 预设 × 深浅色全矩阵 ≥4.5）。
+     */
+    ink500: [dark ? 68 : 42, 0.006, nH],
     ink300: [ink[300], 0.004, nH],
-    success: dark ? [72, 0.16, 158] : [45, 0.13, 158],
+    /*
+     * 头像三档：**各自二分求"白字仍达 AA 的最亮 L"**（色相不同会影响相对亮度，
+     * 直接复用 accentSolidL 会让暖色/粉色的对比掉到 3.96 —— 实测过）。
+     * 色相错开 120°，既保证可读又有区分度；用 maxLforWhiteText 与 accentSolid 同法。
+     */
+    avatar1: [maxLforWhiteText([0, 40], hue, 0.045), 0.045, hue],
+    avatar2: [maxLforWhiteText([0, 40], (hue + 120) % 360, 0.045), 0.045, (hue + 120) % 360],
+    avatar3: [maxLforWhiteText([0, 40], (hue + 240) % 360, 0.045), 0.045, (hue + 240) % 360],
+    /**
+     * 浅色档 L*44（2026-11-10 微调 45 → 44）：旧值 #00804c 在自己的 soft 底上只有 4.4:1
+     * ——palette 与静态 tokens (#067647，L*≈43.9) 双源不同步的历史遗留（merge main 时 palette
+     * 是新引擎新值）。本轮把徽标 soft 底改为**从语义色派生**后，双源必须一致：取 #007845（L*42，静态 #067647 的同族同名档位），徽标 vivid(14%) 档上字对比 ≥4.5 ✓。
+     * 深色档照旧（L*72 亮绿字，598 对比已足，不是本轮病灶）。
+     */
+    success: dark ? [72, 0.16, 158] : [42, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],
     running: dark ? [72, 0.15, 232] : [40, 0.17, 244],
   };
@@ -321,6 +371,9 @@ const VAR_MAP: Array<[string, keyof Palette]> = [
   ["--color-success", "success"],
   ["--color-danger", "danger"],
   ["--color-running", "running"],
+  ["--color-avatar-1", "avatar1"],
+  ["--color-avatar-2", "avatar2"],
+  ["--color-avatar-3", "avatar3"],
 ];
 
 /** 把主题写到 :root。幂等；任何值变化即全站生效（Tailwind utility 引用 var）。 */

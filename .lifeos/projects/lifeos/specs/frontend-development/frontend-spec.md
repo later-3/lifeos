@@ -62,6 +62,49 @@ Life OS（~/.lifeos）
 - **圆角**：`inner` / `control` / `panel` / `bubble` / `full` 五档，不按页面新造。
 - **动效**：只保留“正在工作”等有语义的反馈；遵守 `prefers-reduced-motion`；页面不写 `transition-all`。
 
+### 2.1 区块 × 字档配对表（2026-11-10 新增；"有的挤、大小不统一"的根治）
+
+> **依据（逐条可核，2026-11-10 已把上一版的"直觉表述"全部换成源码/官方证据）：**
+>
+> - **A 级 · Tailwind Typography 官方插件**（开源 prose 基线；`evidence/refs/tailwind-typography`
+>   `src/styles.js`，commit `e3714a3` 2026-06-08）：
+>   每个文字档都是 **fontSize + lineHeight 成对**出现（`styles.js:33-63`：p 14px/24px→1.714、
+>   h1 30px/36px、h2 20px/28px…），间距全部用 `em` 相对前档字号（`em(16, 14)`）——
+>   本表"行高随字号整组定"与"md 一律 em"的直接来源。
+> - **A 级 · LobeChat Markdown**（`evidence/worktree/evidence/refs/lobe-ui/src/Markdown/style.css:1-150`，
+>   commit `33729d4` 2026-11-04）：**单一基准字号 + 乘数**模型（`--lobe-markdown-font-size: 16px` →
+>   h2 = base×(1+header-multiple)、h3=base×1.5、h4=base×1.25；行内码 **0.875em**；正文行高 **1.8**）。
+>   chat 界面里的 md 用它做"克制的页面内文档排版"，与本产品场景同构。
+> - **A 级 · astro-koharu**（用户点名；`evidence/refs/koharu/src/styles/theme/markdown.css:20-21`，
+>   commit `329ce55` 2026-10-10）：正文 `--reader-font-size: 1rem / --reader-line-height: 1.8`；
+>   阅读**参数读用户偏好**（`src/store/settings.ts`）——本表"正文随字号偏好整组缩放"的参考实现。
+> - **A 级 · hexo-theme-butterfly**（用户点名；`evidence/refs/butterfly/source/css/var.styl:31-51`）：
+>   `global_font_size 14px`、`$text-line-height = 2`、**代码块行高独立变量 `$line-height-code-block = 1.6`**
+>   ——"正文行高与代码行高分开定"三个参考里两家一致。
+> - **数值取齐**：正文行高 1.8（三家 1.7–2 的中位）→ 我们 md 用 1.72（对话多短段落，取略紧；
+>   偏差由既有实现检验过，不动）；代码块 1.6（butterfly 同值）；行内码 0.88em（lobe 0.875、koharu 0.9 的中位）。
+> - **B 级 · Apple HIG Typography / Material 3 type scale**（`https://developer.apple.com/design/human-interface-guidelines/typography`、
+>   `https://m3.material.io/styles/typography/type-scale`）：**页面是壳，正文本节未直接摘录**（SPA 抓取不到，标注"待联网核"），
+>   它们只作**背景思路**（role-based scale、行高配字号），**不作为本表条文的依据**——条文依据以上四个 A 级源码。
+> - **机器检查的出处**：词汇普查上限纪律 = 我们自己的门禁（`audit-ui`）；同类机制参考 novu 的
+>   `.grit` 自定义规则（`theme-systems/novu.md` 已录）。
+>
+> **和谐不是"再调一次大小"，是每个区块只用配对表里的那一格。**
+
+| 区块 | 主文字 | 次文字 | 行距与密度关系（要点） |
+|---|---|---|---|
+| 左列（助手行 / 会话行） | `body` 13.5（选中加 600） | `micro` 11 / `nav-muted` | 主行行高 ≤1.45；主↔副行间距 2px（gap-0.5）；行容器 h-14 固定，字号不撑行（数值=既有实现已验收的事实，Task 0015；Knockout 检查=audit-ui） |
+| 分组头 / 列头 | `meta` 12 / 500 / `nav-muted` | — | 与下方第一行间距 ≥6px；计数右侧同一行，不新增字号（同上；参考 LobeChat NavItem 的 12px/1.2 行高，见 theme-systems/lobehub.md） |
+| 对话正文（md） | `content` 15 / 1.72 | `meta`（思考/工具头） | **md 内部字号全部相对 em**：标题 1.25/1.12/1.02、行内码 0.88、表格 0.94、代码块 0.8 —— 随「显示/字号」整组缩放，禁止 px 硬值 |
+| 状态条（对话区） | `micro` 11 / tabular-nums | — | 指标组间 12 / 同组 8 / 图↔数 4（沿用既有间距规则） |
+| composer（输入区） | `body` 13.5 | `micro`（占位/计数） | 输入行高 ≥1.5；按钮行与输入行间距 8 |
+| 设置页 | 页面标题 `title` 17 / 600 | 卡题 `body` 600、说明 `meta` 12 | 卡内标签 meta、值微 tabular-nums；分组间 ≥24 |
+
+**硬规则**（可检查）：
+- 同一区块内**不得出现配对表之外的新字号档**（新增=先改表再改码；audit-ui 会红）；
+- md 内字号一律 `em`/`var(--text-*)`，`px` 值允许存在的唯一位置 = tokens.css；
+- 副行（时间、说明）的字色只走 `nav-muted` / `ink-500`，也不用新灰阶。
+
 ## 3 布局
 
 - 整体骨架、列宽、折叠成本、面板上限、聊天保底**只由 `layout.ts` 计算**；组件不再算第二套宽度。

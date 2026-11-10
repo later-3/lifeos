@@ -21,13 +21,43 @@
        */
       (function () {
         try {
+          var root = document.documentElement;
           var raw = localStorage.getItem("lifeos.theme");
           if (!raw) return;
           var t = JSON.parse(raw);
-          var root = document.documentElement;
-          root.dataset.themeMode = t.mode === "dark" ? "dark" : "light";
-          root.style.colorScheme = t.mode === "dark" ? "dark" : "light";
+          var dark = t.mode === "dark";
+          root.dataset.themeMode = dark ? "dark" : "light";
+          root.style.colorScheme = dark ? "dark" : "light";
           root.setAttribute("data-theme-boot", "");
+
+          /*
+           * **首屏就要正确的四个颜色**（2026-11-09 实测：只写 data-theme-mode 时，
+           * 深色用户刷新会先白 44–99ms —— React 起来才写 :root 的 token）。
+           *
+           * 只算四个（背景/页面底/导航列/正文），它们覆盖首屏可见面积；
+           * 其余 token 等 React 起来后由 theme.ts 全量写入（同一套公式，见下方一致性测试）。
+           *
+           * 为什么要复制公式：这个脚本必须**同步**跑在首帧之前，不能 import 模块。
+           * 漂移风险由 `test/boot-theme.test.mjs` 锁住（用同一 state 对比两边的结果）。
+           */
+          if (dark) {
+            // 深色：轨 9.8 / 列 13.5 / 页面底 12.5 / 内容 16.4，正文墨色近白。
+            // 这些值由 theme.ts 的 darkL() 对 lSurface=100 / lNav=96.9 / lRail=93 算出。
+            root.style.setProperty("--color-surface", "#292828");
+            root.style.setProperty("--color-sunken", "#212020");
+            root.style.setProperty("--color-nav-bg", "#232222");
+            root.style.setProperty("--color-nav-edge", "#1c1b1a");
+            root.style.setProperty("--color-ink-900", "#faf1ef");
+            root.style.setProperty("--color-line", "#363535");
+          } else {
+            root.style.setProperty("--color-surface", "#ffffff");
+            root.style.setProperty("--color-sunken", "#fbfafa");
+            root.style.setProperty("--color-nav-bg", "#f7f6f5");
+            root.style.setProperty("--color-nav-edge", "#ecebea");
+            root.style.setProperty("--color-ink-900", "#312a29");
+            root.style.setProperty("--color-line", "#e2e0e0");
+          }
+          root.style.backgroundColor = dark ? "#292828" : "#ffffff";
         } catch (e) { /* 忽略 */ }
       })();
     </script>

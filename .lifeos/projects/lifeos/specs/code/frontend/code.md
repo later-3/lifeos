@@ -152,3 +152,149 @@
   「耗时」又被压成「1-2 / 小 / 时」三行。
 - 机器检查：`frontend/test/ui-contract.mjs`（「正文表格：最窄一列不被压到逐字竖排（宽列下）」、
   「正文表格：正文列变窄后依然不压字」）。
+
+### 2.22 浮层（popover/modal/toast）只允许用 design/surface.ts 的配方与层级（必须）
+
+- 场景：任何"浮在内容之上"的表面 —— 下拉面板、预览气泡、模态、Toast、抽屉。
+- 规则：
+  - **必须** 从 `design/surface.ts` 的 `SURFACE[tone]` 取圆角/边界/阴影/内距，`LAYER_CLASS[name]` 取层级；
+  - **必须** 边界统一用 `ring-1`（`border` 占 1px 布局，两个浮层并排时边框会差 1px）；
+  - **必须** 阴影用 `--surface-*`（深浅色各一套，深色带 1px 白色描边），**必须不** 用 Tailwind 的
+    `shadow-md/lg/xl`（固定黑投影，深色底下几乎不可见 —— 实测 `#292828` 上肉眼无差）；
+  - **必须** 层级只用 `rail / popover / drawer / modal / toast` 五个语义名，**必须不** 写裸 `z-<数字>`
+    （现状教训：Toast 与 Modal 同为 50 → 模态打开时看不到 toast）；
+  - **应该** 用 `Popover` primitive（`design/popover-view.tsx`）而不是自己拼定位 + 关闭逻辑
+    （定位算法在 `design/popover.ts`，纯函数可穷举；组件补了外点关闭/Esc/焦点归还）。
+- 依据：2026-11-09 审计 —— 5 个浮层 5 套写法（border+shadow-md / ring+shadow-lg / ring+shadow-xl …），
+  而 `tokens.css` 的 `--surface-popover/-modal` 早已算好却 0 使用。
+- 机器检查：`test/design-system.test.mjs`（禁裸 shadow-*、禁裸 z-、LAYER 与 index.css 一致、遮罩只有一种）。
+
+### 2.23 token 写了就必须有人用；不能用"看起来合理"的数值当上限（必须）
+
+- 场景：往 tokens.css / theme.ts 加新的设计 token；给任何可拖/可调的东西定上限。
+- 规则：
+  - **必须** 让每个新 token 至少有一个消费者（组件或 primitive）；只想"留给未来"的必须先说明理由
+    并写进测试的 `ALLOW_UNUSED`（默认不允许）；
+  - **必须** 让上限与"它所在容器的真实尺寸"同源：嵌套区域的上限由外层算出，
+    而**外层算尺寸的公式只能有一处**（本项目：`layout()`；`maxWidthOf()` 必须向它要值）；
+  - **必须不** 在预算公式里加减"命中区厚度/装饰宽度"这类**不影响布局**的量
+    （教训：`maxWidthOf` 多减 `HANDLE_HIT(8)`，导致"拖到 436 就停而面板实际能到 444"，
+    同类缺陷发生过两次：c1 的 440 常量、c4t 的重复预算）；
+  - **应该** 用"关系断言"而不是"数值断言"锁住设计意图（如 hover < 选中 < 选中 ≈ hover×2），
+    数值可以调、关系不能反。
+- 依据：2026-11-09 审计 —— `--surface-popover/-modal`、`--motion-*`、`--tracking-*`、`--radius-full`
+  写好了但 0 使用；五套浮层由此而生。上限漂移两次都造成"拖不动"。
+- 机器检查：`test/design-system.test.mjs`（token 使用率、状态强度关系、分层方向、层级一致性）。
+
+### 2.24 视觉回归用固定夹具 + 矩阵；基线入库（必须）
+
+- 场景：截图基线 / 视觉回归。
+- 规则：
+  - **必须** 用 route mock 的**固定夹具**渲染（agents / sessions / messages / profile / ui-prefs），
+    **必须不** 让真实家目录的用户数据进基线（本轮两次假红都源于此）；
+  - **必须** 覆盖「页面 × 深浅色 × 视口」矩阵（`pnpm test:visual`：5 × 2 × 2 = 20 张）；
+  - **必须** 基线入库（`frontend/test/visual-matrix/`），输入产物（`.visual-matrix-shots/`）忽略 ——
+    基线不入库时"换机器首次跑"等于没测；
+  - **必须** 差异时先看报告（左基线/右本次），先判断"差异是我想改的吗 / 旧基线本身是不是错的 /
+    新图里有没有用户数据"，三者答完再决定刷新还是改实现。
+- 依据：2026-11-09 —— `folded.png` 长期"稳定通过"是因为它一直在比两张空白页；
+  头像"白底白字"在零散图里没人看，在矩阵里一眼可见。
+- 机器检查：`scripts/visual-matrix.mjs`（20 张全一致才算通过）。
+
+### 2.25 可点击容器内部不得再放可点击元素（必须）
+
+- 场景：列表行、卡片、整块可点的区域，右上角/行尾还要放图标按钮（配置、删除、历史）。
+- 规则：
+  - **必须** 把"主点击区"与"行内动作"渲染成**兄弟**：外层容器只负责底色与 hover 分组，
+    主点击区是 `role="button"`（或 `<button>`），动作是有序的 `<button>` 列表；
+  - **必须不** 让 `role="button"` / `<button>` 套住另一个 `button` / `a[href]` / `role="button"`
+    —— axe 的 `nested-interactive` 明确禁止，读屏与键盘会出现"两个目标叠在一起"；
+  - **必须** 单个 primitive 提供 `actions` 之类的槽位（本项目 `Row` 的 `actions`），
+    页面不要自己往 children 里塞按钮 —— 否则下一个调用点又会套回去；
+  - **应该** 把"隐藏入口"（点头像配置）移到动作区，让动作集中在一处（找得到、也可断言）。
+- 依据：2026-11-09 axe 审计 34 处 `nested-interactive`（助手行头像按钮、会话行三按钮）。
+- 机器检查：`pnpm audit:a11y`（serious/critical 含 `nested-interactive` 必须为 0）。
+
+### 2.26 语义 soft 底（danger-soft / success-soft / running-soft）必须给深色值（必须）
+
+- 场景：任何"浅底 + 同色深字"的语义块（失败提示、成功徽标、进行中标签）。
+- 规则：
+  - **必须** 让 `*-soft` 在深色模式下重算（本项目 `index.css` 的 `[data-theme-mode="dark"]`），
+    **必须不** 直接把浅色的固定值搬到深色（深色下"浅粉底 + 浅红字"只有约 1.5:1）；
+  - **必须** 用语义 token（`bg-danger-soft`）而不是曾经的一次性色板（`--color-message-failure`），
+    否则深色重算覆盖不到；
+  - **应该** 成功的同类块（`tool-done`）与失败的同类块（`tool-error`）共用同一族 soft，
+    语义相同的两块**同色是正确的**，不要为了"看得出区别"再造一档。
+- 依据：2026-11-09 axe 审计（失败块在深色下 11 处 color-contrast，含 `bg-message-failure`）。
+- 机器检查：`pnpm audit:a11y` + `test/design-system.test.mjs`（对比度矩阵）。
+
+### 2.27 拖宽的语义是「拖哪条边，哪条边跟手」（必须）
+
+- 场景：任何可拖宽的列、分隔条（c1/c2/c4/c4t/c5 与未来一切分栏）。
+- 规则：
+  - **必须** 让用户抓着的那条分隔条在**每一帧**都贴着鼠标（_coordinate_ 断言：分隔条 x 位移 ≈ 鼠标位移，
+    偏差 ≤ 4px/帧）。宽度数值对了不算跟手——把手不动、另一条边反向移动的实现，宽度断言恒绿但方向感全错；
+  - **必须不** 用「一条边的移动量 = 另一条边的反向补偿」实现变宽（旧嵌套版的「树长多少面板往左长多少」）；
+  - **必须** 内层变宽只吃**同级**空间（文件树吃查看器），**必须不** 自动改写无关节点（左列、聊天列）的宽度——
+    旧版顶到上限后还从左列「借宽」且借走不还；
+  - **应该** 内外层职责分离：内层把手只管内层分界，外层把手（整个面板宽度）才动外层总宽；
+  - **应该** 把手到边界就停（可预期的死区），不用让界反向扩张来制造"还能拖"的错觉。
+- 依据：2026-11-10 用户（原话「我往右拖呢，它在往左边扩张」）：实测 1600 拖树 +100，
+  把手 x 恒 1237、面板左缘 1000→900、c2 300→240 借走不还。修复同步发现并修掉了
+  「松手清 inline 宽度 → 状态无变化不重渲染 → 列被 content 顶宽」（444→527）。
+- 机器检查：`frontend/test/ui-contract.mjs`（嵌套拖动块：分隔条 x 跳既精度断言 +
+  面板/左列宽度不变）+ `test/ui-layout.test.mjs`（嵌套拖动块：面板/左列不变量、
+  查看器几何等价、往返无漂移）。
+
+参考：参考实现语义对齐：opencode `session-panel-width.ts`（只保对侧最小宽）、
+open-webui `ResizableSidePanel.svelte`（`dx` 直接换算宽）；详细对比与删借宽的取舍见
+`knowledge/design/layout-model.md` §6。
+
+### 2.28 行尾动作必须走容器的槽位（hover 出现，不占常驻空间）（必须）
+
+- 场景：列表行尾的图标动作（助手行的「配置/删除」、会话行的「历史/重命名/删除」，以及未来的树/文件行）。
+- 规则：
+  - **必须** 用 `design/ui.tsx` `Row` 的 `status` + `actions`（状态与动作叠在同一栅格格，隐藏不塌、显示不抖）；
+  - **必须不** 在使用点自己写 hover 分支（`opacity-0 group-hover:*` 之类只许存在于 Row / SessionRow 容器内部）——
+    2026-11-10 起 SessionRow 的手写版保留运行；**新增**带动作的行**必须**走 Row，不得复制第二份；
+  - 动作隐藏时状态徽标必须可见（`StatusMarks` 挂 `status` 槽），hover 两者换位 —— 不要出现"格里悬空一段空白"；
+  - 键盘可达（`group-has-[:focus-visible]` 强制显现）与触屏分支（`@media(hover:none)`）由容器统一提供。
+- 依据：2026-11-10 用户（助手行两按钮常驻把列表拉长，"和会话列表里那个一样，鼠标移上去才显示"）。
+  上移前的形态见 `evidence/ui-round8/`（idle 一行干干净净、hover 右端两钮）。
+- 机器检查：`frontend/test/ui-contract.mjs`（助手行五条：默认隐藏 / hover 出现 / 移开隐藏 / 不可误点 / Tab 可见）。
+
+### 2.29 文字选区必须分档：正文实心、代码区 alpha（必须）
+
+- 场景：`::selection`（消息正文、文件树、Markdown、源码、diff 的拖选高亮）。
+- 规则：
+  - **必须** 全局 `::selection` = `--color-accent-solid` 底 + 白字（token 在深浅色下都保证白字 AA ——
+    它的语义就是"白字底"）；
+  - **必须** `pre ::selection` = alpha 档（light `30%` / dark `50%`，`color-mix` 透明化）+ `color: currentcolor`，
+    **必须不** 用实心底盖住代码块的语法色；
+  - **必须不** 用 `*-soft` 一类"底色需要随模式重算"的 token 当选区底 —— 2026-11-10 的实测缺陷：
+    `accent-soft` 深色档 L*≤30 与页面底（L*≈29）同亮度，深色下选区=隐形；
+  - 百分比数只允许写在 `tokens.css::selection` 注释引用的行号处（Gitea light/dark 两档），不在组件里。
+- 依据：2026-11-10 用户（暗色拖选不可见）；参考与数值出自
+  `knowledge/reference-baseline.md`「文字选区」行（Gitea `base.css:269` /
+  `codeeditor.css:177`、Rocket.Chat `codeBlockStyles.ts:13`、LobeChat `chatPanel.css.ts:544`）。
+- 机器检查：`test/design-system.test.mjs`（tokens.css 结构断言 + 白字 × accent-solid 5 预设 × 深浅色 ≥4.5 矩阵）。
+
+### 2.30 「明面容器」在深色下必须比所在底更亮（必须）
+
+- 场景：一切"平铺在页面/卡片上、自身有底色的内容容器"——md 的 fenced/th/行内码、思考块、
+  工具块（运行/成功/失败）、用户气泡、状态徽标 soft、失败横幅、引用块等。
+- 规则：
+  - **必须** 这些容器在深色模式有**显式的深色边界**（`[data-theme-mode="dark"]` 覆盖或主题引擎派生）；
+    **必须不** 让深色沿用浅色静态 hex——thinking/tool 块曾有 #fafafa/#f4f4f5（白色块） such 病（2026-11-10 实测修掉）；
+  - **必须** 深色底**不得比其所在页面底更暗**（方向向上：`#292828` 页面上的容器 ≥ hover `#2f2e2d`）；
+    同向回归锁在 `md-render-contract`（语义块三项 + th 一项）;
+  - **必须** 引用既有体系而不是新造值：中性块用 `--color-hover`（深色亮/浅色暗的双向 token）、
+    语义块用 `*-soft` 的深色派生（规范 2.26）、用户气泡用 `--color-accent-solid`（白字 AA 由 token 语义保证）。
+- 依据：① C213（badge soft 底比页面暗）/ C215（fenced 底 sunken 深色凹陷）——同一族，病根是
+  "浅色静态值深色沿用"的系统性缺口（2006-11-10 实测清单：五个 `--color-message-*` 全部无深色值）；
+  ② 方向参照（标注级别：观察，非 A 级）：GitHub dark 的 fenced 相对页面上**抬一档**
+  （页面 #0d1117 → fenced #161b22）；LobeChat dark 的 message 容器同向。
+  koharu 的深色代码面下游走黑（card×80%+black）是它自身主题色系的取向 ——
+  **方向类自身别做争议**：本条文的执行依据是我们自己的 C213/C215 实测家族 +
+  probe 全清（`evidence/ui-round10/semantic-{dark,light}.png`）；参考方向只作背景，不作条文。
+- 机器检查：`pnpm test:md`（语义块换挡断言）、`pnpm audit:a11y`（深色块的对比度）、视觉矩阵。
