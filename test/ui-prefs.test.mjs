@@ -39,6 +39,14 @@ test("写入后能读回，且落盘位置是 config/ui.json", async () => {
   assert.ok(uiPrefsPath(home).endsWith(join("config", "ui.json")));
 });
 
+test("部分更新：只给 badges 时，已有 theme 与 display 必须保留（第三键也要进部分更新语义）", async () => {
+  await writeUiPrefs({ theme: { mode: "dark", preset: "cool" }, display: { width: { mode: "full" } } });
+  const after = await writeUiPrefs({ badges: { speed: 1.5, amplitude: 0.5, strength: "vivid" } });
+  assert.deepEqual(after.theme, { mode: "dark", preset: "cool" });
+  assert.deepEqual(after.display, { width: { mode: "full" } });
+  assert.deepEqual(after.badges, { speed: 1.5, amplitude: 0.5, strength: "vivid" });
+});
+
 test("部分更新：只给 display 时，已有 theme 必须保留", async () => {
   await writeUiPrefs({ theme: { mode: "dark" } }, home);
   const after = await writeUiPrefs({ display: { font: { scale: 1.2 } } }, home);

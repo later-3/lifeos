@@ -38,6 +38,8 @@ export function uiPrefsPath(home = resolveHome()): string {
 export type UiPrefs = {
   theme?: unknown;
   display?: unknown;
+  /** 状态徽标（运行/未读/失败的配色强度与呼吸动画参数，2026-11-10 用户：单独可调）。 */
+  badges?: unknown;
 };
 
 /** 读取（文件不存在 / 坏 JSON → 空对象，调用方用各自的默认值补齐）。 */
@@ -50,6 +52,7 @@ export async function readUiPrefs(home = resolveHome()): Promise<UiPrefs> {
     const out: UiPrefs = {};
     if (record.theme !== undefined) out.theme = record.theme;
     if (record.display !== undefined) out.display = record.display;
+    if (record.badges !== undefined) out.badges = record.badges;
     return out;
   } catch {
     return {};
@@ -68,6 +71,7 @@ export async function writeUiPrefs(patch: UiPrefs, home = resolveHome()): Promis
   const next: UiPrefs = { ...current };
   if (patch.theme !== undefined) next.theme = patch.theme;
   if (patch.display !== undefined) next.display = patch.display;
+  if (patch.badges !== undefined) next.badges = patch.badges;
   await writeTextAtomic(uiPrefsPath(home), `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }

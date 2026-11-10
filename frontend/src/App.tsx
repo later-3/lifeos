@@ -21,12 +21,14 @@ import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
 import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
-import { fetchUiPrefs, persistDisplayPrefs, persistTheme } from "./ui-prefs-client";
+import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme } from "./ui-prefs-client";
 import { SettingsSurface } from "./settings-surface";
-import { applySurfaceTokens, applyTheme, loadTheme, saveTheme, type ThemeState } from "./design/theme";
+import { applySurfaceTokens, applyTheme, calculatePalette, hex, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
+import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "./badge-prefs";
+import { cachedBadgePrefs } from "./ui-prefs-client";
 import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
 import { processOpenOf } from "./response-fold";
 import { SessionBar, type SessionBarTurn } from "./session-bar";
@@ -451,6 +453,8 @@ export default function App() {
   const [profile, setProfile] = useState<UserProfile | undefined>();
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
+  /** 状态徽标偏好（2026-11-10 用户：速率/幅度/强度单独可调）：缓存先顶上，服务端真值随后覆盖。 */
+  const [badges, setBadges] = useState<BadgePrefs>(() => cachedBadgePrefs());
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -486,6 +490,7 @@ export default function App() {
       if (!alive || remote === undefined) return;
       if (remote.theme !== undefined) setTheme(remote.theme);
       if (remote.display !== undefined) setPrefs(remote.display);
+      if (remote.badges !== undefined) setBadges(remote.badges);
     });
     return () => { alive = false; };
   }, []);
@@ -923,6 +928,23 @@ export default function App() {
     for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);
     root.style.setProperty("--container-reading-width", widthVar(prefs.width));
   }, [prefs]);
+  // —— 状态徽标：动画周期/幅度变量 + 三个 soft 底（从语义色派生，深浅色方向都向上） ——
+  // soft 必须随 theme/gallery 同步：换主题（色相、深浅）后,徽标底的色相应与语义色同源。
+  useEffect(() => { persistBadgePrefs(badges); }, [badges]);
+  useEffect(() => {
+    const root = document.documentElement.style;
+    document.documentElement.dataset.badgeStrength = badges.strength;
+    const palette = calculatePalette(theme);
+    const toHex = (key: keyof typeof palette): string => hex(palette[key][0], palette[key][1], palette[key][2]);
+    const surfaceHex = toHex("surface");
+    for (const [name, value] of Object.entries(badgeVarsOf(badges))) root.setProperty(name, value);
+    root.setProperty("--color-running-soft",
+      badgeSoft("running", theme.mode, badges.strength, toHex("running"), surfaceHex));
+    root.setProperty("--color-success-soft",
+      badgeSoft("success", theme.mode, badges.strength, toHex("success"), surfaceHex));
+    root.setProperty("--color-danger-soft",
+      badgeSoft("danger", theme.mode, badges.strength, toHex("danger"), surfaceHex));
+  }, [badges, theme]);
   // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -3825,8 +3847,9 @@ export default function App() {
         <div className={`absolute inset-y-0 right-0 left-11 ${LAYER_CLASS.drawer}`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
-            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onBadges={setBadges} onBadgesReset={() => setBadges(BADGE_DEFAULTS)}
             onClose={() => setSettingsOpen(false)} />
         </div>
       )}
@@ -3834,8 +3857,9 @@ export default function App() {
         <div className={`fixed inset-0 ${LAYER_CLASS.drawer} bg-surface`}>
           <SettingsSurface section={settingsSection} onSection={setSettingsSection}
             theme={theme} onTheme={setTheme}
-            prefs={prefs} viewport={viewportWidth} onPrefs={setPrefs}
+            prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
+            onBadges={setBadges} onBadgesReset={() => setBadges(BADGE_DEFAULTS)}
             onClose={() => setSettingsOpen(false)} />
         </div>
       )}

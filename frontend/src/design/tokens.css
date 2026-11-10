@@ -23,9 +23,11 @@
   --color-accent-soft: #eff4ff;
   --color-accent-line: #cbdcff;
   --color-danger: #b42318;
-  --color-danger-soft: #fef3f2;
+  /* soft 底的**运行时值**由 App 的徽标偏好层从语义色派生（badge-prefs.ts；强度三档、深浅自适应），
+   * 下面的静态值只是 React 起来前的首帧近似（neutral/palette 的 standard 档）—— 不作为第二事实源。 */
+  --color-danger-soft: #f8ebeb;
   --color-success: #067647;
-  --color-success-soft: #ecfdf3;
+  --color-success-soft: #e6f2ec;
 
   /*
    * 「正在跑」的语义色（Task 0005 · 徽标改版，用户 2026-11-05 裁决 P1 蓝）。
@@ -44,7 +46,7 @@
      值由 theme.ts 从 accentSolid 派生（同 L、色相错 120°）；这里只是 React 起来前的默认。 */
   --color-avatar-1: #76554e;
   --color-avatar-2: #4a6653;
-  --color-avatar-3: #565d78;  --color-running-soft: #eef2ff;
+  --color-avatar-3: #565d78;  --color-running-soft: #e6eff8;
 
   /*
    * diff 专用色（Task 0010 · 检视模式）：增/删行底 + 行标记条。
@@ -382,11 +384,11 @@
  */
 @keyframes badge-breathe {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.02); }
+  50%      { transform: scale(var(--badge-breathe-max, 1.02)); }
 }
 @keyframes dot-breathe {
   0%, 100% { transform: scale(1); }
-  50%      { transform: scale(1.30); }
+  50%      { transform: scale(var(--dot-breathe-max, 1.30)); }
 }
 /* 扩散环：向外推 3px 并淡出。用 box-shadow 而非 transform → 不动布局、不影响几何断言。 */
 @keyframes badge-ring {
@@ -395,11 +397,19 @@
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 
+/*
+ * 周期变量（2026-11-10 用户："动画速率/幅度单独可调"）：
+ * `--badge-motion-period` 由设置页「状态徽标」组写入（`badge-prefs.ts`），默认 3s = v5 基准；
+ * 幅度变量在 50% 帧上取值（`--badge-breathe-max` / `--dot-breathe-max`），
+ * 静态默认值就是 v5——没调过设置的用户看到的东西不变。
+ */
 @utility animate-badge-breathe {
-  animation: badge-breathe 3s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 3s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation: badge-breathe var(--badge-motion-period, 3s) cubic-bezier(.45, 0, .55, 1) infinite,
+    badge-ring var(--badge-motion-period, 3s) cubic-bezier(.45, 0, .55, 1) infinite;
 }
 @utility animate-dot-breathe {
-  animation: dot-breathe 3s cubic-bezier(.45, 0, .55, 1) infinite, badge-ring 3s cubic-bezier(.45, 0, .55, 1) infinite;
+  animation: dot-breathe var(--badge-motion-period, 3s) cubic-bezier(.45, 0, .55, 1) infinite,
+    badge-ring var(--badge-motion-period, 3s) cubic-bezier(.45, 0, .55, 1) infinite;
 }
 
 /*

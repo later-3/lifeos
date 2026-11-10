@@ -37,13 +37,25 @@ export function hex(lstar: number, c: number, hDeg: number): string {
   return "#" + oklchToRgb(lstar, c, hDeg).map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
-/** 相对亮度（WCAG）。入参与 hex 同口径。 */
-function relLum(lstar: number, c: number, hDeg: number): number {
-  const [r, g, b] = oklchToRgb(lstar, c, hDeg).map((v) => {
+/** sRGB(0-255) → WCAG 相对亮度（转换核心唯一：OKLCH 与直 RGB 两个入口共用它）。 */
+function relLumOfBytes([r, g, b]: readonly [number, number, number] | readonly number[]): number {
+  const [rr, gg, bb] = [r, g, b].map((v) => {
     const x = v / 255;
     return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }) as [number, number, number];
+  return 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+}
+
+/** 相对亮度（WCAG）。入参与 hex 同口径（OKLCH）。 */
+function relLum(lstar: number, c: number, hDeg: number): number {
+  return relLumOfBytes(oklchToRgb(lstar, c, hDeg));
+}
+
+/** RGB(0-255) 口径的 WCAG 对比度：hex 值之间的直接比对（2026-11-10 增加，徽标/选区断言用）。
+ *  与 `relLum`/`contrastOf` 共用同一个亮度核，不存在第二份数学。 */
+export function contrastRgb(a: readonly number[], b: readonly number[]): number {
+  const A = relLumOfBytes(a), B = relLumOfBytes(b);
+  return (Math.max(A, B) + 0.05) / (Math.min(A, B) + 0.05);
 }
 
 /** 对比度（WCAG）。供设置界面实时读数与测试断言。 */
@@ -324,7 +336,13 @@ export function calculatePalette(state: ThemeState): Palette {
     avatar1: [maxLforWhiteText([0, 40], hue, 0.045), 0.045, hue],
     avatar2: [maxLforWhiteText([0, 40], (hue + 120) % 360, 0.045), 0.045, (hue + 120) % 360],
     avatar3: [maxLforWhiteText([0, 40], (hue + 240) % 360, 0.045), 0.045, (hue + 240) % 360],
-    success: dark ? [72, 0.16, 158] : [45, 0.13, 158],
+    /**
+     * 浅色档 L*44（2026-11-10 微调 45 → 44）：旧值 #00804c 在自己的 soft 底上只有 4.4:1
+     * ——palette 与静态 tokens (#067647，L*≈43.9) 双源不同步的历史遗留（merge main 时 palette
+     * 是新引擎新值）。本轮把徽标 soft 底改为**从语义色派生**后，双源必须一致：取 #007845（L*42，静态 #067647 的同族同名档位），徽标 vivid(14%) 档上字对比 ≥4.5 ✓。
+     * 深色档照旧（L*72 亮绿字，598 对比已足，不是本轮病灶）。
+     */
+    success: dark ? [72, 0.16, 158] : [42, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],
     running: dark ? [72, 0.15, 232] : [40, 0.17, 244],
   };

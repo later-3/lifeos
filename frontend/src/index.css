@@ -180,7 +180,8 @@ html, body, button, input, textarea, select {
  * 这里按深色重算：底变深（保留色相）、字仍用 danger/success（它们在深色下是亮的）。
  * ══════════════════════════════════════════════════════════════ */
 [data-theme-mode="dark"] {
-  --color-danger-soft: #3a1f1e;
-  --color-success-soft: #12301f;
-  --color-running-soft: #10263a;
+  /* 首帧近似（neutral/palette standard 档的派生值）；React 起来后由徽标偏好层即时覆盖 */
+  --color-danger-soft: #413130;
+  --color-success-soft: #2b3f36;
+  --color-running-soft: #273d46;
 }

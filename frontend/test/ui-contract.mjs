@@ -321,6 +321,92 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
 }
 
+// 状态徽标可调（2026-11-10 用户："速率/幅度/颜色单独可调；深浅色都要适配"）。
+// 与"配置要落根节点变量并持久化"三条断言：滑速率 → --badge-motion-period 变；
+// 拉幅度 → --dot-breathe-max 变；切强度 → --color-running-soft 与 data-badge-strength 变。
+{
+  const badgePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await badgePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await badgePage.waitForTimeout(400);
+  await badgePage.evaluate(() => {
+    document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  const readRoot = () => badgePage.evaluate(() => ({
+    period: document.documentElement.style.getPropertyValue("--badge-motion-period").trim(),
+    breathe: document.documentElement.style.getPropertyValue("--badge-breathe-max").trim(),
+    dot: document.documentElement.style.getPropertyValue("--dot-breathe-max").trim(),
+    strength: document.documentElement.getAttribute("data-badge-strength"),
+    runningSoft: document.documentElement.style.getPropertyValue("--color-running-soft").trim(),
+    preview: (() => {
+      const chip = document.querySelector('[data-testid="badge-preview"]');
+      if (chip === null) return null;
+      const box = chip.getBoundingClientRect();
+      return chip.querySelectorAll("span").length > 0 && box.width > 0 && box.height > 0;
+    })(),
+  }));
+  const before = await readRoot();
+  check("状态徽标：设置页预览行渲染（三徽标 + 三圆点）", before?.preview === true, JSON.stringify(before));
+  check("状态徽标：root 变量已就位（周期/幅度/强度）",
+    before?.period !== "" && before?.breathe !== "" && before?.dot !== "" && before?.strength !== null, JSON.stringify(before));
+
+  // 速率 → period 变
+  await badgePage.locator("#badge-speed").fill("2");
+  await badgePage.locator("#badge-speed").dispatchEvent("change");
+  await badgePage.waitForTimeout(300);
+  const afterSpeed = await readRoot();
+  check("状态徽标：速率滑块 → 周期变量变化（3s → 1.5s）",
+    before?.period === "3s" && afterSpeed?.period !== "3s", `${before?.period} → ${afterSpeed?.period}`);
+
+  // 幅度 → dot 变
+  const dotBefore = afterSpeed?.dot;
+  await badgePage.locator("#badge-amp").fill("0");
+  await badgePage.locator("#badge-amp").dispatchEvent("change");
+  await badgePage.waitForTimeout(300);
+  const afterAmp = await readRoot();
+  check("状态徽标：幅度滑块 → 呼吸幅度变量变化（0 = 静止）",
+    dotBefore !== undefined && dotBefore !== afterAmp?.dot && Number(afterAmp?.dot) === 1,
+    `${dotBefore} → ${afterAmp?.dot}`);
+
+  // 强度 → running-soft 与 attr 变
+  const softBefore = afterAmp?.runningSoft;
+  await badgePage.locator('[data-testid="badge-strength-vivid"]').click();
+  await badgePage.waitForTimeout(300);
+  const afterStrength = await readRoot();
+  check("状态徽标：强度档 → 派生 soft 与 data-badge-strength 变化",
+    afterStrength?.strength === "vivid" && afterStrength?.runningSoft !== softBefore,
+    `${softBefore} → ${afterStrength?.runningSoft}`);
+
+  // 深色下同样生效（切主题 → soft 换深色值）
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("主题"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(300);
+  // 用 API 点深色按钮（appearance 分区的深浅切换）
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('[data-testid="settings-surface"] button')]
+      .find((b) => /深色/.test(b.innerText ?? "") && (b.getAttribute("aria-pressed") ?? b.getAttribute("aria-checked")) !== null);
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(500);
+  await badgePage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("显示"));
+    btn?.click();
+  });
+  await badgePage.waitForTimeout(400);
+  const darkState = await readRoot();
+  check("状态徽标：深色下 soft 派生自动换挡（色值不同于浅色档）",
+    darkState?.runningSoft !== undefined && darkState?.runningSoft !== afterStrength?.runningSoft,
+    JSON.stringify(darkState));
+  await badgePage.close();
+}
+
 // 设置表面（2026-11-09 审核修正，四条实测缺陷的回归契约）
 //
 // 实测记录（都进过 cases/2026-11-09.md）：
@@ -2345,6 +2431,12 @@ const REQUIRED = [
   "头部快捷显示设置：Esc 关闭且焦点回到锚点",
   "头部快捷显示设置：手机不渲染（头部不再增加图标）",
   "助手行动作区：默认隐藏且不可点",
+  "状态徽标：设置页预览行渲染（三徽标 + 三圆点）",
+  "状态徽标：root 变量已就位（周期/幅度/强度）",
+  "状态徽标：速率滑块 → 周期变量变化（3s → 1.5s）",
+  "状态徽标：幅度滑块 → 呼吸幅度变量变化（0 = 静止）",
+  "状态徽标：强度档 → 派生 soft 与 data-badge-strength 变化",
+  "状态徽标：深色下 soft 派生自动换挡（色值不同于浅色档）",
   "助手行动作区：悬停出现（状态徽标同步让位）",
   "助手行动作区：键盘 Tab 进入时可见",
   "嵌套拖动：树真的变宽（不是按下去就被上限夹住）",

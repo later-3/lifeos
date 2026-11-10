@@ -15,12 +15,14 @@
  * 每次都 PUT 会把文件写入放大成每秒几十次（后端是原子写，代价不低）。
  */
 import { DEFAULT_PREFS, parsePrefs, type DisplayPrefs } from "./display-prefs";
+import { parseBadges, type BadgePrefs } from "./badge-prefs";
 import { clampState, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 
 const DISPLAY_CACHE_KEY = "lifeos.displayPrefs";
+const BADGES_CACHE_KEY = "lifeos.badgePrefs";
 const DEBOUNCE_MS = 300;
 
-type UiPrefsBody = { theme?: unknown; display?: unknown };
+type UiPrefsBody = { theme?: unknown; display?: unknown; badges?: unknown };
 
 /** 读缓存（首屏用；React 起来之前 index.html 也读同一份键）。 */
 export function cachedDisplayPrefs(): DisplayPrefs {
@@ -40,19 +42,33 @@ export function cachedTheme(): ThemeState {
  * 返回值是"服务端有的那一半"：服务端没存过（首次使用）时返回 undefined，
  * 调用方保持本地默认值 —— **不拿默认值去覆盖用户本地已经调过的偏好**。
  */
-export async function fetchUiPrefs(): Promise<{ theme?: ThemeState; display?: DisplayPrefs } | undefined> {
+export async function fetchUiPrefs(): Promise<{ theme?: ThemeState; display?: DisplayPrefs; badges?: BadgePrefs } | undefined> {
   try {
     const response = await fetch("/api/ui-prefs");
     if (!response.ok) return undefined;
     const body = await response.json() as UiPrefsBody;
-    const out: { theme?: ThemeState; display?: DisplayPrefs } = {};
+    const out: { theme?: ThemeState; display?: DisplayPrefs; badges?: BadgePrefs } = {};
     if (body.theme !== undefined) out.theme = clampState(body.theme as Partial<ThemeState>);
     if (body.display !== undefined) out.display = parsePrefs(body.display);
+    if (body.badges !== undefined) out.badges = parseBadges(body.badges);
     // 缓存同步（下次首屏就是最新值）
     if (out.display !== undefined) writeDisplayCache(out.display);
     if (out.theme !== undefined) saveTheme(out.theme);
+    if (out.badges !== undefined) writeBadgesCache(out.badges);
     return out;
   } catch { return undefined; }
+}
+
+/** 首屏（React 起来之前/effect 前一行）用缓存值，避免「重启后动画回到默认」这类漂移。 */
+export function cachedBadgePrefs(): BadgePrefs {
+  try {
+    const raw = localStorage.getItem(BADGES_CACHE_KEY);
+    return raw === null ? parseBadges(undefined) : parseBadges(JSON.parse(raw));
+  } catch { return parseBadges(undefined); }
+}
+
+function writeBadgesCache(badges: BadgePrefs): void {
+  try { localStorage.setItem(BADGES_CACHE_KEY, JSON.stringify(badges)); } catch { /* 隐私模式忽略 */ }
 }
 
 function writeDisplayCache(display: DisplayPrefs): void {
@@ -67,7 +83,7 @@ function flush(): void {
   timer = undefined;
   const body = pending;
   pending = {};
-  if (body.theme === undefined && body.display === undefined) return;
+  if (body.theme === undefined && body.display === undefined && body.badges === undefined) return;
   // 失败不重试、不提示：偏好不是关键数据，下一次改动会带上最新值；
   // 而且 localStorage 缓存已经写过，用户当前这一屏不会丢。
   void fetch("/api/ui-prefs", {
@@ -92,4 +108,10 @@ export function persistDisplayPrefs(display: DisplayPrefs): void {
 /** 主题改了：theme.ts 自己会写缓存，这里只排队同步。 */
 export function persistTheme(theme: ThemeState): void {
   schedule({ theme });
+}
+
+/** 状态徽标偏好改了：缓存立即生效 + 排队同步（与 display 同一节奏）。 */
+export function persistBadgePrefs(badges: BadgePrefs): void {
+  writeBadgesCache(badges);
+  schedule({ badges });
 }
