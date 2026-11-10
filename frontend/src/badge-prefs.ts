@@ -101,12 +101,22 @@ export function dotBreatheMax(amplitude: number): number {
   return Math.round((1 + DOT_MAX_DELTA * a) * 1000) / 1000;
 }
 
-/** 写到 :root 的完整变量集（App 的 effect 唯一入口）。 */
+/**
+ * 写到 :root 的完整变量集（App 的 effect 唯一入口）。
+ *
+ * `--badge-ring-spread`（halo 外推距离）由 dot 幅度派生：dot 峰值半径增量 = (dotMax−1)×3px，
+ * halo 还要**盖过峰值**再外出一个"呼吸余量"——否则 dot 放大时穿出光环（用户 2026-11-10：
+ * "呼吸点没包得住"）。旧实现写死 3px，幅度拉满（dot 1.45）时 dot 增量 1.35px 貌似没穿，
+ * 但 halo 的**可见相位**恰好错过峰值（见 tokens.css badge-ring 注释）——两个因素叠加成
+ * "阴影没包住点"的观感。
+ */
 export function badgeVarsOf(prefs: BadgePrefs): Record<string, string> {
+  const spread = Math.round(((dotBreatheMax(prefs.amplitude) - 1) * 3 + 2.5) * 10) / 10;
   return {
     "--badge-motion-period": `${badgePeriodS(prefs.speed)}s`,
     "--badge-breathe-max": `${badgeBreatheMax(prefs.amplitude)}`,
     "--dot-breathe-max": `${dotBreatheMax(prefs.amplitude)}`,
+    "--badge-ring-spread": `${spread}px`,
   };
 }
 

@@ -117,12 +117,17 @@ test("深色下 soft 底不得比页面底更暗（「凹陷」病回归锁）",
   }
 });
 
-test("badgeVarsOf 的三个变量必须被 tokens.css 的 keyframes 消费（改名 = 断链先红）", () => {
+test("badgeVarsOf 的四个变量必须被 tokens.css 的 keyframes 消费（改名 = 断链先红）", () => {
   const vars = badgeVarsOf(BADGE_DEFAULTS);
-  assert.deepEqual(Object.keys(vars), ["--badge-motion-period", "--badge-breathe-max", "--dot-breathe-max"]);
+  assert.deepEqual(Object.keys(vars),
+    ["--badge-motion-period", "--badge-breathe-max", "--dot-breathe-max", "--badge-ring-spread"]);
   assert.equal(vars["--badge-motion-period"], "3s");
+  assert.equal(vars["--badge-ring-spread"], "3.4px", "默认幅度（dot 1.30）时 halo = 版径增量 0.9 + 余量 2.5 = 3.4px");
   const css = readFileSync(join(HERE, "..", "frontend/src/design/tokens.css"), "utf8");
-  for (const name of ["--badge-motion-period", "--badge-breathe-max", "--dot-breathe-max"]) {
+  for (const name of ["--badge-motion-period", "--badge-breathe-max", "--dot-breathe-max", "--badge-ring-spread"]) {
     assert.ok(css.includes(name), `tokens.css 必须消费 ${name}（动画参数可调的线）`);
   }
+  // halo 颜色必须从语义色派生（→ dark/light 各自合适；写死 rgba 的旧做法回归即红）
+  assert.ok(/badge-ring\s*{[\s\S]*color-mix\(in srgb, var\(--color-running\)/.test(css.replace(/\n/g, " ")),
+    "badge-ring 的颜色必须来自 --color-running（keyframes color-mix）");
 });

@@ -390,10 +390,19 @@
   0%, 100% { transform: scale(1); }
   50%      { transform: scale(var(--dot-breathe-max, 1.30)); }
 }
-/* 扩散环：向外推 3px 并淡出。用 box-shadow 而非 transform → 不动布局、不影响几何断言。 */
+/*
+ * 扩散环（2026-11-10 按用户「阴影没把呼吸点包住」重排相位与范围）：
+ * 旧版 halo 在 0% 贴边实环、70% 已完全透明 —— dot 的 scale 峰值在 50%，
+ * 而 halo 恰恰在 50% 前后最淡：**dot 呼吸最鼓的时刻，光环反而看不见**。
+ * 现在 halo 的**可见期对齐 dot 的峰值**（0→35% 膨胀到满、35–50% 保持、70% 收尽后随 dot 回落），
+ * spread 由 `--badge-ring-spread` 控制（badge-prefs 按呼吸幅度派生，不是写死的 3px），
+ * 颜色统一走 `--color-running`（color-mix），dark/light 各自取到合适的亮度。
+ */
 @keyframes badge-ring {
-  0%   { box-shadow: 0 0 0 0 var(--badge-ring, rgba(29, 78, 216, .8)); }
-  70%  { box-shadow: 0 0 0 3px transparent; }
+  0%   { box-shadow: 0 0 0 0 transparent; }
+  35%  { box-shadow: 0 0 0 var(--badge-ring-spread, 3px) color-mix(in srgb, var(--color-running) 30%, transparent); }
+  50%  { box-shadow: 0 0 0 var(--badge-ring-spread, 3px) color-mix(in srgb, var(--color-running) 26%, transparent); }
+  70%  { box-shadow: 0 0 0 var(--badge-ring-spread, 3px) transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 

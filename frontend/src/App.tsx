@@ -156,9 +156,8 @@ function CountBadge({ count, kind, unit }: { count: number; kind: "running" | "u
     // 16px 留出内边距才"透气"。px-1（8px）+ 11px 字的数字宽 7.5px = 15.5 → 取 16 的正方形；
     // 用 px-1.5 会撑到 19.5px 宽（比高宽一圈，又变回"色块"）。双数字靠 min-w 自然撑开。
     //
-    // `--badge-ring`：扩散环的颜色跟着状态走（写死蓝色会让"失败"的红色徽标闪蓝光）。
+    // 扩散环颜色统一走 keyframes 的 color-mix(--color-running)（badge-prefs 层派生），不再逐元素写死。
     <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-micro font-medium leading-none tabular-nums ${tone}`}
-      style={kind === "running" ? { "--badge-ring": "rgba(29, 78, 216, .40)" } as React.CSSProperties : undefined}
       role="status" aria-label={label} title={label} data-state-count={kind}>
       {text}
     </span>
