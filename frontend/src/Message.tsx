@@ -300,8 +300,21 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
         <span>{live ? "思考中…" : "思考过程"}</span>
         <span className="ml-auto shrink-0 text-micro text-ink-500">{open ? "收起" : "展开"}</span>
       </button>
+      {/*
+        * 思考过程与正文**同一 Markdown 渲染**（2026-11-10，用户截图发现 `**粗体**` 原样显示）。
+        * 四家参考一致（全部源码可核，见 cases/2026-11-10.md）：
+        * - Pi TUI 本体：`new Markdown(thinkingBlocks.join("\n\n"), …)`（斜体 + 专用色），
+        *   `packages/coding-agent/src/modes/interactive/components/assistant-message.ts:145-160`（commit 90d863f）；
+        * - LobeChat：`Thinking/index.tsx:70-82` 直接 `<MarkdownMessage>`（与正文同渲染器，commit 867a15a）；
+        * - opencode：`share/part.tsx:151-163` `ContentMarkdown`（正文同函数，commit 6a89e9f）；
+        * - open-webui：`ContentRenderer.svelte:352-368` 注释明言 structural blocks through Markdown（commit c38885a）。
+        * 相比旧版的 `text-meta`（12px），这里用 `md-body--compact`（13.5/1.65）：思考与正文的
+        * **渲染器一致、字级小一档**，靠 `text-ink-700` 弱化层次（Pi 用斜体处理同一件事）。
+        */}
       {open && (
-        <div className="whitespace-pre-wrap border-t border-line px-3 py-2 text-meta leading-relaxed text-ink-700">{text}</div>
+        <div className="border-t border-line px-3 py-2 text-ink-700">
+          <Markdown text={text} className="md-body--compact" />
+        </div>
       )}
     </div>
   );

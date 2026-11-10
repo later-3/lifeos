@@ -31,7 +31,7 @@ export function renderMarkdown(text: string): string {
   return DOMPurify.sanitize(marked.parse(text, { async: false }) as string, { USE_PROFILES: { html: true } });
 }
 
-export function Markdown({ text, inverse = false }: { text: string; inverse?: boolean }) {
+export function Markdown({ text, inverse = false, className = "" }: { text: string; inverse?: boolean; className?: string }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   // 装饰引用当前 DOM（dangerouslySetInnerHTML 会整体重建子树），text 变化/路由变化都重跑
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -40,5 +40,6 @@ export function Markdown({ text, inverse = false }: { text: string; inverse?: bo
     if (node !== null && !node.querySelector(".md-hl-pending")) return;
     void decorateCodeBlocks(node);
   }, [html]);
-  return <div ref={hostRef} className={`md-body${inverse ? " md-inverse" : ""}`} dangerouslySetInnerHTML={{ __html: html }} />;
+  const classes = ["md-body", inverse ? "md-inverse" : "", className].filter(Boolean).join(" ");
+  return <div ref={hostRef} className={classes} dangerouslySetInnerHTML={{ __html: html }} />;
 }
