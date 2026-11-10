@@ -14,11 +14,19 @@ html, body, button, input, textarea, select {
 .md-body { font-size: var(--text-content); line-height: 1.72; color: var(--color-ink-900); word-break: break-word; }
 .md-body > *:first-child { margin-top: 0; }
 .md-body > *:last-child { margin-bottom: 0; }
-.md-body h1, .md-body h2 { font-weight: 600; margin: 1.1em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--color-line); }
+/*
+ * 块间距分层（2026-11-10，线 B 第一刀）：
+ * 旧版全部 0.6em —— 标题、段落、列表同样的空隙，「段落与段落之间没有层级」。
+ * 参考像素（Tailwind Typography `styles.js` 的层级 margin-top 结构与
+ * LobeChat `Markdown/style.css` 的 margin-multiple 模型，行号见 frontend-spec §2.1）：
+ * 标题**前距大于后距**（它宣告一个新单元的开始），段落间距一律相等。
+ * 对话多短段落，整体乘数比长文阅读收敛一档（蝴蝶家的阅读 line-height=2 更松，不照抄）。
+ */
+.md-body h1, .md-body h2 { font-weight: 600; margin: 1.5em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--color-line); }
 .md-body h1 { font-size: 1.25em; }
 .md-body h2 { font-size: 1.12em; }
-.md-body h3, .md-body h4 { font-weight: 600; margin: 0.95em 0 0.35em; font-size: 1.02em; }
-.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.6em 0; }
+.md-body h3, .md-body h4 { font-weight: 600; margin: 1.2em 0 0.35em; font-size: 1.02em; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body pre, .md-body table { margin: 0.75em 0; }
 .md-body ul, .md-body ol { padding-left: 1.45em; }
 /* Tailwind preflight 会把 list-style 清成 none —— 这里显式恢复，否则列表没有圆点/序号 */
 .md-body ul { list-style: disc outside; }
@@ -38,8 +46,30 @@ html, body, button, input, textarea, select {
  * 行内码/表格在 0.875–0.9 与 0.94 区间中位。用户偏好驱动 = koharu 同构（store/settings.ts）。
  */
 .md-body code { background: var(--color-hover); padding: 0.12em 0.35em; border-radius: 4px; font-size: 0.88em; }
-.md-body pre { background: var(--color-sunken); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
+/*
+ * 代码块底（2026-11-10 深色适配）：旧值 `--color-sunken`——深色下它是页面**再往下 1 档**
+ * （页面已是最暗层），代码块在深色里「凹陷」；浅色下反而是对的（GitHub fence `#f6f8fa` 比白卡暗）。
+ * 改用 `--color-hover`：这个 token 的深浅方向天生就是「在卡片上更明显」（深色更亮 / 浅色更暗），
+ * 与行内 code 同一层、fenced 靠边框与 padding 区分（GitHub dark 的 inline 与 fenced 同族亦如此）。
+ * 深浅两套由主题引擎派生，不另写第二值。
+ */
+.md-body pre { background: var(--color-hover); border: 1px solid var(--color-line); padding: 0.7em 0.9em; border-radius: var(--radius-control); overflow-x: auto; }
 .md-body pre code { background: none; padding: 0; font-size: 0.8em; line-height: 1.6; }
+/* 高亮 token 色由 `--color-syn-*`（prism 类映射见 review-highlight-style.ts）——
+   浅色值已在 tokens.css；深色值由 index.css 的 [data-theme-mode=dark] 区补（见下）。 */
+/* 深色下的代码高亮派生（统一在 dark 组，浅色静态值见 tokens.css:89-96；
+   深色值 = 同色相的亮版：对比目标为深色代码底 var(--color-hover)（L*≈32））：
+   keyword 换最亮的紫蓝、comment 保持中位灰、其余各色相走 L*66–72 区间。 */
+[data-theme-mode="dark"] {
+  --color-syn-keyword: #c4b5fd;
+  --color-syn-string: #86efac;
+  --color-syn-comment: #9a9daa;  /* 注释灰在深色底上 5.0:1（4.43 不达标，实测调高） */
+  --color-syn-number: #fdba74;
+  --color-syn-function: #93c5fd;
+  --color-syn-type: #67e8f9;
+  --color-syn-constant: #f0abfc;
+  --color-syn-punctuation: #a1a1aa;
+}
 .md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
 /* 引用块里的内联代码：保持正文色（继承的弱化色叠在代码底色上对比度不足 4.5，UI 契约 2026-10-25 实测） */
 .md-body blockquote code { color: var(--color-ink-900); }

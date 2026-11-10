@@ -28,7 +28,7 @@
     "test:ui": "node frontend/test/ui-contract.mjs",
     "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:draft && pnpm test:jump && pnpm test:pwa && pnpm test:review",
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:mobile && pnpm test:draft && pnpm test:jump && pnpm test:pwa && pnpm test:md",
     "test:mobile": "node frontend/test/mobile-contract.mjs",
     "test:jump": "node frontend/test/jump-to-latest.mjs",
     "test:draft": "node frontend/test/new-session-draft.mjs",
@@ -39,6 +39,7 @@
     "trace": "node scripts/session-trace.mjs",
     "audit:a11y": "node scripts/a11y-audit.mjs",
     "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs",
+    "test:md": "node frontend/test/md-render-contract.mjs",
     "test:visual": "node scripts/visual-matrix.mjs",
     "test:visual:update": "node scripts/visual-matrix.mjs --update"
   },
