@@ -111,6 +111,34 @@ check(`syn 色随主题模式换挡（当前=${probe.mode}，${isDark ? "深色�
 check("md fenced 底 = --color-hover（深浅自适应；批量防「凹陷」回归）",
   probe.fencedBg !== "rgba(0, 0, 0, 0)" && probe.fencedBg !== "rgb(250, 250, 250)", probe.fencedBg);
 
+// CJK emphasis 三类失效修正（用户 2026-11-10 截图；spec.commonmark.org §6.2 right-flanking 引用见 md-cjk.ts）
+{
+  const cjk = await page.evaluate(async () => {
+    const { renderMarkdown } = await import("/src/message-markdown.tsx");
+    const cases = {
+      紧贴词: renderMarkdown("让**技术判断**时谈技术"),
+      CJK句读: renderMarkdown("**这个判断非常准。**再补一句：**不要主动猜态度。**不知道时："),
+      尾空格: renderMarkdown("**方案 P3 (pre-image 快照) **：在 write"),
+      围栏内不动: renderMarkdown("```txt\n**不渲染的星号也应该原样**\n```"),
+      行内码不动: renderMarkdown("字 `**原样**` 尾"),
+    };
+    return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, v.slice(0, 140)]));
+  });
+  check("CJK emphasis：紧贴词形态（CommonMark 本就闭合，不误伤）",
+    cjk["紧贴词"]?.includes("<strong>技术判断</strong>") === true, String(cjk["紧贴词"]));
+  check("CJK emphasis：句读边界的两类（`**准。**再` / `**。再**`）真渲染",
+    cjk["CJK句读"]?.includes("<strong>这个判断非常准。</strong>再补一句")
+      && cjk["CJK句读"]?.includes("<strong>不要主动猜态度。</strong>不知道时"),
+    String(cjk["CJK句读"]));
+  check("CJK emphasis：尾空格 strong（`W ) **：`）内部空格外移后渲染",
+    cjk["尾空格"]?.includes("<strong>方案 P3 (pre-image 快照)</strong> ：在 write") === true,
+    String(cjk["尾空格"]));
+  check("CJK emphasis：围栏代码块逐字保留（WJ/替换不进去）",
+    cjk["围栏内不动"]?.includes("**不渲染的星号也应该原样**") === true, String(cjk["围栏内不动"]));
+  check("CJK emphasis：行内码逐字保留（不把星号替换为 strong）",
+    cjk["行内码不动"]?.includes("<code>**原样**</code>") === true, String(cjk["行内码不动"]));
+}
+
 check("prose 间距分层：h2 前 1.5em（≈22.5px）/ 段落 0.75em（≈11.25px）",
   (() => {
     const fontSize = probe.fontSize ?? 15;
