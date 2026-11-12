@@ -840,7 +840,10 @@ export default function App() {
     const raw = Number(localStorage.getItem("lifeos.reviewRatio"));
     return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : DEFAULT_REVIEW_RATIO;
   });
-  const reviewCtx = useRef<{ taskDir: string } | undefined>(undefined);
+  /** 当前检视的 taskDir —— **唯一状态源**（Task 0018 简化：之前拆成 ref + 异步 data 两处，
+   *  标题同步变、内容等响应，谁晚到谁说了算，实测撕裂成“标题 0018 内容 0015”。
+   *  现在标题与 reload 都从这里推导；网络晚到由 loadReview 的序号守卫丢弃。） */
+  const [reviewTask, setReviewTask] = useState<string | undefined>(undefined);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewFailed, setReviewFailed] = useState<string | null>(null);
@@ -1152,7 +1155,12 @@ export default function App() {
     document.body.style.userSelect = "none";
   }
 
+  /** 检视 diff 请求序号：只有**最后一次发起**的请求有权写状态（Task 0018 竞态修复）。
+   *  用户实测：连续切换 0015/0017/0018 时，先发出的慢响应晚到覆盖新选择 —— 标题显示 0018、
+   *  内容却是 0015（前端规 2.12：切走后旧终态不得改新视图）。 */
+  const reviewLoadSeq = useRef(0);
   async function loadReview(taskDir: string) {
+    const seq = ++reviewLoadSeq.current;
     setReviewLoading(true);
     setReviewFailed(null);
     try {
@@ -1162,6 +1170,7 @@ export default function App() {
         body: JSON.stringify({ taskDir }),
       });
       const body = await response.json().catch(() => undefined) as { items?: ReviewData["items"]; error?: { message?: string } } | undefined;
+      if (seq !== reviewLoadSeq.current) return;   // 已被更新的请求取代：丢弃，不覆盖新选择
       if (!response.ok || body?.items === undefined) {
         setReviewFailed(body?.error?.message ?? `加载失败（HTTP ${response.status}）`);
         setReviewData(null);
@@ -1169,10 +1178,11 @@ export default function App() {
       }
       setReviewData({ items: body.items });
     } catch (error) {
+      if (seq !== reviewLoadSeq.current) return;   // 旧请求的错误同样不得覆盖
       setReviewFailed(error instanceof Error ? error.message : String(error));
       setReviewData(null);
     } finally {
-      setReviewLoading(false);
+      if (seq === reviewLoadSeq.current) setReviewLoading(false);   // loading 只由最新请求收口
     }
   }
 
@@ -1194,7 +1204,7 @@ export default function App() {
   }
 
   function openReview(taskDir: string) {
-    reviewCtx.current = { taskDir };
+    setReviewTask(taskDir);
     setReviewOpen(true);
     void loadReview(taskDir);
     loadReviewCandidates();
@@ -1202,7 +1212,7 @@ export default function App() {
 
   function closeReview() {
     setReviewOpen(false);
-    reviewCtx.current = undefined;
+    setReviewTask(undefined);
     setReviewData(null);
     setReviewFailed(null);
     const previous = restoreReviewFolds.current;
@@ -3244,7 +3254,7 @@ export default function App() {
               const known = reviewTaskPaths[key];
               if (known !== undefined) { if (!reviewOpen) openReview(known); else closeReview(); return; }
               void fetch(`/api/agents/${aid}/projects/${pid}/tasks/${taskId}/review-sources`)
-                .then((response) => response.ok ? response.json() as Promise<{ items?: Array<{ kind: string; path: string }> }> : undefined)
+                .then((response) => response.ok ? response.json() as Promise<{ taskDir?: string; items?: Array<{ kind: string; path: string }> }> : undefined)
                 .then((data) => {
                   const lifeos = data?.items?.find((item) => item.kind === "lifeos");
                   if (lifeos === undefined) { toast("拿不到这个 Task 的目录", "error"); return; }
@@ -3266,7 +3276,7 @@ export default function App() {
           */}
           <IconButton label="选择要检视的 Task" size="lg"
             onClick={() => {
-              const current = reviewCtx.current?.taskDir;
+              const current = reviewTask;
               if (current === undefined) { toast("先点左边的检视按钮打开面板"); return; }
               openReview(current);
               window.setTimeout(() => {
@@ -3880,14 +3890,14 @@ export default function App() {
         <>
           <DragHandle onStart={(event) => beginReviewDrag(event)} />
           <aside ref={reviewRef} style={{ width: box.review }} data-testid="review-aside" className="flex shrink-0 overflow-hidden">
-            <ReviewPanel taskDir={reviewCtx.current?.taskDir ?? ""} data={reviewData}
-              loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewCtx.current !== undefined) void loadReview(reviewCtx.current.taskDir); }}
+            <ReviewPanel taskDir={reviewTask ?? ""} data={reviewData}
+              loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewTask !== undefined) void loadReview(reviewTask); }}
               onClose={closeReview}
               /* D31：换检视对象（候选由 App 拉，面板不认识 agentId/projectId） */
               onSwitchTask={(taskDir) => openReview(taskDir)}
               candidates={reviewCandidates}
               candidatesLoading={reviewCandidatesLoading}
-              currentTaskId={reviewCandidates.find((item) => item.taskDir === (reviewCtx.current?.taskDir ?? ""))?.taskId}
+              currentTaskId={reviewCandidates.find((item) => item.taskDir === reviewTask)?.taskId}
               /* A8/G3：把评论作为**结构化引用**挂到输入框（chip 可逐条移除）；发送时才合成文本，不自动发 */
               onAttachComments={(refs) => {
                 const usable = refs.filter((ref) => attachableComment(ref));
