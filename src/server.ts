@@ -863,6 +863,7 @@ app.use(async (c, next) => {
       const updated = { ...agent } as AgentDefinition & { avatar?: unknown };
       delete updated.avatar;
       await writeAgent(updated);
+      broadcast({ type: "agents_changed" });   // 头像变了要告诉前端重取列表（revision 变 → img src 变 → 即时换图）
       return c.json({ avatar: null });
     }
     if (body === undefined || typeof body.data !== "string" || body.data.length === 0) {
@@ -879,6 +880,7 @@ app.use(async (c, next) => {
     await writeFile(join(avatarDir, file), buffer, { mode: 0o600 });
     const avatar = { kind: "image", file, revision: Date.now() };
     await writeAgent({ ...agent, avatar } as AgentDefinition);
+    broadcast({ type: "agents_changed" });   // 同上：写操作必须闭环到界面（api.md 2.6）
     return c.json({ avatar });
   });
   // ===== 用户档案（2026-11-02）：你本人，不是 Agent =====

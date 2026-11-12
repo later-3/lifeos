@@ -722,6 +722,44 @@ test("创建/归档助手会广播 agents_changed（前端据此自动刷新列�
   } finally { controller.abort(); server.close(); }
 });
 
+test("换头像（上传/reset）必须广播 agents_changed：img src 带 ?v=revision，广播到了图才即时换（反例：漏广播 → 用户手动刷新才见效）", async () => {
+  const { server, base } = await start();
+  const controller = new AbortController();
+  try {
+    const response = await fetch(`${base}/api/events`, { signal: controller.signal });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const readUntil = async (needle, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.includes(needle)) return true;
+      }
+      return false;
+    };
+    assert.ok(await readUntil("event: snapshot", 2000), "先收到快照");
+
+    // 1×1 png（能过魔数嗅探）
+    const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const uploaded = await fetch(`${base}/api/agents/lifeosagent/avatar`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ data: PNG_1PX }),
+    });
+    assert.equal(uploaded.status, 200);
+    assert.ok(await readUntil("event: agents_changed", 3000), "换头像后必须广播 agents_changed");
+
+    buffer = "";
+    const reset = await fetch(`${base}/api/agents/lifeosagent/avatar`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reset: true }),
+    });
+    assert.equal(reset.status, 200);
+    assert.ok(await readUntil("event: agents_changed", 3000), "reset 后必须再广播一次");
+  } finally { controller.abort(); server.close(); }
+});
+
 
 test("会话级 Pi 原生能力：打断 / steer / followUp / 思考级别 / 切模型（含 404 路径）", async () => {
   const { server, base, home } = await start();
