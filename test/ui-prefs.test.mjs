@@ -82,3 +82,48 @@ test("写入是原子替换（不留下 .tmp 文件）", async () => {
   const files = await readdir(join(home, "config"));
   assert.ok(!files.some((name) => name.endsWith(".tmp")), `残留临时文件：${files.join(",")}`);
 });
+
+
+test("selection 键读写（Task 0018）：与 theme/display 互不覆盖", async () => {
+  const saved = await writeUiPrefs({ selection: { copyOnSelect: false } }, home);
+  assert.deepEqual(saved.selection, { copyOnSelect: false });
+  // 部分更新：只写 selection 不动 theme（第 2 条测试写过的 theme 还在）
+  const again = await writeUiPrefs({ display: { width: { mode: "limited", value: 720 } } }, home);
+  assert.equal(again.selection.copyOnSelect, false);
+  assert.ok(again.theme !== undefined, "selection 写入不得重置 theme");
+});
+
+test("badges 键读写（白名单回归：曾因 PUT 白名单漏项导致换设备丢失）", async () => {
+  const saved = await writeUiPrefs({ badges: { speed: 1.5, strength: "vivid" } }, home);
+  assert.deepEqual(saved.badges, { speed: 1.5, strength: "vivid" });
+  const raw = JSON.parse(await readFile(uiPrefsPath(home), "utf8"));
+  assert.equal(raw.badges.speed, 1.5);
+});
+
+
+test("HTTP PUT /api/ui-prefs：四个键都收（badges/selection 是 0018 补的白名单）+ 无键 400", async () => {
+  const { startOn } = await import("./server-harness.mjs");
+  const home2 = (await import("node:fs/promises")).mkdtemp;
+  const { mkdtemp } = await import("node:fs/promises");
+  const base = await mkdtemp(join(tmpdir(), "lifeos-uiprefs-http-"));
+  const { server, base: url, home: httpHome } = await startOn(join(base, "home"));
+  try {
+    // 逐键 PUT：badges 与 selection 必须被白名单收下（此前 badges 静默丢弃）
+    for (const [key, value] of [["badges", { strength: "vivid" }], ["selection", { copyOnSelect: false }]]) {
+      const response = await fetch(`${url}/api/ui-prefs`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ [key]: value }),
+      });
+      assert.equal(response.status, 200, key);
+      const saved = (await response.json())[key];
+      assert.deepEqual(saved, value, `${key} 应被 PUT 白名单收下`);
+    }
+    // 无可识别键 → 400 invalid_request
+    const bad = await fetch(`${url}/api/ui-prefs`, {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ unknown: 1 }),
+    });
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json()).error.code, "invalid_request");
+    void httpHome;
+  } finally { server.close(); }
+});

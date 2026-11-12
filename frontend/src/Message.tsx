@@ -85,7 +85,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, responseBar, markBar }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, responseBar, markBar, draftRequest = null, onDraftHandled }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -125,6 +125,9 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
   annotationActions?: AnnotationActions;
+  /** 外部触发的批注草稿（Task 0018）：功能条「批注」按 messageId 路由进来（0018 的 id 才非 null）。 */
+  draftRequest?: { messageId: string; nonce: number } | null;
+  onDraftHandled?: () => void;
   /**
    * ResponseBar 的数据（Task 0008 · P3；Task 0015 · P5 收窄）：undefined = 不渲染。
    *
@@ -213,7 +216,10 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
     annotationsOfBlock === undefined ? [] : annotationsOfBlock(index);
   const renderBlock = (block: Block, index: number, keyScope: string) => (
     <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId}
-      blockAnnotations={blockAnnotationsOf(index)} blockActions={annotationActions} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+      blockAnnotations={blockAnnotationsOf(index)} blockActions={annotationActions}
+      draftRequest={draftRequest !== null && draftRequest.messageId === messageId ? draftRequest : null}
+      {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
+      {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
       live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
       forceOpen={failure !== undefined} />
   );
@@ -419,7 +425,7 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
  * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions }: {
+function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
   block: Block; live: boolean; forceOpen?: boolean;
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
@@ -431,13 +437,16 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
   blockAnnotations?: readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。 */
   blockActions?: AnnotationActions;
+  draftRequest?: { messageId: string; nonce: number } | null;
+  onDraftHandled?: () => void;
 }) {
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
     return (
       <AnnotatedTextBlock text={block.text} blockIndex={blockIndex} messageId={messageId}
-        annotations={blockAnnotations} actions={blockActions} busy={live} />
+        annotations={blockAnnotations} actions={blockActions} busy={live}
+        draftRequest={draftRequest} {...(onDraftHandled !== undefined ? { onDraftHandled } : {})} />
     );
   }
   if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;

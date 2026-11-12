@@ -321,6 +321,36 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     `active L*=${lightState.activeIconL?.toFixed(1)} idle L*=${lightState.idleIconL?.toFixed(1)}`);
 }
 
+// 「交互」节（Task 0018 D7-D10）：选中后自动复制开关——存在、默认开、点击翻转（不发网络也能本地翻转）。
+{
+  const interPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  await interPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
+  await interPage.waitForTimeout(400);
+  await interPage.evaluate(() => {
+    document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="设置"]')?.click();
+  });
+  await interPage.waitForTimeout(400);
+  await interPage.evaluate(() => {
+    const btn = [...document.querySelectorAll('nav[aria-label="设置分区"] button')].find((b) => (b.innerText ?? "").includes("交互"));
+    btn?.click();
+  });
+  await interPage.waitForTimeout(400);
+  const readToggle = () => interPage.evaluate(() => {
+    const row = document.querySelector('[data-testid="pref-copy-on-select"] input');
+    if (row === null) return null;
+    const box = row.getBoundingClientRect();
+    return { checked: row.checked, realBox: box.width >= 12 && box.height >= 12 && row.offsetParent !== null };
+  });
+  const initial = await readToggle();
+  check("交互节：自动复制开关存在（默认开）", initial !== null && initial.checked === true && initial.realBox === true, JSON.stringify(initial));
+  await interPage.locator('[data-testid="pref-copy-on-select"] input').click();
+  await interPage.waitForTimeout(200);
+  const flipped = await readToggle();
+  check("交互节：点击开关翻转（关闭 → 功能条含复制按钮的行为入口）", flipped?.checked === false, JSON.stringify(flipped));
+  await interPage.locator('[data-testid="pref-copy-on-select"] input').click();
+  await interPage.context().close();
+}
+
 // 状态徽标可调（2026-11-10 用户："速率/幅度/颜色单独可调；深浅色都要适配"）。
 // 与"配置要落根节点变量并持久化"三条断言：滑速率 → --badge-motion-period 变；
 // 拉幅度 → --dot-breathe-max 变；切强度 → --color-running-soft 与 data-badge-strength 变。

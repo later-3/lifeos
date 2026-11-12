@@ -25,16 +25,14 @@ import { markById } from "./marks";
 import { Markdown } from "./message-markdown";
 
 /**
- * 草稿框（拖选后弹出的"新建批注"卡片）**临时关闭** —— Task 0013，用户 2026-11-07 拍板（方案 A）。
+ * 草稿框（"新建批注"卡片）的入口在 Task 0018 改为**选中功能条上的「批注」按钮**（外部 draftRequest 触发）。
  *
- * 为什么关：拖选之后弹出的草稿框会①抢走焦点②清空选区，导致"选中即复制"永远来不及
- *（用户 2026-11-05 原话：「如果选中文字就会出现那个框，用户来不及去复制」）。
- * 用户 2026-11-06 定：**只暂时不显示，代码保留**，等 T11 重做批注入口（两段式：拖选 → 小图标 → 点击展开）时再启用。
- *
- * **删除条件**：T11 落地时删掉这个开关和下面两处 `if (!ANNO_DRAFT_ENABLED)` / `&& ANNO_DRAFT_ENABLED`，
- * 不要留着变成第二套实现分支。
+ * 历史（Task 0013）：拖选直接弹草稿框曾因①抢焦点②清选区与"选中即复制"打架
+ *（用户 2026-11-05 原话：「如果选中文字就会出现那个框，用户来不及去复制」），
+ * 当时用常量开关 `ANNO_DRAFT_ENABLED = false` 临时关闭。
+ * 0018 落地：开关已按当时注明的删除条件删除——现在"拖选"松手弹功能条（use-copy-on-select 统一接管），
+ * 「批注」按钮才清选区/抢焦点（进编辑态的合法边界），不再需要开关。
  */
-const ANNO_DRAFT_ENABLED = false;
 
 type AnnotatedTextBlockProps = {
   text: string;
@@ -49,6 +47,14 @@ type AnnotatedTextBlockProps = {
    * 下一秒可能已经不是那句话了。等这一轮结束、文字定稿再标。
    */
   busy?: boolean;
+  /**
+   * **外部触发的草稿**（Task 0018）：选中功能条点「批注」时，App 把路由到本块（按 messageId），
+   * nonce 变化触发一次草稿。锚点计算留在块内（index / text / rectsFor 都在这），
+   * 点击按钮时选区还在（功能条按钮 mousedown preventDefault）。
+   * 处理完调 onDraftHandled（App 清除请求，防重复触发）。
+   */
+  draftRequest?: { nonce: number } | null;
+  onDraftHandled?: () => void;
 };
 
 /** 批注的可写操作集合；由 App 用 store 组装。 */
@@ -74,7 +80,7 @@ export type AnnotationActions = {
  * **无批注且无 actions 时行为与改造前完全一致**（不加节点、不挂监听）。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions, busy = false }: AnnotatedTextBlockProps) {
+export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions, busy = false, draftRequest = null, onDraftHandled }: AnnotatedTextBlockProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const indexRef = useRef<BlockIndex | null>(null);
@@ -277,19 +283,25 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       return;
     }
 
-    // ② 拖选 → 新建批注。流式期不建（文字还在变，锚点会漂）
-    //    草稿框临时关闭期间（Task 0013）整段跳过：不 setDraft、不 removeAllRanges、不抢焦点，
-    //    选区原样留给"选中即复制"。
-    if (!ANNO_DRAFT_ENABLED) return;
-    if (busy) return;
-    const range = selection.getRangeAt(0);
-    if (!host.contains(range.commonAncestorContainer)) return;
+    // ② 拖选 → 新建批注：**已移除**（Task 0018）。“拖选”的含义现在是「松手弹功能条」
+    //    （use-copy-on-select 统一接管），新建批注的入口 = 功能条上的「批注」按钮（draftRequest）。
+    //    这里不再 setDraft / removeAllRanges / 抢焦点；选区交给功能条链。
+  }, [actions, messageId, blockIndex, rectsFor, busy]);
 
+  /** 外部触发的草稿：功能条点「批注」时，App 路由到这里（按 messageId）。锚点用块内的 index/text 算。 */
+  useEffect(() => {
+    if (draftRequest === null) return;
+    const host = hostRef.current;
+    const index = indexRef.current;
+    if (host === null || index === null) { onDraftHandled?.(); return; }
+    const selection = window.getSelection();
+    const range = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (range === null || !host.contains(range.commonAncestorContainer)) { onDraftHandled?.(); return; }
     const { start, end } = toOffset(index, range);
-    if (start < 0 || end <= start) return;
+    if (start < 0 || end <= start) { onDraftHandled?.(); return; }
     // quote 取自扁平串（不是 selection.toString()：跨表格单元格时浏览器用 \t）
     const quote = quoteOf(index, start, end);
-    if (quote === "") return;
+    if (quote === "") { onDraftHandled?.(); return; }
 
     const rects = rectsFor(start, end);
     clearHideTimer();
@@ -297,8 +309,10 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     setOpenIds((list) => list.filter((id) => annotationsRef.current.find((a) => a.id === id)?.ui.pinned === true));
     setHostRect(host.getBoundingClientRect());
     setDraft({ start, end, quote, rects });
-    selection.removeAllRanges();
-  }, [actions, messageId, blockIndex, rectsFor, busy]);
+    // 选区已转成批注锚点：清掉（编辑态抢焦点是合法的，Task 0013 教训的边界）
+    selection?.removeAllRanges();
+    onDraftHandled?.();
+  }, [draftRequest, onDraftHandled, rectsFor]);
 
   const commitDraft = useCallback((marks: readonly string[], note: string) => {
     if (actions === undefined || messageId === undefined || blockIndex === undefined || draft === null) return;
@@ -389,8 +403,8 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
         );
       })}
 
-      {/* draft 编辑框（Task 0013：ANNO_DRAFT_ENABLED=false 时不渲染） */}
-      {ANNO_DRAFT_ENABLED && draft !== null && hostRect !== null && (
+      {/* draft 编辑框（Task 0018：入口 = 功能条的「批注」按钮，draftRequest 外部触发） */}
+      {draft !== null && hostRect !== null && (
         <AnnotationDraft
           quote={draft.quote}
           rects={draft.rects}
