@@ -1,8 +1,9 @@
 /**
  * 选中功能条（Task 0018 · SelectionToolbar）：拖选/双击/三击松手后浮在选区旁的一排功能入口。
  *
- * 形态纪律（D16）：它是**一排按钮**，不预设"框"的形态；轻量浮动、深底白字（D3 基调，
- * 与「已复制」胶囊同一视觉语言）；不引入新色、数值全部走 tokens。
+ * 形态纪律（D16）：它是**一排按钮**，不预设"框"的形态；轻量浮动，
+ * 配色跟主题走（2026-11-12 用户）：`bg-surface` 卡面 + `ring-line` + `shadow-lg`，
+ * 与检视面板/Modal 同一套浮层语言，深浅模式自适应（原深底白字 D3 基调被本条取代）。
  *
  * **焦点纪律（Task 0013 教训 + 0018 硬约束）**：
  *  - 条与按钮都 `onMouseDown preventDefault`——点击时焦点不离开文档、**选区不被清**
@@ -92,23 +93,23 @@ export function SelectionToolbar({ state, onClose, onCopy, onAnnotate, onQuote }
         // 层级走 LAYER（design-system 门禁拦裸数字）：条是弹出面板层（toast 永远最上，胶囊反馈不被压）
         ...layerStyle("popover"),
       }}
-      className="flex items-center gap-0.5 rounded-panel bg-ink-900 px-1 py-1 text-surface shadow-anno"
+      className="flex items-center gap-0.5 rounded-panel bg-surface px-1 py-1 text-ink-900 ring-1 ring-line shadow-lg"
     >
       {buttons.copy && (
         <button type="button" onClick={onCopy} aria-label={`复制选中的 ${[...state.text.trim()].length} 字`}
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta hover:bg-hover">
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
           复制
         </button>
       )}
       {buttons.annotate && (
         <button type="button" onClick={onAnnotate} aria-label="批注选中的文字"
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta hover:bg-hover">
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
           批注
         </button>
       )}
       {buttons.quote && (
         <button type="button" onClick={onQuote} aria-label="引用到输入框"
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta hover:bg-hover">
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
           引用
         </button>
       )}
