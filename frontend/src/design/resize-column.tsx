@@ -27,9 +27,12 @@ import type { MouseEvent as ReactMouseEvent } from "react";
  */
 export type ResizeKey = "c1" | "c2" | "c3" | "c4" | "c4t" | "c5";
 
-export function DragHandle({ onStart, side = "right" }: {
+export function DragHandle({ onStart, side = "right", className }: {
   onStart: (event: ReactMouseEvent) => void;
   side?: "right" | "left";
+  /** 定位微调（Task 0018）：把手渲染进 relative 容器内部时，用 className 覆盖默认的伸出偏移
+   *  （如容器 overflow-hidden 不能伸出 → `!left-0` 把命中区收进容器内）。拼在默认类之后，后者覆盖前者。 */
+  className?: string;
 }) {
   return (
     <div
@@ -40,7 +43,7 @@ export function DragHandle({ onStart, side = "right" }: {
       // z-30 高于列内任何内容（含页签行、文件树行），保证把手永远是最上层的命中目标。
       className={`group/handle absolute inset-y-0 z-30 flex w-2 cursor-col-resize items-center justify-center ${
         side === "right" ? "-right-1" : "-left-1"
-      }`}>
+      } ${className ?? ""}`}>
       {/* 静止透明；hover / 拖动期间（body 光标为 col-resize）才浮出 2px 高亮 */}
       <span aria-hidden
         className="h-full w-0.5 rounded-full bg-transparent transition-colors group-hover/handle:bg-accent" />

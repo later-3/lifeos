@@ -233,7 +233,10 @@ async function dragReview(page, dx, steps = 18) {
   const box = await panel(page).boundingBox();
   if (box === null) return false;
   const y = Math.min(box.y + box.height / 2, box.y + 400);
-  await page.mouse.move(box.x - 2, y);
+  // 把手在面板**内**左缘（0018：DragHandle 移进 aside 内，overflow-hidden 的面板不能伸出），
+  // 把手 w=8，中心 = box.x + 8——mousedown 必须落在中心，dx 才与位移同源（偏 4px 会让每次拖差 6）。
+  // 旧坐标 box.x - 2 在把手外面，整条拖动族假红（探针实测 560 → 560）。
+  await page.mouse.move(box.x + 8, y);
   await page.mouse.down();
   await page.mouse.move(box.x - 2 + dx, y, { steps });
   await page.waitForTimeout(150);
@@ -837,7 +840,8 @@ async function openReview(page, options = {}) {
       // A7 位置头：卡片上显示 path:Lstart-Lend
       const header = await card.locator("[data-review-draft-header]").first().innerText().catch(() => "");
       check("S3·A7：草稿卡显示位置头 path:Lx-Ly", /^docs\/big\.md:L\d+-L\d+$/.test(header), header);
-      const label = await card.locator("[data-review-draft]").first().innerText();
+      // 偶发环境抖动（S3·A7 拖选草稿渲染，已登记 todo #2）：不让它炸掉整个测试进程挡住后面的用例
+      const label = await card.locator("[data-review-draft]").first().innerText().catch(() => "<超时>");
       check("S3·A7：同时给人话标签「第 x–y 行」", label.includes("第 ") && label.includes("–"), label.split("\n")[0]);
 
     }
@@ -2558,6 +2562,41 @@ async function openReview(page, options = {}) {
     await page.waitForTimeout(2500);        // 0018 的慢响应此时到达
     const after = await page.evaluate(() => document.querySelector('[data-review-target-path="lifeos"]')?.textContent ?? "");
     check("切换后：慢响应不得覆盖新选择（仍显示 0017）", after.includes("demo-lifeos-0017"), after);
+  }
+  await page.context().close();
+}
+
+// ── 组级折叠：点组头收起整个文件列表，组头仍在（计数可见）；再点展开（Task 0018 用户）────────
+{
+  const page = await openPage({ width: 1680, height: 1000 });
+  const opened = await openReview(page);
+  check("组折叠用例：面板已打开", opened);
+  if (opened) {
+    const groupFold = '[data-review-group-fold="lifeos"]';
+    const before = await page.evaluate((sel) => {
+      const btn = document.querySelector(sel);
+      const files = document.querySelectorAll('[data-review-source="lifeos"] [data-review-file]').length;
+      return { expanded: btn?.getAttribute("aria-expanded"), files, head: btn?.getBoundingClientRect().height ?? 0 };
+    }, groupFold);
+    check("组折叠：初始展开（4 文件在列）", before?.expanded === "true" && before.files > 0 && before.head > 0, JSON.stringify(before));
+    await page.locator(groupFold).click();
+    await page.waitForTimeout(200);
+    const folded = await page.evaluate((sel) => {
+      const btn = document.querySelector(sel);
+      return {
+        expanded: btn?.getAttribute("aria-expanded"),
+        files: document.querySelectorAll('[data-review-source="lifeos"] [data-review-file]').length,
+        hint: document.querySelector('[data-review-source="lifeos"]')?.textContent?.includes("已折叠") === true,
+      };
+    }, groupFold);
+    check("组折叠：点组头收起（列表消失、提示可见、aria-expanded=false）",
+      folded?.expanded === "false" && folded.files === 0 && folded.hint === true, JSON.stringify(folded));
+    await page.locator(groupFold).click();
+    await page.waitForTimeout(200);
+    const reopened = await page.evaluate((sel) => ({
+      files: document.querySelectorAll('[data-review-source="lifeos"] [data-review-file]').length,
+    }), groupFold);
+    check("组折叠：再点展开（文件回来）", (reopened?.files ?? 0) === before?.files, JSON.stringify(reopened));
   }
   await page.context().close();
 }

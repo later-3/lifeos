@@ -1778,8 +1778,11 @@ function TreeNodes({ nodes, depth, onToggleViewed }: {
   );
 }
 
-function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, onHiddenExpand, draftsOfFile, onAddDraft, onChangeDraft, onRemoveDraft, authorNameOf, foldedOf, onToggleFold, onChangeMarks, onPinHover, onRevealComments, commentActions, drag, onDragStart, onDragExtend, mountedOf, forcedOf, onForceRender, onFileMount, viewedOf, onToggleViewed, viewMode, renderAs }: {
+function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, onHiddenExpand, draftsOfFile, onAddDraft, onChangeDraft, onRemoveDraft, authorNameOf, foldedOf, onToggleFold, onChangeMarks, onPinHover, onRevealComments, commentActions, drag, onDragStart, onDragExtend, mountedOf, forcedOf, onForceRender, onFileMount, viewedOf, onToggleViewed, viewMode, renderAs, folded, onToggleGroupFold }: {
   group: ReviewSourceDiff;
+  /** 组级折叠（Task 0018 用户：两组文件多时列表太长，可收起只留组头）。 */
+  folded: boolean;
+  onToggleGroupFold: () => void;
   /** 文件 → 是否展开（由面板统一持有：全部展开/折叠与逐个切换必须是同一份状态，
    *  参照 opencode `open()` 单一数组：`packages/session-ui/src/components/session-review.tsx:276-279`） */
   isOpen: (path: string) => boolean;
@@ -1824,12 +1827,17 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
   }, [group.files, filter]);
   return (
     <section className="min-w-0" data-review-source={group.source.kind}>
-      <header className="flex items-center gap-2 px-1 py-1.5">
+      {/* 组头可点收起/展开（Task 0018）：文件计数与增删留在折叠态可见——收着也知道有东西；degraded/缺失提示在列表外，不受折叠影响 */}
+      <button type="button" onClick={onToggleGroupFold}
+        aria-expanded={!folded} aria-label={`${folded ? "展开" : "折叠"}${SOURCE_LABEL[group.source.kind]}`}
+        data-review-group-fold={group.source.kind}
+        className="flex w-full items-center gap-2 rounded-control px-1 py-1.5 text-left hover:bg-hover">
+        <span aria-hidden="true" className={`shrink-0 text-micro ${folded ? "text-ink-300" : "text-ink-500"}`}>{folded ? "▸" : "▾"}</span>
         <h3 className="text-meta font-semibold text-ink-900">{SOURCE_LABEL[group.source.kind]}</h3>
         {group.source.branch !== undefined && <span className="rounded-inner bg-hover px-1.5 py-0.5 font-mono text-micro text-ink-700">{group.source.branch}</span>}
         <span className="text-micro text-ink-500">{files.length} 个文件</span>
         <StatBadge additions={files.reduce((a, f) => a + f.additions, 0)} deletions={files.reduce((a, f) => a + f.deletions, 0)} />
-      </header>
+      </button>
       {group.base !== undefined && (
         <p className="px-1 pb-1 text-micro text-ink-500">
           基线：{group.base.commit.slice(0, 8)}{group.base.at !== undefined ? `（${group.base.at.slice(0, 10)}）` : ""}
@@ -1846,6 +1854,9 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
           这个 Task 还没有代码工作区（约定位置 repo/；历史 Task 在 evidence/worktree）。建 Task 时应自动建出。
         </div>
       )}
+      {folded ? (
+        <p className="px-1 py-1 text-micro text-ink-300">已折叠——点组头展开 {files.length} 个文件。</p>
+      ) : (
       <div className="flex flex-col gap-1.5">
         {files.map((file) => {
           /**
@@ -1889,6 +1900,7 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
           );
         })}
       </div>
+      )}
       {filter.trim() !== "" && files.length === 0 && (
         <p className="px-1 py-2 text-micro text-ink-500" data-review-filter-empty>没有匹配「{filter}」的文件。</p>
       )}
@@ -1994,6 +2006,12 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
   /** G15：渲染档位（默认源码行级；只有 doc 文件才有意义） */
   const [renderAs, setRenderAs] = useState<ReviewRenderMode>("source");
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
+  /** 组级折叠（Task 0018）：两组独立；key = 源 kind。切换 task 不重置（收着翻别的 task 还想收着）。 */
+  const [groupFolded, setGroupFolded] = useState<Record<string, boolean>>({});
+  const groupFoldedOf = useCallback((kind: string) => groupFolded[kind] === true, [groupFolded]);
+  const toggleGroupFold = useCallback((kind: string) => {
+    setGroupFolded((prev) => ({ ...prev, [kind]: !(prev[kind] === true) }));
+  }, []);
   /**
    * 首屏默认：文件少就全展开。**显式写进 openMap**（不靠"没记录就当默认"的兜底）——
    * 否则"全部折叠"之后，另一个源里没被点过的文件会跟着变成折叠，出现半开半合的怪状态。
@@ -3032,6 +3050,7 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         )}
         {data !== null && data.items.map((group) => (
           <SourceGroup key={group.source.kind} group={group} isOpen={isOpen}
+            folded={groupFoldedOf(group.source.kind)} onToggleGroupFold={() => toggleGroupFold(group.source.kind)}
             onToggle={toggle} filter={filter} expandMode={expandMode}
             hiddenOf={hiddenOf} onHiddenExpand={onHiddenExpand}
             draftsOfFile={draftsForFile}
