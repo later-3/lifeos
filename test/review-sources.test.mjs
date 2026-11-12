@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { installHome } from "../src/home.ts";
+import { execFileSync } from "node:child_process";
 import { createTask } from "../src/tasks.ts";
 import { locateSources, computeReviewDiff } from "../src/review.ts";
 import { start } from "./server-harness.mjs";
@@ -113,4 +114,37 @@ test("HTTP：GET review-sources 响应带 taskDir（前端手点按钮用它开�
     const lifeos = body.items?.find((item) => item.kind === "lifeos");
     assert.equal(lifeos?.path, join(taskDir, "home"), "lifeos 源仍是 <taskDir>/home，别和 taskDir 混淆");
   } finally { server.close(); }
+});
+
+
+
+
+test("skip-worktree 的路径不得进 worktree diff 快照（0018：submodule→软链的 typechange 噪声）", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+  const taskDir = join(home, "agents", "a", "projects", "p", "tasks", "0001-x");
+  const worktree = join(taskDir, "repo");
+  await mkdir(worktree, { recursive: true });
+  await git(worktree, ["init", "-q", "-b", "main"]);
+  await writeFile(join(worktree, "code.ts"), "a\n");
+  await git(worktree, ["add", "code.ts"]);
+  // index 里造一条 submodule（gitlink，mode 160000）——真实仓里 pi 就是这个形态
+  //（hash-object 用文件输入：execFile 没有 input 选项，--stdin 会永远等 stdin 卡死测试）
+  await writeFile(join(worktree, ".pi-raw"), "pi-target\n");
+  const link = (await run("git", ["-C", worktree, "hash-object", "-w", ".pi-raw"])).stdout.trim();
+  await import("node:fs/promises").then((fs) => fs.rm(join(worktree, ".pi-raw")));
+  execFileSync("git", ["-C", worktree, "update-index", "--add", "--cacheinfo", `160000,${link},pi`]);
+  await git(worktree, ["commit", "-q", "-m", "init"]);
+  // 本地特殊检出：pi 变软链 + skip-worktree（git 视而不见）
+  await import("node:fs/promises").then((fs) => fs.symlink("/some/target", join(worktree, "pi")));
+  execFileSync("git", ["-C", worktree, "update-index", "--skip-worktree", "pi"]);
+  // 未跟踪文件必须仍进 diff
+  await writeFile(join(worktree, "new-doc.md"), "新增\n");
+
+  const diff = await computeReviewDiff(taskDir);
+  const wt = diff.items.find((item) => item.source.kind === "worktree");
+  const paths = wt.files.map((file) => file.path);
+  assert.ok(!paths.includes("pi"), `skip-worktree 的 pi 不该出现，实际：${paths.join(", ")}`);
+  assert.ok(paths.includes("new-doc.md"), `未跟踪文件应出现，实际：${paths.join(", ")}`);
+  assert.ok(paths.includes("code.ts") === false, "已跟踪未改的文件不该出现");
 });
