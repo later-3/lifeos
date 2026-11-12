@@ -93,7 +93,7 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 
 | | 主实例（用户正在用的） | 开发实例 |
 |---|---|---|
-| 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 本 Task 的 `evidence/worktree/`（`git worktree add`，协议 §3.7/§12） |
+| 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 本 Task 的 `repo/`（`<taskDir>/repo/`，`git worktree add`；历史 Task 在 `evidence/worktree/`，协议 §3.7） |
 | 数据 | `~/.lifeos` | 独立 `LIFEOS_HOME=~/.lifeos-dev/<Task 编号>` |
 | 后端 / 前端 | **43120 / 5173（保留号）** | 由 `node scripts/dev-port.mjs claim --task NNNN` 分配 |
 | 日志 | `/tmp/lifeos-dev-supervisor.log` | `LIFEOS_SUPERVISOR_LOG=/tmp/lifeos-<Task 编号>.log` |
@@ -109,7 +109,7 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 > 补充 §7.1：光"知道主 worktree 不能动"不够，要防的是**肌肉记忆在错误目录执行**。
 
 - **必须** 任何破坏性命令之前先 `pwd` 并肉眼确认前缀：
-  `~/.lifeos/agents/<agent>/projects/<project>/tasks/<NNNN>-*/evidence/`。
+  `~/.lifeos/agents/<agent>/projects/<project>/tasks/<NNNN>-*/`（工作区在它的 `repo/` 或 `evidence/` 下）。
   不是这个前缀 → 停手，不执行。
 - **必须** 把下面的命令当作"只在开发 worktree 可用"的白名单：
   `rm -rf node_modules`、`rm -rf pi`、`git checkout -- pi`、`pnpm install`。
@@ -126,6 +126,35 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 
 **命令与步骤见** `projects/lifeos/tools/dev-port/AGENTS.md`（按需读，不常驻）；端口事实以 `knowledge/architecture/foundation.md` 为准。
 
+### 7.1c Task 工作区与实例收尾（必须）
+
+**工作区**（协议 §3.7）：建 Task 时自动建两个，改动只在这里发生。
+
+| 工作区 | 位置 | 分支 |
+|---|---|---|
+| 项目仓 | `<taskDir>/repo/` | `dev/<NNNN>-<slug>`（历史 Task 为 `evidence/worktree/`） |
+| 家目录仓 | `<taskDir>/home/` | `task/<NNNN>-<slug>` |
+
+- **必须** 不在主区直接改：文档改 `<taskDir>/home/…`，代码改 `<taskDir>/repo/…`；主区 `git status` 应恒为空。
+- **必须** 合并只由用户触发（检视通过）：`git -C <仓> merge --no-ff <分支>` → `git worktree remove` → `git worktree prune`。冲突就停，不替用户解。
+- **必须** 家目录工作区按 Agent 可见范围裁剪（协议 §3.7）：自己的 + 共享 workspace + 绑定的 project；其他 Agent 与未绑定 project 不在里面。绑定关系变了要重算裁剪。
+
+**实例收尾**（2026-11-10 实测：不清收尾累积到 32.5 G / 28 个监听端口）。任务交完或换 Task 时按顺序做：
+
+```bash
+# 1) 停自己起的后端与前端（只停自己端口上的）
+# 2) 释放端口
+node scripts/dev-port.mjs release --task NNNN
+# 3) 删独立家目录（先确认里面没有要留的东西）
+rm -rf ~/.lifeos-dev/NNNN
+# 4) 对账：没有自己的进程与端口残留
+lsof -nP -iTCP:<自己端口> -sTCP:LISTEN     # 应无输出
+```
+
+- **必须** `LIFEOS_HOME` **不得指向真家目录 `~/.lifeos`**。启动参数那一层的闸管不到“事后被改指向”，收尾时要抽查（2026-11-10 实测抓到 3 个 dev 后端指向真家目录：43127/43177/43178）。
+- **可以** 删已合并的旧工作区（`ahead=0`）—— 分支不删，历史留着；先 `git worktree list` 与磁盘目录对账，有孤立目录（`.git` 指向已 prune 的 admin）时直接 `rm -rf`。
+- **必须** 不要把 `node_modules` 长期留在工作区里（每个 0.6 G）；不用了就删，下次 `pnpm install` 重建。
+
 ### 7.3 交付与切换（必须走流程）
 
 1. **必须** 开发实例验证通过（测试回执 + 手测证据）；
@@ -138,7 +167,7 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 
 ### 7.4 禁止项（必须）
 
-- **禁止** 在主实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；**检查方式**：主实例的 supervisor 日志里出现"⚠ 主 worktree 的 src/ 被改动了"即为违规；`git status --short` 显示 `src/` 有 `M`/`??` 且没有对应 Task 的 `evidence/worktree` 即为违规。
+- **禁止** 在主实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；**检查方式**：主实例的 supervisor 日志里出现"⚠ 主 worktree 的 src/ 被改动了"即为违规；`git status --short` 显示 `src/` 有 `M`/`??` 且没有对应 Task 的 `repo/`（历史 Task 为 `evidence/worktree/`）即为违规。
 - **禁止** 在主 worktree 执行 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`；
 - **禁止** 重启或 kill 主实例、修改用户 `~/.lifeos` 数据；
 - **禁止** 同一 Task 开第二份实例（要并行就另起 Task），也禁止用固定 `43130` 启动（C160 就是这么撞车的）。
