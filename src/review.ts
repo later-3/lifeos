@@ -453,10 +453,14 @@ async function computeWorktreeDiff(source: ReviewSource): Promise<ReviewSourceDi
 
 /** 基线引用 → 一棵树（基线是 commit 就取它的根树；是树就原样）。取不到就用空树。 */
 async function treeOfRef(repo: string, ref: string): Promise<string> {
-  const asTree = (await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]).catch(() => "")).trim();
-  if (asTree !== "") return asTree;
-  const peeled = (await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}^{tree}`]).catch(() => "")).trim();
-  return peeled !== "" ? peeled : EMPTY_TREE;
+  // 失败不再静默（后端规 2.9）：静默回空树曾把"整个 diff 全部显示为新增"（0018 测试实测——
+  // code.ts 在 HEAD 树里却被报成 new file）。至少要让排查者看得到是谁、为什么失败。
+  const asTree = await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`])
+    .catch((error: unknown) => { console.error(`[review] treeOfRef(${repo}, ${ref}^{tree}) 失败：`, error instanceof Error ? error.message : String(error)); return ""; });
+  if (asTree.trim() !== "") return asTree.trim();
+  const peeled = await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}^{tree}`])
+    .catch((error: unknown) => { console.error(`[review] treeOfRef(${repo}, ${ref}^{commit}^{tree}) 失败：`, error instanceof Error ? error.message : String(error)); return ""; });
+  return peeled.trim() !== "" ? peeled.trim() : EMPTY_TREE;
 }
 
 /**
@@ -469,7 +473,13 @@ async function diffIncludingUntracked(repo: string, range: string): Promise<stri
   const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
   try {
     await run("git", ["-C", repo, "read-tree", baseTree], { env, timeout: 30_000, maxBuffer: 1024 * 1024 });
-    await run("git", ["-C", repo, "add", "-A", "--", "."], { env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
+    // **skip-worktree 的路径不得进快照**（Task 0018 用户实测）：它们是本地特殊检出
+    //（如开发 worktree 把 submodule 替换成软链），不代表代码事实；真实 index 上的
+    // skip 标志不会跟到临时 index，add -A 会把 typechange 算进 diff。
+    const skipWorktree = (await git(repo, ["ls-files", "-v"]))
+      .split("\n").filter((line) => line.startsWith("S ")).map((line) => line.slice(2));
+    const excludes = skipWorktree.map((path) => `:(exclude)${path}`);
+    await run("git", ["-C", repo, "add", "-A", "--", ".", ...excludes], { env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
     const newTree = (await run("git", ["-C", repo, "write-tree"], { env, timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout.trim();
     return await git(repo, ["diff", "--no-color", "--no-ext-diff", "--unified=3", baseTree, newTree]);
   } finally {
