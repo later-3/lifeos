@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest, sanitizeSegment } from "./projects.ts";
 import { ensureTaskSkeleton, skeletonText } from "./project-skeleton.ts";
+import { createTaskWorktrees, HOME_DIR } from "./task-worktree.ts";
 
 /** 类型是开放集合：由 task-types/<类型>/ 下的模板定义；daily 为系统保留（默认 Task）。 */
 export type TaskType = string;
@@ -29,6 +30,11 @@ export type TaskSummary = {
   status: string;
   goal: string;
   path: string;
+  /**
+   * 该 Task 的**文档**所在目录（协议 §3.7 读侧穿透）：有 `home/` 工作区就是工作区里那份，
+   * 否则与 `path` 相同。`path` 是结构身份（两个工作区的挂载点），`docPath` 才是读文档的地方。
+   */
+  docPath: string;
   /** 普通 Task 的创建日期（YYYY-MM-DD，写在 task.md 字段里）。 */
   date?: string;
   /** 默认 Task（类型 daily）。 */
@@ -51,6 +57,18 @@ type TaskTemplate = { schemaVersion: 1; type: string; categories: Record<string,
 
 const tasksRoot = (ctx: TaskContext) => join(resolveHome(), "agents", ctx.agentId, "projects", ctx.projectId, "tasks");
 const projectDir = (ctx: TaskContext) => join(resolveHome(), "agents", ctx.agentId, "projects", ctx.projectId);
+
+/**
+ * Task 文档的读根（协议 §3.7「读侧能穿透」）：
+ * 有家目录工作区时文档在工作区里，主区那份是**上次合并**的版本，不能拿来读。
+ * 判断标准是“工作区里那份 task.md 在不在”，不看目录是否存在（工作区可能建了一半）。
+ */
+export async function taskDocPathOf(ctx: TaskContext, dirName: string): Promise<string> {
+  const main = join(tasksRoot(ctx), dirName);
+  const inWorktree = join(main, HOME_DIR, "agents", ctx.agentId, "projects", ctx.projectId, "tasks", dirName);
+  const info = await stat(join(inWorktree, "task.md")).catch(() => undefined);
+  return info?.isFile() === true ? inWorktree : main;
+}
 
 const isDoc = (value: unknown): value is TaskDocTemplate => {
   if (typeof value !== "object" || value === null) return false;
@@ -132,6 +150,15 @@ export async function resolveTaskDir(ctx: TaskContext, idOrDirName: string): Pro
   return entry === undefined ? undefined : join(tasksRoot(ctx), entry.name);
 }
 
+/** `resolveTaskDir` 的读侧版本：返回该 Task 的**文档**目录（有工作区就是工作区里那份）。 */
+export async function resolveTaskDocDir(ctx: TaskContext, idOrDirName: string): Promise<string | undefined> {
+  const match = /^(\d{4})(?:-|$)/.exec(idOrDirName);
+  if (match === null) return undefined;
+  const entries = await readdir(tasksRoot(ctx), { withFileTypes: true }).catch(() => []);
+  const entry = entries.find((candidate) => candidate.isDirectory() && (candidate.name === idOrDirName || candidate.name.startsWith(`${match[1]}-`)));
+  return entry === undefined ? undefined : await taskDocPathOf(ctx, entry.name);
+}
+
 /** 本 Task 遵守的规范与类型规则路径（只写真实存在的路径；不写死不存在的东西）。 */
 
 /** 开发类 Task 的"本任务遵守"里逐文件点名（仅列当前项目实际存在的那些，不跨项目泄漏路径）。 */
@@ -203,13 +230,16 @@ async function materialize(ctx: TaskContext, input: {
   /** Task 参与者（T12）：其他 Agent 的 id 与/或用户 id；空 = `参与者：—`。 */
   participants?: string[];
   docs: TaskDocTemplate[]; typeRulesDir: string; pointer: string;
-}): Promise<TaskSummary> {
+}, docDir?: string): Promise<TaskSummary> {
   const id = String(input.number).padStart(4, "0");
   const dir = join(tasksRoot(ctx), input.dirName);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await ensureTaskSkeleton(dir);
+  // 文档写到哪（协议 §3.7）：有家目录工作区就写工作区里那份，否则写主区目录。
+  const doc = docDir ?? dir;
+  if (doc !== dir) await mkdir(doc, { recursive: true, mode: 0o700 });
+  await ensureTaskSkeleton(doc);
   for (const extra of input.extraDirs) {
-    const sub = join(dir, extra);
+    const sub = join(doc, extra);
     await mkdir(sub, { recursive: true, mode: 0o700 });
     await writeFile(join(sub, "AGENTS.md"), await skeletonText(extra), { encoding: "utf8", mode: 0o600, flag: "wx" })
       .catch(() => { /* 已存在：不覆盖 */ });
@@ -233,14 +263,14 @@ async function materialize(ctx: TaskContext, input: {
     "",
     ...(await referenceBlock(ctx, input.typeRulesDir, input.type)),
   ].join("\n");
-  await writeFile(join(dir, "task.md"), taskMd, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
-  for (const doc of input.docs) {
-    await writeFile(join(dir, doc.file), docSkeleton(doc.title, doc.sections), { encoding: "utf8", mode: 0o600, flag: "wx" })
+  await writeFile(join(doc, "task.md"), taskMd, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
+  for (const docTemplate of input.docs) {
+    await writeFile(join(doc, docTemplate.file), docSkeleton(docTemplate.title, docTemplate.sections), { encoding: "utf8", mode: 0o600, flag: "wx" })
       .catch(() => { /* 已存在：不覆盖 */ });
   }
   return {
     id, dirName: input.dirName, number: input.number, title: input.title,
-    type: input.type, category: input.categoryLabel, status: "进行中", goal: input.goal, path: dir,
+    type: input.type, category: input.categoryLabel, status: "进行中", goal: input.goal, path: dir, docPath: doc,
     ...(input.date !== undefined ? { date: input.date } : {}),
     isDefault: input.type === "daily",
     participants: input.participants ?? [],
@@ -276,6 +306,14 @@ export async function createTask(ctx: TaskContext, input: {
     if (info === undefined || !info.isDirectory()) return { code: "project_not_found", message: `找不到项目 ${ctx.projectId}` };
   }
   const number = await nextTaskNumber(ctx);
+  const id = String(number).padStart(4, "0");
+  const dirName = `${id}-${sanitizeSegment(title)}`;
+  const taskDir = join(tasksRoot(ctx), dirName);
+  // 工作区先于文档：骨架要写进工作区里那份（协议 §3.7）。
+  const worktrees = await createTaskWorktrees({
+    taskDir, taskId: id, agentId: ctx.agentId, projectId: ctx.projectId,
+    ...(manifest?.path !== undefined ? { projectPath: manifest.path } : {}),
+  });
   const goalInput = (input.goal ?? "").trim();
   const task = await materialize(ctx, {
     number,
@@ -283,14 +321,14 @@ export async function createTask(ctx: TaskContext, input: {
     type,
     categoryLabel: categoryTemplate.label,
     goal: goalInput === "" ? title : goalInput,
-    dirName: `${String(number).padStart(4, "0")}-${sanitizeSegment(title)}`,
+    dirName,
     date: input.date ?? localDate(),
     requiredDocs: [...categoryTemplate.docs.map((doc) => doc.file), ...(categoryTemplate.extraDirs ?? []).map((dir) => `${dir}/`)],
     extraDirs: categoryTemplate.extraDirs ?? [],
     docs: categoryTemplate.docs,
     typeRulesDir: resolved.source,
     pointer: "（下一步做什么 / 卡在哪——状态只写在这里）",
-  });
+  }, worktrees.docRoot);
   return { task };
 }
 
@@ -310,19 +348,26 @@ export async function ensureDefaultTask(ctx: TaskContext): Promise<TaskSummary> 
     const categoryTemplate = resolved.template.categories.D;
     if (categoryTemplate === undefined) throw new Error("daily 模板缺少 D 类别");
     const number = await nextTaskNumber(ctx);
+    const id = String(number).padStart(4, "0");
+    const dirName = `${id}-default`;
+    const manifest = await readProjectManifest(ctx.agentId, ctx.projectId);
+    const worktrees = await createTaskWorktrees({
+      taskDir: join(tasksRoot(ctx), dirName), taskId: id, agentId: ctx.agentId, projectId: ctx.projectId,
+      ...(manifest?.path !== undefined ? { projectPath: manifest.path } : {}),
+    });
     return await materialize(ctx, {
       number,
       title: "默认",
       type: "daily",
       categoryLabel: categoryTemplate.label,
       goal: "日常对话的入口：没有明确 Task 时的交互都归到这里；按本地日期记入 daily/<日期>.md，只有发生交互的日子才有分片",
-      dirName: `${String(number).padStart(4, "0")}-default`,
+      dirName,
       requiredDocs: ["daily/（按天分片）"],
       extraDirs: categoryTemplate.extraDirs ?? [],
       docs: categoryTemplate.docs,
       typeRulesDir: resolved.source,
       pointer: "按日期分片：发起对话的那一天建 daily/<日期>.md；没有交互的日子没有分片",
-    });
+    }, worktrees.docRoot);
   })().finally(() => { defaultLocks.delete(key); });
   defaultLocks.set(key, work);
   return await work;
@@ -334,8 +379,9 @@ export async function ensureDefaultTask(ctx: TaskContext): Promise<TaskSummary> 
  */
 export async function ensureDailyShard(ctx: TaskContext, date = localDate()): Promise<{ task: TaskSummary; file: string }> {
   const task = await ensureDefaultTask(ctx);
-  const file = join(task.path, "daily", `${date}.md`);
-  await mkdir(join(task.path, "daily"), { recursive: true, mode: 0o700 });
+  // 文档落点（协议 §3.7）：有工作区就写工作区，不写主区。
+  const file = join(task.docPath, "daily", `${date}.md`);
+  await mkdir(join(task.docPath, "daily"), { recursive: true, mode: 0o700 });
   await writeFile(file, `# ${date}\n\n`, { encoding: "utf8", mode: 0o600, flag: "wx" }).catch(() => { /* 已存在：不覆盖 */ });
   return { task, file };
 }
@@ -387,7 +433,9 @@ export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
     const match = /^(\d{4})-(.+)$/.exec(entry.name);
     if (match === null) continue;
     const dir = join(tasksRoot(ctx), entry.name);
-    const text = await readFile(join(dir, "task.md"), "utf8").catch(() => undefined);
+    // 协议 §3.7 读侧穿透：有家目录工作区时，文档在工作区里（主区那份是上次合并的版本）。
+    const docPath = await taskDocPathOf(ctx, entry.name);
+    const text = await readFile(join(docPath, "task.md"), "utf8").catch(() => undefined);
     if (text === undefined) continue;
     const field = (label: string): string => {
       const line = text.split("\n").find((candidate) => candidate.startsWith(`${label}：`) || candidate.startsWith(`${label}:`));
@@ -409,6 +457,7 @@ export async function listTasks(ctx: TaskContext): Promise<TaskSummary[]> {
       status: field("状态"),
       goal: field("目标"),
       path: dir,
+      docPath,
       ...(date !== "" ? { date } : {}),
       isDefault: type === "daily",
       participants,
@@ -438,7 +487,7 @@ export async function addTaskParticipant(
     return { ok: true, added: false, participants: task.participants ?? [] };
   }
 
-  const file = join(task.path, "task.md");
+  const file = join(task.docPath, "task.md");
   const text = await readFile(file, "utf8").catch(() => undefined);
   if (text === undefined) return { ok: false, message: `读不到 ${file}` };
 

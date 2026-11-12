@@ -17,7 +17,7 @@ import { PAYLOAD_TOO_LARGE } from "./failure.ts";
 import { readLimits, recordObservedToFile } from "./payload-limit.ts";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest } from "./projects.ts";
-import { resolveTaskDir } from "./tasks.ts";
+import { resolveTaskDocDir } from "./tasks.ts";
 
 export type ModelChoice = { defaultProvider: string; defaultModel: string; defaultThinkingLevel?: string };
 
@@ -179,7 +179,8 @@ export async function buildPromptParts(agentId: string, projectId: string, taskI
 
   // 当前 Task（协议 §7）：只加载指针指向的这一个
   const ctx = { agentId, projectId };
-  const taskDir = taskId !== undefined && taskId !== "" ? await resolveTaskDir(ctx, taskId) : undefined;
+  // 读侧穿透（协议 §3.7）：Task 文档在工作区里时读工作区那份。
+  const taskDir = taskId !== undefined && taskId !== "" ? await resolveTaskDocDir(ctx, taskId) : undefined;
   let typeRules: string | undefined;
   if (taskDir !== undefined) {
     const taskMd = await readText(join(taskDir, "task.md"));

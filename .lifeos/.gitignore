@@ -1,0 +1,46 @@
+# 家目录仓的忽略规则（模板来源；安装时随整个 .lifeos 复制到 ~/.lifeos/）
+#
+# 判据：**家目录仓只跟踪人写的文档与结构**。程序写入的运行数据、外部克隆、二进制、
+# 依赖缓存一律不跟踪——它们要么每次对话都变（无 diff 价值），要么体积大且可重新生成。
+# 想知道某个文件跟不跟，看这里，不另设第二份清单。
+
+.DS_Store
+Thumbs.db
+
+# ── 运行数据：程序写入，不是协议内容，不进版本库 ──────────────────
+logs/
+state/
+config/
+tmp/
+attachments/
+*.log
+venv-mlx/
+
+# 会话原始记录（JSONL，每次对话都改，无 diff 价值）
+**/projects/*/sessions/
+
+# 记忆库（sqlite 二进制 + WAL，反复改写）与其运行时目录
+**/memory/**/data/
+**/memory/daemon/
+**/memory/skills/
+**/memory/logs/
+
+# ── Task 的工作树与过程资料：体积大、来源外部 ────────────────────
+# ① 项目仓 worktree ② 家目录仓 worktree ③ 历史遗留的裸 worktree/
+**/tasks/*/repo/
+**/tasks/*/home/
+**/tasks/*/worktree/
+# 过程资料（不进版本控制，随 worktree 处理）
+**/tasks/*/refs/
+**/tasks/*/shots/
+# 老位置：历史 Task 的 evidence/（外部克隆、worktree、截图、录屏）
+# 例外：我们自己写的 .md 用 git add -f 一次性纳入（已跟踪的不受此规则影响）
+**/tasks/*/evidence/
+
+# 依赖与缓存
+**/.venv/
+**/__pycache__/
+**/node_modules/
+
+# 任务参考克隆（外部仓库副本，集中放一处，随时可整目录删）
+reference/

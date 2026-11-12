@@ -127,7 +127,9 @@
 | 项目仓 | `<taskDir>/repo/` | Task 所属 project 的 `project.json` 有 `path` 且是 git 仓时 |
 | 家目录仓 | `<taskDir>/home/` | 恒有（`workspace` 这类无 `path` 的项目只有这一个） |
 
-- **必须** 除 `daily` 外，Task 的任何文档与代码改动都发生在这两个工作区里；主区保持干净（`git status` 为空）。
+- **必须** Task 的任何文档与代码改动都发生在工作区里（`daily` 也不例外）；主区保持干净（`git status` 为空）。
+- **必须** 建工作区前先把主区存档：`git worktree add` 只从 commit 检出，主区里没提交的文档在工作区里就是不存在。这一步由建 Task 的动作自动完成（脏就本地提交一次，不推送）。
+- **可以** 家目录还不是 git 仓时（例如尚未 `git init`），不建工作区，文档写回主区——这是兼容路径，不是默认形态。
 - **必须** 工作区在 Task 创建时**自动建**，不是“记得就建”；各自一条分支从 `main` 起：家目录 `task/<NNNN>-<slug>`，项目仓 `dev/<NNNN>-<slug>`。
 - **必须** 分支按 **Task** 分，不按 Agent 或 Agent × Project 分 —— 同一 Agent 的两个 Task 共用分支会让改动混在一起，检视失去粒度。
 - **必须** 家目录工作区按 Agent 的**可见范围**裁剪（§4.2 的层）：自己的（`agents/<自己>/`）全量 + 共享 workspace + **绑定的**共享 project + `interaction-harness/` + `users/`；其他 Agent 与未绑定 project 的路径**不在里面**。

@@ -42,7 +42,9 @@ async function requireNotes(home: string, root: string, errors: string[], counte
       const text = await readFile(note, "utf8").catch(() => "");
       if (text.trim() === "") errors.push(`说明文件为空：${relative(home, dir)}/AGENTS.md`);
     }
-    if (name === "evidence") continue;
+    // 工作区与过程证据不按家目录结构检查：`repo/` `home/` 是 Task 的 git worktree
+    // （`home/` 里是整份家目录副本，进去会把它当作家目录再查一遍），`evidence/` 是外部资料。
+    if (name === "evidence" || name === "repo" || name === "home") continue;
     await requireNotes(home, dir, errors, counter);
   }
 }
