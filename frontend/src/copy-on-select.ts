@@ -50,6 +50,42 @@ export function shouldCopy(facts: CopyDecisionFacts): boolean {
   return facts.text.trim() !== "";
 }
 
+/* ── 选中功能条（Task 0018）─────────────────────────────────────────────────────
+ *
+ * 松手后的动作组合由**设置 + 选区事实**决定（02-design D7–D16）：
+ *  - copyOnSelect 开：松手即复制（Task 0013 现状）+ 功能条**不含复制按钮**；
+ *  - copyOnSelect 关：松手只弹条，点「复制」才复制（反馈同一个胶囊）。
+ *  - 批注只在“选区起止都在同一个非流式 assistant 文本块”时可选（D12）；
+ *  - 引用对任何选区都可用（D14/D15）。
+ */
+
+/** 功能条上各入口是否出现（渲染层只执行，不再判断）。 */
+export type ToolbarButtons = { copy: boolean; annotate: boolean; quote: boolean };
+
+/** 松手动作组合：复制与否 + 弹条与否 + 条上按钮。 */
+export type SelectionAction = {
+  copyNow: boolean;
+  showToolbar: boolean;
+  toolbar: ToolbarButtons;
+};
+
+export type SelectionPrefsShape = { copyOnSelect: boolean };
+
+export type SelectionActionFacts = CopyDecisionFacts & {
+  /** 选区起止是否都落在同一个**非流式** assistant 文本块内（handler 已查好 DOM 事实）。 */
+  annotatable: boolean;
+};
+
+/** 松手动作组合的**唯一判定**（可穷举；handler 只执行返回值）。 */
+export function selectionAction(facts: SelectionActionFacts, prefs: SelectionPrefsShape): SelectionAction {
+  const none: SelectionAction = { copyNow: false, showToolbar: false, toolbar: { copy: false, annotate: false, quote: false } };
+  if (!shouldCopy(facts)) return none;
+  if (prefs.copyOnSelect) {
+    return { copyNow: true, showToolbar: true, toolbar: { copy: false, annotate: facts.annotatable, quote: true } };
+  }
+  return { copyNow: false, showToolbar: true, toolbar: { copy: true, annotate: facts.annotatable, quote: true } };
+}
+
 /**
  * 成功文案。用户 2026-11-07 拍板带字数：「已复制 · N 字」。
  *

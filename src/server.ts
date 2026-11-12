@@ -792,17 +792,21 @@ app.use(async (c, next) => {
   app.get("/api/ui-prefs", async (c) => c.json(await readUiPrefs()));
 
   app.put("/api/ui-prefs", async (c) => {
-    const body = await c.req.json().catch(() => undefined) as { theme?: unknown; display?: unknown } | undefined;
+    const body = await c.req.json().catch(() => undefined) as { theme?: unknown; display?: unknown; badges?: unknown; selection?: unknown } | undefined;
     if (body === undefined) {
-      const error = problem("invalid_request", "需要 JSON 请求体（可以只带 theme 或 display）", 400);
+      const error = problem("invalid_request", "需要 JSON 请求体（可以只带 theme / display / badges / selection）", 400);
       return c.json(error.body, error.status);
     }
-    // 只认这两个键：多余字段忽略（而不是 400）—— 前端将来加字段不应让旧后端拒绝整次保存
-    const patch: { theme?: unknown; display?: unknown } = {};
+    // 只认这四个键：多余字段忽略（而不是 400）—— 前端将来加字段不应让旧后端拒绝整次保存。
+    // badges 是 2026-11-12 修的：它加入时白名单没跟上（persistBadgePrefs 发的 badges 被静默丢弃，
+    // 徽标设置在换浏览器/清缓存后丢失）；selection 同日加入。
+    const patch: { theme?: unknown; display?: unknown; badges?: unknown; selection?: unknown } = {};
     if (body.theme !== undefined) patch.theme = body.theme;
     if (body.display !== undefined) patch.display = body.display;
-    if (patch.theme === undefined && patch.display === undefined) {
-      const error = problem("invalid_request", "请求体里既没有 theme 也没有 display", 400);
+    if (body.badges !== undefined) patch.badges = body.badges;
+    if (body.selection !== undefined) patch.selection = body.selection;
+    if (patch.theme === undefined && patch.display === undefined && patch.badges === undefined && patch.selection === undefined) {
+      const error = problem("invalid_request", "请求体里没有可识别的偏好键（theme / display / badges / selection）", 400);
       return c.json(error.body, error.status);
     }
     const saved = await writeUiPrefs(patch);

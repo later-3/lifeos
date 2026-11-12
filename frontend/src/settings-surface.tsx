@@ -28,9 +28,10 @@ import {
 } from "./badge-prefs";
 import { Button, IconButton } from "./design/ui";
 import { LAYER_CLASS } from "./design/surface";
+import type { SelectionPrefs } from "./selection-prefs";
 
 /* ── 分区注册表（数据驱动；新板块加一条即可）── */
-type SectionKey = "appearance" | "display" | "motion" | "language" | "models" | "notify" | "about";
+type SectionKey = "appearance" | "display" | "interaction" | "motion" | "language" | "models" | "notify" | "about";
 
 /**
  * **只登记已有真实控件的分区**（2026-11-09 审核修正）。
@@ -42,7 +43,7 @@ type SectionKey = "appearance" | "display" | "motion" | "language" | "models" | 
  * 规划中的分区改在导航底部用一行文字说明（可读、不可点，不制造死点击）。
  */
 const SECTIONS: Array<{ g: string; items: Array<{ k: SectionKey; label: string }> }> = [
-  { g: "外观", items: [{ k: "appearance", label: "主题" }, { k: "display", label: "显示" }] },
+  { g: "外观", items: [{ k: "appearance", label: "主题" }, { k: "display", label: "显示" }, { k: "interaction", label: "交互" }] },
 ];
 /** 规划中的分区：只作为一行说明，不进导航（避免 5 个空点击）。 */
 const PLANNED_SECTIONS = "模型 · 通知 · 语言 · 动效 · 关于";
@@ -312,11 +313,31 @@ function DisplaySection({ prefs, badges, viewport, onBadges, onChange, onReset, 
 }
 
 /* ── 表面 ── */
-export function SettingsSurface({ section, onSection, theme, onTheme, prefs, badges, viewport, onPrefs, onPrefsReset, onBadges, onBadgesReset, onClose }: {
+
+/** 「交互」节（Task 0018）：选中行为设置。 */
+function InteractionSection({ selection, onChange }: { selection: SelectionPrefs; onChange: (next: SelectionPrefs) => void }) {
+  return (
+    <Section title="交互" desc="选中文字后的行为。改动立即生效、自动保存。">
+      <div className="flex flex-col gap-4" data-testid="interaction-prefs">
+        <Card title="选中文字后自动复制" hint="开启：松手即复制并提示「已复制 · N 字」；关闭：松手弹出功能条，点「复制」才复制。">
+          <label className="chk flex items-center gap-2 text-meta text-ink-700" data-testid="pref-copy-on-select">
+            <input type="checkbox" checked={selection.copyOnSelect} aria-label="选中文字后自动复制"
+              onChange={(e) => onChange({ ...selection, copyOnSelect: e.currentTarget.checked })} />
+            选中后自动复制
+          </label>
+        </Card>
+      </div>
+    </Section>
+  );
+}
+
+export function SettingsSurface({ section, onSection, theme, onTheme, prefs, badges, viewport, onPrefs, onPrefsReset, onBadges, onBadgesReset, selection, onSelection, onClose }: {
   section: SectionKey; onSection: (k: SectionKey) => void;
   theme: ThemeState; onTheme: (next: ThemeState) => void;
   prefs: DisplayPrefs; viewport: number; onPrefs: (next: DisplayPrefs) => void; onPrefsReset: () => void;
   badges?: BadgePrefs; onBadges?: (next: BadgePrefs) => void; onBadgesReset?: () => void;
+  /** 选中行为（Task 0018 D7-D10）。 */
+  selection: SelectionPrefs; onSelection: (next: SelectionPrefs) => void;
   onClose: () => void;
 }) {
   // Esc 关闭（与模态同规）
@@ -327,7 +348,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
   }, [onClose]);
   // 每个分区一个不同图标（旧版"显示"与"动效"共用 IconWand，实测是视觉噪音）
   const icons: Record<SectionKey, React.ReactNode> = {
-    appearance: <IconPalette size={16} />, display: <IconAdjustmentsHorizontal size={16} />, motion: <IconWand size={16} />,
+    appearance: <IconPalette size={16} />, display: <IconAdjustmentsHorizontal size={16} />, interaction: <IconWand size={16} />, motion: <IconWand size={16} />,
     language: <IconLanguage size={16} />, models: <IconPlug size={16} />, notify: <IconBell size={16} />, about: <IconInfoCircle size={16} />,
   };
   return (
@@ -382,6 +403,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
       <div className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full px-4 py-6 sm:px-8 sm:py-8" style={{ maxWidth: "var(--container-settings)" }}>
           {section === "appearance" && <AppearanceSection theme={theme} onChange={onTheme} />}
+          {section === "interaction" && <InteractionSection selection={selection} onChange={onSelection} />}
           {section === "display" && <DisplaySection prefs={prefs} badges={badges} viewport={viewport}
             onChange={onPrefs} onReset={onPrefsReset} onBadges={onBadges} onBadgesReset={onBadgesReset} />}
         </div>

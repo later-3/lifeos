@@ -21,7 +21,10 @@ import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
 import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
-import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme } from "./ui-prefs-client";
+import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme, persistSelectionPrefs, cachedSelectionPrefs } from "./ui-prefs-client";
+import type { SelectionPrefs } from "./selection-prefs";
+import { quoteDraftOf } from "./selection-quote";
+import { SelectionToolbar } from "./selection-toolbar";
 import { SettingsSurface } from "./settings-surface";
 import { applySurfaceTokens, applyTheme, calculatePalette, hex, loadTheme, saveTheme, type ThemeState } from "./design/theme";
 import {
@@ -490,6 +493,7 @@ export default function App() {
       if (remote.theme !== undefined) setTheme(remote.theme);
       if (remote.display !== undefined) setPrefs(remote.display);
       if (remote.badges !== undefined) setBadges(remote.badges);
+      if (remote.selection !== undefined) setSelectionPrefs(remote.selection);
     });
     return () => { alive = false; };
   }, []);
@@ -897,17 +901,56 @@ export default function App() {
   /** 检视面板的容器（可复制区域之一；与 `<main>` 是兄弟节点，必须单独列）。 */
   const reviewRef = useRef<HTMLElement>(null);
   /**
-   * 选中即复制（Task 0013 · 用户 2026-11-07 拍板）：
-   * 对话区域（`<main>`）与检视面板里拖选/双击/三击，松手即写剪贴板，并在选区上方显示「已复制 · N 字」1000ms。
-   * 判据与几何都在纯函数里（`copy-on-select.ts`），这里只挂事件与渲染提示。
-   *
-   * 检视面板 2026-11-09 加进来：它的内容（路径、行号、代码、评论）同样需要能直接复制，
-   * 而它是 `<main>` 的**兄弟节点**，旧判据（落在 `<main>` 里）对它恒为 false。
+   * 选中行为设置（Task 0018 D7-D10）：copyOnSelect 默认开 = Task 0013 现状。
+   * 首屏用 localStorage 缓存（ui-prefs-client 的同一套首屏纪律），拉到真值就覆盖。
    */
-  const copyFeedback = useCopyOnSelect(
-    useMemo(() => [scrollRef, reviewRef], []),
+  const [selectionPrefs, setSelectionPrefs] = useState<SelectionPrefs>(() => cachedSelectionPrefs());
+  const setSelectionPrefsAndPersist = useCallback((next: SelectionPrefs) => {
+    setSelectionPrefs(next);
+    persistSelectionPrefs(next);
+  }, []);
+  /**
+   * 选中行为（Task 0013 复制 + 0018 功能条）：
+   * 对话区域（`<main>`，允许功能条）与检视面板（只复制，不弹条——D11）里拖选/双击/三击：
+   *  - 「选中后自动复制」开（默认）：松手即写剪贴板 + 「已复制 · N 字」胶囊 1000ms + 功能条（无复制按钮）；
+   *  - 关：松手只弹功能条（复制/批注/引用），点复制才复制（同一个胶囊反馈）。
+   * 判据与动作组合都在纯函数层（copy-on-select.ts 的 shouldCopy/selectionAction），这里只挂事件与渲染。
+   */
+  const { feedback: copyFeedback, toolbar, closeToolbar, submitCopy } = useCopyOnSelect(
+    useMemo(() => [
+      // getter 对象：事件时现取 ref（main 允许功能条；检视面板不弹）
+      { get current() { return scrollRef.current; }, toolbar: true },
+      { get current() { return reviewRef.current; } },
+    ], []),
+    selectionPrefs,
     (message) => toast(message, "error"),
   );
+
+  /**
+   * 批注的外部触发（Task 0018）：功能条点「批注」→ 按 messageId 路由到对应块。
+   * 锚点计算留在块内（index/text 都在那）；块处理完调 onDraftHandled 清除。
+   */
+  const draftNonce = useRef(0);
+  const [draftRequest, setDraftRequest] = useState<{ messageId: string; nonce: number } | null>(null);
+  /** 块处理完清请求（防重复触发）。 */
+  const onDraftHandled = useCallback(() => setDraftRequest(null), []);
+  const onAnnotateFromToolbar = useCallback(() => {
+    if (toolbar === null || toolbar.messageId === undefined) return;
+    draftNonce.current += 1;
+    setDraftRequest({ messageId: toolbar.messageId, nonce: draftNonce.current });
+    closeToolbar();
+  }, [toolbar, closeToolbar]);
+
+  /** 引用（D15）：格式化后追加进输入框（不覆盖已有草稿），焦点交给用户接话。 */
+  const onQuoteFromToolbar = useCallback(() => {
+    if (toolbar === null) return;
+    const quote = quoteDraftOf(toolbar.text, toolbar.speaker);
+    if (quote !== "") {
+      setInput(input === "" ? quote : `${input}\n\n${quote}`);
+      inputRef.current?.focus();
+    }
+    closeToolbar();
+  }, [toolbar, closeToolbar, input]);
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3194,6 +3237,22 @@ export default function App() {
 
       {/* 选中即复制的提示（Task 0013）：fixed 定位，不参与任何列布局 */}
       <CopyFeedbackToast feedback={copyFeedback} />
+      {/* 选中功能条（Task 0018）：portal 到 body，fixed 定位；按钮组合弹出时已定死 */}
+      {toolbar !== null && (
+        <SelectionToolbar
+          state={{
+            text: toolbar.text,
+            anchor: toolbar.anchor,
+            annotatable: toolbar.annotatable,
+            speaker: toolbar.speaker,
+            buttons: toolbar.buttons,
+          }}
+          onClose={closeToolbar}
+          onCopy={submitCopy}
+          onAnnotate={onAnnotateFromToolbar}
+          onQuote={onQuoteFromToolbar}
+        />
+      )}
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
@@ -3517,6 +3576,8 @@ export default function App() {
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
                       annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
                       annotationActions={annoActions}
+                      draftRequest={draftRequest !== null && draftRequest.messageId === message.id ? draftRequest : null}
+                      {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
                       {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
                       onOpenPeer={(target) => {
@@ -3866,7 +3927,7 @@ export default function App() {
           参照 Twenty/LobeHub：设置是独立页面，不是叠在对话上的浮层。 */}
       {settingsOpen && !isMobile && (
         <div className={`absolute inset-y-0 right-0 left-11 ${LAYER_CLASS.drawer}`}>
-          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection} selection={selectionPrefs} onSelection={setSelectionPrefsAndPersist}
             theme={theme} onTheme={setTheme}
             prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
@@ -3876,7 +3937,7 @@ export default function App() {
       )}
       {settingsOpen && isMobile && (
         <div className={`fixed inset-0 ${LAYER_CLASS.drawer} bg-surface`}>
-          <SettingsSurface section={settingsSection} onSection={setSettingsSection}
+          <SettingsSurface section={settingsSection} onSection={setSettingsSection} selection={selectionPrefs} onSelection={setSelectionPrefsAndPersist}
             theme={theme} onTheme={setTheme}
             prefs={prefs} badges={badges} viewport={viewportWidth} onPrefs={setPrefs}
             onPrefsReset={() => setPrefs(parsePrefs({}))}
