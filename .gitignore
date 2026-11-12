@@ -20,3 +20,8 @@ docs/images/
 # 视觉矩阵的**输入产物**不入库，**基线入库**（2026-11-09 起：换机器也能跑，
 # 否则首次跑等于没测；旧的 ui-baseline 仍是本地产物）
 .visual-matrix-shots/
+
+# 开发 worktree 的运行文件：端口登记（dev-port 写）与依赖软链（dev-harness §7.1 说明书允许的演练形态）。
+# node_modules/ 只匹配目录；worktree 里是 symlink，需要不带斜杠的模式（0018 实测：软链进了检视 diff）。
+.lifeos-worktree.json
+node_modules
