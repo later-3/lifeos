@@ -293,7 +293,6 @@ export type AnnotationDraftProps = {
 
 export function AnnotationDraft({ quote, rects, hostRect, onCommit, onCancel, onEnter, onLeave }: AnnotationDraftProps) {
   const [picked, setPicked] = useState<readonly string[]>([]);
-  const [note, setNote] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -304,8 +303,12 @@ export function AnnotationDraft({ quote, rects, hostRect, onCommit, onCancel, on
 
   const commit = useCallback(() => {
     if (picked.length === 0) return;
-    onCommit(picked, note.trim());
-  }, [picked, note, onCommit]);
+    // 备注读 **DOM 值**（非受控）：中文输入法的 composing（拼音组合）期间 React
+    // 不回写 value，输入体验与主输入框一致（2026-11-12 用户实测：受控写法把
+    // 拼音中间态落进文本，主输入框没这个问题）。提交时 trim。
+    const note = textareaRef.current?.value.trim() ?? "";
+    onCommit(picked, note);
+  }, [picked, onCommit]);
 
   const toggle = useCallback((id: string) => {
     setPicked((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]));
@@ -340,8 +343,9 @@ export function AnnotationDraft({ quote, rects, hostRect, onCommit, onCancel, on
       <textarea
         ref={textareaRef}
         data-testid="draft-note"
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
+        // 非受控：IME（中文输入法）composing 期间 React 不回写 value（否则拼音中间态会被打断/落进文本，
+        // 2026-11-12 用户实测）。提交时从 DOM 读值；取消时组件卸载，无需手动清。
+        defaultValue=""
         onKeyDown={(event) => {
           if (event.key === "Escape") { event.preventDefault(); onCancel(); return; }
           if (event.key === "Enter" && !event.nativeEvent.isComposing && !event.shiftKey) {
