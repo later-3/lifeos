@@ -44,3 +44,6 @@ venv-mlx/
 
 # 任务参考克隆（外部仓库副本，集中放一处，随时可整目录删）
 reference/
+
+# 家目录 worktree 的运行文件：端口登记（dev-port/worktree 机制写，0018 实测进了检视 diff）。
+.lifeos-worktree.json
