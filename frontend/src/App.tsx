@@ -3949,8 +3949,11 @@ export default function App() {
       {/* 检视面板（Task 0010）：与文件面板并存不互斥（D10）；手机上走全屏表面（mobile 模型，D17a 本期不做手机——这段只在桌面渲染） */}
       {reviewOpen && !isMobile && box.review > 0 && (
         <>
-          <DragHandle onStart={(event) => beginReviewDrag(event)} />
-          <aside ref={reviewRef} style={{ width: box.review }} data-testid="review-aside" className="flex shrink-0 overflow-hidden">
+          {/* 把手必须贴面板左缘且命中区在面板内：DragHandle 是 absolute，
+              放在 aside 外面时包含块是主容器 → 把手跑到视口左缘外（x=-4，探针实测）。
+              放进 aside（relative）内部 + !left-0 收进面板，aside 的 overflow-hidden 才不裁它。 */}
+          <aside ref={reviewRef} style={{ width: box.review }} data-testid="review-aside" className="relative flex shrink-0 overflow-hidden">
+            <DragHandle onStart={(event) => beginReviewDrag(event)} side="left" className="!left-0" />
             <ReviewPanel taskDir={reviewTask ?? ""} data={reviewData}
               loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewTask !== undefined) void loadReview(reviewTask); }}
               onClose={closeReview}
