@@ -55,10 +55,14 @@ export function checkIsolation({ port, home, worktree, logFile, expectedHome, ex
   if (requireRegistration === true && registration === undefined) {
     problems.push(`端口 ${String(port)} 不在 dev-port 登记表里：先 node scripts/dev-port.mjs claim --task <NNNN>`);
   }
-  // worktree 位置检查：必须在某个 Task 的 evidence/ 下（协议 §3.7/§12）。
+  // worktree 位置检查：必须在某个 Task 的工作区下。
+  // 两种合法形态：tasks/<NNNN>/repo/（协议 §3.7，2026-11-10 增补的建 Task 自动工作区）
+  // 或 tasks/<NNNN>/evidence/…（2026-11 之前的历史位置）。0018 是首个使用 repo/ 形态的 Task：
+  // 守卫没跟上增补时，合规实例会被这条挡死（实测：supervisor 拒绝启动）。
   if (typeof worktree === "string" && worktree !== "" && requireRegistration === true) {
-    if (!/\/tasks\/[^/]+\/evidence\//.test(worktree)) {
-      problems.push(`worktree 不在 Task 的 evidence/ 下（${worktree}）：按协议 §3.7/§12 应建在 tasks/<NNNN>/evidence/`);
+    const inTaskWorkspace = /\/tasks\/[^/]+\/(repo(\/|$)|evidence\/)/.test(worktree);
+    if (!inTaskWorkspace) {
+      problems.push(`worktree 不在 Task 工作区下（${worktree}）：应为 tasks/<NNNN>/repo/（协议 §3.7）或历史 evidence/worktree/`);
     }
   }
   return problems;

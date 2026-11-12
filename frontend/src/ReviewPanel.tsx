@@ -416,8 +416,14 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
           : "bg-diff-mod-soft text-diff-mod"}`}>
           {STATUS_LABEL[file.status]}
         </span>
-        <span className="min-w-0 truncate text-body text-ink-900" title={file.oldPath !== undefined ? `${file.oldPath} → ${file.path}` : file.path}>
-          {file.path}
+        <span className="min-w-0 flex-1 truncate text-body text-ink-900" title={file.oldPath !== undefined ? `${file.oldPath} → ${file.path}` : file.path}>
+          {/* 文件头主显 basename（0018）：家目录文档源是四级嵌套路径，整行显示全路径时
+              truncate 把文件名截在行尾之外，用户认不出哪个文件（实测："看不到 design.md"）。
+              目录只显尾段（前面加 …），窄面板 truncate 从右端吃 —— 先截掉目录，保住文件名。 */}
+          {filePathParts(file.path).name}
+          {dirLabelOf(file.path) !== "" && (
+            <span className="ml-1.5 text-micro text-ink-500">{dirLabelOf(file.path)}</span>
+          )}
         </span>
         <span className="shrink-0 rounded-inner bg-hover px-1.5 py-0.5 text-micro text-ink-500">{KIND_LABEL[file.kind]}</span>
         {/*
@@ -773,6 +779,19 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
 }
 
 const SOURCE_LABEL: Record<ReviewSourceKind, string> = { worktree: "项目代码（repo/）", lifeos: "家目录文档（~/.lifeos）" };
+
+/** 文件行显示拆分：主显文件名（basename），目录尾段次显（0018）。 */
+function filePathParts(path: string): { dir: string; name: string } {
+  const index = path.lastIndexOf("/");
+  return index < 0 ? { dir: "", name: path } : { dir: path.slice(0, index), name: path.slice(index + 1) };
+}
+
+/** 目录尾段标签：dir 还有更上层时前缀 …；只有一段就不加（src/demo.ts → "src/"）。 */
+function dirLabelOf(path: string): string {
+  const { dir } = filePathParts(path);
+  if (dir === "") return "";
+  return (dir.includes("/") ? "…" : "") + `${dir.split("/").pop()}/`;
+}
 
 /**
  * 一段隐藏区域的展开状态（S1·G1b）。

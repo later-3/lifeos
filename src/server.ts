@@ -1041,7 +1041,10 @@ app.use(async (c, next) => {
     const taskDir = await resolveTaskDir({ agentId: agent.id, projectId: project.id }, taskId);
     if (taskDir === undefined) { const error = problem("task_not_found", "找不到这个 task", 404); return c.json(error.body, error.status); }
     const items = await locateSources(taskDir);
-    return c.json({ items });
+    // taskDir 显式回给前端：手点"检视当前 Task 的改动"要用它开面板。items[].path 是**源目录**
+    // （lifeos 源 = <taskDir>/home），拿它当 taskDir 会让面板对着 worktree 根算 diff
+    //（0 文件 / "不是 git 仓库"，2026-11-12 用户实测）。
+    return c.json({ taskDir, items });
   });
 
   /**
