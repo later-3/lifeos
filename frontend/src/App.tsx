@@ -3248,8 +3248,12 @@ export default function App() {
                 .then((data) => {
                   const lifeos = data?.items?.find((item) => item.kind === "lifeos");
                   if (lifeos === undefined) { toast("拿不到这个 Task 的目录", "error"); return; }
-                  setReviewTaskPaths((prev) => ({ ...prev, [key]: lifeos.path }));
-                  if (!reviewOpen) openReview(lifeos.path); else closeReview();
+                  // 面板要的是 **taskDir**（diff 接口的口径）：items[].path 是源目录（lifeos 源 =
+                  // <taskDir>/home），拿它开面板等于把 worktree 根当 Task 目录 → 永远空
+                  //（2026-11-12 实测：手点按钮后面板全空）。新后端直接回 taskDir；老后端回退拼回去。
+                  const taskDir = typeof data?.taskDir === "string" ? data.taskDir : lifeos.path.replace(/\/home$/, "");
+                  setReviewTaskPaths((prev) => ({ ...prev, [key]: taskDir }));
+                  if (!reviewOpen) openReview(taskDir); else closeReview();
                 })
                 .catch(() => toast("检视面板打开失败", "error"));
             }}>

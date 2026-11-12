@@ -54,18 +54,21 @@ test("T0016-18 多处串线时一次报全（不挤牙膏）", () => {
 });
 
 test("T0016-19 端口不在登记表里必须被拒绝（不允许自挑一个空号）", () => {
-  // ok.worktree 本身也不在 tasks/<NNNN>/evidence/ 下，会同时报两条：这里断言"含登记问题"
+  // ok.worktree 本身也不在 tasks/<NNNN>/ 工作区下，会同时报两条：这里断言"含登记问题"
   const problems = checkIsolation({ ...ok, requireRegistration: true });
   assert.ok(problems.some((p) => /不在 dev-port 登记表里/.test(p)), problems.join(" / "));
-  assert.ok(problems.some((p) => /不在 Task 的 evidence\/ 下/.test(p)), problems.join(" / "));
+  assert.ok(problems.some((p) => /不在 Task 工作区下/.test(p)), problems.join(" / "));
 });
 
-test("T0016-20 已登记的端口放行；worktree 必须在 Task 的 evidence/ 下", () => {
+test("T0016-20 已登记的端口放行；worktree 必须在 Task 工作区（repo/ 或 evidence/）下", () => {
   const registered = { ...ok, worktree: "/h/.lifeos/agents/a/projects/p/tasks/0016-x/evidence/worktree", requireRegistration: true, registration: { taskId: "0016" } };
   assert.deepEqual(checkIsolation(registered), []);
+  // 协议 §3.7（2026-11-10 增补）：建 Task 自动建 <taskDir>/repo/，项目仓工作区在那里（Task 0018 首用）。
+  const inRepo = { ...registered, worktree: "/h/.lifeos/agents/a/projects/p/tasks/0018-x/repo" };
+  assert.deepEqual(checkIsolation(inRepo), []);
   const outside = checkIsolation({ ...ok, worktree: "/Users/xulater/Code/lifeos-dev/coder", requireRegistration: true, registration: { taskId: "0016" } });
   assert.equal(outside.length, 1);
-  assert.match(outside[0], /不在 Task 的 evidence\/ 下/);
+  assert.match(outside[0], /不在 Task 工作区下/);
 });
 
 test("T0016-21 启动者判定：Pi 注入的 PI_* 变量 = agent，干净环境 = user", () => {

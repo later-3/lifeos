@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import { installHome } from "../src/home.ts";
 import { createTask } from "../src/tasks.ts";
 import { locateSources, computeReviewDiff } from "../src/review.ts";
+import { start } from "./server-harness.mjs";
 
 const run = promisify(execFile);
 const git = async (cwd, args) =>
@@ -96,4 +97,20 @@ test("代码源：repo/ 优先于 evidence/worktree（两种都在时取 repo/�
   const sources = await locateSources(taskDir);
   const codeSource = sources.find((source) => source.kind === "worktree");
   assert.equal(codeSource.path, join(taskDir, "repo"));
+});
+
+test("HTTP：GET review-sources 响应带 taskDir（前端手点按钮用它开面板，0018）", async () => {
+  // 回归：手点"检视当前 Task 的改动"曾经拿 items[].path（= <taskDir>/home）当 taskDir 开面板，
+  // 等于对着 worktree 根算 diff → 0 文件 / "不是 git 仓库"（用户实测）。响应现在显式回 taskDir。
+  const { server, base, home } = await start();
+  try {
+    const taskDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0099-x");
+    await mkdir(join(taskDir, "home"), { recursive: true });
+    const response = await fetch(`${base}/api/agents/lifeosagent/projects/workspace/tasks/0099-x/review-sources`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.taskDir, taskDir, "响应顶层必须回 taskDir（主区 Task 目录，不是源目录）");
+    const lifeos = body.items?.find((item) => item.kind === "lifeos");
+    assert.equal(lifeos?.path, join(taskDir, "home"), "lifeos 源仍是 <taskDir>/home，别和 taskDir 混淆");
+  } finally { server.close(); }
 });

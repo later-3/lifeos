@@ -292,6 +292,13 @@ async function openReview(page, options = {}) {
     check("两组源都在（项目 worktree + Task 文档）",
       shape.sources.includes("worktree") && shape.sources.includes("lifeos"), shape.sources.join(","));
     check("文件与 hunk 都渲染", shape.fileCount === 4 && shape.hunkHeads === 5, `文件 ${shape.fileCount} / hunk ${shape.hunkHeads}`);
+    // 文件头主显 basename（0018）：长嵌套路径 truncate 时文件名仍可见，目录尾段次显
+    const headText = await page.evaluate(() => {
+      const card = document.querySelector("[data-review-file]");
+      return card?.querySelector("button")?.textContent ?? "";
+    });
+    check("文件头主显文件名（basename），目录尾段次显",
+      headText.includes("demo.ts") && headText.includes("src/"), headText.slice(0, 120));
     check("增/删/上下文三种行底色互不相同",
       shape.addedBg !== shape.removedBg && shape.addedBg !== shape.contextBg && shape.removedBg !== shape.contextBg,
       `${shape.addedBg} / ${shape.removedBg} / ${shape.contextBg}`);
