@@ -1082,6 +1082,22 @@ export type TaskCandidateView = {
   openComments?: number;
 };
 
+/**
+ * 合入结果的一个源（与后端 `src/task-merge.ts` 的 `MergeStep` 同形）。
+ * `status` 的取值就是后端的词，前端不另造一套。
+ */
+export type MergeStepView = {
+  kind: "project" | "home";
+  status: "merged" | "skipped" | "conflict" | "dirty" | "failed";
+  message: string;
+  conflicts?: string[];
+};
+
+type MergeButtonState = {
+  phase: "idle" | "confirm" | "running";
+  result?: { ok: boolean; message: string; steps: MergeStepView[] };
+};
+
 /** G11：视图模式（difit `DiffViewMode` / opencode `SessionReviewDiffStyle` 同取值）。 */
 export type ReviewViewMode = "unified" | "split";
 
@@ -1916,6 +1932,37 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
   const [showResolved, setShowResolved] = useState(false);
   /** G9：文件树是否展开（`<details>` 的受控状态；默认收起，不挤压 diff 阅读宽度） */
   const [treeOpen, setTreeOpen] = useState(false);
+  /**
+   * 合入（协议 §3.7：合并只由用户触发）。
+   * 三步式而不是 `window.confirm`：先按钮 → 就地二次确认 → 逐源结果
+   * （frontend-spec §5「危险操作要有确认，不用 window.confirm」）。
+   */
+  const [merge, setMerge] = useState<MergeButtonState>({ phase: "idle" });
+  const runMerge = useCallback(async () => {
+    setMerge({ phase: "running" });
+    try {
+      const response = await fetch("/api/tasks/merge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskDir }),
+      });
+      const payload = await response.json().catch(() => undefined) as
+        | { ok?: boolean; steps?: MergeStepView[]; error?: { message?: string } }
+        | undefined;
+      if (!response.ok || payload === undefined) {
+        setMerge({ phase: "idle", result: { ok: false, message: payload?.error?.message ?? `合入请求失败（HTTP ${response.status}）`, steps: [] } });
+        return;
+      }
+      setMerge({
+        phase: "idle",
+        result: { ok: payload.ok === true, message: payload.ok === true ? "已合入 main" : "没有全部合入，逐源结果在下面", steps: payload.steps ?? [] },
+      });
+      onReload();
+    } catch (error) {
+      setMerge({ phase: "idle", result: { ok: false, message: `合入请求失败：${error instanceof Error ? error.message : String(error)}`, steps: [] } });
+    }
+  }, [taskDir, onReload]);
+
 
   /**
    * G11 视图模式：单列 / 并排。默认**单列**（与既有行为一致，不突变）。
@@ -2811,6 +2858,16 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
           >复制全部 {openComments}</button>
         )}
         <span className="ml-auto flex items-center">
+          {data !== null && data.items.some((group) => group.source.exists) && (
+            <button
+              type="button"
+              onClick={() => setMerge({ phase: merge.phase === "confirm" ? "idle" : "confirm" })}
+              disabled={merge.phase === "running"}
+              className="mr-1 shrink-0 rounded-inner px-1.5 py-0.5 text-micro text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:opacity-50"
+              data-review-merge
+              title="把两个工作区合入各自的 main，并删除工作区（不可撤销）"
+            >{merge.phase === "running" ? "合入中…" : "合入 main"}</button>
+          )}
           {hasContent && (
             <IconButton label={allOpen ? "全部折叠" : "全部展开"} data-review-toggle-all aria-pressed={allOpen}
               onClick={() => setAll(!allOpen)}>
@@ -2821,6 +2878,37 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
           <IconButton label="关闭检视面板" onClick={onClose}><IconX size={16} /></IconButton>
         </span>
       </header>
+
+      {merge.phase === "confirm" && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface px-2 py-1.5 text-micro text-ink-700" data-review-merge-confirm>
+          <span>把两个工作区合入各自的 main，然后删除工作区。这一步不可撤销。</span>
+          <span className="ml-auto flex items-center gap-1">
+            <button type="button" onClick={() => void runMerge()} className="rounded-inner bg-accent px-2 py-0.5 text-micro text-white" data-review-merge-yes>确认合入</button>
+            <button type="button" onClick={() => setMerge({ phase: "idle" })} className="rounded-inner px-2 py-0.5 text-micro text-ink-500 hover:bg-hover" data-review-merge-no>取消</button>
+          </span>
+        </div>
+      )}
+
+      {merge.result !== undefined && (
+        <div
+          className={`shrink-0 border-b border-line px-2 py-1.5 text-micro ${merge.result.ok ? "bg-success-soft text-ink-700" : "bg-message-failure text-ink-700"}`}
+          data-review-merge-result={merge.result.ok ? "ok" : "failed"}
+        >
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">{merge.result.message}</span>
+            <button type="button" onClick={() => setMerge({ phase: "idle" })} className="ml-auto text-ink-500 hover:text-ink-900" aria-label="关闭合入结果">×</button>
+          </div>
+          {merge.result.steps.map((step) => (
+            <div key={step.kind} className="mt-0.5">
+              <span className="font-mono">{step.kind === "project" ? "项目仓" : "家目录仓"}</span>
+              {" · "}{step.status}{" · "}{step.message}
+              {step.conflicts !== undefined && step.conflicts.length > 0 && (
+                <span className="ml-1 font-mono text-ink-500">{step.conflicts.slice(0, 5).join(", ")}{step.conflicts.length > 5 ? " …" : ""}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/*
         G9 文件树侧栏：目录三态（全看 / 部分 / 没看）+ 勾选目录批量标记已看。

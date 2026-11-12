@@ -15,6 +15,7 @@ import { computeReviewDiff, locateSources, readReviewBlob, type ReviewError } fr
 import { clearComments, readComments, removeComment, removeReply, addReply, upsertReply, setCommentAwaiting, setCommentState, toCommentInput, upsertComment } from "./review-comments.ts";
 import { clearViewed, readViewed, setFileViewed, setFilesViewed } from "./review-viewed.ts";
 import { listCandidates } from "./review-candidates.ts";
+import { mergeTask } from "./task-merge.ts";
 import { resolveTaskDir } from "./tasks.ts";
 import {
   abortRetryOf, abortSession, annotationsOf, appendAnnotation, consumeAnnotations, toStoredAnnotation,
@@ -1041,6 +1042,30 @@ app.use(async (c, next) => {
     if (taskDir === undefined) { const error = problem("task_not_found", "找不到这个 task", 404); return c.json(error.body, error.status); }
     const items = await locateSources(taskDir);
     return c.json({ items });
+  });
+
+  /**
+   * 合并一个 Task 的所有工作区（协议 §3.7：**合并只由用户触发**）。
+   *
+   * 按 `taskDir` 受贿（与 `/api/review/diff` 同口径）：面板只认 taskDir，不知道 agentId/projectId。
+   * 两个工作区属于两个仓，各合各的；一个失败不影响另一个（结果里逐源列出）。
+   * 冲突会回滚并列出冲突文件——不替用户解，也不留一个冲突中的仓。
+   */
+  app.post("/api/tasks/merge", async (c) => {
+    const body = await c.req.json().catch(() => undefined) as { taskDir?: unknown } | undefined;
+    if (body === undefined || typeof body.taskDir !== "string" || body.taskDir.trim() === "") {
+      const error = problem("invalid_request", "需要 taskDir 字段（非空字符串）", 400); return c.json(error.body, error.status);
+    }
+    const taskDir = body.taskDir.trim();
+    if (!(await stat(taskDir).catch(() => undefined))?.isDirectory()) {
+      const error = problem("task_dir_not_found", `Task 目录不存在：${basename(taskDir)}`, 404); return c.json(error.body, error.status);
+    }
+    const result = await mergeTask(taskDir);
+    log.info("tasks", "merge", "合并 Task 工作区", {
+      details: { taskDir, ok: result.ok, steps: result.steps.map((step) => ({ kind: step.kind, status: step.status })) },
+    });
+    // 失败也是 200：这是"操作跑了，结果在这里"，不是请求错误（错误形状留给 404/400）。
+    return c.json(result);
   });
 
   /**
