@@ -136,8 +136,37 @@ async function openPage(viewport) {
   }));
   await page.route(/\/review-sources$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
-    body: JSON.stringify({ items: [{ kind: "worktree", path: "/tmp/demo-worktree" }, { kind: "lifeos", path: "/tmp/demo-lifeos" }] }),
+    body: JSON.stringify({ taskDir: "/tmp/demo-lifeos", items: [{ kind: "worktree", path: "/tmp/demo-worktree" }, { kind: "lifeos", path: "/tmp/demo-lifeos" }] }),
   }));
+  await page.route(/review-candidates$/, (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ items: [
+      { taskId: "0017", title: "竞态参照（慢）", taskDir: "/tmp/demo-lifeos-0017", substantive: true },
+      { taskId: "0018", title: "竞态目标（快）", taskDir: "/tmp/demo-lifeos-0018", substantive: true },
+    ] }),
+  }));
+  /** diff mock：切 0018 的响应**延迟**（制造在飞）；切 0017 立即返回带标记的变体；其他（初始）立即返回默认。
+   *  竞态路径：选 0018（慢）→ 立刻改选 0017（快、先到）→ 0018 晚到 —— 无守卫时晚到者覆盖（撕裂），有守卫时丢弃。 */
+  await page.route(/\/api\/review\/diff$/, async (route) => {
+    const raw = route.request().postData();
+    const body = typeof raw === "string" && raw !== "" ? JSON.parse(raw) : {};
+    const variantOf = (marker) => {
+      const variant = JSON.parse(JSON.stringify(FIXTURE));
+      const lifeos = variant.items.find((item) => item.source.kind === "lifeos");
+      if (lifeos !== undefined) lifeos.source.path = marker;
+      return variant;
+    };
+    if (body.taskDir === "/tmp/demo-lifeos-0018") {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(variantOf("/tmp/demo-lifeos-0018")) });
+      return;
+    }
+    if (body.taskDir === "/tmp/demo-lifeos-0017") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(variantOf("/tmp/demo-lifeos-0017")) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(FIXTURE) });
+  });
   await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -2509,6 +2538,26 @@ async function openReview(page, options = {}) {
       g.review >= MIN_REVIEW || (await page.locator("text=放不下检视面板").count()) > 0,
       `review=${g.review}`);
     check("无论开没开，聊天都 ≥ 保底", g.chat >= MIN_CHAT, `聊天 ${g.chat}`);
+  }
+  await page.context().close();
+}
+
+// ── 切换竞态：慢响应不得覆盖新选择（Task 0018 · 用户实测“切 0018 却显示 0015/0017 的内容”）────────
+{
+  const page = await openPage({ width: 1680, height: 1000 });
+  const opened = await openReview(page);   // 初始 task 立即返回（默认 FIXTURE）
+  check("竞态用例：面板已打开", opened);
+  if (opened) {
+    await page.waitForSelector('[data-review-switcher-select] option[value="/tmp/demo-lifeos-0018"]', { timeout: 5000 }).catch(() => {});
+    await page.selectOption('[data-review-switcher-select]', '/tmp/demo-lifeos-0018');   // 0018 响应在飞（延迟 1.5s）
+    await page.waitForTimeout(300);
+    await page.selectOption('[data-review-switcher-select]', '/tmp/demo-lifeos-0017');   // 改选 0017，立即到
+    await page.waitForTimeout(600);        // 等 0017 的响应渲染
+    const switched = await page.evaluate(() => document.querySelector('[data-review-target-path="lifeos"]')?.textContent ?? "");
+    check("改选 0017：内容已是 0017", switched.includes("demo-lifeos-0017"), switched);
+    await page.waitForTimeout(2500);        // 0018 的慢响应此时到达
+    const after = await page.evaluate(() => document.querySelector('[data-review-target-path="lifeos"]')?.textContent ?? "");
+    check("切换后：慢响应不得覆盖新选择（仍显示 0017）", after.includes("demo-lifeos-0017"), after);
   }
   await page.context().close();
 }
