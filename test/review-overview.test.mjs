@@ -51,8 +51,8 @@ const BASE_OVERVIEW = {
 test("P4·1 总览文本说清三件事：检视对象在哪 / 改了多少 / 有几条等我", () => {
   const text = formatReviewOverview(BASE_OVERVIEW);
   assert.match(text, /Review state for task 0010/);
-  assert.match(text, /project worktree: .*evidence\/worktree \(exists, branch dev\/0010-review @ abc1234\)/, text);
-  assert.match(text, /task documents: .*0010-review \(exists, @ def5678\)/);
+  assert.match(text, /project code \(repo\/\): .*evidence\/worktree \(exists, branch dev\/0010-review @ abc1234\)/, text);
+  assert.match(text, /home documents \(~\/\.lifeos\): .*0010-review \(exists, @ def5678\)/);
   assert.match(text, /Changes: 3 file\(s\) \(\+41 -7\) — code 2, doc 1, other 0/);
   assert.match(text, /Comments: 3 thread\(s\) — draft 0, open 2, resolved 1/);
   assert.match(text, /Waiting \(open threads only\): for you 2, for the user 0, unassigned 1/);
@@ -92,8 +92,8 @@ test("P4·5 没有 worktree 时给出可行动的说明（不是只说「没有�
     ...BASE_OVERVIEW,
     sources: [{ kind: "worktree", path: "/x/evidence/worktree", exists: false }, { kind: "lifeos", path: "/x", exists: true }],
   });
-  assert.match(text, /worktree: .*\(missing\)/);
-  assert.match(text, /no worktree for this task yet.*evidence\/worktree/);
+  assert.match(text, /project code \(repo\/\): .*\(missing\)/);
+  assert.match(text, /no code worktree for this task yet.*repo\//);
 });
 
 test("P4·6 warnings 必须出现在文本里（聚合失败不许静默）", () => {

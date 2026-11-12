@@ -125,9 +125,12 @@ test("规范不跨项目泄漏：LifeOS 的 code specs 只进 lifeos 项目；�
 
 test("任务入口逐文件点名：lifeos 项目建 Task → task.md 列出五份 code specs + 项目规范/流程；不写不存在的路径", async () => {
   const home = await freshHome();
+  // 这个用例只管规范点名，不管工作区。把项目 path 去掉，免得建 Task 时在真实仓库里
+  // 开出一个 worktree（`installHome` 会把 `__REPO_ROOT__` 填成真仓库 → 测试污染真实仓库）。
+  await writeFile(join(home, "projects", "lifeos", "project.json"), JSON.stringify({ schemaVersion: 1, id: "lifeos", name: "lifeos" }) + "\n");
   const result = await createTask({ agentId: "lifeosagent", projectId: "lifeos" }, { title: "入口点名", category: "B" });
   assert.ok(!("code" in result));
-  const file = await readFile(join(result.task.path, "task.md"), "utf8");
+  const file = await readFile(join(result.task.docPath, "task.md"), "utf8");
   const expect = ["specs/code/frontend/code.md", "specs/code/backend/code.md", "specs/code/testing/testing.md", "specs/code/api/api.md", "specs/code/architecture/architecture.md", "specs/development-harness/development-harness.md", "specs/review/review.md", "knowledge/reference-baseline.md"];
   for (const path of expect) assert.match(file, new RegExp(path.replaceAll("/", "\\/")), `入口应点名 ${path}`);
   assert.doesNotMatch(file, /不存在|__TEMPLATE__/, "不应出现占位或幻觉路径");

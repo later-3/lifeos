@@ -103,12 +103,14 @@ async function writeMarker(worktreePath: string, marker: WorktreeMarker): Promis
 
 /** 家目录工作区：建在家目录仓上，按 Agent 可见范围裁剪。 */
 export async function createHomeWorktree(input: {
-  taskDir: string; taskId: string; agentId: string; boundProjects: string[];
+  taskDir: string; taskId: string; agentId: string; projectId: string; boundProjects: string[];
 }): Promise<WorktreeResult> {
   const home = resolveHome();
   if (!await isGitRepo(home)) return { skipped: "家目录不是 git 仓（没有 init 过），跳过家目录工作区" };
   const path = join(input.taskDir, HOME_DIR);
-  const branch = `task/${input.taskId}`;
+  // 分支名带 agent × project：Task ID 只在 Agent × Project 内唯一（协议 §3.7），
+  // 裸 `task/0004` 会让两个 Agent 的 0004 撞在同一个分支上。
+  const branch = `task/${input.agentId}/${input.projectId}/${input.taskId}`;
   const base = await baseRefOf(home);
   const archived = await archiveIfDirty(home);
   await git(home, ["worktree", "add", "--no-checkout", path, "-b", branch, base]);
@@ -132,7 +134,7 @@ export async function createProjectWorktree(input: {
 }): Promise<WorktreeResult> {
   if (!await isGitRepo(input.projectPath)) return { skipped: "项目目录不是 git 仓，跳过项目工作区" };
   const path = join(input.taskDir, REPO_DIR);
-  const branch = `dev/${input.taskId}`;
+  const branch = `dev/${input.agentId}/${input.projectId}/${input.taskId}`;
   const base = await baseRefOf(input.projectPath);
   await git(input.projectPath, ["worktree", "add", path, "-b", branch, base]);
   try {
@@ -179,8 +181,8 @@ export async function createTaskWorktrees(input: {
   const boundProjects = await boundProjectsOf(input.agentId);
 
   const home = await createHomeWorktree({
-    taskDir: input.taskDir, taskId: input.taskId, agentId: input.agentId, boundProjects,
-  }).catch((error: unknown) => { throw error; });
+    taskDir: input.taskDir, taskId: input.taskId, agentId: input.agentId, projectId: input.projectId, boundProjects,
+  });
   if (home.path !== undefined) created.home = home.path;
   if (home.skipped !== undefined) skipped.push(home.skipped);
 

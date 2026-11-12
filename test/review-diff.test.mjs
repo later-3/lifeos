@@ -73,8 +73,11 @@ test("P1·1 worktree diff：新增/修改/删除/重命名/未提交全部计入
     assert.equal(byPath["lib/renamed.ts"].oldPath, "lib/util.ts");
     assert.equal(byPath["feat.ts"].status, "added");
     assert.ok(byPath["feat.ts"].additions >= 2, "feat.ts 计入未提交修改（merge-base → 工作区）");
-    // 未跟踪文件一期不入 diff 体（已知边界，P2 在文件清单里以状态呈现）
-    assert.equal(byPath["scratch.ts"], undefined, "untracked 不进 diff（一期边界）");
+    // 未跟踪文件必须进 diff（Task 0004）：新建的 Task 文档、新建的源码都是未跟踪的，
+    // 裸 `git diff` 会让“这个 Task 什么都没改”。走临时 index + add -A + write-tree。
+    assert.ok(byPath["scratch.ts"], "untracked 必须进 diff");
+    assert.equal(byPath["scratch.ts"].status, "added");
+    assert.equal(byPath["scratch.ts"].additions, 1);
     assert.equal(worktree.truncated, false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

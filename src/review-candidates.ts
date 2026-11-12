@@ -98,18 +98,26 @@ const hasGitMarker = async (path: string): Promise<boolean> => {
   } catch { return false; }
 };
 
-/** 定位 worktree（与 `review.ts#locateSources` 同一约定：先 `evidence/worktree`，再扫一层）。 */
+/**
+ * 定位项目 worktree（与 `review.ts#locateSources` 同一约定，按优先级）：
+ * `repo/`（新形态）→ `evidence/worktree/`（历史）→ 扫一层含 `.git` 的子目录。
+ */
 async function findWorktree(taskDir: string): Promise<string | undefined> {
-  const convention = join(taskDir, "evidence", "worktree");
-  if (await isDir(convention)) return convention;
+  for (const convention of [join(taskDir, "repo"), join(taskDir, "evidence", "worktree")]) {
+    if (await isDir(convention)) return convention;
+  }
   const entries = await readdir(taskDir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    if (entry.name === "home" || entry.name === "repo" || entry.name === "evidence") continue;
     const candidate = join(taskDir, entry.name);
     if (await hasGitMarker(join(candidate, ".git"))) return candidate;
   }
   return undefined;
 }
+
+/** 家目录工作区（协议 §3.7）：有它时文档改动在它里面，主区不会再脏。 */
+const homeWorktreeOf = (taskDir: string): string => join(taskDir, "home");
 
 /**
  * worktree 有没有东西可看：**工作区脏** 或 **相对 main/master 有提交**。
@@ -191,9 +199,12 @@ export async function listCandidates(agentId: string, projectId: string): Promis
   const items = await mapLimit(tasks, CANDIDATE_CONCURRENCY, async (task): Promise<TaskCandidate> => {
     const worktree = await findWorktree(task.path);
     const changed = worktree === undefined ? false : await worktreeChanged(worktree);
+    // 文档改动：有家目录工作区就算它的脏条目（主区那份不再变），否则看历史形态的全仓 status。
+    const homeWorktree = homeWorktreeOf(task.path);
+    const homeDirty = await isDir(homeWorktree) ? (await git(homeWorktree, ["status", "--porcelain", "-uall"])).trim().split("\n").filter((line) => line !== "").length : 0;
     const docInfo = docs.get(`${agentId}/${projectId}/${task.id}`);
-    const docChangedFiles = docInfo?.count ?? 0;
-    const docOnlyDaily = docInfo?.onlyDaily === true;
+    const docChangedFiles = Math.max(docInfo?.count ?? 0, homeDirty);
+    const docOnlyDaily = (docInfo?.onlyDaily === true) && homeDirty === 0;
     /**
      * 评论：直接按 taskDir 算文件路径读（不扫目录）——实测 2 个文件 2.6ms，
      * 15 个 Task 约 20ms；比"先扫一遍 state 目录再反查 slug"更直接，也不会读错别的 Task。

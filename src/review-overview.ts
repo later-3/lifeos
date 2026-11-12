@@ -188,7 +188,7 @@ export function formatReviewOverview(overview: ReviewOverview): string {
 
   lines.push("", "Sources:");
   for (const source of overview.sources) {
-    const label = source.kind === "worktree" ? "project worktree" : "task documents";
+    const label = source.kind === "worktree" ? "project code (repo/)" : "home documents (~/.lifeos)";
     const meta = [source.branch !== undefined ? `branch ${source.branch}` : undefined, source.head !== undefined ? `@ ${source.head}` : undefined]
       .filter((part): part is string => part !== undefined)
       .join(" ");
@@ -197,7 +197,7 @@ export function formatReviewOverview(overview: ReviewOverview): string {
   }
   const missingWorktree = overview.sources.some((source) => source.kind === "worktree" && !source.exists);
   if (missingWorktree) {
-    lines.push("  note: no worktree for this task yet — Development tasks are expected to keep code under evidence/worktree.");
+    lines.push("  note: no code worktree for this task yet — it is expected at <taskDir>/repo/ (legacy tasks: evidence/worktree/).");
   }
 
   lines.push("", `Changes: ${files.total} file(s) (+${files.additions} -${files.deletions}) — code ${files.code}, doc ${files.doc}, other ${files.other}${files.truncated ? " [truncated]" : ""}`);

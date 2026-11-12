@@ -16,11 +16,13 @@
 // 2464 diff 行 / 148KB，故 200 文件 / 20k 行 / 1MB 单文件给足余量。超出截断并标记——
 // 失败可见，不静默（Discourse diff_error 同思路）。
 import { execFile } from "node:child_process";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { resolveHome } from "./home.ts";
 import { parseUnifiedPatchToHunks, type DiffHunk } from "./review-patch.ts";
+import { HOME_DIR, REPO_DIR } from "./task-worktree.ts";
 
 const run = promisify(execFile);
 
@@ -119,20 +121,29 @@ async function gitMarkerExists(path: string): Promise<boolean> {
 /**
  * 定位一个 Task 的检视源。
  *
- * worktree 的约定路径 = `<Task 目录>/evidence/worktree`（协议 §3.7/§12，
- * dev-supervisor-guard.mjs:60 的正则同款）。不在约定位置时**扫 Task 目录下一层**含 `.git`
- * 的子目录兜底（实测覆盖 reviewer 0003 的 `tasks/NNNN/worktree`）——多个时取第一个并按
- * `via:"scan"` 标注；一个 Task 多个项目 worktree 是 D15e 的形态，一期每源独立展示。
+ * 项目 worktree 的约定路径（协议 §3.7，按优先级）：
+ *   1. `<Task 目录>/repo/`（新形态，与 `home/` 对称）
+ *   2. `<Task 目录>/evidence/worktree/`（2026-11 之前的历史位置）
+ *   3. 扫 Task 目录下一层含 `.git` 的子目录（历史散落形态，如 reviewer 0003 的 `worktree/`）
+ *   都找不到才算“还没有工作区”（`exists:false`，引导用户去建）。
+ *
+ * 文档源（kind `lifeos`）：
+ *   - 有 `<Task 目录>/home/` → 它就是源（家目录仓的 worktree，整份家目录按 Agent 裁剪）；
+ *   - 没有 → 退回 Task 目录本身（历史形态，diff 走 `computeLifeosDiff`）。
  */
 export async function locateSources(taskDir: string): Promise<ReviewSource[]> {
   const sources: ReviewSource[] = [];
 
-  // ① 项目 worktree：约定 → 扫描兜底
-  const convention = join(taskDir, "evidence", "worktree");
+  // ① 项目 worktree：repo/ → evidence/worktree → 扫一层
+  const convention = join(taskDir, REPO_DIR);
+  const legacy = join(taskDir, "evidence", "worktree");
   let worktreePath: string | undefined;
   let via: ReviewSource["via"];
   if (await dirExists(convention)) {
     worktreePath = convention;
+    via = "convention";
+  } else if (await dirExists(legacy)) {
+    worktreePath = legacy;
     via = "convention";
   } else {
     try {
@@ -162,7 +173,20 @@ export async function locateSources(taskDir: string): Promise<ReviewSource[]> {
     sources.push({ kind: "worktree", path: convention, exists: false });
   }
 
-  // ② Task 自身文档（家目录仓）
+  // ② Task 自身文档（家目录仓）：有 home/ 工作区就用它，否则退回 Task 目录本身
+  const homeWorktree = join(taskDir, HOME_DIR);
+  if (await dirExists(homeWorktree)) {
+    const source: ReviewSource = { kind: "lifeos", path: homeWorktree, exists: true, via: "direct" };
+    try {
+      const branch = (await git(homeWorktree, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+      const head = (await git(homeWorktree, ["rev-parse", "--short", "HEAD"])).trim();
+      if (branch !== "") source.branch = branch;
+      if (head !== "") source.head = head;
+    } catch { /* 存在但读不了：diff 阶段退化为空 */ }
+    sources.push(source);
+    return sources;
+  }
+
   const lifeos: ReviewSource = { kind: "lifeos", path: taskDir, exists: true, via: "direct" };
   const homeRepo = resolveHome();
   try {
@@ -394,11 +418,16 @@ function relativeTo(root: string, dir: string): string {
 }
 
 /**
- * 项目 worktree 的 diff：merge-base(main, HEAD) → 工作区（含未提交）。
+ * 项目 worktree 的 diff：merge-base(main, HEAD) → 工作区（**含未跟踪文件**）。
  *
- * 用 `git diff <merge-base>`（一个点）：它天然比对"工作区 vs 该提交"，未提交改动自动包含。
- * merge-base 取 main；没有 main（独立仓/换名）时取当前分支的 fork 点不可得 → 退化为 HEAD
- * 的父提交不可靠 → 直接用 HEAD（只显示未提交改动）并标记 base 分支，避免误报巨大 diff。
+ * 两个关键点：
+ * 1. 用 `git diff <merge-base>`（一个点）而不是三点：它天然比对“工作区 vs 分叉点”，未提交改动自动包含。
+ * 2. **未跟踪文件必须纳入**：新建的 Task 文档、新建的源码文件都是未跟踪的，裸 `git diff` 会
+ *    根本看不到它们（实测：新 Task 的文档侧全是未跟踪 → 检视一片空白）。
+ *    做法：临时 `GIT_INDEX_FILE` 里 `read-tree <基线树>` + `add -A` + `write-tree`，
+ *    再把两棵树 diff——不动真实 index（同 `computeLifeosDiff` 的手法）。
+ *
+ * merge-base 取 main；没有 main（独立仓/换名）时退化为 HEAD（只看未提交改动），避免误报巨大 diff。
  */
 async function computeWorktreeDiff(source: ReviewSource): Promise<ReviewSourceDiff> {
   const baseBranch = await baseBranchOf(source.path);
@@ -410,16 +439,42 @@ async function computeWorktreeDiff(source: ReviewSource): Promise<ReviewSourceDi
   } catch { /* 没有 main 或分叉历史：baseRef 保持 undefined */ }
 
   // baseRef 缺失（无 main/master）：退化为只看未提交改动（`git diff HEAD` 仍含已提交，
-  // 但那是分支自己的提交——比"整段历史"保守）；source.branch 的存在让前端可标注
-  // "基线：HEAD（找不到 main）"。02-design §6 风险 1 的同款"基线可见化"。
+  // 但那是分支自己的提交——比“整段历史”保守）；source.branch 的存在让前端可标注
+  // “基线：HEAD（找不到 main）”。02-design §6 风险 1 的同款“基线可见化”。
   const range = baseRef ?? "HEAD";
   let patch: string;
   try {
-    patch = await git(source.path, ["diff", "--no-color", "--no-ext-diff", "--unified=3", range]);
+    patch = await diffIncludingUntracked(source.path, range);
   } catch (error) {
     throw gitShortError(error);
   }
   return { source, files: filesFromPatch(patch), truncated: false };
+}
+
+/** 基线引用 → 一棵树（基线是 commit 就取它的根树；是树就原样）。取不到就用空树。 */
+async function treeOfRef(repo: string, ref: string): Promise<string> {
+  const asTree = (await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]).catch(() => "")).trim();
+  if (asTree !== "") return asTree;
+  const peeled = (await git(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}^{tree}`]).catch(() => "")).trim();
+  return peeled !== "" ? peeled : EMPTY_TREE;
+}
+
+/**
+ * 含未跟踪文件的 diff：临时 index 里把工作区快照成一棵树，再与基线树对比。
+ * `-- .` 从仓根装（不跟 .gitignore 讨价——被忽略的本来就不该进检视）。
+ */
+async function diffIncludingUntracked(repo: string, range: string): Promise<string> {
+  const baseTree = await treeOfRef(repo, range);
+  const tmpIndex = join(tmpdir(), `lifeos-review-${process.pid}-${Date.now()}.idx`);
+  const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+  try {
+    await run("git", ["-C", repo, "read-tree", baseTree], { env, timeout: 30_000, maxBuffer: 1024 * 1024 });
+    await run("git", ["-C", repo, "add", "-A", "--", "."], { env, timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
+    const newTree = (await run("git", ["-C", repo, "write-tree"], { env, timeout: 60_000, maxBuffer: 1024 * 1024 })).stdout.trim();
+    return await git(repo, ["diff", "--no-color", "--no-ext-diff", "--unified=3", baseTree, newTree]);
+  } finally {
+    await rm(tmpIndex, { force: true }).catch(() => undefined);
+  }
 }
 
 /** 未跟踪文件清单（-z 输出；目录条目以 / 结尾，只留文件）。P2 的文件清单用。 */
@@ -574,7 +629,19 @@ export async function computeReviewDiff(taskDir: string): Promise<{ items: Revie
         }
       }
     } else {
-      items.push(await computeLifeosDiff(taskDir));
+      // 文档源：有 home/ 工作区就走与代码同一套算法（含未跟踪文件），否则退回历史形态
+      const homeWorktree = join(taskDir, HOME_DIR);
+      if (await dirExists(homeWorktree)) {
+        try {
+          items.push(await computeWorktreeDiff({ ...source, path: homeWorktree }));
+        } catch (error) {
+          const e = error as ReviewError;
+          console.error(`[review] home worktree diff 失败 (${homeWorktree}):`, e?.message ?? String(error));
+          items.push({ source, files: [], truncated: false, degraded: "no_vcs" });
+        }
+      } else {
+        items.push(await computeLifeosDiff(taskDir));
+      }
     }
   }
   return { items };

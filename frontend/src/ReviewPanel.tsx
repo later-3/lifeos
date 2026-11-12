@@ -772,7 +772,7 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
   );
 }
 
-const SOURCE_LABEL: Record<ReviewSourceKind, string> = { worktree: "项目 worktree", lifeos: "Task 文档（~/.lifeos）" };
+const SOURCE_LABEL: Record<ReviewSourceKind, string> = { worktree: "项目代码（repo/）", lifeos: "家目录文档（~/.lifeos）" };
 
 /**
  * 一段隐藏区域的展开状态（S1·G1b）。
@@ -903,7 +903,7 @@ function shortenPath(path: string): string {
 function copyTargetText(data: ReviewData | null, taskDir: string): string {
   const lines = [`检视对象：${taskDir}`];
   for (const group of data?.items ?? []) {
-    const label = group.source.kind === "worktree" ? "worktree" : "Task 文档";
+    const label = group.source.kind === "worktree" ? "项目代码" : "家目录文档";
     const meta = [
       group.source.branch !== undefined ? `分支 ${group.source.branch}` : undefined,
       group.source.head !== undefined ? `@ ${group.source.head}` : undefined,
@@ -1808,7 +1808,7 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
       )}
       {group.source.kind === "worktree" && !group.source.exists && (
         <div className="rounded-panel bg-surface px-3 py-2 text-micro text-ink-500 ring-1 ring-line">
-          这个 Task 还没有 worktree（约定位置 evidence/worktree）。开发类 Task 应先建 worktree 再改代码。
+          这个 Task 还没有代码工作区（约定位置 repo/；历史 Task 在 evidence/worktree）。建 Task 时应自动建出。
         </div>
       )}
       <div className="flex flex-col gap-1.5">

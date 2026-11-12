@@ -130,7 +130,7 @@
 - **必须** Task 的任何文档与代码改动都发生在工作区里（`daily` 也不例外）；主区保持干净（`git status` 为空）。
 - **必须** 建工作区前先把主区存档：`git worktree add` 只从 commit 检出，主区里没提交的文档在工作区里就是不存在。这一步由建 Task 的动作自动完成（脏就本地提交一次，不推送）。
 - **可以** 家目录还不是 git 仓时（例如尚未 `git init`），不建工作区，文档写回主区——这是兼容路径，不是默认形态。
-- **必须** 工作区在 Task 创建时**自动建**，不是“记得就建”；各自一条分支从 `main` 起：家目录 `task/<NNNN>-<slug>`，项目仓 `dev/<NNNN>-<slug>`。
+- **必须** 工作区在 Task 创建时**自动建**，不是“记得就建”；各自一条分支从 `main` 起：家目录 `task/<agent>/<project>/<NNNN>`，项目仓 `dev/<agent>/<project>/<NNNN>`。分支名**必须带 agent 与 project**——Task ID 只在 Agent × Project 内唯一（§3.7），裸 `task/0004` 会让两个 Agent 的 0004 撞在同一条分支上。
 - **必须** 分支按 **Task** 分，不按 Agent 或 Agent × Project 分 —— 同一 Agent 的两个 Task 共用分支会让改动混在一起，检视失去粒度。
 - **必须** 家目录工作区按 Agent 的**可见范围**裁剪（§4.2 的层）：自己的（`agents/<自己>/`）全量 + 共享 workspace + **绑定的**共享 project + `interaction-harness/` + `users/`；其他 Agent 与未绑定 project 的路径**不在里面**。
 - **必须** 合并只由用户触发；Agent 不自动合并、不自动删工作区（冲突停下来交给用户）。
