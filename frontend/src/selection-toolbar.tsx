@@ -21,7 +21,6 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { layerStyle } from "./design/surface";
 import { COPY_EDGE_MARGIN, COPY_GAP, type RectLike } from "./copy-on-select";
-import { quotePreviewOf, type SelectionQuoteSpeaker } from "./selection-quote";
 
 /** 功能条定位（视口坐标，fixed）。下方优先，放不下翻上方，最后夹进视口。 */
 export function toolbarPosition(
@@ -76,7 +75,6 @@ export function SelectionToolbar({ state, onClose, onCopy, onAnnotate, onQuote }
     setPos(p);
   }, [state.anchor]);
 
-  const quote = quotePreviewOf(state.text, state.speaker satisfies SelectionQuoteSpeaker);
   const buttons = state.buttons;
 
   return createPortal(
@@ -109,10 +107,9 @@ export function SelectionToolbar({ state, onClose, onCopy, onAnnotate, onQuote }
         </button>
       )}
       {buttons.quote && (
-        <button type="button" onClick={onQuote} title={quote}
-          aria-label="引用到输入框"
-          className="flex h-7 max-w-56 items-center gap-1 rounded-control px-2 text-meta hover:bg-hover">
-          <span className="truncate">引用：{quote}</span>
+        <button type="button" onClick={onQuote} aria-label="引用到输入框"
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta hover:bg-hover">
+          引用
         </button>
       )}
     </div>,

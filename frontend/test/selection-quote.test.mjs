@@ -3,7 +3,7 @@
 // 引号内保持原样（含多行），统一后接换行 + 箭头（用户接话位置）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { quoteDraftOf, quotePreviewOf } from "../src/selection-quote.ts";
+import { quoteDraftOf } from "../src/selection-quote.ts";
 
 test("assistant 块的选区 → Agent 说 + 箭头", () => {
   assert.equal(quoteDraftOf("这一段回复", "assistant"), "Agent 说：“这一段回复”\n→ ");
@@ -24,10 +24,4 @@ test("多行选区：引号内保持原样，箭头在最后一行之后", () =>
 test("首尾空白 trim；全空白选区 → 空串（不预填垃圾）", () => {
   assert.equal(quoteDraftOf("  两边空格  ", "assistant"), "Agent 说：“两边空格”\n→ ");
   assert.equal(quoteDraftOf("   \n\t  ", "user"), "");
-});
-
-test("按钮预览：不含箭头与换行", () => {
-  assert.equal(quotePreviewOf("一段话", "assistant"), "Agent 说：“一段话”");
-  assert.equal(quotePreviewOf("第一行\n第二行", "user"), "我说：“第一行\n第二行”");
-  assert.equal(quotePreviewOf("   ", undefined), "");
 });
