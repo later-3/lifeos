@@ -265,3 +265,21 @@ test("S4b·22 toCommentInput 透传 awaiting / canClose（否则 POST 带了也�
   assert.equal(bad.awaiting, undefined, "非法 awaiting 丢掉（不写脏值）");
   assert.equal(bad.canClose, undefined, "非法 canClose 丢掉（落盘时用默认）");
 });
+
+
+test("isCountable（0018 孤儿口径）：空草稿不算、失锚不算、正常算", async () => {
+  const { isCountable } = await import("../src/review-comments.ts");
+  const available = new Set(["worktree\u0000frontend/src/demo.ts"]);
+  const mk = (over) => ({
+    id: "t1", taskId: "t", author: { kind: "user", id: "xu" },
+    anchor: { source: "worktree", path: "frontend/src/demo.ts", side: "new", start: 2, end: 2, snapshot: "s" },
+    body: "意见正文", state: "open", ...over,
+  });
+  assert.equal(isCountable(mk({}), available), true, "正常 open 评论算");
+  assert.equal(isCountable(mk({ state: "draft", body: "  " }), available), false, "空正文草稿不算");
+  assert.equal(isCountable(mk({ state: "draft", body: "写了" }), available), true, "有正文的草稿算");
+  const orphan = mk({});
+  orphan.anchor.path = "src/gone.ts";
+  assert.equal(isCountable(orphan, available), false, "锚不在 diff 的孤儿不算");
+  assert.equal(isCountable(mk({}), new Set()), false, "空 diff（全合并后）= 全部孤儿");
+});

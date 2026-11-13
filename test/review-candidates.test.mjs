@@ -195,6 +195,20 @@ test("D29·2 有评论：pendingForUser 复用 pendingFor 口径（未关闭 且
    */
   git(HOME, ["add", "--", dir]);
   git(HOME, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "add 0006", "--allow-empty"]);
+  // 锚必须真的在当前 diff 里（0018 口径）：worktree 里 a.ts 有 ahead 提交（工作区干净），
+  // diff = main..HEAD 含 a.ts → 锚 (worktree, a.ts) 有效。没有 worktree 的评论 = 孤儿，不计。
+  const repoDir = join(dir, "repo");
+  mkdirSync(repoDir, { recursive: true });
+  git(repoDir, ["init", "-q", "-b", "main"]);
+  writeFileSync(join(repoDir, "a.ts"), "line1\n");
+  git(repoDir, ["add", "a.ts"]);
+  git(repoDir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "v1"]);
+  // 分支形态（与真实 worktree 同构）：main 停在 v1，提交走 dev 分支——
+  // 否则 main 跟着 HEAD 走，merge-base = HEAD，diff 恒空（实测）。
+  git(repoDir, ["checkout", "-q", "-b", "dev"]);
+  writeFileSync(join(repoDir, "a.ts"), "line1\nline2\n");
+  git(repoDir, ["add", "a.ts"]);
+  git(repoDir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "v2"]);
   const input = (start) => ({
     taskId: "0006", author: { kind: "user", id: "u" },
     anchor: { source: "worktree", path: "a.ts", side: "new", start, end: start },
@@ -217,9 +231,15 @@ test("D29·2 有评论：pendingForUser 复用 pendingFor 口径（未关闭 且
   assert.equal(target.pendingForUser, 2, `实际 ${target.pendingForUser}`);
 });
 
-test("D29·3 评论不影响 substantive（评论不是「改动」，不该点亮改动徽标）", async () => {
+test("D29·3 评论不影响 substantive + 孤儿口径（0018）：无 worktree 的评论锚 = 孤儿不计", async () => {
   const { items } = await listCandidates(AGENT, PROJECT);
   const target = items.find((item) => item.taskId === "0006");
+  // 0006 的评论锚在 worktree a.ts 上（D29·2 的夹具给了它 worktree+提交 → diff 含 a.ts → 锚有效）
   assert.equal(target.pendingForUser, 2);
-  assert.equal(target.substantive, false, "只有评论、没有代码/文档改动 → 不算 substantive");
+  assert.equal(target.substantive, true, "worktree 有 ahead 提交（锚的载体）→ substantive 按 D31 判据为 true");
+  // 孤儿口径的反面验证：另一个 task 的评论锚在不存在 worktree 的文件上 → 计数 0（0018 用户实测的场景）
+  const noWt = items.find((item) => item.taskId === "0005" || item.taskId === "0007");
+  if (noWt !== undefined && noWt.hasWorktree === false) {
+    assert.equal(noWt.commentsTotal, 0, `无 worktree 的 task 评论应为孤儿不计，实际 ${JSON.stringify(noWt)}`);
+  }
 });

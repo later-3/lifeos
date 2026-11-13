@@ -22,7 +22,8 @@
 import { readdir } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { listTasks, type TaskSummary } from "./tasks.ts";
-import { pendingFor, readComments } from "./review-comments.ts";
+import { isCountable, pendingFor, readComments } from "./review-comments.ts";
+import { computeReviewDiff } from "./review.ts";
 import { resolveHome } from "./home.ts";
 import { stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -210,6 +211,25 @@ export async function listCandidates(agentId: string, projectId: string): Promis
      * 15 个 Task 约 20ms；比"先扫一遍 state 目录再反查 slug"更直接，也不会读错别的 Task。
      */
     const comments = await readComments(task.path);
+    /**
+     * 计数口径（0018 用户实测两次）：**只数面板上能看到卡片的评论**——
+     * ① 空正文的草稿（点"＋"没写就丢下）不算；
+     * ② 锚 (source,path) 不在当前 diff 文件清单的 = 失锚孤儿（评论绑检视时刻的 diff，
+     *    合并/改动后文件不在了，跳转也看不到卡）不算。
+     * 只有"有评论的 Task"才付这次 diff 的成本（0018：15 个 Task 里少数）。
+     */
+    let available: Set<string> | undefined;
+    if (comments.length > 0) {
+      available = new Set();
+      try {
+        const diff = await computeReviewDiff(task.path);
+        for (const group of diff.items ?? []) {
+          const kind = group.source.kind;
+          for (const file of group.files) available.add(`${kind}\u0000${file.path}`);
+        }
+      } catch { /* diff 算不出来：available 保持 undefined = 旧口径（评论全算），错误可见于日志 */ }
+    }
+    const countable = available !== undefined ? comments.filter((c) => isCountable(c, available as Set<string>)) : comments;
     return {
       taskId: task.id,
       dirName: task.dirName,
@@ -222,9 +242,9 @@ export async function listCandidates(agentId: string, projectId: string): Promis
       docChangedFiles,
       docOnlyDaily,
       substantive: changed || (docChangedFiles > 0 && !docOnlyDaily),
-      commentsTotal: comments.length,
-      openComments: comments.filter((comment) => comment.state !== "resolved").length,
-      pendingForUser: pendingFor(comments, "user").length,
+      commentsTotal: countable.length,
+      openComments: countable.filter((comment) => comment.state !== "resolved").length,
+      pendingForUser: pendingFor(countable, "user", available).length,
     };
   });
 

@@ -2404,10 +2404,22 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
     [drafts],
   );
 
-  /** 未关闭的评论条数（G2 的"复制全部 N"用它；关闭的不算） */
+  /** 未关闭的评论条数（G2 的"复制全部 N"用它；关闭的不算）。
+   * 口径与后端 candidates 一致（0018 用户实测）：**只数面板上能看到卡片的**——
+   * ① 空正文的草稿（点"＋"没写就丢下）不算；② 锚 (source,filePath) 不在当前 diff
+   * 文件清单的 = 失锚孤儿（跳转也看不到卡）不算。 */
+  const availablePaths = useMemo(() => {
+    const set = new Set<string>();
+    for (const group of data?.items ?? []) {
+      for (const file of group.files) set.add(`${group.source.kind}\u0000${file.path}`);
+    }
+    return set;
+  }, [data]);
   const openComments = useMemo(
-    () => drafts.filter((draft) => (draft.state ?? "draft") !== "resolved" && draft.note.trim() !== "").length,
-    [drafts],
+    () => drafts.filter((draft) => (draft.state ?? "draft") !== "resolved"
+      && draft.note.trim() !== ""
+      && availablePaths.has(`${draft.source}\u0000${draft.filePath}`)).length,
+    [drafts, availablePaths],
   );
 
   /**
