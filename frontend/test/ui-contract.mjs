@@ -1842,6 +1842,142 @@ const urlThreeKeys = await page.evaluate(async () => {
 check("URL 三键：切项目更新 ?project=（无会话时也要）", urlThreeKeys.skipped === true || urlThreeKeys.ok === true,
   urlThreeKeys.skipped === true ? "只有 1 个项目，跳过" : String(urlThreeKeys.detail ?? ""));
 
+// —— Task 0010：分组头右侧成列 + 项目概览卡 ——
+// testing 2.15：用真实选择器断言几何；先验证命中数（0 个命中 = 没测）。
+const headerColumns = await page.evaluate(() => {
+  const headers = [...document.querySelectorAll('[data-testid="group-header"]')];
+  if (headers.length === 0) return null;
+  const pills = headers.map((header) => header.querySelector('[data-shot-mask="group-count"]'));
+  if (pills.some((pill) => pill === null)) return { missing: "group-count" };
+  const pluses = headers.map((header) => [...header.querySelectorAll("button")]
+    .find((button) => (button.getAttribute("aria-label") ?? "").includes("新建会话")));
+  if (pluses.some((plus) => plus === undefined)) return { missing: "新建会话" };
+  // 概览钮（Task 0010 二轮拍板）：ⓘ 与计数同格互换；静止时透明但命中盒已在（几何可测，testing 2.15）。
+  const overviewButtons = headers.map((header) => [...header.querySelectorAll("button")]
+    .find((button) => (button.getAttribute("aria-label") ?? "").endsWith("项目概览")));
+  if (overviewButtons.some((button) => button === undefined)) return { missing: "项目概览钮" };
+  const removeButtons = headers.flatMap((header) => [...header.querySelectorAll("button")]
+    .filter((button) => (button.getAttribute("aria-label") ?? "").includes("移除项目")));
+  const pillRights = pills.map((pill) => Math.round(pill.getBoundingClientRect().right));
+  const plusRights = pluses.map((plus) => Math.round(plus.getBoundingClientRect().right));
+  const overviewHits = overviewButtons.map((button) => {
+    const box = button.getBoundingClientRect();
+    return Math.round(box.width) >= 28 && Math.round(box.height) >= 28 && button.offsetParent !== null
+      && getComputedStyle(button).opacity === "1";   // 常显（三轮拍板）：不依赖 hover，静止时就是不透明
+  });
+  return {
+    headers: headers.length,
+    pillRightSpread: Math.max(...pillRights) - Math.min(...pillRights),
+    plusRightSpread: Math.max(...plusRights) - Math.min(...plusRights),
+    pillBeforePlus: pills.every((pill, index) => pill.getBoundingClientRect().right <= pluses[index].getBoundingClientRect().left),
+    allHaveOverviewButton: overviewHits.every((hit) => hit === true),
+    removeButtonCount: removeButtons.length,
+    badgeBeforePill: headers.every((header) => {
+      const badges = header.querySelectorAll("[data-state-count]");
+      const pill = header.querySelector('[data-shot-mask="group-count"]');
+      if (badges.length === 0 || pill === null) return true;
+      const badge = badges[badges.length - 1];
+      return badge.getBoundingClientRect().right <= pill.getBoundingClientRect().left;
+    }),
+  };
+});
+if (headerColumns === null) {
+  check("[0010] 分组头成列（无分组头，跳过）", true, "");
+} else if (headerColumns.missing !== undefined) {
+  check("[0010] 分组头成列", false, `选择器 0 命中：${headerColumns.missing}（0 个 = 没测）`);
+} else {
+  check("[0010] 分组头计数药丸右缘成列（±2px）", headerColumns.pillRightSpread <= 2, `spread=${headerColumns.pillRightSpread}px（${headerColumns.headers} 行）`);
+  check("[0010] 分组头＋按钮右缘成列（±2px）", headerColumns.plusRightSpread <= 2, `spread=${headerColumns.plusRightSpread}px`);
+  check("[0010] 计数在＋左侧（先数据后动作，不再是算式）", headerColumns.pillBeforePlus === true, "");
+  check("[0010] 状态徽标在计数左侧（挂名字旁）", headerColumns.badgeBeforePill === true, "");
+  check("[0010] 每行都有概览钮（ⓘ 常显，命中盒 ≥28，不依赖 hover）", headerColumns.allHaveOverviewButton === true, "");
+  check("[0010] 行内没有移除 ✕（已搬进概览卡）", headerColumns.removeButtonCount === 0, `${headerColumns.removeButtonCount} 个`);
+}
+
+// 概览卡：hover 行让 ⓘ 显形（同格互换），点它打开（真实接口）；有统计格与路径/默认工作区；Esc 关闭。
+// 信息与删除的分级断言需要**有移除钮的卡**：选“有外部路径的项目”（API 精确定位，不靠排序猜）。
+const externalProjectName = await page.evaluate(async () => {
+  const agent = new URL(location.href).searchParams.get("agent") ?? "lifeosagent";
+  const list = await (await fetch(`/api/agents/${agent}/projects`)).json();
+  return (list.items ?? []).find((item) => typeof item.path === "string" && item.path !== "")?.name ?? null;
+});
+const openOverviewCard = async (groupName) => {
+  const locator = groupName === undefined
+    ? page.locator('[data-testid="group-header"]').first()
+    : page.locator(`[data-testid="group-header"][data-group-name="${groupName}"]`);
+  const info = locator.locator('button[aria-label$="项目概览"]').first();
+  if (await info.count() === 0) return false;
+  await info.click();   // ⓘ 常显（三轮拍板）：无需 hover 直接点
+  return true;
+};
+const overviewOpen = await openOverviewCard();
+if (overviewOpen === false) {
+  check("[0010] 概览卡打开", false, "找不到概览钮（0 个 = 没测）");
+} else {
+  await page.waitForSelector('[data-testid="project-overview"]', { timeout: 3000 });
+  const card = await page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="project-overview"]');
+    if (panel === null) return { statCount: 0, hasBody: false };
+    const stats = panel.querySelectorAll('[data-testid="overview-stats"] > div');
+    return {
+      statCount: stats.length,
+      hasBody: /默认工作区|[\\/]/u.test(panel.textContent ?? ""),
+      hasError: panel.querySelector('[data-testid="overview-error"]') !== null,
+    };
+  });
+  check("[0010] 概览卡打开：6 格统计 + 路径/默认工作区", card.statCount === 6 && card.hasBody && !card.hasError,
+    `stats=${card.statCount} body=${card.hasBody}`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(150);
+  const closed = await page.evaluate(() => document.querySelector('[data-testid="project-overview"]') === null);
+  check("[0010] Esc 关闭概览卡", closed, "");
+}
+// 信息与删除分级（用户 2026-11-13 拍板）：细线分隔 + 移除钮 ghost-danger 无实底。
+if (externalProjectName === null) {
+  check("[0010] 信息与删除分级", true, "无外部项目，跳过");
+} else {
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(150);
+  const opened = await openOverviewCard(externalProjectName);
+  const graded = opened
+    ? await page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="project-overview"]');
+      if (panel === null) return { divider: false, bg: "missing" };
+      const removeButton = [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("移除项目"));
+      if (removeButton === undefined) return { divider: false, bg: "missing" };
+      return {
+        divider: panel.querySelector(".border-t") !== null,
+        bg: getComputedStyle(removeButton).backgroundColor,
+      };
+    })
+    : { divider: false, bg: "missing" };
+  check("[0010] 信息与删除分级：细线分隔 + 移除钮无实底（ghost-danger）",
+    opened && graded.divider && (graded.bg === "" || graded.bg === "rgba(0, 0, 0, 0)"),
+    `opened=${opened} divider=${graded.divider} bg=${graded.bg}`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(150);
+}
+
+// 失败态（testing 2.3）：拦截 overview 请求 → 卡打开后显示错误 + 重试（testing 2.21：按需接口打桩）。
+await page.route("**/overview", (route) => route.abort());
+const overviewRetry = await openOverviewCard();
+if (overviewRetry === true) {
+  await page.waitForSelector('[data-testid="overview-error"]', { timeout: 3000 });
+  const errorCard = await page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="project-overview"]');
+    const error = panel?.querySelector('[data-testid="overview-error"]');
+    return {
+      open: panel !== null,
+      hasRetry: error?.querySelector("button") !== null,
+      text: (error?.textContent ?? "").trim(),
+    };
+  });
+  check("[0010] 概览卡失败态：错误文案 + 重试按钮", errorCard.open && errorCard.hasRetry && errorCard.text !== "", errorCard.text);
+}
+await page.unroute("**/overview");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+
 // 空项目 / 新 Agent：输入框可用，首条消息 = 建会话 + 发送（参照 Pi Web 的 new session draft）
 const freshPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
 await freshPage.clock.install({ time: FROZEN_TIME });

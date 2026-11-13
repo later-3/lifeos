@@ -79,6 +79,7 @@
 |---|---|---|
 | 打开目录（添加项目） | `POST /api/agents/:id/projects {path}` | 校验目录 → 共享层按 path 幂等取 id（或新建 `projects/<id>/project.json`）→ 建 Agent × 项目骨架与默认 Task（0700）→ 从 `hiddenProjectIds` 摘除 |
 | 列表 | `GET /api/agents/:id/projects` | 扫描 Agent 绑定目录 − `hiddenProjectIds`；显示名 = `basename(path)`；`workspace` 在前 |
+| 项目概览（Task 0010） | `GET /api/agents/:id/projects/:pid/overview` | `{path\|null, isDefault, tasks:{total,running}, assets:{knowledge,cases,tools,specs}}`；tasks 与 `/tasks` 同一实现（`listTasks`）；assets 扫 `~/.lifeos/projects/<pid>/`（knowledge 递归 .md 除 AGENTS.md、cases 顶层 .md、tools/specs 顶层子目录，目录缺失=0）；**不含 sessions**——对话数用分组头行上同一份（api 2.10）；404 agent/project 与相邻路由同族 |
 | 从列表移除（可逆） | `DELETE /api/agents/:id/projects/:pid` | 只写 `hiddenProjectIds`；**全局注册表、绑定目录、会话、记录全部保留**；再次打开同 path 即重新出现；`workspace` 不可移除（400） |
 
 - **目录即项目**：绑定目录存在即可用；外部项目的 cwd = 共享层 `project.json` 的 `path`。

@@ -8,13 +8,14 @@
 // - manifest 只落家目录，**不写进用户项目目录**（保持用户仓库干净）。
 // - 共享 workspace 是顶层特殊项目 `projects/workspace/`；Agent 私有同名 `agents/<id>/projects/workspace/`。
 import { randomBytes } from "node:crypto";
+import type { Dirent } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { sanitizeSegment } from "./segments.ts";
 import { ensureGlobalProject, readGlobalProject, type GlobalProject } from "./project-registry.ts";
 import { ensureAgentProjectLayer } from "./project-skeleton.ts";
-import { ensureDefaultTask, type TaskSummary } from "./tasks.ts";
+import { ensureDefaultTask, listTasks, type TaskSummary } from "./tasks.ts";
 import { readAgent, writeAgent } from "./agents.ts";
 import { broadcast } from "./events.ts";
 
@@ -132,6 +133,62 @@ export async function listAgentProjects(agentId: string): Promise<ProjectItem[]>
   }
   items.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
   return items;
+}
+
+/** 项目概览（Task 0010）：分组头计数药丸点开的概览卡数据。 */
+export type ProjectOverview = {
+  /** 项目外部路径；默认项目（workspace）无 path → null。path 本就在 /projects 列表返回，无新增暴露。 */
+  path: string | null;
+  isDefault: boolean;
+  /** 该 Agent × 项目下的 Task（协议 §3.7：Task 归属 Agent×Project）；与 /tasks 同一实现（api 2.7）。 */
+  tasks: { total: number; running: number };
+  /** 协议资产计数（02-design §4）：共享项目层各目录的数量；目录缺失 = 0（可选目录，不是异常）。 */
+  assets: { knowledge: number; cases: number; tools: number; specs: number };
+};
+
+/**
+ * 共享项目层的资产计数。
+ *
+ * 口径（02-design §4）：knowledge = 递归 .md（排除 AGENTS.md 说明文件）；cases = 顶层 .md；
+ * tools / specs = 顶层子目录（协议：一个工具/主题一个目录）。目录缺失 = 0 —— 这些目录是
+ * "用到才建"的（协议 §10），没有不是错误。
+ */
+async function countSharedAssets(pid: string): Promise<ProjectOverview["assets"]> {
+  const base = join(resolveHome(), "projects", pid);
+  const md = (entry: Dirent) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "AGENTS.md";
+  const [knowledge, cases, tools, specs] = await Promise.all([
+    readdir(join(base, "knowledge"), { recursive: true, withFileTypes: true }).catch(() => [] as Dirent[])
+      .then((entries) => entries.filter(md).length),
+    readdir(join(base, "cases"), { withFileTypes: true }).catch(() => [] as Dirent[])
+      .then((entries) => entries.filter(md).length),
+    readdir(join(base, "tools"), { withFileTypes: true }).catch(() => [] as Dirent[])
+      .then((entries) => entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).length),
+    readdir(join(base, "specs"), { withFileTypes: true }).catch(() => [] as Dirent[])
+      .then((entries) => entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).length),
+  ]);
+  return { knowledge, cases, tools, specs };
+}
+
+/**
+ * 组装项目概览（Task 0010）。
+ *
+ * 为什么不含 sessions：对话数在分组头行上已有（groups 数据），后端重算会出现"行与卡不一致"
+ * 的两个来源（api 2.10）——卡上的对话数直接用行同一份。
+ * tasks 与 GET /tasks 调同一个 `listTasks`（api 2.7：一个事实一处实现）。
+ */
+export async function projectOverview(
+  agentId: string,
+  project: { id: string; path?: string },
+  isDefault: boolean,
+): Promise<ProjectOverview> {
+  const [tasks, assets] = await Promise.all([
+    listTasks({ agentId, projectId: project.id }).then((items) => ({
+      total: items.length,
+      running: items.filter((task) => task.status === "进行中").length,
+    })),
+    countSharedAssets(project.id),
+  ]);
+  return { path: project.path ?? null, isDefault, tasks, assets };
 }
 
 /** 注册并绑定：同 path 幂等复用；之前"从列表移除"过的话摘掉 hidden 标记（重新出现）。 */

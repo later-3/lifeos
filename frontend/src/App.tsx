@@ -70,6 +70,7 @@ import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 import { useCopyOnSelect } from "./use-copy-on-select";
 import { CopyFeedbackToast } from "./copy-toast";
+import { ProjectOverviewCard } from "./project-overview";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -834,6 +835,10 @@ export default function App() {
   const ignoreMobilePop = useRef(false);
   useAppHeight();
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
+  // 项目概览卡（Task 0010）：入口 = 分组头计数药丸；锚 = 药丸按钮（Popover 定位用）。
+  // 对话数不在 state 里——从 groups 现算（行上同一份，卡与行永远一致）。
+  const overviewAnchor = useRef<HTMLElement | null>(null);
+  const [overview, setOverview] = useState<{ agentId: string; projectId: string; name: string } | undefined>();
   // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
   const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
@@ -3042,14 +3047,12 @@ export default function App() {
                       onSelect={() => { setSelectedProjectId(group.project.id); setCollapsedGroups((previous) => ({ ...previous, [group.project.id]: false })); }}
                       onNewSession={() => newSessionIn(group.project)}
                       onNewSessionDisabled={group.project.id === selectedProjectId && sessionId === undefined}
-                      {...(group.project.path !== undefined ? {
-                        onRemove: () => setConfirm({
-                          title: `移除「${group.project.name}」`,
-                          message: "只从该助手移除；项目注册、该项目下的会话与记录都会保留。",
-                          confirmLabel: "移除",
-                          run: () => void unbindProject(group.project),
-                        }),
-                      } : {})}
+                      // 概览卡入口 = 计数药丸（Task 0010）：锚 = 药丸按钮本身。
+                      onOverview={(anchor) => {
+                        if (agent === undefined) return;
+                        overviewAnchor.current = anchor;
+                        setOverview({ agentId: agent.id, projectId: group.project.id, name: group.project.name });
+                      }}
                       actions={<StatusMarks status={status} unit="会话" />} />
                     {open && (
                       <GroupBody>
@@ -3237,6 +3240,27 @@ export default function App() {
 
       {/* 选中即复制的提示（Task 0013）：fixed 定位，不参与任何列布局 */}
       <CopyFeedbackToast feedback={copyFeedback} />
+      {/* 项目概览卡（Task 0010）：分组头计数药丸点开；fixed 定位，不参与列布局。
+          对话数 = 行同一份 groups 数据（现算，不存 state）；移除项目从卡里走（confirm 复用，
+          确认后同时关卡——项目已不在列表上，卡继续开着只会展示旧事实）。 */}
+      <ProjectOverviewCard open={overview !== undefined} onClose={() => setOverview(undefined)}
+        anchorRef={overviewAnchor}
+        agentId={overview?.agentId ?? ""} projectId={overview?.projectId ?? ""} name={overview?.name ?? ""}
+        sessionCount={groups.find((group) => group.project.id === overview?.projectId)?.sessions.length ?? 0}
+        {...(overview !== undefined && groups.find((group) => group.project.id === overview.projectId)?.project.path !== undefined
+          ? {
+              onRemove: () => {
+                const target = groups.find((group) => group.project.id === overview.projectId);
+                if (target === undefined) return;
+                setConfirm({
+                  title: `移除「${target.project.name}」`,
+                  message: "只从该助手移除；项目注册、该项目下的会话与记录都会保留。",
+                  confirmLabel: "移除",
+                  run: () => { setOverview(undefined); void unbindProject(target.project); },
+                });
+              },
+            }
+          : {})} />
       {/* 选中功能条（Task 0018）：portal 到 body，fixed 定位；按钮组合弹出时已定死 */}
       {toolbar !== null && (
         <SelectionToolbar

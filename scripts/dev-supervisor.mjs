@@ -14,7 +14,14 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const backend = process.env.LIFEOS_API ?? "http://127.0.0.1:43120";
+// dev 实例的 drain / 运行数检查必须指向**自己要重启的那个后端**（--port）。
+// 2026-11-13 实测缺陷（Task 0010）：起 43133 的 supervisor 用默认 43120 检查——
+// 把用户实例 drain 了 60 秒，又因用户实例回合在跑而永远不重启自己的后端。
+const backendPort = (() => {
+  const found = process.argv.find((arg) => arg.startsWith("--port="));
+  return found === undefined ? 43120 : Number(found.slice("--port=".length));
+})();
+const backend = process.env.LIFEOS_API ?? `http://127.0.0.1:${backendPort}`;
 // 透传额外参数给后端（如 --port=43130）；supervisor 只保留自身控制参数。
 const args = ["--experimental-strip-types", "src/main.ts", ...process.argv.slice(2)];
 const POLL_MS = 1000;
@@ -66,10 +73,6 @@ async function runningCount() {
 
 // 启动自检（任务 0016）：保留号 / 共用用户家目录 / 共用主 worktree / 共用默认日志 / 端口已被占用
 // —— 任何一条成立就**打印原因并退出**，不进入"每秒崩溃重启"的循环（那是 2026-11-02 的 91 万行日志）。
-const backendPort = (() => {
-  const found = process.argv.find((arg) => arg.startsWith("--port="));
-  return found === undefined ? 43120 : Number(found.slice("--port=".length));
-})();
 const portBusy = (port) => new Promise((resolve) => {
   const server = createServer();
   server.once("error", () => resolve(true));

@@ -18,14 +18,14 @@
  * - 组内行双行 56；组间距 8；列内边距 8。
  */
 import type { ReactNode } from "react";
-import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconPencil, IconPlus, IconTrash, IconX } from "@tabler/icons-react";
+import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconInfoCircle, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar } from "./user-avatar";
 import { Button, IconButton, Label } from "./design/ui";
 import { avatarBoxStyle, avatarOverlapOffset } from "./avatar-style";
 
-/** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数。 */
-export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onRemove, actions }: {
+/** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数药丸（可点开概览卡）。 */
+export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onOverview, actions }: {
   name: string;
   count: number;
   open: boolean;
@@ -51,17 +51,31 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
   onNewSession?: () => void;
   /** 已经在这个项目的草稿里：本组按钮禁用（其他组照常可点，点了切过去）。 */
   onNewSessionDisabled?: boolean;
-  onRemove?: () => void;
+  /**
+   * 打开项目概览卡（Task 0010）。参数 = 概览钮元素（浮层定位的锚）。
+   * 入口 = **同格互换的 ⓘ 钮**（用户 2026-11-13 拍板）：与助手行/会话行同一套
+   * "状态 ↔ hover 动作同格互换"机制（`design/ui.tsx` Row / SessionRow）——
+   * 旧版把入口藏在计数里（点数字），不可发现，已废弃。
+   */
+  onOverview: (anchor: HTMLElement) => void;
+  /**
+   * 状态徽标（running/unread/error）：**挂在项目名旁**（Task 0010）。
+   *
+   * 为什么搬家：徽标以前排在计数之后，出现/消失会把 ＋ 和计数整体左推（实测两行差 48px，
+   * 不成列）。它是"这个项目的状态"，锚在名字上语义更顺，且不再参与右列布局。
+   * 徽标是 span（非交互元素），点击随行折叠（行主作用不变）。
+   */
   actions?: ReactNode;
 }) {
   return (
     // 行高 32（design-language §5.1）；内部按钮用 **h-8**（32 = 命中区档位 ≥28），
     // 不用 h-7（28 视觉高但实测只报 26，撞门禁）。
     // 容器**不加水平内边距**：滚动容器已有 px-2（8），折叠列 28 + gap 8 = 44 刚好与组内行标题同缘（D21）。
-    <div className="group flex h-8 items-center gap-2 pr-1"
+    <div className="flex h-8 items-center gap-2 pr-1"
       data-testid="group-header" data-group-name={name}>
       {/* 折叠列 = 28 = 命中盒档位；点击整行折叠（不只点箭头）。
-          整行可点：把折叠钮与名字合成一个按钮区，避免出现两个可点目标指向同一动作。 */}
+          名字不再 flex-1（徽标要贴着名字）：min-w-0 让长名在徽标前截断；
+          按钮本身仍 flex-1——空白中段仍是折叠点击区，悬停底色仍覆盖整行。 */}
       <button type="button"
         onClick={() => { if (onSelect !== undefined && !selected) { onSelect(); return; } onToggle(); }}
         aria-expanded={open}
@@ -71,15 +85,21 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
           {open ? <IconChevronRight size={16} className="rotate-90" /> : <IconChevronRight size={16} />}
         </span>
-        {/* 分组头 = **容器**，字级要比行标题**小一号**、颜色更弱（2026-11-09 实测修正）。
-            旧值是 text-content(15px)/600 —— 比行标题 text-body(13.5px) 还大，容器抢了内容的戏。
-            两家产品参考：LobeHub 分组标签 12px/500/中灰（桌面版实测）、
-            LibreChat 分区标题 12px/500/text-secondary（`Nav/KeyboardShortcutsDialog.tsx:240`）。
-            我们用 text-meta(12px)/500 + nav-muted：字级与颜色两条都弱下去，名字仍可扫。 */}
-        <span className="min-w-0 flex-1 truncate text-meta font-medium text-nav-muted">{name}</span>
+        {/* 分组头 = **容器**，字级要比行标题**小一号**、颜色更弱（2026-11-09 实测修正）：
+            text-meta(12px)/500 + nav-muted（字级与颜色两条都弱下去，名字仍可扫）。 */}
+        <span className="min-w-0 shrink truncate text-meta font-medium text-nav-muted">{name}</span>
+        {actions}
       </button>
-      {/* 新建会话：在项目名之后、计数之前。
-          不放最右是因为最右是「移除项目」（hover 出现），两个图标紧挨着误点代价不对称。 */}
+      {/* 右区固定锚（Task 0010 · 三轮拍板）：[计数（纯数据）][ⓘ 概览钮（常显）][＋ 新建]。
+         用户原话"直接固定吧，不要鼠标移动上去再显示"——可发现性优先于密度；
+         三样全部右锚定成列。移除 ✕ 已搬进概览卡（低频危险动作离开行尾）。 */}
+      <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
+        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
+      <IconButton size="sm" label={`${name} 项目概览`} onClick={(event) => onOverview(event.currentTarget)}>
+        <IconInfoCircle size={14} />
+      </IconButton>
+      {/* 新建会话：在计数之后（Task 0010：计数左·动作右，行尾成熟排法）。
+          旧顺序（＋在计数前）读起来像 "workspace ＋ 12" 算式。 */}
       {onNewSession !== undefined && (
         <span className="shrink-0">
           <IconButton size="sm" label={`在 ${name} 新建会话`} onClick={onNewSession}
@@ -88,18 +108,6 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
           </IconButton>
         </span>
       )}
-      <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
-        className="shrink-0 text-micro tabular-nums text-nav-muted">{count}</span>
-      <span className="flex shrink-0 items-center">
-        {actions}
-        {onRemove !== undefined && (
-          <span className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <IconButton label={`从该助手移除项目 ${name}`} size="sm" onClick={onRemove}>
-              <IconX size={14} />
-            </IconButton>
-          </span>
-        )}
-      </span>
     </div>
   );
 }
