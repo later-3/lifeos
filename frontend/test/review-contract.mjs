@@ -625,7 +625,7 @@ async function openReview(page, options = {}) {
       JSON.stringify(afterAll.map((b) => `${b.region}:${b.count}:${b.text.slice(0, 20)}`)));
 
     // 刷新后折叠状态重置（difit：diff identity 变即清空）
-    await page.locator('button[aria-label="重新加载 diff"]').click();
+    await page.locator('button[aria-label="重新加载 diff 与评论"]').click();
     await page.waitForTimeout(1200);
     const afterReload = await bars();
     check("S1·折叠：刷新后展开状态重置（gap 回到 84 行原始折叠态）",
@@ -2597,6 +2597,46 @@ async function openReview(page, options = {}) {
       files: document.querySelectorAll('[data-review-source="lifeos"] [data-review-file]').length,
     }), groupFold);
     check("组折叠：再点展开（文件回来）", (reopened?.files ?? 0) === before?.files, JSON.stringify(reopened));
+  }
+  await page.context().close();
+}
+
+// ── 评论卡：锚定原文的来源行 + 草稿态不渲染回复框（Task 0018 用户两问）────────
+{
+  const page = await openPage({ width: 1680, height: 1000 });
+  const opened = await openReview(page);
+  check("评论卡用例：面板已打开", opened);
+  if (opened) {
+    // 新建一条评论（S2 同法：悬停改动行 → 「＋」出现 → 点击）
+    const card = page.locator('[data-review-file="src/demo.ts"]').first();
+    const addBtn = card.locator('[data-review-add-draft="new:2"]').first();
+    await addBtn.hover();
+    await page.waitForTimeout(300);
+    await addBtn.click();
+    await page.waitForTimeout(500);
+    const cards = await page.evaluate(() => document.querySelectorAll('[data-review-draft]').length);
+    check("评论卡用例：新建出了一条评论卡", cards > 0, `卡片 ${cards} 张`);
+    if (cards > 0) {
+      const state = await page.evaluate(() => {
+        const el = document.querySelector('[data-review-comment-state="draft"], [data-review-comment-state="open"]');
+        const reply = document.querySelector('[data-review-reply-input]');
+        const source = document.querySelector('[data-review-snapshot-source]');
+        return {
+          stateBadge: el?.textContent ?? null,
+          replyVisible: reply !== null && reply.offsetParent !== null,
+          sourceLine: source === null ? null : (source.textContent ?? "").trim(),
+        };
+      });
+      check("评论卡：草稿态显示「未提交」徽标（不是等谁）", state?.stateBadge === "未提交", JSON.stringify(state));
+      check("评论卡：草稿态不渲染回复框", state?.replyVisible === false, JSON.stringify(state));
+      check("评论卡：锚定原文有来源行（分支/提交或基线）", typeof state?.sourceLine === "string" && state.sourceLine.includes("来源："), state?.sourceLine);
+      // 清理：删掉测试评论（不留在用户的检视数据里）
+      await page.evaluate(() => {
+        const btn = [...document.querySelectorAll("button")].find((b) => (b.textContent ?? "") === "丢弃");
+        btn?.click();
+      });
+      await page.waitForTimeout(300);
+    }
   }
   await page.context().close();
 }

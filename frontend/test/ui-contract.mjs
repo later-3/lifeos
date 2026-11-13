@@ -2670,6 +2670,45 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
   await page.unroute(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/);
 }
 
+// ComposerButton solid 钮的可见性不变量（0018 用户：低饱和主色下 accent-solid 与底同色，
+// 生成中的停止钮"隐形"）：实心钮底 = ink-900、字 = surface——正文对比度是主题系统保证的
+// 不变量，这里把它锁成断言（light + dark 两模式都要 ≥4.5），换任何主题都必须成立。
+{
+  const lum = ([r, g, b]) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const parse = (hex) => hex.match(/^#([0-9a-f]{6})$/i) ? [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) : null;
+  const ratio = (a, b) => { const l1 = lum(a), l2 = lum(b); return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); };
+  for (const mode of ["light", "dark"]) {
+    // 预置 localStorage（addInitScript 在防闪脚本**之前**跑，后者读 lifeos.theme）——
+    // 页面加载后 React 的 theme effect 会把主题设回用户值，所以不能加载后再改 DOM。
+    const varContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    // 拦掉服务端 ui-prefs 的 theme 键：ui.json 的主题（用户当前 dark）会覆盖 localStorage 预置——
+    // "缓存永远服从服务端"是这个体系的纪律，断言页面要离线主题就必须把服务端的 theme 摘掉。
+    await varContext.route("**/api/ui-prefs", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ display: {}, badges: {}, selection: { copyOnSelect: true } }),
+    }));
+    await varContext.addInitScript((m) => {
+      localStorage.setItem("lifeos.theme", JSON.stringify({ mode: m, preset: "cool", accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4, lSurface: 100, lNav: 96.9, lRail: 93, lLine: 89.4, hoverD: 4.2, selRatio: 2 }));
+    }, mode);
+    const varPage = await varContext.newPage();
+    await varPage.goto(ENTRY_URL, { waitUntil: "domcontentloaded" });
+    await varPage.waitForTimeout(600);
+    const v = await varPage.evaluate(() => ({
+      ink: getComputedStyle(document.documentElement).getPropertyValue("--color-ink-900").trim(),
+      surface: getComputedStyle(document.documentElement).getPropertyValue("--color-surface").trim(),
+      modeAttr: document.documentElement.getAttribute("data-theme-mode"),
+    }));
+    const a = parse(v.ink), b = parse(v.surface);
+    check(`solid 钮可见性不变量 [${v.modeAttr ?? mode}]：ink-900 vs surface ≥ 4.5`,
+      a !== null && b !== null && ratio(a, b) >= 4.5, `ink=${v.ink} surface=${v.surface} ratio=${a && b ? Math.round(ratio(a, b) * 100) / 100 : "?"}`);
+    await varContext.close();
+  }
+}
+
+
 const failed = results.filter((item) => !item.ok);
 for (const item of results) console.log(`${item.ok ? "✔" : "✖"} ${item.name}${item.detail === "" ? "" : `  → ${item.detail}`}`);
 console.log(`\n${results.length - failed.length}/${results.length} 通过${failed.length === 0 ? "" : `；${failed.length} 项失败`}`);

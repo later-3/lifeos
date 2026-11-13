@@ -60,6 +60,12 @@ function annotatableOf(range: Range): boolean {
   return startHost.getAttribute("data-anno-busy") !== "1";
 }
 
+/** 选区是否落在流式生成中的块（任一端命中即算——条整个不弹，复制链照常）。 */
+function inStreamingBlockOf(range: Range): boolean {
+  return blockHostOf(range.startContainer)?.getAttribute("data-anno-busy") === "1"
+    || blockHostOf(range.endContainer)?.getAttribute("data-anno-busy") === "1";
+}
+
 /** 说话人（引用前缀用，D15）：向上找消息容器的 `data-role`。 */
 function speakerOf(node: Node): "user" | "assistant" | undefined {
   let cur: Element | null = node instanceof Element ? node : node.parentElement;
@@ -237,6 +243,7 @@ export function useCopyOnSelect(
         // 目标元素优先用松手点：落点在 input 里时 commonAncestorContainer 可能是外层
         inFormField: inFormField(event.target as Node | null) || inFormField(node),
         annotatable: range !== null && allowToolbar && annotatableOf(range),
+        inStreamingBlock: range !== null && inStreamingBlockOf(range),
       };
       if (!shouldCopy(facts)) return;
       // 在已有选区里单击（没移动 + 选区没变）= 不是复制/弹条动作，跳过。

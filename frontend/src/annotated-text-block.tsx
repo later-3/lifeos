@@ -334,9 +334,9 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
 
   return (
     <div className="relative" ref={wrapRef}>
+      {/* data-anno-busy 是功能条的判定事实（流式块内不弹条，0018 用户）；不再用 title 提示 */}
       <div ref={hostRef} data-testid="message-text" data-block-index={blockIndex}
         data-anno-busy={busy ? "1" : undefined}
-        title={busy && actions !== undefined ? "这一轮生成完成后才能批注" : undefined}
         onMouseUp={actions !== undefined ? onUp : undefined}>
         <Markdown text={text} />
       </div>

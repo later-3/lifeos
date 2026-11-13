@@ -147,4 +147,6 @@ test("skip-worktree 的路径不得进 worktree diff 快照（0018：submodule�
   assert.ok(!paths.includes("pi"), `skip-worktree 的 pi 不该出现，实际：${paths.join(", ")}`);
   assert.ok(paths.includes("new-doc.md"), `未跟踪文件应出现，实际：${paths.join(", ")}`);
   assert.ok(paths.includes("code.ts") === false, "已跟踪未改的文件不该出现");
+  // base 随 diff 返回（评论卡"锚定的原文"的来源标注用，0018）
+  assert.ok(wt.base?.commit !== undefined && /^[0-9a-f]{40}$/.test(wt.base.commit), `worktree 源应带基线 commit，实际：${JSON.stringify(wt.base)}`);
 });

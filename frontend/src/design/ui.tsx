@@ -59,7 +59,14 @@ export function ComposerButton({ label, tone = "solid", disabled = false, onClic
   return (
     <button type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick}
       className="group inline-flex h-11 w-11 shrink-0 items-center justify-center justify-self-end rounded-full disabled:cursor-not-allowed">
-      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-accent-solid text-white" : ""}`}>
+      {/*
+        solid 的底 = `ink-900`（正文最深色）+ `text-surface` 反白——**主题不变量**。
+        之前用 `accent-solid`：主色被调成低饱和/浅色时（0018 用户实测），它与 composer 底
+        几乎同色，生成中的停止钮直接"隐形"、hover 才出现。正文对比度是主题系统保证的
+        不变量（≥4.5，换任何主题都成立），实心钮的可见性押在它上面，不再押在主色巧不巧深。
+        hover 仍闪 `accent`（主操作提示）；disabled 有 bg-hover 兜底。
+      */}
+      <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition-colors group-hover:[&:not(:disabled)]:bg-accent/85 group-disabled:bg-hover group-disabled:text-ink-500 ${tone === "solid" ? "bg-ink-900 text-surface" : ""}`}>
         {children}
       </span>
     </button>

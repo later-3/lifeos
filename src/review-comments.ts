@@ -697,6 +697,24 @@ export async function setCommentAwaiting(
 export function pendingFor(
   comments: readonly ReviewComment[],
   who: "user" | "agent",
+  /** 当前检视对象的 (source,path) 集（0018 用户）：口径修正——**失锚孤儿不算待办**
+   *  （评论绑检视时刻的 diff，合并/改动后文件不在 diff 里，跳转也看不到卡片）；
+   *  同理空正文的草稿（点了＋没写就丢下）不算。不传 = 旧口径（全部计入）。 */
+  available?: ReadonlySet<string>,
 ): ReviewComment[] {
-  return comments.filter((c) => c.state !== "resolved" && (c.awaiting === null || c.awaiting === who));
+  return comments.filter((c) => c.state !== "resolved"
+    && (c.awaiting === null || c.awaiting === who)
+    && (available === undefined || isCountable(c, available)));
+}
+
+/** 空正文的草稿 = 点了"＋"没写就丢下，不算意见（0018 实测计入会误导）。 */
+export function isEmptyDraft(comment: ReviewComment): boolean {
+  return (comment.state ?? "draft") === "draft" && comment.body.trim() === "";
+}
+
+/** 这条评论**计不计数**（总条数/待办/跳转）：空草稿不算；锚不在当前 diff 的文件里 = 失锚孤儿不算。 */
+export function isCountable(comment: ReviewComment, available: ReadonlySet<string>): boolean {
+  if (isEmptyDraft(comment)) return false;
+  const a = comment.anchor;
+  return available.has(`${a.source}\u0000${a.path}`);
 }
