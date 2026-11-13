@@ -29,10 +29,3 @@ export function quoteDraftOf(text: string, speaker: SelectionQuoteSpeaker): stri
   if (trimmed === "") return "";
   return `${speakerPrefix(speaker)}“${trimmed}”\n→ `;
 }
-
-/** 按钮预览（不含箭头与换行——条上只有一行）。 */
-export function quotePreviewOf(text: string, speaker: SelectionQuoteSpeaker): string {
-  const trimmed = text.trim();
-  if (trimmed === "") return "";
-  return `${speakerPrefix(speaker)}“${trimmed}”`;
-}

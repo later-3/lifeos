@@ -3,7 +3,9 @@
  *
  * 形态来源（见任务 02-references.md）：
  *  - 位置几何：LibreChat `QuoteButton.tsx`（上方优先 / 间距 8 / 边缘 16 / 先量后显）；
- *  - 深底白字：用我们自己的 `--color-ink-900`（= 用户气泡底色）+ `--shadow-anno`；
+ *  - 浮层配色（2026-11-12 用户改为跟主题走）：`bg-surface` 卡面 + `ring-line` 边界 + `shadow-lg`
+ *    浮层阴影 + `text-ink-900` 正文——与检视面板/Modal 同一套语言，深浅模式自适应
+ *   （原为硬深底 `bg-ink-900 + text-surface`，Task 0013 D3 拍板；被本条取代）。
  *  - 文案：`已复制 · N 字`（用户 2026-11-07 拍板）；
  *  - 停留：1000ms（Zulip / Pi TUI 同值，用户拍板选它而不是我们动作条的 1500ms）。
  *
@@ -57,9 +59,9 @@ export function CopyFeedbackToast({ feedback }: { feedback: CopyFeedback | null 
       role="status"
       aria-live="polite"
       style={{ visibility: visible ? "visible" : "hidden" }}
-      className={`pointer-events-none fixed ${LAYER_CLASS.toast} inline-flex select-none items-center gap-1.5 whitespace-nowrap rounded-full bg-ink-900 px-2.5 py-1 text-meta font-semibold text-surface shadow-anno`}
+      className={`pointer-events-none fixed ${LAYER_CLASS.toast} inline-flex select-none items-center gap-1.5 whitespace-nowrap rounded-full bg-surface px-2.5 py-1 text-meta font-semibold text-ink-900 ring-1 ring-line shadow-lg`}
     >
-      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2"
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="var(--color-success)" strokeWidth="2.2"
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M2.5 8.5 6 12 13.5 4.5" />
       </svg>
