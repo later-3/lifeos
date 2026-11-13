@@ -6,7 +6,8 @@
  * 带一点口语化的格式（前缀 + 引号 + 换行箭头）。所以走**文字预填**，不走 chip。
  *
  * 格式（D15，按选中来源分前缀）：
- *  - 选自 assistant 回复：`Agent 说："…"`；
+ *  - 选自 assistant 回复：`你说："…"`（用户 2026-11-12 拍板——用户转述 Agent 的话，
+ *    原稿"Agent 说"被要求改掉）；
  *  - 选自用户自己发的：`我说："…"`；
  *  - 其他（思考块 / 工具块展开区）：`"…"`（无前缀）；
  *  - 统一后接换行 + `→ ` —— 箭头是用户的接话位置。
@@ -16,9 +17,9 @@
 
 export type SelectionQuoteSpeaker = "user" | "assistant" | undefined;
 
-/** 前缀。assistant 的回复用"Agent 说"；用户自己的话再引用是"我说"。 */
+/** 前缀。assistant 的回复引用时写"你说"（用户对 Agent 转述）；用户自己的话是"我说"。 */
 function speakerPrefix(speaker: SelectionQuoteSpeaker): string {
-  if (speaker === "assistant") return "Agent 说：";
+  if (speaker === "assistant") return "你说：";
   if (speaker === "user") return "我说：";
   return "";
 }
