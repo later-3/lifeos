@@ -2911,7 +2911,9 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
               {allOpen ? <IconChevronsUp size={16} /> : <IconChevronsDown size={16} />}
             </IconButton>
           )}
-          <IconButton label="重新加载 diff" onClick={onReload} disabled={loading}><IconRefresh size={16} /></IconButton>
+          {/* 刷新 = diff 与评论一起重拉（Task 0018 用户：外部改了评论数，点刷新要能看到）——
+              只调 onReload 会漏掉 reloadDrafts（评论只在挂载/taskDir 变化时拉）。 */}
+          <IconButton label="重新加载 diff 与评论" onClick={() => { onReload(); reloadDrafts(); }} disabled={loading}><IconRefresh size={16} /></IconButton>
           <IconButton label="关闭检视面板" onClick={onClose}><IconX size={16} /></IconButton>
         </span>
       </header>
