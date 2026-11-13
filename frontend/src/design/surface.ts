@@ -27,12 +27,14 @@ export type SurfaceTone = "card" | "popover" | "modal" | "toast" | "tooltip";
  *
  * 现状问题（审计）：z-index 是 10/20/30/40/50 随手写的，Toast 与 Modal 同为 50 ——
  * 模态打开时 Toast 会被压在下面（顺序错了）。这里按"谁该在上面"定死：
- * 轨上的浮标 < 弹出面板 < 抽屉 < 模态 < toast（toast 永远最上，否则用户看不到反馈）。
+ * 轨上的浮标 < 弹出面板 < 抽屉 < 版本提示条 < 模态 < toast（toast 永远最上，否则用户看不到反馈；
+ * 版本提示条在模态下面 —— 更新提示不抢模态里的操作，关掉模态就看见）。
  */
 export const LAYER = {
   rail: 10,
   popover: 30,
   drawer: 40,
+  versionBanner: 45,
   modal: 50,
   toast: 60,
 } as const;
@@ -134,6 +136,7 @@ export const LAYER_CLASS = {
   rail: "layer-rail",
   popover: "layer-popover",
   drawer: "layer-drawer",
+  versionBanner: "layer-version-banner",
   modal: "layer-modal",
   toast: "layer-toast",
 } as const;

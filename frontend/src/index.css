@@ -205,12 +205,14 @@ html, body, button, input, textarea, select {
   --z-rail: 10;
   --z-popover: 30;
   --z-drawer: 40;
+  --z-versionBanner: 45;
   --z-modal: 50;
   --z-toast: 60;
 }
 .layer-rail { z-index: var(--z-rail); }
 .layer-popover { z-index: var(--z-popover); }
 .layer-drawer { z-index: var(--z-drawer); }
+.layer-version-banner { z-index: var(--z-versionBanner); }
 .layer-modal { z-index: var(--z-modal); }
 .layer-toast { z-index: var(--z-toast); }
 
