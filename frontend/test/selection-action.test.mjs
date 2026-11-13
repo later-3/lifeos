@@ -39,3 +39,18 @@ test("设置关：不自动复制，条上有复制按钮（D9）；批注按事
   const off = selectionAction({ ...base, annotatable: false }, { copyOnSelect: false });
   assert.deepEqual(off.toolbar, { copy: true, annotate: false, quote: true });
 });
+
+
+test("流式生成中的选区：不弹功能条，复制链照常（0018 用户）", () => {
+  // 开态：松手即复制照常、条不弹
+  const on = selectionAction({ ...base, annotatable: false, inStreamingBlock: true }, { copyOnSelect: true });
+  assert.equal(on.copyNow, true);
+  assert.equal(on.showToolbar, false);
+  // 关态：复制没有条入口（生成中的文字在变，Cmd+C 兜底）
+  const off = selectionAction({ ...base, annotatable: true, inStreamingBlock: true }, { copyOnSelect: false });
+  assert.equal(off.copyNow, false);
+  assert.equal(off.showToolbar, false);
+  // 非流式不受影响
+  const idle = selectionAction({ ...base, annotatable: true, inStreamingBlock: false }, { copyOnSelect: true });
+  assert.equal(idle.showToolbar, true);
+});

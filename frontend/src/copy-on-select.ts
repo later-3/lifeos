@@ -74,12 +74,19 @@ export type SelectionPrefsShape = { copyOnSelect: boolean };
 export type SelectionActionFacts = CopyDecisionFacts & {
   /** 选区起止是否都落在同一个**非流式** assistant 文本块内（handler 已查好 DOM 事实）。 */
   annotatable: boolean;
+  /** 选区是否落在**流式生成中**的块内（文字每帧在变）。 */
+  inStreamingBlock: boolean;
 };
 
 /** 松手动作组合的**唯一判定**（可穷举；handler 只执行返回值）。 */
 export function selectionAction(facts: SelectionActionFacts, prefs: SelectionPrefsShape): SelectionAction {
   const none: SelectionAction = { copyNow: false, showToolbar: false, toolbar: { copy: false, annotate: false, quote: false } };
   if (!shouldCopy(facts)) return none;
+  // 流式块内**不弹功能条**（0018 用户：复制不受影响，只是别触发条——文字每帧在变，
+  // 批注锚点会漂、引用的内容下一秒就不是原文）。复制链照常（开态松手即复制）。
+  if (facts.inStreamingBlock) {
+    return { copyNow: prefs.copyOnSelect, showToolbar: false, toolbar: { ...none.toolbar } };
+  }
   if (prefs.copyOnSelect) {
     return { copyNow: true, showToolbar: true, toolbar: { copy: false, annotate: facts.annotatable, quote: true } };
   }
