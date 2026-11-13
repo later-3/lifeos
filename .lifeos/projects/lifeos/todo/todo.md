@@ -46,6 +46,7 @@
 | 38 | 检视模式（Task 0010）已交付 P1/P2/S1–S4-i + P4 总览 + G5/G6/G8/G9/G10/G11/G12/G13/G14/G15 + D29/D31/D32；事实见 `knowledge/architecture/review-mode.md` | **检视模式的手机适配**（唯一剩余项） | 按 `specs/frontend-mobile/mobile.md` 走全屏表面 + 单主列 + 44px 触控；跨 agent 候选列表已裁决**不做**（D31g + 协议 §3.7）；实现后把事实写进 `review-mode.md` §9 并删掉这条 |
 | 39 | 项目概览卡（Task 0010 · 分组头计数药丸）已落地：路径/任务/知识库/案例/工具/规范计数 + 移除项目；设计文档 `knowledge/design/im/project-space.md`（工作台覆盖层）已是 IM v2 定稿（任务 0003 demo）但未落地 | **项目空间工作台页**（概览卡的下一站） | 落地 project-space.md 的工作台覆盖层（统计条+任务卡+近期对话+同事卡，入口三处：rail/分组头/任务条）；入口从概览卡升级为开页；PM 类参考已拉：Plane @ `9cefae8`（已登记 reference-projects.md） |
 | 40 | AgentConfig（助手设置模态）为 v0 草案（`knowledge/design/agent-config.md` 自述"待评审"）；用户 2026-11-13 点名"比较简陋，跟不上现在的设计" | **AgentConfig 重设计** | 参照项目概览卡的信息分区思路 + 当下设计语言重做设置表单（四态/命中区/对比度全套）；不动数据接口 |
+| 42 | 2026-11-13 跑 `home:check`：真实家目录累计 **272 处结构漂移**（reviewer 213、coder 15、frontend-developer 13——多为旧任务缺 task.md/子目录缺 AGENTS.md；0010 新增为 0）。结构闸平时只在家目录改动时跑，从未全量清过 | **家目录结构漂移全量清零** | 按归属 Agent 分批清（reviewer 优先）；每批清完跑一次 check；考虑把 check 纳入某个周期动作（待定时任务落地，todo #5） |
 | 41 | `frontend/test/ui-contract.mjs` 在全新家目录上跑：显示设置"恢复默认"失败后字号卡在 2×，导致后续无竖向裁切/徽标呼吸等多项级联假红（2026-11-13 实测：改前/改后 stash A/B 均有 30 项）；另依赖真会话数 ≥3（夹具）与模型密钥（回合） | **ui-contract 的全新家目录健壮性** | 显示设置每段用例结束必须恢复默认（try/finally）；夹具会话不足时显式跳过而非假红；无密钥环境的回合依赖用例用 route mock 补齐；先在全新 `~/.lifeos-dev/` 家目录复现再修 |
 
 - [ ] 可选：用 Tauri/Electron 薄壳包住 Life OS 现有 Web 地址做桌面应用（零架构改动，用户想要桌面图标时再做）
