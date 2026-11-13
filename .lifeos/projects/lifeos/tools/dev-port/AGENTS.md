@@ -44,6 +44,10 @@ LIFEOS_HOME="$HOME/.lifeos-dev/$T" LIFEOS_SUPERVISOR_LOG="/tmp/lifeos-$T.log" \
 VITE_DEV_API=http://127.0.0.1:<backend> pnpm --dir frontend exec vite --port <web>
 ```
 
+> **不用设 `LIFEOS_API`**：supervisor 自 2026-11-13 起（Task 0010 · C216）默认检查
+> `--port` 指向的自己那个后端（drain/运行数不再打向 43120 用户实例）。
+> 只有当后端不在 `127.0.0.1:<--port>` 时才需要 `LIFEOS_API` 显式指定。
+
 **注意**：`dev-port.mjs` 在 **worktree 里**才有（它是仓库文件）。在别的目录调用时用绝对路径，或先 `cd "$W"`。
 
 ## 用法

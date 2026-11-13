@@ -24,7 +24,7 @@ import {
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed, projectIdOfSession,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
-import { bindProject, listAgentProjects, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
+import { bindProject, listAgentProjects, projectOverview, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import {
   MAX_AVATAR_BYTES, avatarExists, normalizeName, readProfile, readProfileAvatar, storeProfileAvatar, writeProfile,
@@ -364,6 +364,17 @@ app.use(async (c, next) => {
   });
 
   // 当前项目的任务清单（UI 的 /task 切换器读取；不产生文件、不建索引）。
+  // 项目概览（Task 0010）：分组头计数药丸点开的卡。事实清单见 knowledge/architecture/agent.md。
+  // 不含 sessions：对话数 = 行上同一份（前端 groups 数据），后端不重算（api 2.7/2.10）。
+  app.get("/api/agents/:id/projects/:pid/overview", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const project = await resolveProject(agent, c.req.param("pid"));
+    if (project === undefined) { const error = problem("project_not_found", "找不到这个 project", 404); return c.json(error.body, error.status); }
+    const isDefault = (agent.defaultProjectId ?? "workspace") === project.id;
+    return c.json(await projectOverview(agent.id, project, isDefault));
+  });
+
   app.get("/api/agents/:id/projects/:pid/tasks", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }

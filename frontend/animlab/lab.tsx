@@ -348,6 +348,7 @@ function Lab() {
                 </div>
                 <div className="px-2 pb-2">
                   <GroupHeader name="lifeos" count={4} open selected={false} onToggle={() => undefined}
+                    onOverview={() => undefined}
                     actions={<span className="flex items-center gap-1">{badge("1")}{greenBadge("2")}</span>} />
                   <GroupBody>
                     <SessionRow testId="s1" selected={false} title="要做一个检视模式，你可以参考下 copilot" titleFallback={false}

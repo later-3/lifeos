@@ -6,13 +6,16 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
  * 所有数值来自 design/tokens.css；这里出现任何 text-[..]/#rgb 都是 bug。
  */
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "ghost-danger";
 type Size = "sm" | "md";
 
 const VARIANT: Record<Variant, string> = {
   primary: "bg-accent-solid text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
   secondary: "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
   ghost: "text-ink-700 hover:bg-hover hover:text-ink-900 disabled:text-ink-500",
+  // ghost-danger（Task 0010）：信息卡里的危险次级动作 —— 文字用 danger 色、无实底，
+  // hover 才染 danger-soft。与实底 danger（主危险钮）分级：卡片主体是信息，危险动作退居次级。
+  "ghost-danger": "text-danger hover:bg-danger-soft disabled:text-ink-500",
   danger: "bg-danger text-white hover:brightness-95 disabled:bg-hover disabled:text-ink-500",
 };
 

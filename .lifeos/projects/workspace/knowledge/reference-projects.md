@@ -38,6 +38,9 @@ git -C ~/Code/reference/<name> log -1 --format=%cs           # 日期
 | **open-design** | `~/Code/reference/open-design` | `nexu-io/open-design` | `main` | `034c389` | 2026-07-22 | 同形态全栈参考；架构与交互 |
 | **deepseek-harness-chat** | `~/Code/deepseek-harness-chat`（例外） | `later-3/deepseek-harness-chat` | `master` | `99f6f02` | 2026-08-17 | 同形态 harness 参考（单会话，无会话列表） |
 | **LibreChat** | `~/Code/opc-os/LibreChat`（例外） | `danny-avila/LibreChat` | `main` | `8e5ef1f` | 2026-07-16 | 回合生命周期 / steer 权威语义 / composer 版式 |
+| **lobe-chat** | `~/Code/reference/lobe-chat` | `lobehub/lobe-chat` | `main` | `867a15a` | 2026-11-07 | 分组头两段式（trigger / accordion-action）+ hover 动作槽恒占机制（`CollapsedIndicators.tsx:48-72`）；侧栏折叠组的状态徽标常显 |
+| **plane** | `~/Code/reference/plane` | `makeplane/plane` | `main` | `9cefae8` | 2026-11-12 | 开源项目管理代表：侧栏项目行 hover 动作（`projects-list-item.tsx:373-380`）、行内不放统计；项目卡信息分区（`project/card.tsx:299-380`） |
+| **gitea** | `~/Code/reference/gitea` | `go-gitea/gitea` | `main` | `8848843` | 2026-11-07 | 项目概览卡形态源：仓库首页 About 卡 = 身份区→统计区→入口（`templates/repo/home_sidebar_*.tmpl`） |
 
 ## 同类产品（A/B 级）
 
