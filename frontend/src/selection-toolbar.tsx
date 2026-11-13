@@ -20,7 +20,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { layerStyle } from "./design/surface";
+import { layerStyle, surfaceStyle } from "./design/surface";
 import { COPY_EDGE_MARGIN, COPY_GAP, type RectLike } from "./copy-on-select";
 
 /** 功能条定位（视口坐标，fixed）。下方优先，放不下翻上方，最后夹进视口。 */
@@ -91,9 +91,11 @@ export function SelectionToolbar({ state, onClose, onCopy, onAnnotate, onQuote }
         top: pos?.top ?? 0,
         visibility: pos === null ? "hidden" : "visible",
         // 层级走 LAYER（design-system 门禁拦裸数字）：条是弹出面板层（toast 永远最上，胶囊反馈不被压）
+        // 阴影走 --surface-popover（design-system 门禁拦裸 shadow-*）：深浅色自适应的浮层投影
         ...layerStyle("popover"),
+        ...surfaceStyle("popover"),
       }}
-      className="flex items-center gap-0.5 rounded-panel bg-surface px-1 py-1 text-ink-900 ring-1 ring-line shadow-lg"
+      className="flex items-center gap-0.5 rounded-panel bg-surface px-1 py-1 text-ink-900 ring-1 ring-line"
     >
       {buttons.copy && (
         <button type="button" onClick={onCopy} aria-label={`复制选中的 ${[...state.text.trim()].length} 字`}
