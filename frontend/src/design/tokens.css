@@ -22,6 +22,13 @@
   --color-accent: #2563eb;
   --color-accent-soft: #eff4ff;
   --color-accent-line: #cbdcff;
+  /*
+   * 主色实心底（主按钮/用户气泡，C214 止血）：Tailwind 只为 @theme 里存在的变量生成 utility——
+   * 这里不定义，ui.tsx 的 `bg-accent-solid` 类就不存在，主按钮永远是透明底 + 白字（浅色下整颗消失）。
+   * 静态值 = 引擎 neutral/light 的派生值 #747474（白字对比 ≥4.5 由 maxLforWhiteText 二分保证）；
+   * 运行时由 design/theme.ts 的 VAR_MAP 按主题覆盖（深浅两套都在引擎手里，这里只兑首帧与编译）。
+   */
+  --color-accent-solid: #747474;
   --color-danger: #b42318;
   /* soft 底的**运行时值**由 App 的徽标偏好层从语义色派生（badge-prefs.ts；强度三档、深浅自适应），
    * 下面的静态值只是 React 起来前的首帧近似（neutral/palette 的 standard 档）—— 不作为第二事实源。 */
