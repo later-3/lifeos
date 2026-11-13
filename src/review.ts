@@ -448,7 +448,9 @@ async function computeWorktreeDiff(source: ReviewSource): Promise<ReviewSourceDi
   } catch (error) {
     throw gitShortError(error);
   }
-  return { source, files: filesFromPatch(patch), truncated: false };
+  // base 随 diff 返回（0018 用户：评论卡"锚定的原文"要能标注来自哪个基线/分支——
+  // lifeos 源一直带 base，worktree 源漏了）。baseRef 为 undefined（找不到 main）时不带。
+  return { source, files: filesFromPatch(patch), truncated: false, ...(baseRef !== undefined ? { base: { commit: baseRef } } : {}) };
 }
 
 /** 基线引用 → 一棵树（基线是 commit 就取它的根树；是树就原样）。取不到就用空树。 */

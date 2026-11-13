@@ -19,6 +19,7 @@ import { Markdown } from "./message-markdown";
 import { MARKS } from "./marks";
 import { placePopover } from "./design/popover";
 import { createHttpStore, createHttpViewedStore, hasLocalOnlyComments, type CommentStore, type ReviewComment, type ViewedRecordWire } from "./review-comment-store";
+import { createContext, useContext } from "react";
 import { commentToLine, commentsToText } from "./review-comment-copy";
 import {
   actionOfKey, firstFileRow, lastFileRow, shouldIgnoreNav, stepChunk, stepFile, stepLine, KEY_BINDINGS, type NavRow,
@@ -780,6 +781,11 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
 
 const SOURCE_LABEL: Record<ReviewSourceKind, string> = { worktree: "项目代码（repo/）", lifeos: "家目录文档（~/.lifeos）" };
 
+/** 每个源的版本标识（0018 用户：评论卡"锚定的原文"要标注来自哪个分支/提交/基线——
+ *  不然过期判定只有原文没有参照物）。面板按 data 算一次，DraftCard 经 Context 消费。 */
+type SourceRef = { ref?: string; base?: string };
+const SourceRefContext = createContext<Record<string, SourceRef>>({});
+
 /** 文件行显示拆分：主显文件名（basename），目录尾段次显（0018）。 */
 function filePathParts(path: string): { dir: string; name: string } {
   const index = path.lastIndexOf("/");
@@ -1403,6 +1409,17 @@ function authorAccent(author: { kind: "user" | "agent"; id: string }): string {
   return author.kind === "agent" ? avatarTone(author.id) : "bg-ink-300";
 }
 
+/** 锚定原文的来源行（0018 用户）：这份原文来自哪个侧、哪个分支/提交/基线——过期判定的参照物可见。 */
+function SnapshotSourceRef({ draft }: { draft: ReviewDraft }) {
+  const refs = useContext(SourceRefContext);
+  const own = refs[draft.source] ?? {};
+  const side = draft.side ?? "new";
+  const text = side === "old"
+    ? `基线侧${own.base !== undefined ? ` · ${own.base}` : ""}`
+    : `工作区侧${own.ref !== undefined ? ` · ${own.ref}` : ""}`;
+  return <p className="mt-1 text-micro text-ink-500" data-review-snapshot-source>来源：{text}</p>;
+}
+
 function DraftCard({ draft, outdated, authorName, authorNameOf, folded, onToggleFold, onChange, onRemove, onChangeMarks, canClose, onClose, onReopen, onCopy, onSend, closed, awaiting, commentActions, onSetAwaiting }: {
   draft: ReviewDraft;
   outdated: boolean;
@@ -1465,6 +1482,9 @@ function DraftCard({ draft, outdated, authorName, authorNameOf, folded, onToggle
         {/* 状态（A18）：已关闭 / 等谁处理 —— 两件事分开显示，不混成一个词 */}
         {closed ? (
           <span className="shrink-0 rounded-inner bg-success-soft px-1.5 py-0.5 text-success" data-review-comment-state="resolved">已关闭</span>
+        ) : (draft.state ?? "draft") === "draft" ? (
+          /* 草稿还没"发送"进讨论，谈不上等谁（0018 用户：没评论为什么就有回复了——同族问题） */
+          <span className="shrink-0 rounded-inner bg-hover px-1.5 py-0.5 text-ink-500" data-review-comment-state="draft">未提交</span>
         ) : (
           /*
             G1「等谁」的界面入口：以前这里只是只读徽标，服务端与渲染都支持 awaiting，
@@ -1561,10 +1581,14 @@ function DraftCard({ draft, outdated, authorName, authorNameOf, folded, onToggle
       {draft.snapshot !== undefined ? (
         <details className="mt-1 text-micro text-ink-500">
           <summary className="cursor-pointer select-none">锚定的原文（过期判定依据）</summary>
+          <SnapshotSourceRef draft={draft} />
           <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-inner bg-sunken px-2 py-1">{draft.snapshot}</pre>
         </details>
       ) : null}
-      <ThreadReplies draft={draft} authorNameOf={authorNameOf} commentActions={commentActions} closed={closed} />
+      {/* 草稿（还没"发送"进讨论）不渲染回复链：回复是对已提交评论的回应，自己还没写完的卡不谈讨论（0018 用户） */}
+      {(draft.state ?? "draft") !== "draft" && (
+        <ThreadReplies draft={draft} authorNameOf={authorNameOf} commentActions={commentActions} closed={closed} />
+      )}
       </>
       )}
       </div>
@@ -2819,7 +2843,17 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [navRows, cursor, helpOpen, moveCursor, onClose, onAddDraft, data]);
 
+  /** 两组源的版本标识（0018 用户）：评论卡"锚定的原文"要标注来自哪个分支/提交/基线。 */
+  const sourceRefs: Record<string, SourceRef> = {};
+  for (const group of data?.items ?? []) {
+    const s = group.source;
+    sourceRefs[s.kind] = {
+      ref: [s.branch, s.head !== undefined ? `@${s.head}` : null].filter(Boolean).join(" ") || undefined,
+      base: group.base?.commit.slice(0, 8),
+    };
+  }
   return (
+    <SourceRefContext.Provider value={sourceRefs}>
     <div className="relative flex h-full w-full min-w-0 flex-col bg-sunken" data-testid="review-panel" role="complementary" aria-label="检视面板">
       {/* 头部：页签 + 总计 + 刷新/关闭 */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-2">
@@ -3138,5 +3172,6 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
       <div className="shrink-0 border-t border-line" data-review-annotations-bar hidden />
       <input type="hidden" value={taskDir} data-review-task-dir />
     </div>
+    </SourceRefContext.Provider>
   );
 }
