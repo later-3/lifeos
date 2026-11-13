@@ -150,3 +150,19 @@ test("skip-worktree 的路径不得进 worktree diff 快照（0018：submodule�
   // base 随 diff 返回（评论卡"锚定的原文"的来源标注用，0018）
   assert.ok(wt.base?.commit !== undefined && /^[0-9a-f]{40}$/.test(wt.base.commit), `worktree 源应带基线 commit，实际：${JSON.stringify(wt.base)}`);
 });
+
+
+test("只有 home/ 的 Task：扫描兜底不把 home/ 当项目代码（0018 agent-3909 实测）", async () => {
+  const base = await mkdtemp(join(tmpdir(), "lifeos-homeonly-"));
+  const taskDir = join(base, "tasks", "0001-x");
+  const homeDir = join(taskDir, "home");
+  await mkdir(homeDir, { recursive: true });
+  // home worktree 的形态：.git 是文件（gitdir 指针）
+  await writeFile(join(homeDir, ".git"), "gitdir: /somewhere/home4\n");
+  await writeFile(join(taskDir, "task.md"), "# x\n");
+  const sources = await locateSources(taskDir);
+  const code = sources.find((s) => s.kind === "worktree");
+  assert.ok(code !== undefined && code.exists === false, `worktree 源应不存在（home 不是代码），实际：${JSON.stringify(code)}`);
+  const doc = sources.find((s) => s.kind === "lifeos");
+  assert.equal(doc?.path, homeDir, "家目录文档源仍是 home/");
+});

@@ -150,6 +150,10 @@ export async function locateSources(taskDir: string): Promise<ReviewSource[]> {
       const entries = await readdir(taskDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
+        // **home/ 不参加扫描**（0018 用户实测）：home/ 是家目录文档源的 worktree（含 .git
+        // 指针文件），没有 repo/ 的 Task 会被它误认成"项目代码"——两组源指向同一目录，
+        // 项目代码组显示的全是任务文档（agent-3909 0003 实测）。它不是代码。
+        if (entry.name === HOME_DIR) continue;
         const candidate = join(taskDir, entry.name);
         if (await gitMarkerExists(join(candidate, ".git"))) {
           worktreePath = candidate;
