@@ -689,15 +689,27 @@ export default function App() {
 
   const [input, setInputState] = useState("");
   const [busy, setBusy] = useState(false);
-  // —— 图片附件（docs/design/image-input.md）：只存在内存草稿里，发送成功才清空 ——
-  const [attachments, setAttachments] = useState<PendingImage[]>([]);
+  /** 草稿作用域（会话 id；无会话时 agent/project）——文字草稿与图片附件共用同一归属。 */
+  const draftKey = sessionId ?? (agent !== undefined && selectedProjectId !== undefined ? `${agent.id}/${selectedProjectId}` : undefined);
+  // —— 图片附件（docs/design/image-input.md）：**按会话归属**存内存（draftKey → 图片数组），
+  // 切会话即换（与文字草稿同一语义；此前是整页单份，切到哪个会话都显示同一批图，用户 2026-11-14 报告）。
+  // 发送成功才清当前键；不落 localStorage：单张上限 10MB 的 base64 超出其 ~5MB 配额，落盘不可行，页面刷新即丢。 ——
+  const [attachmentMap, setAttachmentMap] = useState<Record<string, PendingImage[]>>({});
+  const attachments = draftKey !== undefined ? attachmentMap[draftKey] ?? [] : [];
+  /** 写**当前作用域**的附件；没有归属（无会话且无项目）时丢弃写入。 */
+  function setAttachments(next: PendingImage[]) {
+    if (draftKey === undefined) return;
+    setAttachmentMap((map) => ({ ...map, [draftKey]: next }));
+  }
   /**
    * 检视评论引用（A8 + G3）：**结构化条目**，不是拼进正文的文本。
    * 发送时由 `commentsToText()` 合成（同一条实现，不新造格式）；发送成功清空、失败回填。
    */
   const [commentRefs, setCommentRefs] = useState<CommentRef[]>([]);
   const commentRefsRef = useRef<CommentRef[]>([]);
-  const attachmentsRef = useRef<PendingImage[]>([]);
+  /** 附件与该 ref 的**作用域一致**（Task 0019）：[key=draftKey, images] 成对存，
+   *  跨渲染回调读到时能判断“这份图是不是当前会话的”，不会把 A 的图发到 B。 */
+  const attachmentsRef = useRef<{ key: string | undefined; images: PendingImage[] }>({ key: undefined, images: [] });
   const attachmentSeq = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -952,13 +964,38 @@ export default function App() {
     const quote = quoteDraftOf(toolbar.text, toolbar.speaker);
     if (quote !== "") {
       setInput(input === "" ? quote : `${input}\n\n${quote}`);
-      inputRef.current?.focus();
+      focusComposer();
     }
     closeToolbar();
   }, [toolbar, closeToolbar, input]);
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  /** 程序化聚焦 composer（2026-11-14 用户报"重新进入输入时光标跑到最前"）：
+   *  `focus()` 不设置 selection——textarea 如果当前 selection 停在 0/0（刚挂载、或浏览器失焦时
+   *  重置了 selection），聚焦后光标就在最前，接着打字插到文字开头。
+   *  聚焦后把"最前且有文字"的光标移到末尾；鼠标点击的路径由 textarea 的 `onClick` 调同一规则。 */
+  function focusComposer() {
+    const el = inputRef.current;
+    if (el === null) return;
+    el.focus();
+    correctCaret(el);
+  }
+
+  /** 光标纠正的唯一规则：**有文字且 selection 停在 0/0** → 移到末尾。
+   *
+   * 为什么需要两个调用点（实测依据：`evidence/caret/README.md`）：
+   *  · 程序聚焦：`focus()` 同步触发，`selection` 保持原值不动 → 0/0 时直接在 focus 后纠正；
+   *  · 鼠标点击：聚焦发生在 **mousedown**，浏览器在 **mouseup** 时才按点击位置设 selection。
+   *    点在文字的左侧 padding / 首行上方空白 → 浏览器把 caret 放到行首（0/0）→ 用户感受到"跑到最前"。
+   *    所以点击路径的纠正必须等 mouseup（在 `onClick` 里做）。
+   *  · 点文字中间 / 拖选 / 多行行首：selection 不是 0/0 或已非空 → 不干预（保留浏览器语义）。 */
+  function correctCaret(el: HTMLTextAreaElement) {
+    if (el.value !== "" && el.selectionStart === 0 && el.selectionEnd === 0) {
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }
 
   useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
   // —— 用户档案（你本人）：取一次；失败不阻断界面（只是没头像/用默认名） ——
@@ -1023,7 +1060,7 @@ export default function App() {
 
   // 输入草稿：按会话归属（切会话换草稿、刷新不丢）；发送时清空，失败回填。
   // 还没有会话时（新 Agent / 空项目）草稿挂在 agent+project 上——这就是"新会话草稿"（Pi Web 的 newSessionDraftKey）。
-  const draftKey = sessionId ?? (agent !== undefined && selectedProjectId !== undefined ? `${agent.id}/${selectedProjectId}` : undefined);
+  // （draftKey 声明已上移到附件状态处：两者共用同一归属。）
   useEffect(() => {
     if (draftKey === undefined) { setInputState(""); return; }
     try { setInputState(localStorage.getItem(`${DRAFT_PREFIX}${draftKey}`) ?? ""); } catch { setInputState(""); }
@@ -1464,7 +1501,8 @@ export default function App() {
     if (agent?.id === item.id && next[0] !== undefined) await selectAgent(next[0]);
   }
 
-  /** 换会话与开草稿共用的清理：流、历史、状态条、busy 归零；消息清空。
+  /** 换会话与开草稿共用的清理：流、历史、状态条、busy 归零；消息清空；**输入上下文一并换新**
+   *  （评论引用/命令面板是"这一轮"的暂存，切走即清——规范 2.12；附件不清：按会话缓存，切回仍在）。
    *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
   function resetChatState() {
     setHistory(undefined);
@@ -1481,6 +1519,9 @@ export default function App() {
     setBusy(false);
     setMessages([]);
     setMeta(undefined);
+    setCommentRefs([]);                  // 评论引用来自旧会话的检视上下文，切走即清（Task 0019）
+    commentRefsRef.current = [];
+    setPalette(undefined);               // 命令面板的可用性按旧会话算，残留会误导（Task 0019）
   }
 
   async function openSession(a: Agent, sid: string) {
@@ -2175,7 +2216,7 @@ export default function App() {
     current.current = undefined;
     setShowGroups(true);
     // 桌面把光标放进输入框；手机不抢焦点，否则会弹键盘（参考 Pi Web AppShell.tsx:945-953）。
-    if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
+    if (!isMobile) requestAnimationFrame(focusComposer);
   }
 
   /**
@@ -2203,7 +2244,7 @@ export default function App() {
     setShowGroups(true);
     // 折叠的组点了 ＋ 要能看见结果：展开它
     setCollapsedGroups((previous) => ({ ...previous, [project.id]: false }));
-    if (!isMobile) requestAnimationFrame(() => inputRef.current?.focus());
+    if (!isMobile) requestAnimationFrame(focusComposer);
   }
 
   async function registerProject(path: string): Promise<string | null> {
@@ -2261,6 +2302,12 @@ export default function App() {
     if (agent === undefined) return;
     const response = await fetch(`/api/agents/${agent.id}/sessions/${session.sessionId}`, { method: "DELETE" });
     if (!response.ok) return;
+    // 会话没了，它那份未发送的图片草稿也失去归属：不清理就会在长开标签里永久占着 base64（单张上限 10MB）
+    setAttachmentMap((map) => {
+      if (map[session.sessionId] === undefined) return map;
+      const { [session.sessionId]: _dropped, ...rest } = map;
+      return rest;
+    });
     const next = await reloadGroups();
     if (session.sessionId === sessionId) {
       const currentGroup = (next ?? []).find((g) => g.project.id === selectedProjectId);
@@ -2283,14 +2330,20 @@ export default function App() {
    * - 发送失败（网络/4xx）→ **回填草稿**，不静默吃掉用户输入；
    * - `submittingRef` 防快速连按 Enter 重复提交。
    */
-  // 附件状态与 ref 同步：sendText 可能从跨渲染的回调（sendTextRef）进来，读 ref 才不会拿到旧值
-  useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  // 附件状态与 ref 同步：sendText 可能从跨渲染的回调（sendTextRef）进来，读 ref 才不会拿到旧值。
+  // **ref 带作用域**（Task 0019）：图已按会话分区，ref 若只是"最后一份数组"，
+  // 跨渲染回调会在切会话后读到别的会话的图。读侧一律用 `pendingImages()`。
+  useEffect(() => { attachmentsRef.current = { key: draftKey, images: attachments }; }, [draftKey, attachments]);
+  /** 本次渲染/回调要发的图：ref 属于同一作用域就用它（跨渲染回调），否则用当前渲染的 state。 */
+  function pendingImages(): PendingImage[] {
+    return attachmentsRef.current.key === draftKey ? attachmentsRef.current.images : attachments;
+  }
   useEffect(() => { commentRefsRef.current = commentRefs; }, [commentRefs]);
 
   /** 把用户选的/粘贴的/拖入的文件逐个变成附件；超限或非法时提示并跳过。 */
   async function collectImages(files: readonly File[]) {
     if (files.length === 0) return;
-    let next = attachmentsRef.current;
+    let next = pendingImages();
     let added = 0;
     for (const file of files) {
       if (!file.type.startsWith("image/")) { toast(`只能发送图片：${file.name || "未命名"}`, "error"); continue; }
@@ -2302,12 +2355,12 @@ export default function App() {
       next = verdict.images;
       added += 1;
     }
-    if (added > 0) { setAttachments(next); attachmentsRef.current = next; }
+    if (added > 0) { setAttachments(next); attachmentsRef.current = { key: draftKey, images: next }; }
   }
 
   async function sendText(raw: string) {
     const text = raw.trim();
-    const pending = attachmentsRef.current;      // 本次发送携带的图片（发送成功才真正清空）
+    const pending = pendingImages();      // 本次发送携带的图片（发送成功才真正清空）
     if ((text === "" && pending.length === 0) || agent === undefined) return;
     if (!busyRef.current) {
       setTurnStep(1);
@@ -2355,7 +2408,7 @@ export default function App() {
         setInput("");
         busySessionRef.current = sid;
         setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }]);
-        if (pending.length > 0) { setAttachments([]); attachmentsRef.current = []; }
+        if (pending.length > 0) { setAttachments([]); attachmentsRef.current = { key: draftKey, images: [] }; }
         toast("已插话（steer，不影响当前轮继续）");
         if (sid !== undefined) setRunFacts((f) => queueAdd(f, sid, { behavior: "steer", text }));
         return;
@@ -2366,7 +2419,7 @@ export default function App() {
     setTailError(undefined);             // 用户发起新动作：清掉上一次的失败残留（tailError 的唯一清理点之一）
     activeTurnIdRef.current = null;      // C119：新回合等 turn(running) 事件来认领 turnId
     setInput("");                       // 事务开始：清该会话草稿（失败会回填）
-    setAttachments([]); attachmentsRef.current = [];
+    setAttachments([]); attachmentsRef.current = { key: draftKey, images: [] };
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -2390,7 +2443,7 @@ export default function App() {
       // 批注也要回填：否则"发送失败"等于把用户刚写的一批批注也弄丢了
       const snapshot = pendingAnnoRestore.current;
       if (snapshot !== undefined) { anno.restore(snapshot); pendingAnnoRestore.current = undefined; }
-      if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
+      if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = { key: draftKey, images: [...pending] }; }
       // 评论引用也回填：否则"发送失败"等于把用户刚挑的几条评论弄丢了
       const refsSnapshot = commentRefsRef.current;
       if (refsSnapshot.length > 0) { setCommentRefs(refsSnapshot); commentRefsRef.current = refsSnapshot; }
@@ -2416,12 +2469,15 @@ export default function App() {
           await fetch(`/api/agents/${agent.id}/sessions/${sid}`, { method: "DELETE" }).catch(() => undefined);
           const backToDraft = selectedProjectId === undefined ? undefined : `${agent.id}/${selectedProjectId}`;
           writeDraftFor(backToDraft, text);      // 文字挂回项目草稿键（退回草稿后 draftKey 换成它）
+          // resetChatState 会清评论引用（Task 0019）：退回草稿态后用户还要重发，先抓快照再回填
+          const refsSnapshot = commentRefsRef.current;
           resetChatState();
           setSessionId(undefined);
           current.current = undefined;
           setInputState(text);
           setTurnStep(1);
-          if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = [...pending]; }
+          if (pending.length > 0) { setAttachments([...pending]); attachmentsRef.current = { key: draftKey, images: [...pending] }; }
+          if (refsSnapshot.length > 0) { setCommentRefs(refsSnapshot); commentRefsRef.current = refsSnapshot; }
           void reloadGroups();
           toast(`发送失败：${error.error?.message ?? "请求被拒绝"}`, "error");
           return;
@@ -3745,7 +3801,7 @@ export default function App() {
                           className="h-14 w-14 rounded object-cover ring-1 ring-line" />
                       </ImageTrigger>
                       <button type="button" aria-label="移除图片"
-                        onClick={() => { const next = removeImage(attachmentsRef.current, image.id); setAttachments(next); attachmentsRef.current = next; }}
+                        onClick={() => { const next = removeImage(pendingImages(), image.id); setAttachments(next); attachmentsRef.current = { key: draftKey, images: next }; }}
                         className="absolute -right-1 -top-1 rounded-full bg-ink-900 p-0.5 text-surface ring-1 ring-line">
                         <IconX size={10} />
                       </button>
@@ -3848,6 +3904,7 @@ export default function App() {
                   void send();
                 }}
                 onCompositionStart={() => { composingRef.current = true; }}
+                onClick={(event) => correctCaret(event.currentTarget)}
                 onCompositionEnd={() => { composingRef.current = false; lastCompositionEndRef.current = Date.now(); }}
                 className="composer-autogrow w-full min-w-0 flex-1 resize-none bg-transparent pl-2 pr-1 pt-2 pb-2 text-content leading-relaxed text-ink-900 placeholder:text-ink-500" />
                 {/* 发送/停止钮与 textarea 同行对齐（ChatGPT 同型），不占独立区域 */}
@@ -3991,7 +4048,7 @@ export default function App() {
                 const usable = refs.filter((ref) => attachableComment(ref));
                 if (usable.length === 0) return;
                 setCommentRefs((prev) => usable.reduce((list, ref) => addCommentRef(list, ref), prev));
-                inputRef.current?.focus();
+                focusComposer();
               }} />
           </aside>
         </>
