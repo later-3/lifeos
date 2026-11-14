@@ -1660,6 +1660,19 @@ async function openReview(page, options = {}) {
       check("A8·端到端：用户自己补的话也在同一条消息里（不是两条）", text.includes("顺便把注释也补上") && sent.length === 1, `${sent.length} 条 / ${JSON.stringify(text.slice(-60))}`);
       await page.waitForTimeout(600);
       check("A8·端到端：发送成功后 chip 被清空（不残留）", (await page.locator("[data-comment-ref]").count()) === 0);
+      // Task 0019：评论引用是“这一轮”的暂存，切会话/开草稿即清（resetChatState，规范 2.12）。
+      // 不用再建第二会话：开草稿与切会话共用同一个 resetChatState，断言同一条清理路径。
+      await card.locator("[data-review-send]").first().click();
+      await page.waitForTimeout(400);
+      check("A8·Task0019：重挂一条引用（准备切走）", (await page.locator("[data-comment-ref]").count()) === 1);
+      const draftButton = page.locator('button[aria-label$="新建会话"]').first();
+      if ((await draftButton.count()) > 0 && !(await draftButton.isDisabled())) {
+        await draftButton.click();
+        await page.waitForTimeout(600);
+        check("A8·Task0019：切到草稿（新建会话）后引用被清空", (await page.locator("[data-comment-ref]").count()) === 0, `count=${await page.locator("[data-comment-ref]").count()}`);
+      } else {
+        check("A8·Task0019：找得到可用的「新建会话」按钮", false, "按钮不存在或已禁用");
+      }
     }
   }
   await context.close();
