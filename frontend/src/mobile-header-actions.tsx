@@ -1,0 +1,179 @@
+/**
+ * 手机头部"更多"动作层（Task 0016 · P7-S5）。
+ *
+ * ## 为什么需要
+ *
+ * 手机头部原来平铺 **6 个图标钮**（返回 / 完整历史 / 检视 / 选 Task / 文件面板 / 设置），
+ * 实测标题可用宽度：430px → 78px、390px → **38px**、360px → **8px**、≤336px → **0px**
+ * （`evidence/shots/chat-360.png` 里标题只剩半个字）。
+ *
+ * 问题不是命中区（每个都是 44），是**数量**——标题被挤到不可读。
+ *
+ * ## 形态（借 pi-web `components/AppShell.tsx:1803-1900`）
+ *
+ * 头部只留「返回 · 标题 · ⋯」；点 ⋯ **在原地展开一条动作层**（不占额外高度、不遮挡消息区），
+ * 里面是全部 5 个动作；再点变 ✕ 收起。
+ *
+ * 为什么不是下拉菜单：下拉会盖住消息区第一行；原地覆盖只占用头部那一行。
+ * 为什么不是底部 Tab：那是信息架构改动（需先定"消息/项目/设置"三页内容），
+ * 而且核过三个参考项目都没在聊天页用底部 Tab（`knowledge/reference-mobile.md` §7）。
+ *
+ * ## 焦点纪律（三条件关闭）
+ *
+ * 覆盖期间被盖住的控件必须 `aria-hidden` + `tabIndex={-1}`，否则键盘 Tab 会跳进看不见的元素。
+ * 关闭三条件：外部 `pointerdown`（`composedPath` 判定）、`Esc`、切换会话/Agent。
+ * 三条各自有断言（`frontend/test/mobile-contract.mjs`）。
+ *
+ * ## 动作是**声明式注册**（不是逐个写死）
+ *
+ * 规范 2.3：同类第二次出现 → 容器 + 注册项。这里的"容器"是本组件，
+ * "注册项"是 `MobileHeaderAction[]`（id / label / icon / onSelect / active / disabled）。
+ * 加动作只改注册表，不改布局。
+ */
+import { useEffect, useRef } from "react";
+import type { ReactNode } from "react";
+import { AppIcon, type IconName } from "./design/icons";
+import { IconButton } from "./design/ui";
+import { LAYER_CLASS } from "./design/surface";
+
+/** 一个头部动作（声明式注册项）。 */
+export type MobileHeaderAction = {
+  /** 稳定 id（测试与 `data-mobile-toolbar-action` 用）。 */
+  id: string;
+  /** 可访问名（也用作 title）。 */
+  label: string;
+  icon: IconName;
+  onSelect: () => void;
+  /** 当前生效（如图标钮的 active 态）。 */
+  active?: boolean;
+  /** 不可用（如"完整历史"在草稿态）。 */
+  disabled?: boolean;
+};
+
+/** 头部高度：与现状一致（44），动作层原地覆盖同一行。 */
+const HEADER_ROW = "h-11";
+
+export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  actions: readonly MobileHeaderAction[];
+}) {
+  const root = useRef<HTMLDivElement>(null);
+
+  /* 外部 pointerdown 关闭：用 composedPath 判定，避免"点在层内但 target 被 React 重渲染换掉"时误关 */
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const node = root.current;
+      if (node === null) return;
+      if (event.composedPath().includes(node)) return;
+      onClose();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open, onClose]);
+
+  /* Esc 关闭：捕获阶段，避免被内层输入框先吃掉（本层里没有输入框，但保持一致） */
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [open, onClose]);
+
+  return (
+    <div ref={root} className={`relative flex flex-1 items-stretch ${HEADER_ROW}`} data-mobile-toolbar={open ? "open" : "closed"}>
+      {/*
+        ⋯ 按钮**常驻**（是这一层的开关）：它必须一直在，否则"打开之后怎么关"取决于
+        层里有没有关闭钮——那会让收起路径随动作清单一变就坏。
+      */}
+      <IconButton label={open ? "收起操作" : "更多操作"} size="lg" active={open}
+        data-mobile-toolbar-more="true" aria-expanded={open}
+        onClick={onToggle} className="relative z-[1]">
+        <AppIcon name={open ? "x" : "adjustments-horizontal"} size={16} />
+      </IconButton>
+
+      {/*
+        动作层：原地覆盖在 ⋯ 右侧（`left` 让开 ⋯ 的 44px），不占额外高度。
+        `absolute` + `inset-y-0` 保证高度等于头部那一行；列表用 `overflow-x-auto` 兜住
+        动作变多的情况（宁可横滑，也不把标题挤回去）。
+      */}
+      {open && (
+        <div id="mobile-toolbar-actions" role="toolbar" aria-label="更多操作"
+          data-mobile-toolbar-actions="true"
+          className={`absolute inset-y-0 right-0 left-11 z-[1] flex items-stretch overflow-x-auto border-l border-line bg-surface/95 backdrop-blur-sm ${LAYER_CLASS.popover}`}>
+          {actions.map((action) => (
+            <IconButton key={action.id} label={action.label} size="lg"
+              active={action.active === true}
+              {...(action.disabled === true ? { disabled: true } : {})}
+              data-mobile-toolbar-action={action.id}
+              className="shrink-0 rounded-none border-r border-line last:border-r-0"
+              onClick={() => { onClose(); action.onSelect(); }}>
+              <AppIcon name={action.icon} size={16} />
+            </IconButton>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 被覆盖期间要"退出交互"的容器包装（`aria-hidden` + `tabIndex=-1` 的宿主）。
+ *
+ * 为什么不用 CSS `visibility: hidden`：主区是消息区，藏掉会让滚动位置丢失且视觉抖动。
+ * 这里做的是**语义层**退出（读屏与 Tab 不进去），视觉上仍然可见——与 pi-web
+ * `AppShell.tsx:1454,1580` 的做法一致（它对"被盖住的控件"用 `aria-hidden` + `tabIndex=-1`）。
+ */
+export function CoveredWhen({ covered, children }: { covered: boolean; children: ReactNode }) {
+  return (
+    <div aria-hidden={covered ? true : undefined} className="contents" data-covered={covered ? "true" : undefined}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * 手机头部动作清单（**唯一注册处**，规范 2.3：同类第二次出现 → 容器 + 注册项）。
+ *
+ * 五个动作与桌面一一对应：
+ *   完整历史 / 检视（打开当前 Task）/ 文件面板 / 设置 —— 加上 ⋯ 本身。
+ * 桌面的"选择要检视的 Task"**不在这里**：手机动作层只有 5 个位置，
+ * 而 Task 切换本来就在检视面板内部（`review-switcher-select`），单列只是重复入口。
+ *
+ * 为什么做成工厂函数而不是常量数组：`disabled`/`active` 依赖当前状态
+ * （草稿态没有历史、面板开着要显示 active）。数组本身是声明式的，只是把状态算进来。
+ */
+export function MOBILE_HEADER_ACTIONS(input: {
+  isMobile: boolean;
+  historyOpen: boolean;
+  reviewOpen: boolean;
+  panelOpen: boolean;
+  settingsOpen: boolean;
+  sessionId: string | undefined;
+  onHistory: () => void;
+  onReview: () => void;
+  onFiles: () => void;
+  onSettings: () => void;
+}): MobileHeaderAction[] {
+  return [
+    {
+      id: "history",
+      label: "完整历史",
+      icon: "history",
+      active: input.historyOpen,
+      // 草稿态没有历史可看（桌面的按钮同样 disabled）
+      disabled: input.sessionId === undefined,
+      onSelect: input.onHistory,
+    },
+    { id: "review", label: "检视当前 Task 的改动", icon: "git-compare", active: input.reviewOpen, onSelect: input.onReview },
+    { id: "files", label: input.panelOpen ? "收起文件面板" : "展开文件面板", icon: "layout-sidebar-right", active: input.panelOpen, onSelect: input.onFiles },
+    { id: "settings", label: "打开设置", icon: "settings", active: input.settingsOpen, onSelect: input.onSettings },
+  ];
+}

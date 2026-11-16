@@ -51,6 +51,7 @@ import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
 import { MessageView, type Block } from "./Message";
 import { MobileNav, type Level } from "./mobile-nav";
+import { MobileHeaderActions, MOBILE_HEADER_ACTIONS } from "./mobile-header-actions";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
 import { failureLabel, fixHint, type FailureKind } from "./failure-text";
@@ -893,6 +894,15 @@ export default function App() {
   const isMobile = useIsMobile();
   const [mobileNav, setMobileNav] = useState(false);
   const [mobileNavLevel, setMobileNavLevel] = useState<Level>("agents");
+  /**
+   * 手机头部"更多"动作层的开合（P7-S5）。
+   *
+   * 为什么需要：手机头部平铺 6 个图标把标题挤到 **8px**（360px 宽）/ **0px**（≤336px）。
+   * 形态与理由见 `mobile-header-actions.tsx` 头注。
+   */
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  /** 切会话/换 Agent 时收起：动作层里全是"当前上下文"的动作，留着会指向旧会话。 */
+  useEffect(() => { setMobileActionsOpen(false); }, [sessionId, agent?.id]);
   const mobileHistoryPushed = useRef(false);
   const ignoreMobilePop = useRef(false);
   useAppHeight();
@@ -3435,6 +3445,60 @@ export default function App() {
   const view = viewStateOf({ sessionId, sessionLoading, messageCount: messages.length });
   /** 当前项目下的对话条数（P1-S2 项目级空态用："有 11 条，去选一条"≠"还没有对话"）。 */
   const projectSessionCount = groups.find((group) => group.project.id === selectedProjectId)?.sessions.length ?? 0;
+  /** 完整历史（头部与手机动作层共用）。 */
+  const toggleHistoryAction = useCallback(() => {
+    if (sessionId === undefined) return;
+    if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle);
+  }, [sessionId, sessionTitle, history, closeHistory, openHistory]);
+
+  /**
+   * 打开/关闭检视（P7-S5 抽出来复用）。
+   *
+   * 手机上没有"选 Task"这个独立动作的位置（动作层已经 5 项），
+   * 所以手机上这个按钮 = 打开当前 Task 的检视；Task 切换在面板内做（`review-switcher-select`）。
+   */
+  const openCurrentReview = useCallback(() => {
+    const aid = agent?.id;
+    const taskId = meta?.activeTaskId
+      ?? projectDefaultTasks[taskTitleKey(aid ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", "default")]?.id;
+    if (aid === undefined || taskId === undefined) { toast("当前没有可检视的 Task", "error"); return; }
+    const preferred = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+    const candidates = [preferred, ...[...new Set(groups.map((g) => g.project.id))].filter((p) => p !== preferred)];
+    const knownKey = taskTitleKey(aid, preferred, taskId);
+    const known = reviewTaskPaths[knownKey];
+    if (known !== undefined) { if (!reviewOpen) openReview(known); else closeReview(); return; }
+    type SourceResp = { taskDir?: string; items?: Array<{ kind: string; path: string }> };
+    const probe = (pid: string): Promise<{ pid: string; data: SourceResp } | undefined> =>
+      fetch(`/api/agents/${aid}/projects/${pid}/tasks/${taskId}/review-sources`)
+        .then((response) => (response.ok ? response.json() as Promise<SourceResp> : undefined))
+        .then((data) => (data === undefined ? undefined : { pid, data }))
+        .catch(() => undefined);
+    void (async () => {
+      for (const pid of candidates) {
+        const hit = await probe(pid);
+        if (hit === undefined) continue;
+        const lifeos = hit.data.items?.find((item) => item.kind === "lifeos");
+        if (lifeos === undefined) continue;
+        const key = taskTitleKey(aid, hit.pid, taskId);
+        const taskDir = typeof hit.data.taskDir === "string" ? hit.data.taskDir : lifeos.path.replace(/\/home$/, "");
+        setReviewTaskPaths((prev) => ({ ...prev, [key]: taskDir }));
+        if (!reviewOpen) openReview(taskDir); else closeReview();
+        return;
+      }
+      toast(`Task ${taskId} 在 ${candidates.join(" / ")} 都没找到：可能刚被合并/归档，或后端在重启。刷新后再试`, "error");
+    })();
+  }, [agent?.id, meta?.activeTaskId, projectDefaultTasks, currentGroup?.project.id, selectedProjectId, groups, reviewTaskPaths, reviewOpen, openReview, closeReview, toast]);
+
+  /** 文件面板开合（头部与手机动作层共用）。 */
+  const toggleFilePanelAction = useCallback(() => {
+    if (!panelOpen && history !== undefined) closeHistory();
+    if (!panelOpen && isMobile && fileTabs.length === 0) setShowTree(true);
+    if (panelOpen) closeFilePanel(); else setPanelOpen(true);
+  }, [panelOpen, history, isMobile, fileTabs.length, closeHistory, setShowTree, closeFilePanel, setPanelOpen]);
+
+  /** 设置开合（头部与手机动作层共用）。 */
+  const toggleSettingsAction = useCallback(() => { setSettingsOpen((open) => !open); }, []);
+
   /**
    * 状态条上的回合提示（Task 0007）：**从与按钮同一份数据派生**。
    *
@@ -3601,6 +3665,35 @@ export default function App() {
             </p>
           </div>
           <span className="ml-auto" />
+          {/*
+            手机头部（P7-S5）：标题之后**只留一个 ⋯**，其余 4 个动作进动作层。
+            改之前平铺 6 个图标，标题可用宽度实测 430→78px / 390→38px / 360→**8px** / ≤336→**0px**。
+            动作是声明式注册（规范 2.3），加动作只改这个数组，不改布局。
+          */}
+          {isMobile && (
+            <MobileHeaderActions open={mobileActionsOpen}
+              onToggle={() => setMobileActionsOpen((open) => !open)}
+              onClose={() => setMobileActionsOpen(false)}
+              actions={MOBILE_HEADER_ACTIONS({
+                isMobile,
+                historyOpen: history !== undefined,
+                reviewOpen,
+                panelOpen,
+                settingsOpen,
+                sessionId,
+                onHistory: toggleHistoryAction,
+                onReview: () => {
+                  /*
+                   * 手机上的检视（P7-S5）：点它就直接开面板，**不再先要一次"选 Task"**。
+                   * 理由：动作层只有 5 个位置，而"选 Task"本来就在面板内部
+                   * （`review-switcher-select`）——把它单独列在这里只是重复入口。
+                   */
+                  openCurrentReview();
+                },
+                onFiles: toggleFilePanelAction,
+                onSettings: toggleSettingsAction,
+              })} />
+          )}
           {/* 快捷显示设置（老位置）：桌面显示、手机隐藏（手机去设置页）。
               className 里用 `hidden sm:inline-flex` 会让 IconButton 自带的 inline-flex 失效，
               所以外面套一层条件渲染的容器 —— 与页面里其它"手机不渲染"的写法一致。 */}
@@ -3608,10 +3701,12 @@ export default function App() {
             <DisplayPrefsPanel prefs={prefs} viewport={viewportWidth} onChange={setPrefs}
               open={displayPrefsOpen} onOpenChange={setDisplayPrefsOpen} />
           )}
-          <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
-            onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
+          {!isMobile && <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
+            onClick={toggleHistoryAction}>
             <AppIcon name="history" size={16} />
-          </IconButton>
+          </IconButton>}
+{/* 检视（桌面）：手机走头部动作层（P7-S5），见 openCurrentReview */}
+          {!isMobile && (
           <IconButton label="检视当前 Task 的改动" size="lg" active={reviewOpen}
             onClick={() => {
               const aid = agent?.id;
@@ -3658,12 +3753,13 @@ export default function App() {
             }}>
             <AppIcon name="git-compare" size={18} />
           </IconButton>
+          )}
           {/*
             A3 的「箭头」：主按钮看当前 Task，这个按钮打开面板并把焦点放到"检视对象"选择器上。
             为什么不做真正的 split button 下拉：面板里已经有原生 `<select>`（键盘可达、无自绘成本），
             再自绘一个下拉等于同一类 UI 两套实现（frontend-spec 2.3）。
           */}
-          <IconButton label="选择要检视的 Task" size="lg"
+          {!isMobile && <IconButton label="选择要检视的 Task" size="lg"
             onClick={() => {
               const current = reviewTask;
               if (current === undefined) { toast("先点左边的检视按钮打开面板"); return; }
@@ -3673,24 +3769,13 @@ export default function App() {
               }, 350);
             }}>
             <AppIcon name="selector" size={16} />
-          </IconButton>
-          <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
-            onClick={() => {
-              if (!panelOpen && history !== undefined) closeHistory();
-              if (!panelOpen && isMobile && fileTabs.length === 0) setShowTree(true);
-              if (panelOpen) closeFilePanel(); else setPanelOpen(true);
-            }}>
+          </IconButton>}
+          {!isMobile && <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
+            onClick={toggleFilePanelAction}>
             <AppIcon name="layout-sidebar-right" size={16} />
-          </IconButton>
-          {/* 设置入口（Task 0009 · 2026-11-09 用户裁决）：桌面在图标轨底部；
-              手机无图标轨，只有头部入口。**条件渲染**而不是 hidden 类——
-              IconButton 自带 inline-flex，类名顺序会让 hidden 失效（2026-11-09 用户抓到重复入口）。 */}
-          {isMobile && (
-            <IconButton label="打开设置" size="lg" active={settingsOpen}
-              onClick={() => setSettingsOpen((open) => !open)}>
-              <AppIcon name="settings" size={16} />
-            </IconButton>
-          )}
+          </IconButton>}
+          {/* 设置入口：桌面在图标轨底部；手机走头部动作层（P7-S5，见 MOBILE_HEADER_ACTIONS）。
+              改之前手机这里有第 6 个图标，标题被挤到 8px。 */}
         </header>
 
         <div className="relative min-h-0 flex-1">

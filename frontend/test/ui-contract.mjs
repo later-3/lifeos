@@ -507,10 +507,20 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
   await mobilePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await mobilePage.waitForTimeout(400);
+  /*
+   * 手机设置入口（Task 0016 · P7-S5）：头部收编成「返回 · 标题 · ⋯」之后，
+   * "打开设置"进了**动作层**（点头部 ⋯ 才出现）。入口位置变了，可达性不变——
+   * 所以这里先展开动作层再点，而不是直接找 `button[aria-label="打开设置"]`
+   * （那个按钮现在只在桌面头部存在）。
+   */
   await mobilePage.evaluate(() => {
-    document.querySelector('button[aria-label="打开设置"]')?.click();
+    document.querySelector("[data-mobile-toolbar-more]")?.click();
   });
   await mobilePage.waitForTimeout(300);
+  await mobilePage.evaluate(() => {
+    document.querySelector('[data-mobile-toolbar-action="settings"]')?.click();
+  });
+  await mobilePage.waitForTimeout(400);
   const mobile = await mobilePage.evaluate(() => {
     const surface = document.querySelector('[data-testid="settings-surface"]');
     if (surface === null) return null;

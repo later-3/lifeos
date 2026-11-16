@@ -77,11 +77,9 @@ for (const width of widths) {
   // 320 档的横向溢出是**已知缺陷**：头部 6 个 44px 图标 + 5 个 8px 间距 + 32px 内边距 = 336px，
   // 所以 mobile 布局视口被撑到 336（实测 docScrollWidth 336 > 320）。修法是 P7-S5「手机头部更多层」，
   // 那一步之后这条会变绿，届时 checkKnown 会打印"请删掉豁免"。
-  if (width === 320) {
-    checkKnown(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`, "P7-S5 手机头部");
-  } else {
-    check(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`);
-  }
+  // 320 档曾因头部 6 个 44px 图标把移动布局视口撑到 336 而溢出；
+  // P7-S5（头部收编成"返回 · 标题 · ⋯"）之后已修，这条恢复为普通断言。
+  check(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`);
   check(`[${width}] 手机不显示桌面 rail`, base.rail === false);
   check(`[${width}] 有导航入口`, base.menu || base.back);
   check(`[${width}] 可见按钮触控目标 ≥44`, base.small.length === 0, base.small.map((button) => `${button.text}:${button.w}x${button.h}`).join(" / "));
@@ -182,11 +180,7 @@ for (const width of widths) {
   });
   check(`[${width}] 配置是全屏 sheet`, modal.w >= width - 1 && modal.h >= 843, `${modal.w}x${modal.h}`);
   check(`[${width}] 配置按钮 ≥44`, modal.buttons.length > 0 && modal.buttons.every((height) => height >= 44), modal.buttons.join("/"));
-  if (width === 320) {
-    checkKnown(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`, "P7-S5 手机头部");
-  } else {
-    check(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`);
-  }
+  check(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`);
   await page.keyboard.press("Escape");
   await page.waitForTimeout(200);
 
@@ -292,11 +286,27 @@ for (const width of widths) {
     await page.waitForTimeout(400);
   }
 
-  // 全屏面板必须有返回/关闭，且按钮在视口内。
-  const historyButton = page.getByRole("button", { name: "完整历史" }).first();
-  if (await historyButton.count() > 0 && await historyButton.isEnabled()) {
-    await historyButton.click();
+  /*
+   * 全屏面板必须有返回/关闭，且按钮在视口内。
+   *
+   * P7-S5 之后手机头部的"完整历史"进了动作层（头部只留「返回 · 标题 · ⋯」），
+   * 所以这里先展开动作层再点 —— 入口位置变了，但**可达性不变**（这正是 P7-S5 的验收点）。
+   */
+  // 先把可能开着的抽屉/全屏表面关掉（它盖住头部，点不到动作层）
+  if ((await page.locator('[data-testid="mobile-nav"]').count()) > 0) {
+    await page.evaluate(() => { document.querySelector('[data-testid="mobile-nav"] button[aria-label="关闭导航"]')?.click(); });
+    await page.waitForTimeout(300);
+  }
+  // 动作层可能已开：只在没开时展开（否则会把刚开的又收起）
+  const layerOpen = await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') !== null);
+  if (!layerOpen) {
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-more]')?.click(); });
     await page.waitForTimeout(400);
+  }
+  const historyButton = page.locator('[data-mobile-toolbar-action="history"]').first();
+  if (await historyButton.count() > 0 && await historyButton.isEnabled()) {
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="history"]')?.click(); });
+    await page.waitForTimeout(600);
     const historyBack = page.locator('aside [aria-label="返回"]').first();
     const historyBox = await historyBack.boundingBox().catch(() => null);
     check(`[${width}] 完整历史有返回且可见`, historyBox !== null && historyBox.x >= 0 && historyBox.x + historyBox.width <= width, JSON.stringify(historyBox));
@@ -313,9 +323,11 @@ for (const width of widths) {
     if (historyBox !== null) await historyBack.click();
     await page.waitForTimeout(300);
     check(`[${width}] 完整历史可返回`, await page.locator('[data-shot-mask="history-body"]').count() === 0);
-    // 系统返回同样关闭全屏历史。
-    await historyButton.click();
+    // 系统返回同样关闭全屏历史（动作层在点动作后自动收起，这里重开一次）
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-more]')?.click(); });
     await page.waitForTimeout(300);
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="history"]')?.click(); });
+    await page.waitForTimeout(500);
     await page.goBack();
     await page.waitForTimeout(300);
     check(`[${width}] 完整历史可被系统返回关闭`, await page.locator('[data-shot-mask="history-body"]').count() === 0);
@@ -323,10 +335,22 @@ for (const width of widths) {
     check(`[${width}] 完整历史有返回且可见`, false, "没有可用会话");
   }
 
-  const fileButton = page.getByRole("button", { name: "展开文件面板" }).first();
+  /*
+   * 文件面板入口同样在动作层（P7-S5）。动作层是**开合**的：上一步若刚点过动作，
+   * 它已自动收起。所以这里先看状态再决定要不要点（点两次会"开了又关"，测试就会挂）。
+   */
+  const ensureActionsOpen = async () => {
+    const open = await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') !== null);
+    if (open) return true;
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-more]')?.click(); });
+    await page.waitForTimeout(350);
+    return await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') !== null);
+  };
+  await ensureActionsOpen();
+  const fileButton = page.locator('[data-mobile-toolbar-action="files"]').first();
   if (await fileButton.count() > 0) {
-    await fileButton.click();
-    await page.waitForTimeout(300);
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="files"]')?.click(); });
+    await page.waitForTimeout(500);
     const fileClose = page.getByRole("button", { name: "关闭文件面板" }).first();
     const fileBox = await fileClose.boundingBox().catch(() => null);
     check(`[${width}] 文件面板有关闭且可见`, fileBox !== null && fileBox.x >= 0 && fileBox.y >= 0 && fileBox.x + fileBox.width <= width, JSON.stringify(fileBox));
@@ -340,9 +364,10 @@ for (const width of widths) {
     if (fileBox !== null) await fileClose.click();
     await page.waitForTimeout(300);
     check(`[${width}] 文件面板可关闭`, (await page.getByRole("button", { name: "关闭文件面板" }).count()) === 0);
-    // 系统返回同样关闭全屏文件面板。
-    await fileButton.click();
-    await page.waitForTimeout(300);
+    // 系统返回同样关闭全屏文件面板（同理：先确保动作层开着）
+    await ensureActionsOpen();
+    await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="files"]')?.click(); });
+    await page.waitForTimeout(500);
     await page.goBack();
     await page.waitForTimeout(300);
     check(`[${width}] 文件面板可被系统返回关闭`, (await page.getByRole("button", { name: "关闭文件面板" }).count()) === 0);
@@ -388,13 +413,7 @@ for (const width of widths) {
           closeH: close === null || close === undefined ? 0 : Math.round(close.getBoundingClientRect().height),
         };
       });
-      if (width === 320) {
-        // 320 档：移动布局视口被头部 6 个 44 图标撑到 336（同「无横向溢出」那条已知缺陷），
-        // 全屏表面按 innerWidth 量出来差 16px。修在 P7-S5。
-        checkKnown(`[${width}] 项目概览是全屏表面`, surface.exists && surface.fullScreen, JSON.stringify(surface), "P7-S5 手机头部");
-      } else {
-        check(`[${width}] 项目概览是全屏表面`, surface.exists && surface.fullScreen, JSON.stringify(surface));
-      }
+      check(`[${width}] 项目概览是全屏表面`, surface.exists && surface.fullScreen, JSON.stringify(surface));
       check(`[${width}] 项目概览 6 格统计都在`, surface.statCells === 6, `${surface.statCells} 格`);
       check(`[${width}] 项目概览关闭钮 ≥44`, surface.closeH >= 44, `${surface.closeH}`);
       await page.keyboard.press("Escape");
@@ -432,6 +451,70 @@ for (const width of widths) {
   check("[844×390 横屏] 有移动导航入口", landscape.mobileNav === true, String(landscape.mobileNav));
   check("[844×390 横屏] 命中区 ≥44", landscape.small.length === 0, landscape.small.map((el) => `${el.label}:${el.w}x${el.h}`).join(" / "));
   check("[844×390 横屏] 无横向溢出", landscape.scroll === landscape.client, `${landscape.scroll}/${landscape.client}`);
+  await context.close();
+}
+
+// ── 手机头部（Task 0016 · P7-S5）─────────────────────────────────────────────
+// 改之前头部平铺 6 个图标，标题可用宽度实测 430→78px / 390→38px / 360→8px / ≤336→0px。
+// 现在只留「返回/菜单 · 标题 · ⋯」，其余动作进"原地覆盖的动作层"。
+// 断言四条：标题 ≥120 / 头部按钮数 = 2 / 动作层 4 项且都 ≥44 / 三种关闭方式。
+for (const width of [320, 360, 390]) {
+  const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+
+  const head = await page.evaluate(() => {
+    const h1 = document.querySelector("header h1");
+    const box = h1?.getBoundingClientRect();
+    return {
+      titleW: box === undefined ? 0 : Math.round(box.width),
+      buttons: [...document.querySelectorAll("header button")].filter((b) => b.offsetParent !== null).length,
+    };
+  });
+  // 120px = 「Life OS 会话标题」这类短标题在 text-body 13.5px 下能显示 8–9 个汉字的下限
+  check(`[${width}] 头部标题可用宽度 ≥120px`, head.titleW >= 120, `${head.titleW}px`);
+  check(`[${width}] 头部只留 2 个按钮（返回/菜单 + ⋯）`, head.buttons === 2, `${head.buttons} 个`);
+
+  const moreBtn = page.locator("[data-mobile-toolbar-more]").first();
+  if (await moreBtn.count() > 0) {
+    await moreBtn.click({ force: true });
+    await page.waitForTimeout(400);
+    const layer = await page.evaluate(() => {
+      const node = document.querySelector('[data-mobile-toolbar-actions]');
+      if (node === null) return null;
+      const items = [...node.querySelectorAll("[data-mobile-toolbar-action]")];
+      return {
+        ids: items.map((el) => el.getAttribute("data-mobile-toolbar-action")),
+        sizes: items.map((el) => { const r = el.getBoundingClientRect(); return `${Math.round(r.width)}x${Math.round(r.height)}`; }),
+        titleW: Math.round(document.querySelector("header h1")?.getBoundingClientRect().width ?? 0),
+      };
+    });
+    check(`[${width}] ⋯ 展开动作层（4 项齐全）`,
+      layer !== null && layer.ids.length === 4 && ["history", "review", "files", "settings"].every((id) => layer.ids.includes(id)),
+      layer === null ? "动作层没出现" : layer.ids.join(","));
+    check(`[${width}] 动作层每项命中 ≥44`,
+      layer !== null && layer.sizes.every((s) => { const [w, h] = s.split("x").map(Number); return w >= 44 && h >= 44; }),
+      layer === null ? "" : layer.sizes.join(" / "));
+    check(`[${width}] 动作层展开时标题宽度不被挤掉`, layer !== null && layer.titleW >= 120, layer === null ? "" : `${layer.titleW}px`);
+
+    // 关闭方式 1：Esc
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(350);
+    check(`[${width}] 动作层 Esc 可关`, await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') === null));
+    // 关闭方式 2：外部点击
+    await moreBtn.click({ force: true });
+    await page.waitForTimeout(300);
+    await page.evaluate(() => { document.querySelector("main")?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await page.waitForTimeout(350);
+    check(`[${width}] 动作层点外面可关`, await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') === null));
+    // 关闭方式 3：再点 ⋯
+    await moreBtn.click({ force: true });
+    await page.waitForTimeout(300);
+    await moreBtn.click({ force: true });
+    await page.waitForTimeout(350);
+    check(`[${width}] 动作层再点 ⋯ 可关`, await page.evaluate(() => document.querySelector('[data-mobile-toolbar-actions]') === null));
+  }
   await context.close();
 }
 
