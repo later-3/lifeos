@@ -15,6 +15,7 @@ import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { decorateCodeBlocks } from "./md-highlight";
 import { fixCjkEmphasis } from "./md-cjk";
+import { closeIncompleteMarkdown } from "./md-stream";
 import { expandShortcodes } from "./emoji-catalog";
 
 /** marked v18 的 code renderer 收**对象**参数；HTML 全部 `escaped`，不做原始透传。 */
@@ -53,8 +54,23 @@ export function renderMarkdown(text: string): string {
   return DOMPurify.sanitize(marked.parse(fixCjkEmphasis(expanded), { async: false }) as string, { USE_PROFILES: { html: true } });
 }
 
+/**
+ * 流式渲染：先把未闭合的 Markdown 结构补齐，再走同一条渲染链（Task 0018 · R5）。
+ *
+ * 为什么必须先补：分隔符只到一半时是字面（`**渲染入口`），闭合那一刻星号被吃掉、
+ * 同一段文字翻成粗体 —— 已显示的字符消失 + 字形宽度变化 + 该行重排 = 用户说的「不断闪」。
+ * 实测（`evidence/d22`）：典型思考文本 13 个 delta 内 4 次回吞 / 39 个已显示字符被改掉；纯文字 0 次。
+ *
+ * 边界：填补只发生在**开启符后面已经有正文内容**时（`remend` 同规则），
+ * 所以 `先确认 **` 这一帧仍然是字面星号 —— 这是避免空粗体（`****`）的必要代价。
+ */
+export function renderMarkdownStreaming(text: string): string {
+  return renderMarkdown(closeIncompleteMarkdown(text));
+}
+
 export function Markdown({ text, inverse = false, className = "", streaming = false }: { text: string; inverse?: boolean; className?: string; streaming?: boolean }) {
-  const html = useMemo(() => renderMarkdown(text), [text]);
+  // 流式期走 `renderMarkdownStreaming`（补未闭合结构，见 md-stream.ts）；定稿走原文
+  const html = useMemo(() => (streaming ? renderMarkdownStreaming(text) : renderMarkdown(text)), [text, streaming]);
   // 装饰引用当前 DOM（dangerouslySetInnerHTML 会整体重建子树），text 变化/路由变化都重跑
   const hostRef = useRef<HTMLDivElement | null>(null);
   /*
