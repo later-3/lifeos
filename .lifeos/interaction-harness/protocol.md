@@ -140,6 +140,30 @@
 
 **为什么把改动放进工作区，而不是直接改主区**：主区同时是程序的实时数据源和用户的阅读对象。直接改，会把“改了但没生效”“生效了但没人看过”“用户手改的和 Agent 改的”混成一堆，事后分不开。工作区把**改动**与**落地**分开：检视看 diff，通过才合并。
 
+**提交与署名**（2026-11-16 增补，Task 0020）
+
+**为什么必须有条文**：改了工作区形态之后，「谁写的这段代码」完全依赖 Agent 记不记得在 `git commit` 前传
+`-c user.name=<自己>`。实测事实（2026-11-16）：仓库 378 条提交里 314 条作者是用户的全局身份，
+带 Agent 名的 64 条全部来自 Agent 自觉传参，而 2026-11-12 改用工作区之后**一条都没有了**
+（`--since=2026-11-11` 的 Agent 署名提交 0 条）。于是“这个提示条是谁做的”只能靠还留着的分支名反查。
+
+- **必须** Agent 的提交只发生在工作区里；主区的提交只有两种来源：**用户的合并**、**系统的自动存档**。
+  「合并只由用户触发」不只是“别自动合并”，也包含“不得直接往主区提交”（反例：2026-11-16 一次 media 改动直接落 main，用户当场制止）。
+- **必须** 工作区里的提交作者 = 写它的那个 Agent：`user.name = <agentId>`，`user.email = <agentId>@lifeos.local`（本地部分就是 agent id，机器可解析）。
+- **必须** 这个身份由**建工作区的动作**写进该工作区，不靠 Agent 传参：仓公共配置只需 `extensions.worktreeConfig=true`，
+  身份写在工作区独占的 `config.worktree` 里。**不得**把 `user.*` 写进仓的公共配置或主区——那会让用户在 main 上的提交也变成 Agent 的名字。
+- **必须** 系统自动存档署名 `Life OS <lifeos@localhost>`，**不得**冒充某个 Agent。
+- **必须** 身份没写成功时要**报出来**（建 Task 的回执、体检命令），不得静默：静默跳过会让 Agent 以为自己在工作区里提交，
+  实际落成用户的全局身份。此时 Agent 按条文显式传 `-c user.name=<agentId> -c user.email=<agentId>@lifeos.local` 提交。
+- **应该** 提交正文带一条 trailer `Task: <agentId>/<projectId>/<NNNN>`：author 回答“谁写的”，trailer 回答“为哪个 Task”。
+- **必须** 存量无署名提交**不改写**（§11 历史不改写）。补的是**配置**不是历史：体检与补齐走
+  `pnpm worktree:identity`（只报告）与 `pnpm worktree:identity:fix`（只写各工作区自己的 `config.worktree`）。
+- **必须** Agent 不在主区构建运行产物（`pnpm build` 等）、不重启用户实例：`dist/` 与 `frontend/dist/`
+  不进版本控制，但**它们就是用户正在用的那一份**。实测 2026-11-16：主区被 `pnpm build` 4 次，
+  前端产物 10:29 重建、主实例进程 10:01 启动 → 浏览器拿到新前端 + 旧后端，老标签页弹出「有新版本」。
+- 检查方式：`pnpm worktree:identity --check`（身份）、`pnpm instance:drift`（主实例前后端是否错版）。
+  注意 `git status` **看不见**这两类问题：运行产物被 `.gitignore` 排除，工作区身份在 `.git/config` 里。
+
 **Task 的类型**（写在 `task.md` 的 `类型` 字段里）：类型是一个**可以扩展的集合**，每个类型对应 `task-types/<类型>/` 下的一份模板（`template.json`）和一份规则（`AGENTS.md`）。当前已有：
 
 | 类型 | 取值 | 说明 |
@@ -539,6 +563,9 @@ interaction-harness/
 | 新建 Task | 按类型模板建目录与 `task.md`，编号连续 |
 | 引入外部项目/资料（克隆、下载）、截图 | 该 Task 的 `evidence/` 下；外部克隆优先集中到 `~/.lifeos/reference/<repo>/`（§5.4） |
 | 在 Task 里改文档 / 改项目代码 | 分别落 `<taskDir>/home/…` 与 `<taskDir>/repo/…`（工作区），不直接改主区 |
+| 提交 | 在工作区里提交，作者 = 本 Agent（身份由建工作区的动作写入；系统存档用 `Life OS <lifeos@localhost>`） |
+| 重建 / 重启主实例（用户正在用的那个） | **用户触发**：Agent 只在 Task 的工作区里构建；主区产物只由用户在其同意的时间窗重建并重启 |
+| 检查提交署名 / 主实例错版 | `pnpm worktree:identity --check`、`pnpm instance:drift`（两者都不改任何东西） |
 | 新建 Task | 建目录 + 自动建两个工作区 + 写类型骨架（骨架写在工作区里） |
 | 合并（落地） | **只由用户触发**：通过检视后把工作区分支合回各自 `main`，再删工作区与 `prune` |
 | 使用记忆 | 按 §3.11 的用法，用记忆工具查、增、删 |

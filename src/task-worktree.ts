@@ -18,6 +18,7 @@ import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { resolveHome } from "./home.ts";
+import { applyWorktreeIdentity } from "./worktree-identity.ts";
 import { worktreeProfileOf } from "./worktree-profile.ts";
 
 const run = promisify(execFile);
@@ -48,6 +49,11 @@ export type WorktreeResult = {
   skipped?: string;
   /** 建之前主区是不是脏的（脏就会自动存档一次）。 */
   archived?: boolean;
+  /**
+   * 提交身份没写进去的原因（协议 §3.7「提交与署名」）。
+   * 有值 = 这个工作区里的提交会落成用户的全局身份，Agent 必须显式传 `-c`。
+   */
+  identitySkipped?: string;
 };
 
 async function git(cwd: string, args: string[], maxBuffer = 16 * 1024 * 1024): Promise<string> {
@@ -101,6 +107,17 @@ async function writeMarker(worktreePath: string, marker: WorktreeMarker): Promis
   await writeFile(join(worktreePath, MARKER_FILE), `${JSON.stringify(marker, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
+/**
+ * 给刚建好的工作区写提交身份（协议 §3.7「提交与署名」）。
+ *
+ * 返回一个只含 `identitySkipped`（或为空对象）的补丁——失败不影响工作区本身可用，
+ * 只是提交会落成用户身份，所以**报出来**而不是静默跳过。
+ */
+async function identitySkipOf(worktree: string, agentId: string): Promise<{ identitySkipped?: string }> {
+  const applied = await applyWorktreeIdentity({ worktree, agentId });
+  return applied.ok ? {} : { identitySkipped: applied.reason };
+}
+
 /** 家目录工作区：建在家目录仓上，按 Agent 可见范围裁剪。 */
 export async function createHomeWorktree(input: {
   taskDir: string; taskId: string; agentId: string; projectId: string; boundProjects: string[];
@@ -121,7 +138,7 @@ export async function createHomeWorktree(input: {
       kind: "home", taskId: input.taskId, agentId: input.agentId,
       baseBranch: base, branch, createdAt: new Date().toISOString(),
     });
-    return { path, archived };
+    return { path, archived, ...await identitySkipOf(path, input.agentId) };
   } catch (error) {
     await removeWorktree(home, path).catch(() => undefined);
     throw error;
@@ -142,7 +159,7 @@ export async function createProjectWorktree(input: {
       kind: "project", taskId: input.taskId, projectId: input.projectId, agentId: input.agentId,
       baseBranch: base, branch, createdAt: new Date().toISOString(),
     });
-    return { path };
+    return { path, ...await identitySkipOf(path, input.agentId) };
   } catch (error) {
     await removeWorktree(input.projectPath, path).catch(() => undefined);
     throw error;
@@ -185,6 +202,7 @@ export async function createTaskWorktrees(input: {
   });
   if (home.path !== undefined) created.home = home.path;
   if (home.skipped !== undefined) skipped.push(home.skipped);
+  if (home.identitySkipped !== undefined) skipped.push(home.identitySkipped);
 
   if (input.projectPath !== undefined && input.projectPath !== "") {
     const project = await createProjectWorktree({
@@ -193,6 +211,7 @@ export async function createTaskWorktrees(input: {
     });
     if (project.path !== undefined) created.project = project.path;
     if (project.skipped !== undefined) skipped.push(project.skipped);
+    if (project.identitySkipped !== undefined) skipped.push(project.identitySkipped);
   } else {
     skipped.push(`项目 ${input.projectId} 没有 path（不是代码仓），只有家目录工作区`);
   }

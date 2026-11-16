@@ -14,3 +14,5 @@
 | `dev-port/` | 开发实例的端口分配与登记（`claim` / `list` / `release`） |
 | `session-state/` | 会话状态的**四层核对**：用户报"数字对不上"时先跑它（`pnpm state`） |
 | `session-trace/` | 单条会话的**交互时间线**：用户报"发不出消息 / 不知道卡在哪"时先跑它（`pnpm trace`） |
+| `worktree-identity/` | 工作区提交身份的体检与补齐（`pnpm worktree:identity` / `:fix`）——「这行代码是谁写的」 |
+| `instance-drift/` | 主实例前后端是否错版（`pnpm instance:drift`）——「有新版本」/改了没生效时先跑它 |

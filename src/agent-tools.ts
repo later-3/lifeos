@@ -157,14 +157,18 @@ export function createAgentTools(ctx: ToolContext) {
       const task = result.task;
       await ctx.onEnterTask?.(task.id);
       const files = task.docs ?? [];
+      // 工作区 / 提交身份没建起来必须让人看见（协议 §3.7 «提交与署名»）：
+      // 静默的话 Agent 会以为自己在工作区里提交，实际落成用户的全局身份。
+      const skipped = result.skipped ?? [];
       return {
         content: [{
           type: "text" as const,
           text: `Created task ${task.id} (${task.type} · ${task.category}) at ${task.path}\n`
             + `Files: task.md${files.length > 0 ? ` · ${files.join(" · ")}` : ""}\n`
+            + (skipped.length > 0 ? `⚠ ${skipped.join("\n⚠ ")}\n` : "")
             + `This conversation now works in task ${task.id} (takes effect from the next turn). Next: fill the background with current facts, then the plan.`,
         }],
-        details: { id: task.id, number: task.number, path: task.path, type: task.type },
+        details: { id: task.id, number: task.number, path: task.path, type: task.type, skipped },
       };
     },
   });
