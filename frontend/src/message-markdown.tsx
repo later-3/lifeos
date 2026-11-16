@@ -53,15 +53,26 @@ export function renderMarkdown(text: string): string {
   return DOMPurify.sanitize(marked.parse(fixCjkEmphasis(expanded), { async: false }) as string, { USE_PROFILES: { html: true } });
 }
 
-export function Markdown({ text, inverse = false, className = "" }: { text: string; inverse?: boolean; className?: string }) {
+export function Markdown({ text, inverse = false, className = "", streaming = false }: { text: string; inverse?: boolean; className?: string; streaming?: boolean }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   // 装饰引用当前 DOM（dangerouslySetInnerHTML 会整体重建子树），text 变化/路由变化都重跑
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /*
+   * **流式期间不着色**（Task 0018 · T3）：
+   * `dangerouslySetInnerHTML` 每个 delta 都把整棵子树换掉，而 fade 代码块的着色是
+   * “纯文本 → 异步 tokenize → 写回 innerHTML”两拍。流式中逐 delta 重复这两拍，
+   * 屏幕上就是代码块不停“有颜色↔没颜色”地闪（实测一段 4 行代码在 14 个 delta 里闪了 11 次）。
+   * 所以流式期只出纯文本，**这一轮结束**（streaming 变 false）时一次着色。
+   * 旁证（A 级，源码可核）：pi-web `components/MermaidBlock.tsx:236-266`（main@f3a5c91）注释原话
+   * “highlighting a growing block re-tokenizes all of it on every chunk, which is the single most
+   * expensive part of streamed rendering”，做法同样是流式期只渲染纯文本。
+   */
   useEffect(() => {
+    if (streaming) return;
     const node = hostRef.current;
     if (node !== null && !node.querySelector(".md-hl-pending")) return;
     void decorateCodeBlocks(node);
-  }, [html]);
+  }, [html, streaming]);
   const classes = ["md-body", inverse ? "md-inverse" : "", className].filter(Boolean).join(" ");
   return <div ref={hostRef} className={classes} dangerouslySetInnerHTML={{ __html: html }} />;
 }

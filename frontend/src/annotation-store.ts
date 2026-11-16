@@ -73,6 +73,8 @@ export type AnnotationStore = {
 };
 
 let seq = 0;
+/** 共享空数组（Task 0018 · T4）：引用稳定，否则每个 delta 都会让所有无批注的正文块重算索引。 */
+const EMPTY_ANNOTATIONS: readonly Annotation[] = [];
 /**
  * 生成一条新批注的 id：避开 `taken` 里的全部已知 id。
  *
@@ -114,14 +116,19 @@ export function useAnnotations(): AnnotationStore {
       cacheRef.current = { source: annotations, byBlock, byMessage };
     }
     const fresh = cacheRef.current;
-    return fresh === null ? [] : (fresh.byBlock.get(`${messageId}\u0000${blockIndex}`) ?? []);
+    /*
+     * **必须返回同一个空数组实例**（Task 0018 · T4）：以前这里写 `?? []`，每次调用都新建一个数组，
+     * 于是 `Message.tsx` 把 `annotations=[]` 传给每个无批注的正文块 → 引用每帧都变 →
+     * 上色围欄与 memo 全部失效（实测长会话 31 次 TreeWalker / delta）。空数组是常量，不该每帧新建。
+     */
+    return fresh === null ? EMPTY_ANNOTATIONS : (fresh.byBlock.get(`${messageId}\u0000${blockIndex}`) ?? EMPTY_ANNOTATIONS);
   }, [annotations]);
 
   const ofMessage = useCallback((messageId: string) => {
     const cache = cacheRef.current;
     if (cache === null || cache.source !== annotations) ofBlock("", 0);   // 触发建缓存
     const fresh = cacheRef.current;
-    return fresh === null ? [] : (fresh.byMessage.get(messageId) ?? []);
+    return fresh === null ? EMPTY_ANNOTATIONS : (fresh.byMessage.get(messageId) ?? EMPTY_ANNOTATIONS);
   }, [annotations, ofBlock]);
 
   const add = useCallback((anchor: AnnotationDraftAnchor, marks: readonly string[], note: string, author?: AnnotationAuthor) => {
