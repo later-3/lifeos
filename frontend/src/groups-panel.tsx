@@ -93,8 +93,16 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
       {/* 右区固定锚（Task 0010 · 三轮拍板）：[计数（纯数据）][ⓘ 概览钮（常显）][＋ 新建]。
          用户原话"直接固定吧，不要鼠标移动上去再显示"——可发现性优先于密度；
          三样全部右锚定成列。移除 ✕ 已搬进概览卡（低频危险动作离开行尾）。 */}
+      {/*
+        * 计数药丸**不借行悬停色**（Task 0017 · P1 / 层模型 L2）：
+        * 它原来是 `bg-nav-accent`，而分组头悬停也是 `bg-nav-accent`（`:84`）——
+        * 同一层、同一个 token 画两次 ⇒ 悬停时药丸的**形**消失（数字还在，胶囊底没了），
+        * 看起来像"设计如此"。改用 `bg-sunken`（与列底不同的中性档）：
+        * 既保住药丸的形状，又不与任何悬停态撞色。
+        * `frontend/test/layer-paint.mjs` 断言「药丸与宿主悬停不同 token」。
+        */}
       <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
-        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
+        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-sunken px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
       <IconButton size="sm" label={`${name} 项目概览`} onClick={(event) => onOverview(event.currentTarget)}>
         <AppIcon name="info" size={14} />
       </IconButton>

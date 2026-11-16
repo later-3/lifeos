@@ -213,8 +213,20 @@ export function Row({ selected = false, className = "", children, onClick, testI
 }) {
   const interactive = onClick !== undefined;
   return (
+    /*
+     * 底色**只画在这一层**（Task 0017 · P1，层模型 L2）。
+     *
+     * 2026-11-16 用户截图（`3eac831e…`）：悬停一行看到「左边方角块 + 右边圆角小胶囊 +
+     * 中间一条缝 + 上下两块缺口」。原因是视觉属性没随结构搬迁 —— `37e8aede` 把行拆成
+     * 「容器 + 主点击区 + 动作槽」时，`rounded-row` 留在容器、`hover:bg-nav-accent` 留在内层，
+     * 于是底色画在没有圆角的子区域上；`5f76f56` 又把覆盖层连它自带的 `bg-nav-accent` 搬进来，
+     * 成了第二个绘制者（6px 圆角、矮 4px），两色一深一浅就露出缝与缺口。
+     *
+     * 现在：悬停/选中底一律由**行根**画一次。行内任何子元素都不画行级底色
+     * （`frontend/test/layer-paint.mjs` 断言「行级填充只声明在行根」）。
+     */
     <div className={`group/row relative flex h-11 w-full items-center rounded-row text-body transition-colors sm:h-8 ${
-      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700"
+      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
     } ${className}`}>
       <div
         {...(interactive
@@ -229,9 +241,7 @@ export function Row({ selected = false, className = "", children, onClick, testI
           : {})}
         data-testid={testId}
         aria-current={selected ? "true" : undefined}
-        className={`flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 ${
-          selected ? "" : "hover:bg-nav-accent"
-        }`}>
+        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 px-2">
         {children}
       </div>
       {/* 动作是主点击区的**兄弟**：不嵌套、不抢行的点击（各自 stopPropagation 也不再必需） */}
@@ -244,11 +254,18 @@ export function Row({ selected = false, className = "", children, onClick, testI
               group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0
               [@media(hover:none)]:group-focus-within/row:opacity-0">{status}</span>
           )}
-          <span className={`relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 rounded-control opacity-0 pointer-events-none transition-opacity
+          {/*
+            * 覆盖层**不画底色**（层模型 L4）：它只负责让位与内容。
+            * 参照 LobeHub `NavItem.tsx:44-60` @`867a15a`——它用
+            * `mask-image` 淡出被遮的文字，注释原文：
+            * 「Fade the covered text itself instead of painting a row-colored plate over it,
+            *   so the overlay matches any row background (hover / active / none)」。
+            * 我们照这件事做：底色由行根提供，覆盖层透明，因此任何主题/任何行底都正确。
+            */}
+          <span className="relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 opacity-0 pointer-events-none transition-opacity
             group-hover/row:opacity-100 group-hover/row:pointer-events-auto
             group-has-[:focus-visible]/row:opacity-100 group-has-[:focus-visible]/row:pointer-events-auto
-            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto
-            ${selected ? "bg-nav-selected" : "bg-nav-accent"}`}>
+            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto">
             {actions}
           </span>
         </span>
@@ -455,7 +472,8 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
       </div>
       <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
         <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
-        <span className="absolute right-0 flex items-center rounded-control bg-nav-accent opacity-0 pointer-events-none transition-opacity group-hover/session:bg-nav-selected group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
+        {/* 覆盖层不画底色（Task 0017 · P1 / 层模型 L4，同 Row 的修法）。 */}
+        <span className="absolute right-0 flex items-center opacity-0 pointer-events-none transition-opacity group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><AppIcon name="history" size={14} /></IconButton>
           <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><AppIcon name="pencil" size={14} /></IconButton>
           <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><AppIcon name="trash" size={14} /></IconButton>

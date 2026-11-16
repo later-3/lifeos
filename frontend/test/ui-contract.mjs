@@ -52,8 +52,27 @@ const results = [];
  * 否则按钮是 pointer-events:none，Playwright 的 actionability 会一直等（30s 超时）。
  */
 async function clickRowAction(page, locator) {
-  await locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]").hover();
-  await locator.click();
+  /*
+   * 用途：把"动作区里的按钮"点开（配置对话框 / 会话历史 / 图片查看器），**不是**用来证明它可点。
+   * 「hover 才出现、可点、键盘可达」由专门的 5 条断言负责（搜「动作区：默认隐藏且不可点」）。
+   *
+   * 为什么不用 `locator.click()`（2026-11-16 实测三次不同的崩溃）：
+   * `ui-contract` 里有 `page.clock.install()` 冻结时钟的页面，而动作区是
+   * `opacity-0 → 100` 的 **CSS transition**；在某些时序里 hover 已生效但过渡尚未推进，
+   * 命中测试读到的是上一帧的 `pointer-events: none` → 报
+   * 「<span class="relative grid justify-items-end"> intercepts pointer events」并 30s 超时，
+   * **整个跑批被终止**（连红都打不出来，看起来像 0 红 0 绿）。
+   * 换成真实鼠标坐标也会在滚动/重渲染换行时失败。
+   *
+   * 所以：hover 一次（让视觉与真实路径一致，截图更好看），然后直接派发 click
+   * —— 事件照常走 React 的 onClick，对话框照常打开，不受过渡时序影响。
+   */
+  const row = locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]");
+  await row.scrollIntoViewIfNeeded().catch(() => {});
+  await row.hover().catch(() => {});
+  await page.waitForTimeout(120);
+  await locator.dispatchEvent("click");
+  await page.waitForTimeout(120);
 }
 
 async function measureHistory(target) {
@@ -174,9 +193,22 @@ async function measure(page) {
     }
 
     // 命中区
+    /*
+     * 命中区口径（2026-11-16 · Task 0017 · P0 修，非放宽）：
+     * 只量**按钮类**控件，不量**行内文字链接**。
+     *
+     * 依据（官方文档，WCAG 2.5.8 Target Size (Minimum) 的 Inline 例外）：
+     * "Inline: The target is in a sentence or its size is otherwise constrained by the
+     *  line-height of non-target text."
+     * 我们这条断言要抓的是"做了个 20×20 的图标钮在那儿"（真缺陷），
+     * 而 `laterzxhp@outlook.com` 这种邮件链接的高度天然等于行高 18px，
+     * 把它算进去等于要求"正文里的链接必须 28px 高"——那会把行高撑破。
+     * 判据：`a[href]` 且**有可见文本**（不是图标链接）→ 不计入命中区。
+     */
     const smallTargets = [];
     for (const el of document.querySelectorAll("button, [role=button], a[href]")) {
       if (!visible(el)) continue;
+      if (el.tagName === "A" && (el.textContent ?? "").trim() !== "") continue;   // WCAG 2.5.8 Inline 例外
       const box = rect(el);
       if (box.width < MIN_HIT || box.height < MIN_HIT) {
         smallTargets.push(`${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 14)} ${Math.round(box.width)}×${Math.round(box.height)}`);
@@ -206,6 +238,65 @@ const browser = await playwright.chromium.launch({
 
 mkdirSync(SHOT_DIR, { recursive: true });
 
+/* ── 统一主题夹具（Task 0017 · P0） ──────────────────────────────────────
+ *
+ * 2026-11-16 实测：本文件原来用 `browser.newPage()`，其 localStorage **继承用户真实主题**
+ * （`~/.lifeos/config/ui.json` 的 `preset:cool / mode:dark / accentH:34`），
+ * 而断言文字写的是"内置 cool 浅色"（rail ΔL* 方向、对比度、徽标 soft、截图基线）。
+ * 后果：同一个文件在用户换主题后 44 项红，其中 42 项只是"测的不是同一套颜色"。
+ *
+ * 修法：**一处夹具**——所有页面都从同一个 context 工厂来，预置：
+ *   ① `lifeos.theme` = 内置 cool / 指定 mode（断言的前提）；
+ *   ② `lifeos.themePacks` = 空（外部主题包不参与，避免用户激活过 Quiet Light 就漂）；
+ * 并把 `/api/ui-prefs` 的 theme 键摘掉（服务端 ui.json 会盖掉 localStorage，这是体系的纪律）。
+ *
+ * 需要特定主题的用例（如下面的 solid 钮不变量）自己再 newContext，不走这个工厂。
+ */
+const pageFor = async (viewport, mode = "light") => {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await context.route("**/api/ui-prefs", async (route) => {
+    /*
+     * 只处理 GET；PUT（把偏好写回服务端）必须原样放过。
+     * 2026-11-16 实测：一律 route.fetch 会在页面关闭时抛 `Request context disposed`
+     * （PUT 还在飞，context 已关），整个测试直接崩，看起来像"从 44 红变 0 红"。
+     */
+    /*
+     * 非 GET（把偏好写回服务端）**不转发**：门禁只读不写（testing 2.1）。
+     * 2026-11-16 实测过两个后果：
+     *  ① 转发 → 测试自己把「字号 2 倍」写进开发家目录的 ui.json，**下一次跑**就带着它启动，
+     *     于是 `[N] 无竖向文本裁切` 全线红（徽标 h-4=16px 装 22px 字）；
+     *  ② `route.fetch()` 在页面关闭时抛 `Request context disposed`，整个跑批崩掉。
+     * 本地应答 200 既满足前端"保存成功"的路径，又不留任何持久副作用。
+     */
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {});
+      return;
+    }
+    try {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({}));
+      delete body.theme;                     // 只摘主题，其余偏好（display/badges）保留
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    } catch { /* 页面已关：这次请求没人要结果了 */ }
+  });
+  await context.addInitScript((m) => {
+    localStorage.setItem("lifeos.theme", JSON.stringify({
+      preset: "cool", mode: m, accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
+      lSurface: 100, lNav: 96.9, lRail: 93, lLine: 89.4, hoverD: 4.2, selRatio: 2,
+    }));
+    localStorage.removeItem("lifeos.themePackActive");
+  }, mode);
+  const page = await context.newPage();
+  /*
+   * `page.close()` 时把 context 一并关掉：文件里有 24 处 `await xxxPage.close()`，
+   * 逐个改成 `closePage(...)` 是 24 处无意义改动，且以后新增用例一定会漏。
+   * 包一层之后，**新增用例照旧写 `page.close()` 就不会漏 context**（test 里没有别处依赖它）。
+   */
+  const rawClose = page.close.bind(page);
+  page.close = async (...args) => { await rawClose(...args); await context.close().catch(() => {}); };
+  return page;
+};
+
 // 稳定入口：显式指定 agent/project/session。否则"上次选中的助手"可能是刚建的、还没有会话
 // → 完整历史按钮 disabled、面板/截图相关断言会超时（数据无关的写法）。
 const ENTRY_URL = await (async () => {
@@ -214,8 +305,18 @@ const ENTRY_URL = await (async () => {
     const body = await res.json();
     // 优先选有真实消息的非默认会话；默认欢迎会话可能没有 usage，状态条/截图契约会无数据。
     // 选消息数最多的非默认会话（有回复且带用量的概率最高；不依赖"最近更新"这种会变的顺序，2026-10-25 修复）
-    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && item.messages > 0)
-      .sort((a, b) => b.messages - a.messages)[0]?.sessionId
+    /*
+     * 2026-11-16 修（Task 0017 · P0）：这里原来读 `item.messages`，而行的实际字段是
+     * `counts.total`（`SessionRow` 的唯一形状，见 `src/session-rows.ts`）。
+     * `undefined > 0` 恒 false → 过滤结果永远是空数组 → 回落 `body.items[0]`，
+     * 而那往往是**默认欢迎会话（无消息、无 usage）**。
+     * 后果是一串假红："所有回合都没有 usage 块头"、"选择或新建一个会话"、
+     * 以及依赖 ENTRY_URL 的截图基线（内容不同 → 差异 8%–10%）。
+     * 判据只看 `counts.total`，不用 `messages`。
+     */
+    const totalOf = (item) => item.counts?.total ?? 0;
+    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && totalOf(item) > 0)
+      .sort((a, b) => totalOf(b) - totalOf(a))[0]?.sessionId
       ?? body.items?.[0]?.sessionId;
     return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
   } catch { return APP_URL; }
@@ -225,7 +326,7 @@ mkdirSync(BASELINE_DIR, { recursive: true });
 const FROZEN_TIME = new Date("2026-10-18T12:00:00+08:00");   // 冻结时钟：相对时间文案（"4小时前"）否则会让截图基线抖动
 
 for (const viewport of [1024, 1280, 1440, 1600]) {
-  const page = await browser.newPage({ viewport: { width: viewport, height: 900 }, deviceScaleFactor: 1 });
+  const page = await pageFor({ width: viewport, height: 900 });
   await page.clock.install({ time: FROZEN_TIME });
   await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await page.waitForTimeout(700);
@@ -241,7 +342,7 @@ for (const viewport of [1024, 1280, 1440, 1600]) {
 }
 
 // 交互态：折叠 / 面板 / 模态 / hover
-const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+const page = await pageFor({ width: 1600, height: 900 });
 await page.clock.install({ time: FROZEN_TIME });
 await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(700);
@@ -323,7 +424,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 
 // 「交互」节（Task 0018 D7-D10）：选中后自动复制开关——存在、默认开、点击翻转（不发网络也能本地翻转）。
 {
-  const interPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const interPage = await pageFor({ width: 1600, height: 900 });
   await interPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await interPage.waitForTimeout(400);
   await interPage.evaluate(() => {
@@ -355,7 +456,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 与"配置要落根节点变量并持久化"三条断言：滑速率 → --badge-motion-period 变；
 // 拉幅度 → --dot-breathe-max 变；切强度 → --color-running-soft 与 data-badge-strength 变。
 {
-  const badgePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const badgePage = await pageFor({ width: 1600, height: 900 });
   await badgePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await badgePage.waitForTimeout(400);
   await badgePage.evaluate(() => {
@@ -445,7 +546,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 //  · 深浅色分段按钮 46×25、range 16px、复选框 13×13 → 命中区低于 28；
 //  · 会话行 hover 动作区 84px 塞在 64px 槽里 → 压住标题 12px。
 {
-  const settingsPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const settingsPage = await pageFor({ width: 1600, height: 900 });
   await settingsPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await settingsPage.waitForTimeout(400);
   await settingsPage.evaluate(() => {
@@ -504,7 +605,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     surf === null ? "" : `closeVisible=${surf.closeVisible}`);
 
   // 手机：必须有可见出口 + 内容列不被导航挤掉
-  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const mobilePage = await pageFor({ width: 390, height: 844 });
   await mobilePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await mobilePage.waitForTimeout(400);
   await mobilePage.evaluate(() => {
@@ -536,7 +637,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 反例：`hover:` 类只写在"未选中"分支 → 已展开的列开关（默认就是展开）hover 毫无反应，
 // 只有未激活的设置 hover 变白底。同一个轨里两种行为，用户当然判定是 bug。
 {
-  const railPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const railPage = await pageFor({ width: 1600, height: 900 });
   await railPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await railPage.waitForTimeout(400);
   const buttons = await railPage.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
@@ -572,7 +673,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 断言两件事：① 拖动全程宽度**跟手**（每帧都在变，不是松手才跳）；
 // ② 拖动期间**不产生长任务**（>50ms 的 JS 阻塞）。
 {
-  const dragPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const dragPage = await pageFor({ width: 1600, height: 900 });
   await dragPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await dragPage.waitForTimeout(600);
   // 统计口径（2026-11-09 两次踩坑后定稿）：
@@ -695,7 +796,7 @@ async function auditResizeColumns(page, sceneSetup) {
     },
   ];
   for (const scene of scenes) {
-    const resizePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+    const resizePage = await pageFor({ width: 1600, height: 900 });
     await resizePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
     await resizePage.waitForTimeout(600);
     await scene.setup(resizePage);
@@ -709,7 +810,7 @@ async function auditResizeColumns(page, sceneSetup) {
 
 // 两列拖到墙后聊天列宽度一致（同一套上限规则）
 {
-  const capPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const capPage = await pageFor({ width: 1600, height: 900 });
   await capPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await capPage.waitForTimeout(500);
   const dragToWall = async (key) => {
@@ -742,7 +843,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // 因为之前是改动配置，用户能实时看到工作区的改变的。"
 // 五条：入口在（桌面）→ 打开贴锚点 6px → 拖滑块正文实时变 → Esc 关闭且焦点归还 → 手机不渲染。
 {
-  const quickPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const quickPage = await pageFor({ width: 1600, height: 900 });
   await quickPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await quickPage.waitForTimeout(500);
   const anchor = quickPage.locator('header button[aria-label="显示设置"]');
@@ -791,7 +892,7 @@ async function auditResizeColumns(page, sceneSetup) {
   await quickPage.close();
 
   // 手机：不渲染（手机头部已有 6 个图标、标题只剩 38px）
-  const phonePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const phonePage = await pageFor({ width: 390, height: 844 });
   await phonePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await phonePage.waitForTimeout(500);
   const phoneCount = await phonePage.locator('header button[aria-label="显示设置"]').count();
@@ -811,7 +912,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // ② 树变宽时面板总宽/左列一概不动（旧版整块面板反向扩张 + 从左列借宽不还）；
 // ③ 各列下限与聊天/查看器保底不破。不枚举实现细节。
 {
-  const treePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const treePage = await pageFor({ width: 1600, height: 900 });
   await treePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await treePage.waitForTimeout(500);
   await treePage.evaluate(() => { localStorage.removeItem("lifeos.columnWidths"); localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
@@ -878,7 +979,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
 // （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
 {
-  const tablePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const tablePage = await pageFor({ width: 1600, height: 900 });
   await tablePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await tablePage.waitForTimeout(700);
   const tableProbe = async () => await tablePage.evaluate(() => {
@@ -912,7 +1013,7 @@ async function auditResizeColumns(page, sceneSetup) {
 
 // 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
 {
-  const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const rowPage = await pageFor({ width: 1600, height: 900 });
   await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await rowPage.waitForTimeout(500);
   // 结构（2026-11-09）：行容器 > [主点击区(role=button), 状态槽]。动作区在槽内绝对定位。
@@ -1319,7 +1420,7 @@ check("头部显示会话实际模型（与接口 meta 一致）",
 //   - 覆盖过：显示覆盖模型（它就等于实际）。
 // 关键用例是**两者不一致时必须以实际为准**，下面第三条专测这个。
 {
-  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const displayPage = await pageFor({ width: 1600, height: 900 });
   const mockSession = (meta) => displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ messages: [], meta: { thinkingLevel: "off", running: false, context: null, ...meta } }),
@@ -1361,7 +1462,7 @@ check("头部显示会话实际模型（与接口 meta 一致）",
 // Task 0002：task 段 =「0001 标题」（无 Task 前缀、无清中标题时只 ID）；thinking 段 = 档位本身（无"思考"二字）。
 // 用 mock 响应证明显示规则，不依赖真实会话恰好有 activeTaskId。
 {
-  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const displayPage = await pageFor({ width: 1600, height: 900 });
   await displayPage.route(/\/api\/agents\/[^/]+\/config$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ config: null, effective: { defaultProvider: "test", defaultModel: "display-default" }, source: "catalog" }),
@@ -1535,7 +1636,7 @@ await page.waitForTimeout(250);
 // 配置保存语义：footer primary 是“保存全部”，不是只保存基础信息。
 // 复现用户反例：改模型 → 点 footer 保存 → 关闭，不能再弹“放弃未保存的改动”。
 {
-  const configPage = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
+  const configPage = await pageFor({ width: 1400, height: 900 });
   // 配置保存语义测试不依赖当前家目录有几个模型：显式给一个可切换的最小目录。
   await configPage.route(/\/api\/models-config$/, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
@@ -1808,7 +1909,7 @@ if (await historyButton.count() > 0) {
 }
 
 // 1280 并排：窗口变窄时自动收左三列，对话区与历史列都要保住
-const narrow = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+const narrow = await pageFor({ width: 1280, height: 900 });
 await narrow.clock.install({ time: FROZEN_TIME });
 await narrow.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await narrow.waitForTimeout(700);
@@ -1982,7 +2083,7 @@ await page.keyboard.press("Escape");
 await page.waitForTimeout(150);
 
 // 空项目 / 新 Agent：输入框可用，首条消息 = 建会话 + 发送（参照 Pi Web 的 new session draft）
-const freshPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+const freshPage = await pageFor({ width: 1600, height: 900 });
 await freshPage.clock.install({ time: FROZEN_TIME });
 await freshPage.goto(APP_URL, { waitUntil: "networkidle" });
 const emptyTarget = await freshPage.evaluate(async () => {
@@ -2051,15 +2152,24 @@ await freshPage.close();
   };
 
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    const items = body.items ?? [];
-    // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
-    if (!items.some((item) => item.sessionId === HIST_A)) {
-      items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
-      items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
-    }
-    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    /*
+     * 2026-11-16（Task 0017 · P0）：route 只能被处理一次。页面在同一端点上有并发请求时
+     * （首屏 + 重连 + 项目切换），先处理的那个 fulfill 之后，另一个会抛
+     * `route.fulfill: Route is already handled!` —— 而这会**终止整个跑批**，
+     * 表现成"一条红都没有、进程却 exit 1"（比红更糟：看不出测了什么）。
+     * 一个已经被答过的请求对夹具没有任何价值，忽略即可。
+     */
+    try {
+      const res = await route.fetch();
+      const body = await res.json();
+      const items = body.items ?? [];
+      // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
+      if (!items.some((item) => item.sessionId === HIST_A)) {
+        items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
+        items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
+      }
+      await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    } catch { /* 已被处理的请求：夹具无所谓谁答的 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
     const sid = new URL(route.request().url()).pathname.split("/").pop();
@@ -2127,12 +2237,48 @@ await freshPage.close();
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
 // 否则同一 context 里页面的先后顺序、以及"4小时前"这类相对时间文案，会让基线随机抖动（实测 66457 vs 66460 字节）。
+/** 截图浏览器也走同一套主题夹具（Task 0017 · P0）：否则 6 张基线随用户主题漂。 */
+const shotPageFor = async (viewport) => {
+  const context = await shotBrowser.newContext({ viewport, deviceScaleFactor: 1 });
+  await context.route("**/api/ui-prefs", async (route) => {
+    /*
+     * 非 GET（把偏好写回服务端）**不转发**：门禁只读不写（testing 2.1）。
+     * 2026-11-16 实测过两个后果：
+     *  ① 转发 → 测试自己把「字号 2 倍」写进开发家目录的 ui.json，**下一次跑**就带着它启动，
+     *     于是 `[N] 无竖向文本裁切` 全线红（徽标 h-4=16px 装 22px 字）；
+     *  ② `route.fetch()` 在页面关闭时抛 `Request context disposed`，整个跑批崩掉。
+     * 本地应答 200 既满足前端"保存成功"的路径，又不留任何持久副作用。
+     */
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {});
+      return;
+    }
+    try {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({}));
+      delete body.theme;
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    } catch { /* 页面已关 */ }
+  });
+  await context.addInitScript(() => {
+    localStorage.setItem("lifeos.theme", JSON.stringify({
+      preset: "cool", mode: "light", accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
+      lSurface: 100, lNav: 96.9, lRail: 93, lLine: 89.4, hoverD: 4.2, selRatio: 2,
+    }));
+    localStorage.removeItem("lifeos.themePackActive");
+  });
+  const shot = await context.newPage();
+  const rawClose = shot.close.bind(shot);
+  shot.close = async (...args) => { await rawClose(...args); await context.close().catch(() => {}); };
+  return shot;
+};
+
 const shotBrowser = await playwright.chromium.launch({
   headless: true, executablePath: playwright.chromium.executablePath(),
   args: ["--no-proxy-server", "--font-render-hinting=none", "--disable-lcd-text"],
 });
 async function capture(width, setup, clipTo, install) {
-  const shotPage = await shotBrowser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
+  const shotPage = await shotPageFor({ width, height: 900 });
   await shotPage.clock.install({ time: FROZEN_TIME });
   if (install !== undefined) await install(shotPage);   // 路由 mock 必须在首屏请求之前装上
   await shotPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
@@ -2276,7 +2422,7 @@ await shotBrowser.close();
 // 而"0 个"又恰好满足"没有 0×0 的点"）——正好是 C161 那个假断言的新形态。
 // 教训写进 `specs/code/testing` 2.15：夹具跟实现走，实现换了数据源，夹具必须跟着换。
 {
-  const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const runPage = await pageFor({ width: 1600, height: 900 });
   // 焦点上报会改服务端"已读"时间：拦掉不转发，门禁只读不写。
   await runPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
@@ -2334,7 +2480,7 @@ await shotBrowser.close();
 
 // —— 图片查看器（用户 2026-10-27：不新开页面，浮层里放大缩小）——
 // 入口用"附件托盘缩略图"，它与消息图片共用同一个组件，且不依赖会话里恰好有图片
-const viewerPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const viewerPage = await pageFor({ width: 1440, height: 900 });
 try {
   await viewerPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await viewerPage.waitForTimeout(700);
@@ -2389,7 +2535,7 @@ try {
 // 视觉变更必须有可断言项（process.md 四步：每条视觉改动配检查）。
 // 这里用"计算样式 + 几何"断言，不靠截图基线（基线会把行内排版遮掉，案例 C152）。
 {
-  const page2 = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const page2 = await pageFor({ width: 1600, height: 900 });
   try {
     await page2.goto(ENTRY_URL, { waitUntil: "domcontentloaded" });
     await page2.waitForTimeout(2000);
@@ -2630,7 +2776,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
 // 断言到**可核对的事实**（数量文本 + aria-label + 有布局盒），不数 class。
 // 参照 Rocket.Chat `RoomListItem.stories.tsx:55`：用 role=status + aria-label 做断言最稳。
 {
-  const countPage = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
+  const countPage = await pageFor({ width: 1600, height: 1000 });
   await countPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
   const ids = (listed.items ?? []).map((item) => item.sessionId);
@@ -2739,6 +2885,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
    */
   await page.route(/\/api\/agents$/, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
+    try {
     const res = await route.fetch();
     const body = await res.json().catch(() => ({ items: [] }));
     const items = Array.isArray(body.items) ? body.items : [];
@@ -2746,13 +2893,16 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       ? items.map((item) => (item.id === "coder" ? { ...item, name: "Coder" } : item))
       : [...items, { id: "coder", name: "Coder", description: "", defaultProjectId: "workspace" }];
     await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: withCoder }) });
+    } catch { /* 同上：已被处理 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    const items = body.items ?? [];
-    if (!items.some((item) => item.sessionId === SID)) items.push(row);
-    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    try {
+      const res = await route.fetch();
+      const body = await res.json();
+      const items = body.items ?? [];
+      if (!items.some((item) => item.sessionId === SID)) items.push(row);
+      await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    } catch { /* 同上：已被处理 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
     const sid = new URL(route.request().url()).pathname.split("/").pop();
