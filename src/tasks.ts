@@ -281,7 +281,7 @@ async function materialize(ctx: TaskContext, input: {
 /** 用户下达的普通 Task（development / general）。 */
 export async function createTask(ctx: TaskContext, input: {
   title: string; type?: TaskType; category: TaskCategory; goal?: string; date?: string;
-}): Promise<{ task: TaskSummary } | TaskError> {
+}): Promise<{ task: TaskSummary; skipped?: string[] } | TaskError> {
   const title = (input.title ?? "").trim();
   if (title === "") return { code: "invalid_title", message: "title 不能为空" };
   const type: TaskType = (input.type ?? "development").trim();
@@ -329,7 +329,9 @@ export async function createTask(ctx: TaskContext, input: {
     typeRulesDir: resolved.source,
     pointer: "（下一步做什么 / 卡在哪——状态只写在这里）",
   }, worktrees.docRoot);
-  return { task };
+  // 工作区没建出来 / 提交身份没写进去的原因一并交上去：都是**不报错但会默默变坏**的情况，
+  // 静默跳过会让 Agent 以为自己在工作区里提交、实际落成用户的全局身份（协议 §3.7 提交与署名）。
+  return { task, ...(worktrees.skipped.length === 0 ? {} : { skipped: worktrees.skipped }) };
 }
 
 // 同一项目并发取默认 Task 时只造一个（进程内串行；跨进程不是本版目标）。

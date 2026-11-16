@@ -132,12 +132,28 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 
 | 工作区 | 位置 | 分支 |
 |---|---|---|
-| 项目仓 | `<taskDir>/repo/` | `dev/<NNNN>-<slug>`（历史 Task 为 `evidence/worktree/`） |
-| 家目录仓 | `<taskDir>/home/` | `task/<NNNN>-<slug>` |
+| 项目仓 | `<taskDir>/repo/` | `dev/<agent>/<project>/<NNNN>`（历史 Task 为 `evidence/worktree/`） |
+| 家目录仓 | `<taskDir>/home/` | `task/<agent>/<project>/<NNNN>` |
+
+> 分支名带 agent 与 project 是协议 §3.7 的要求（Task ID 只在 Agent × Project 内唯一）；
+> 本文 2026-11-10 版写的是 `dev/<NNNN>-<slug>`，与实现不符，本次对账更正。
 
 - **必须** 不在主区直接改：文档改 `<taskDir>/home/…`，代码改 `<taskDir>/repo/…`；主区 `git status` 应恒为空。
 - **必须** 合并只由用户触发（检视通过）：`git -C <仓> merge --no-ff <分支>` → `git worktree remove` → `git worktree prune`。冲突就停，不替用户解。
 - **必须** 家目录工作区按 Agent 可见范围裁剪（协议 §3.7）：自己的 + 共享 workspace + 绑定的 project；其他 Agent 与未绑定 project 不在里面。绑定关系变了要重算裁剪。
+
+**提交署名**（2026-11-16 增补，协议 §3.7「提交与署名」）：
+
+- **必须** 提交只发生在工作区里；主区的提交只有两种来源：用户的合并、系统的自动存档（`Life OS <lifeos@localhost>`）。
+- **必须** 工作区里的提交作者 = 这个工作区所属的 Agent（`user.name=<agentId>`、`user.email=<agentId>@lifeos.local`）。身份由建工作区的动作写进该工作区（`src/worktree-identity.ts`），**不靠 Agent 传参**。
+- **必须** 新 Task 若回执里带了身份没写成功的提示，就按提示显式传 `-c user.name=<agentId> -c user.email=<agentId>@lifeos.local` 提交，并把这件事记进 `log.md`。
+- **应该** 提交正文带 trailer `Task: <agentId>/<projectId>/<NNNN>`。
+- **必须** 不改写存量无署名提交（协议 §11）：314 条作者是用户身份的提交保持原样，反查靠分支名与 Task 目录归属。
+- **可以** 2026-11-16 之前建的存量工作区不补身份（用户 2026-11-16 拍板：存量不管，只要求新建的守规范）；
+  需要时 `pnpm worktree:identity` 看现状、`pnpm worktree:identity:fix` 补，**它不是提交前的规定步骤**。
+
+> 为什么这事必须由机制而不是记性保证：2026-11-16 实测 378 条提交里 314 条落成用户的全局身份，
+> 带 Agent 名的 64 条全是 Agent 自己记得传 `-c`；改用工作区后（11-12 起）署名归零。
 
 **实例收尾**（2026-11-10 实测：不清收尾累积到 32.5 G / 28 个监听端口）。任务交完或换 Task 时按顺序做：
 
@@ -169,6 +185,11 @@ lsof -nP -iTCP:<自己端口> -sTCP:LISTEN     # 应无输出
 
 - **禁止** 在主实例运行期间修改主 worktree 的 `src/**`、`frontend/**`；**检查方式**：主实例的 supervisor 日志里出现"⚠ 主 worktree 的 src/ 被改动了"即为违规；`git status --short` 显示 `src/` 有 `M`/`??` 且没有对应 Task 的 `repo/`（历史 Task 为 `evidence/worktree/`）即为违规。
 - **禁止** 在主 worktree 执行 `pnpm build`、`pnpm test:ui:update`、`pnpm home:install`；
+  **检查方式（2026-11-16 新增，因为原来没有）**：`pnpm instance:drift` —— 它比较主实例进程的启动时刻与
+  `dist/server.mjs` / `frontend/dist/index.html` 的 mtime。产物比进程新 = 主区在实例运行期间被构建过。
+  **`git status` 看不见这条**：`dist/` 与 `frontend/dist/` 都在 `.gitignore` 里，工作区被排除。
+  实测代价（2026-11-16）：当天在主区 build 4 次 → 前端 10:29 重建、进程 10:01 启动 →
+  用户在浏览器里看到「Life OS 有新版本」，且后端跑的是旧代码。
 - **禁止** 重启或 kill 主实例、修改用户 `~/.lifeos` 数据；
 - **禁止** 同一 Task 开第二份实例（要并行就另起 Task），也禁止用固定 `43130` 启动（C160 就是这么撞车的）。
 - **禁止** 把"开发中"的状态当成"已交付"。
