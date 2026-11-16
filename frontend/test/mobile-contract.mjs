@@ -435,6 +435,46 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 抽屉列表分页（Task 0016 · P7-S4）──────────────────────────────────────────
+// 手机抽屉每级一屏，项目/会话都可能有几十上百条：首屏只渲染一页 + "显示更多"，
+// 比虚拟滚动便宜得多（与 P4 的消息分页同一结论）。
+// 断言用**具体数字**（≤20 行、点一次变 40），不写"有/没有"——数字才能抓住"翻页没生效"。
+for (const width of [360, 390]) {
+  const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  const navEntry3 = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+  if (await navEntry3.count() > 0) {
+    await navEntry3.first().click();
+    await page.waitForTimeout(700);
+    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
+      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+    const projectRow3 = page.locator('[data-mobile-level="projects"] [role="button"]').first();
+    if (await projectRow3.count() > 0) {
+      await projectRow3.click();
+      await page.waitForTimeout(1200);
+    }
+    const rowsState = () => page.evaluate(() => ({
+      rows: document.querySelectorAll('[data-mobile-level="sessions"] [role="button"]').length,
+      hasMore: document.querySelector('[data-testid="load-more-rows"]') !== null,
+      moreH: Math.round(document.querySelector('[data-testid="load-more-rows"]')?.getBoundingClientRect().height ?? 0),
+    }));
+    const before = await rowsState();
+    check(`[${width}] 抽屉列表首屏不超过一页`, before.rows <= 20, `${before.rows} 行`);
+    if (before.hasMore) {
+      check(`[${width}] "显示更多"命中区 ≥44`, before.moreH >= 44, `${before.moreH}`);
+      await page.evaluate(() => { document.querySelector('[data-testid="load-more-rows"]')?.click(); });
+      await page.waitForTimeout(600);
+      const after = await rowsState();
+      check(`[${width}] 点"显示更多"后行数增加`, after.rows > before.rows, `${before.rows} → ${after.rows}`);
+    }
+  }
+  await context.close();
+}
+
 // ── 全屏表面内的触控目标（Task 0016 · P7-S3）──────────────────────────────────
 // `mobile-contract` 原来只查 main 与导航抽屉里的 button，**不查全屏表面内部**，
 // 于是设置页 Tab 68×36、深浅色分段 46×28、AgentConfig 的 select 318×36 全部漏过去了。

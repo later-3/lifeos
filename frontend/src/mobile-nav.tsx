@@ -22,6 +22,18 @@ type GroupLite = { project: ProjectLite; sessions: SessionLite[] };
 export type Level = "agents" | "projects" | "sessions";
 
 /**
+ * 抽屉列表一页多少条（Task 0016 · P7-S4）。
+ *
+ * 手机抽屉是 drill-down（一级一屏），所以项目与会话的列表都**可能有几百条**：
+ * 实测主家目录某个 Agent 的 workspace 下 11 条会话；用户真实使用时每项目几十到上百条很正常。
+ * 首屏只渲染一页 + 一个"显示更多"，比虚拟滚动便宜得多（同一结论见 P4 的分页渲染）。
+ *
+ * 20 的依据：手机一屏可见行数 ≈ 13–15 行（`Row` 44 高），留一页余量以便"再多看一点"，
+ * 同时把首屏 DOM 控制在 20 行级别。
+ */
+const PAGE_SIZE = 20;
+
+/**
  * 手机导航：多级 drill-down（助手 → 项目 → 会话），而不是“点一下就关”。
  * 参考 iOS/Linear/ChatGPT 手机端：选中上一级进入下一级，header 有返回；选到会话才关闭。
  */
@@ -79,8 +91,15 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
   useDialogFocus(panel, onClose, { enabled: open });
   /** 当前展开动作菜单的会话 id（同一时刻只允许一个；点行/切级/关抽屉都清）。 */
   const [menuFor, setMenuFor] = useState<string | undefined>(undefined);
-  // 切级或关闭时清空：菜单是某一级的临时态，跨级留着会指向不存在的行
-  useEffect(() => { setMenuFor(undefined); }, [level, open]);
+  /**
+   * 当前级显示到第几条（P7-S4）。
+   *
+   * 为什么按"级"重置：`projects` 与 `sessions` 是两个不同的列表，
+   * 共享一个水位会让"在项目级点了显示更多"影响到会话级（且切级后无从解释）。
+   */
+  const [visibleRows, setVisibleRows] = useState(PAGE_SIZE);
+  // 切级或关闭时清空：菜单与列表水位都是某一级的临时态
+  useEffect(() => { setMenuFor(undefined); setVisibleRows(PAGE_SIZE); }, [level, open]);
   if (!open) return null;
 
   const currentGroup = groups.find((group) => group.project.id === projectId);
@@ -113,7 +132,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
           </Row>
         ))}
 
-        {level === "projects" && groups.map((group) => (
+        {level === "projects" && groups.slice(0, visibleRows).map((group) => (
           <Row key={group.project.id} selected={group.project.id === projectId}
             onClick={() => { void Promise.resolve(onSelectProject(group.project)).then(() => onLevelChange("sessions")); }}
             /* 信息按钮常显（同会话行 ⋯ 的理由：触屏没有 hover，且这里点行就进会话） */
@@ -130,7 +149,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
         ))}
         {level === "projects" && groups.length === 0 && <p className="px-3 py-8 text-center text-meta text-ink-500">还没有项目</p>}
 
-        {level === "sessions" && sessions.map((item) => (
+        {level === "sessions" && sessions.slice(0, visibleRows).map((item) => (
           <Row key={item.sessionId} selected={item.sessionId === sessionId}
             onClick={renaming?.sid === item.sessionId ? undefined : () => onOpenSession(item.sessionId)}
             /* 动作放 Row 的 actions 槽（与主点击区是兄弟，不嵌套 —— axe nested-interactive 的既有教训）。
@@ -184,6 +203,24 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
           );
         })()}
         {level === "sessions" && sessions.length === 0 && <p className="px-3 py-8 text-center text-meta text-ink-500">还没有会话</p>}
+        {/*
+          分页"显示更多"（P7-S4）：项目级与会话级共用同一个水位。
+          用 `Button`（primitive，内部才是原生 button）而不是 `Row`（div role=button）——
+          后者会被 `[data-mobile-level] [role="button"]` 的选择器当成"一行"，
+          现有契约与键盘行为都按"每行一个实体"写的。
+        */}
+        {(() => {
+          const total = level === "projects" ? groups.length : level === "sessions" ? sessions.length : 0;
+          if (total <= visibleRows) return null;
+          return (
+            <div className="px-2 py-1">
+              <Button variant="ghost" className="w-full" data-testid="load-more-rows"
+                onClick={() => setVisibleRows((current) => current + PAGE_SIZE)}>
+                显示更多（还有 {total - visibleRows} 条）
+              </Button>
+            </div>
+          );
+        })()}
       </div>
 
       <footer className="shrink-0 border-t border-line p-3 pb-safe">
