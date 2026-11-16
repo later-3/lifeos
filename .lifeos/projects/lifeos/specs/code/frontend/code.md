@@ -255,8 +255,11 @@ open-webui `ResizableSidePanel.svelte`（`dx` 直接换算宽）；详细对比�
 - 场景：列表行尾的图标动作（助手行的「配置/删除」、会话行的「历史/重命名/删除」，以及未来的树/文件行）。
 - 规则：
   - **必须** 用 `design/ui.tsx` `Row` 的 `status` + `actions`（状态与动作叠在同一栅格格，隐藏不塌、显示不抖）；
-  - **必须不** 在使用点自己写 hover 分支（`opacity-0 group-hover:*` 之类只许存在于 Row / SessionRow 容器内部）——
-    2026-11-10 起 SessionRow 的手写版保留运行；**新增**带动作的行**必须**走 Row，不得复制第二份；
+  - **必须不** 在使用点自己写 hover 分支（`opacity-0 group-hover:*` 之类只许存在于 `Row` 内部）；
+  - **必须** 只有一份行实现：`Row`（`variant="single" | "two-line"`）。`SessionRow` 是它的**薄包装**，
+    **必须不** 再写第二份"自己画底色 + 自己拼槽位"的行；
+    （2026-11-10 曾为 SessionRow 的手写版开过例外，2026-11-16 删除：同一机制两份实现方向相反——
+    `Row` 把悬停底画在主点击区（无圆角 → 方角块）、`SessionRow` 画在行根，用户截图即此。见 Task 0017 · C201。）
   - 动作隐藏时状态徽标必须可见（`StatusMarks` 挂 `status` 槽），hover 两者换位 —— 不要出现"格里悬空一段空白"；
   - 键盘可达（`group-has-[:focus-visible]` 强制显现）与触屏分支（`@media(hover:none)`）由容器统一提供。
 - 依据：2026-11-10 用户（助手行两按钮常驻把列表拉长，"和会话列表里那个一样，鼠标移上去才显示"）。

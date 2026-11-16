@@ -2115,18 +2115,29 @@ if (overviewOpen === false) {
   check("[0010] 概览卡打开", false, "找不到概览钮（0 个 = 没测）");
 } else {
   await page.waitForSelector('[data-testid="project-overview"]', { timeout: 3000 });
+  /*
+   * 2026-11-16（Task 0017 · P3）：判据从「整卡 textContent 里有没有 `默认工作区` 或 `/`」
+   * 改为「身份区下方**那一格**存在且非空」。
+   *
+   * 旧写法两个毛病：① 正则匹配任何 `/`，与"这一格渲染了没有"无关；
+   * ② 实测在整跑批中**时红时绿**（同一份代码两次运行结果不同）—— 它读的是整卡文本，
+   * 而卡片在不同时刻可能处于不同项目（有路径 / 默认工作区），只要有一个字没渲染完就红。
+   * 定位到具体元素后判据稳定（`testing.md` 2.15：断言到元素，不断言整块文本）。
+   */
   const card = await page.evaluate(() => {
     const panel = document.querySelector('[data-testid="project-overview"]');
-    if (panel === null) return { statCount: 0, hasBody: false };
+    if (panel === null) return { statCount: 0, hasBody: false, location: "" };
     const stats = panel.querySelectorAll('[data-testid="overview-stats"] > div');
+    const location = (panel.querySelector('[data-testid="overview-location"]')?.textContent ?? "").trim();
     return {
       statCount: stats.length,
-      hasBody: /默认工作区|[\\/]/u.test(panel.textContent ?? ""),
+      hasBody: location !== "",
+      location,
       hasError: panel.querySelector('[data-testid="overview-error"]') !== null,
     };
   });
   check("[0010] 概览卡打开：6 格统计 + 路径/默认工作区", card.statCount === 6 && card.hasBody && !card.hasError,
-    `stats=${card.statCount} body=${card.hasBody}`);
+    `stats=${card.statCount} location="${card.location}"`);
   await page.keyboard.press("Escape");
   await page.waitForTimeout(150);
   const closed = await page.evaluate(() => document.querySelector('[data-testid="project-overview"]') === null);

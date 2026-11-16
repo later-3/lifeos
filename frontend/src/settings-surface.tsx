@@ -429,7 +429,8 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
               <div className="px-2 pb-1 pt-3 text-micro font-semibold tracking-wide text-nav-muted max-sm:hidden">{g.g}</div>
               {g.items.map((it) => (
                 <button key={it.k} type="button"
-                  className={`relative flex h-9 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
+                  /* 设置分区导航也是**导航列里的行**（与 Row / SessionRow 并列）→ 用行圆角 8px（Task 0017 · P3）。 */
+                  className={`relative flex h-9 shrink-0 items-center gap-2 rounded-row px-2 text-left text-body transition-colors ${
                     section === it.k
                       // 选中态文字用 ink-900（accent 在 nav-bg 上只有 4.33，不到 AA 4.5）；
                       // 强调交给左侧 2px 指示条 —— 颜色是稀缺信号，不该由文字颜色承担
@@ -491,7 +492,7 @@ function ThemeSelector({ themes, activeId, onSelect }: {
         <div className="absolute mt-1 w-full rounded-panel border border-line bg-surface"
           style={{ boxShadow: "var(--surface-popover)", zIndex: "var(--z-popover)", maxHeight: "280px", overflowY: "auto" }}>
           {themes.map((t) => (
-            <ClickableRow key={t.id}
+            <ClickableRow key={t.id} shape="row"
               className={`gap-3 px-3 py-2 ${t.id === activeId ? "bg-wash-selected" : ""}`}
               onClick={() => { onSelect(t.id); setOpen(false); }}>
               <span className="flex h-5 w-9 shrink-0 overflow-hidden rounded-inner border border-line" aria-hidden>

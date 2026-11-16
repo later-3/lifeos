@@ -77,6 +77,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
           名字不再 flex-1（徽标要贴着名字）：min-w-0 让长名在徽标前截断；
           按钮本身仍 flex-1——空白中段仍是折叠点击区，悬停底色仍覆盖整行。 */}
       <ClickableRow
+        shape="row"
         onClick={() => { if (onSelect !== undefined && !selected) { onSelect(); return; } onToggle(); }}
         aria-expanded={open}
         aria-current={selected ? "true" : undefined}

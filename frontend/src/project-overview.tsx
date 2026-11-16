@@ -94,7 +94,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
           <span className="min-w-0 truncate text-body font-medium text-ink-900">{name}</span>
         </div>
         {state.kind === "data" && state.data.path !== null && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" data-testid="overview-location">
             <code title={state.data.path}
               className="min-w-0 flex-1 truncate rounded-control bg-sunken px-1.5 py-1 font-mono text-micro text-ink-700">
               {state.data.path}
@@ -111,7 +111,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
           </div>
         )}
         {state.kind === "data" && state.data.path === null && (
-          <p className="text-micro text-nav-muted">默认工作区 · 家目录（没有外部路径）</p>
+          <p className="text-micro text-nav-muted" data-testid="overview-location">默认工作区 · 家目录（没有外部路径）</p>
         )}
         {state.kind === "loading" && (
           <p className="text-micro text-nav-muted" data-testid="overview-loading">正在读取项目信息…</p>

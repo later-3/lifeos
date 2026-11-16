@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
+const DEV_PAGE = `${APP_URL}/dev/design-system.html`;
 const CANDIDATES = [
   process.env.PLAYWRIGHT_CORE,
   join(process.cwd(), "frontend/node_modules/playwright-core/index.js"),
@@ -225,6 +226,32 @@ const openPage = async (mode = "light") => {
       `宿主悬停=${same.hostHover.join(",") || "无"} 药丸=${same.pillTokens.join(",") || "无"} 撞=${same.shared.join(",") || "无"}`);
   }
   await page.close();
+}
+
+/* ── 4 行圆角一致性（Task 0017 · P3：同一列里的行必须同档） ── */
+{
+  const page = await openPage();
+  await page.goto(`${DEV_PAGE}?mode=light&theme=builtin`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(900);
+  const radii = await page.evaluate(() => {
+    const rootRadius = (innerSel) => {
+      const inner = document.querySelector(innerSel);
+      return inner === null ? null : parseFloat(getComputedStyle(inner.parentElement).borderRadius) || 0;
+    };
+    const selfRadius = (sel) => {
+      const el = document.querySelector(sel);
+      return el === null ? null : parseFloat(getComputedStyle(el).borderRadius) || 0;
+    };
+    return {
+      row: rootRadius("[data-shot-zone='row-idle'] [role='button']"),
+      session: rootRadius("[data-shot-zone='session-idle'] [role='button']"),
+      groupHeader: selfRadius("[data-shot-zone='group-header-idle'] button"),
+    };
+  });
+  const values = Object.values(radii);
+  check("行圆角同档：Row / SessionRow / 分组头都是同一档（8px）",
+    values.every((v) => v === 8),
+    JSON.stringify(radii));
 }
 
 await browser.close();
