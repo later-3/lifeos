@@ -16,7 +16,7 @@
  */
 import { useCallback, useRef, useState } from "react";
 
-import type { PendingImage } from "../attachments";
+import type { PendingImage } from "../api/attachments";
 
 export type PaletteItem = { key: string; label: string; hint?: string; disabled?: boolean; run: () => void };
 export type PaletteState = { items: PaletteItem[]; index: number };

@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createHttpStore, createLocalStore, hasLocalOnlyComments, localCommentsOf,
-} from "../frontend/src/review-comment-store.ts";
+} from "../frontend/src/api/review-comment-store.ts";
 
 /** 内存 storage（localStorage 子集）。 */
 function memStorage() {

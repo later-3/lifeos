@@ -27,7 +27,7 @@ import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceStyle } from "../src/d
 import { Button, ComposerButton, controlClass, Field, IconButton, Label, Row, Segmented, Skeleton, Spinner, Tabs } from "../src/design/ui";
 import { AppIcon, type IconName } from "../src/design/icons";
 import { SessionRow } from "../src/design/ui";
-import { GroupHeader } from "../src/groups-panel";
+import { GroupHeader } from "../src/views/groups-panel";
 
 /* ── 排版小件 ── */
 function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {

@@ -25,16 +25,16 @@ import {
   applySurfaceTokens, applyTheme, loadTheme, type ThemeState,
 } from "../design/theme";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "../design/theme-package";
-import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "../badge-prefs";
-import { fontVars, parsePrefs, widthVar, type DisplayPrefs } from "../display-prefs";
-import { loadPrefs } from "../display-prefs-panel";
+import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "../api/badge-prefs";
+import { fontVars, parsePrefs, widthVar, type DisplayPrefs } from "../api/display-prefs";
+import { loadPrefs } from "../views/display-prefs-panel";
 import {
   cachedBadgePrefs, cachedSelectionPrefs, fetchUiPrefs,
   persistBadgePrefs, persistDisplayPrefs, persistSelectionPrefs, persistTheme,
-} from "../ui-prefs-client";
-import type { SelectionPrefs } from "../selection-prefs";
+} from "../api/ui-prefs-client";
+import type { SelectionPrefs } from "../api/selection-prefs";
 
-export type SettingsSection = Parameters<typeof import("../settings-surface").SettingsSurface>[0]["section"];
+export type SettingsSection = Parameters<typeof import("../views/settings-surface").SettingsSurface>[0]["section"];
 
 export function useAppearance() {
   const [theme, setTheme] = useState<ThemeState>(() => loadTheme());

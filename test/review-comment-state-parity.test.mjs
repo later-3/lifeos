@@ -12,7 +12,7 @@ const HOME = mkdtempSync(join(tmpdir(), "review-parity-home-"));
 process.env.LIFEOS_HOME = HOME;
 
 const server = await import("../src/review-comments.ts");
-const client = await import("../frontend/src/review-comment-state.ts");
+const client = await import("../frontend/src/api/review-comment-state.ts");
 
 const USER = { kind: "user", id: "xu-later" };
 const CODER = { kind: "agent", id: "coder" };

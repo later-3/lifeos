@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from "react";
 
-import { readCollapsedGroups, writeCollapsedGroups } from "../layout-storage";
+import { readCollapsedGroups, writeCollapsedGroups } from "../api/layout-storage";
 import type { Agent, Group, UserProfile } from "./types";
 
 export type { Agent, Group, UserProfile };

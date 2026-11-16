@@ -44,7 +44,7 @@ test("预览区只用语义 utility（无硬编码颜色/任意值）", () => {
 });
 
 test("预览区挂在设置页的主题分区里（不是只在 dev 页）", () => {
-  const settings = readFileSync(new URL("../frontend/src/settings-surface.tsx", import.meta.url), "utf8");
+  const settings = readFileSync(new URL("../frontend/src/views/settings-surface.tsx", import.meta.url), "utf8");
   assert.ok(settings.includes("ThemePreview"), "设置页没有引用 ThemePreview（用户要求：组件预览放进设置）");
   assert.ok(/当前主题效果/.test(settings), "设置页缺'当前主题效果'区块标题");
 });

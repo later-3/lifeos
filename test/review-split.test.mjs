@@ -3,7 +3,7 @@
 // 参考：difit `SideBySideDiffChunk.tsx:414-490` `convertToSideBySide`。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pairForSplit, splitAnchorOf } from "../frontend/src/review-split.ts";
+import { pairForSplit, splitAnchorOf } from "../frontend/src/api/review-split.ts";
 
 const ctx = (oldNo, newNo, text) => ({ type: "context", oldNo, newNo, text });
 const del = (oldNo, text) => ({ type: "removed", oldNo, newNo: null, text });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applySectionPatch, sectionsAfter } from "../frontend/src/prompt-patches.ts";
+import { applySectionPatch, sectionsAfter } from "../frontend/src/api/prompt-patches.ts";
 
 /**
  * 判据：Pi 落盘的 system `sections` 是**增量补丁**（只记变化的区，删除记 null）。

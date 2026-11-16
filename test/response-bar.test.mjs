@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { processOpenOf } from "../frontend/src/response-fold.ts";
+import { processOpenOf } from "../frontend/src/api/response-fold.ts";
 
 test("用户没点过：按 live（生成中展开、结束后折叠）", () => {
   assert.equal(processOpenOf(undefined, true), true);

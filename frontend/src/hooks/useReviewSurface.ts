@@ -16,7 +16,7 @@
 import { useState } from "react";
 
 import { DEFAULT_REVIEW_RATIO } from "../design/layout";
-import type { ReviewData, TaskCandidateView } from "../ReviewPanel";
+import type { ReviewData, TaskCandidateView } from "../views/ReviewPanel";
 
 export function useReviewSurface() {
   const [reviewOpen, setReviewOpen] = useState(false);

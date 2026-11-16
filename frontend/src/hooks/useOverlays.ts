@@ -20,8 +20,8 @@
  */
 import { useRef, useState } from "react";
 
-import type { Level } from "../mobile-nav";
-import type { PeerTarget } from "../PeerPanel";
+import type { Level } from "../views/mobile-nav";
+import type { PeerTarget } from "../views/PeerPanel";
 import type { Agent } from "./types";
 
 export type { Level, PeerTarget };

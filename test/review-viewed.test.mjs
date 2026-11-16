@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildFileTree, diffContentHash, filesUnder, viewedStatesOf, viewedStatusOf, viewedSummaryOf,
-} from "../frontend/src/review-viewed.ts";
+} from "../frontend/src/api/review-viewed.ts";
 
 const file = (over = {}) => ({
   path: "src/a.ts",

@@ -8,8 +8,8 @@
  * 这里只放**形状**，不放行为；`SessionRow` 直接复用后端的唯一形状（见下面那行 type 导入）。
  */
 import type { SessionRow as SessionRowData } from "../../../src/session-rows.ts";
-import type { AgentAvatarSpec } from "../agent-avatar";
-import type { UserProfile } from "../user-avatar";
+import type { AgentAvatarSpec } from "../views/agent-avatar";
+import type { UserProfile } from "../views/user-avatar";
 
 export type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
 export type { UserProfile };

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   BADGE_DEFAULTS, badgeBreatheMax, badgePeriodS, badgeSoft, badgeVarsOf,
   dotBreatheMax, hexToRgb, mixOver, parseBadges, rgbToHex,
-} from "../frontend/src/badge-prefs.ts";
+} from "../frontend/src/api/badge-prefs.ts";
 import { calculatePalette, clampState, contrastRgb, hex as themeHex, THEME_PRESETS } from "../frontend/src/design/theme.ts";
 
 /**

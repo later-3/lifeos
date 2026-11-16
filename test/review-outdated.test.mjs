@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildFileLineIndex, isAnchorOutdated, outdatedIds, snapshotOf,
-} from "../frontend/src/review-outdated.ts";
+} from "../frontend/src/api/review-outdated.ts";
 
 const line = (type, oldNo, newNo, text) => ({ type, oldNo, newNo, text });
 
