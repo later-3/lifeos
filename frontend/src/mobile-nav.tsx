@@ -27,7 +27,7 @@ export type Level = "agents" | "projects" | "sessions";
  */
 export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId, canNewSession,
   onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent,
-  onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel }: {
+  onOpenProjectInfo, onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel }: {
   open: boolean;
   level: Level;
   onLevelChange: (level: Level) => void;
@@ -54,6 +54,13 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
    * **实测手机完全无法重命名或删除任何会话**（`knowledge/component-mobile-audit.md` §2.2）。
    * 业务实现仍走 App 的 `commitRename` / `setConfirm`（不复制一套写逻辑）。
    */
+  /**
+   * 项目概览（P7-S2）：点项目行的"信息"按钮。
+   *
+   * 为什么需要：桌面的入口是分组头的计数药丸（`App.tsx` 的 `onOverview`），而 `leftColumns`
+   * 在手机上整块不渲染 —— **手机上完全看不到项目概览**（路径/任务/知识库计数/移除项目）。
+   */
+  onOpenProjectInfo?: (projectId: string) => void;
   onRenameSession?: (sessionId: string, currentTitle: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   /**
@@ -108,7 +115,15 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
 
         {level === "projects" && groups.map((group) => (
           <Row key={group.project.id} selected={group.project.id === projectId}
-            onClick={() => { void Promise.resolve(onSelectProject(group.project)).then(() => onLevelChange("sessions")); }}>
+            onClick={() => { void Promise.resolve(onSelectProject(group.project)).then(() => onLevelChange("sessions")); }}
+            /* 信息按钮常显（同会话行 ⋯ 的理由：触屏没有 hover，且这里点行就进会话） */
+            actionsAlwaysVisible
+            actions={onOpenProjectInfo === undefined ? undefined : (
+              <IconButton label="项目概览" size="sm" data-project-info={group.project.id}
+                onClick={() => onOpenProjectInfo(group.project.id)}>
+                <AppIcon name="info" size={14} />
+              </IconButton>
+            )}>
             <span className="min-w-0 flex-1 truncate">{group.project.name}</span>
             <span className="text-micro text-ink-500">{group.sessions.length}</span>
           </Row>

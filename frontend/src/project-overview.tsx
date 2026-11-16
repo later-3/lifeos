@@ -13,8 +13,11 @@
  * 四态（testing 2.3）：加载骨架 / 失败 + 重试 / 成功；计数 0 是真实数据照常显示（没有"空态"）。
  * 浮层本体 = `design/popover-view.tsx`（定位/Esc/点外关闭/焦点归还是基建）。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Popover } from "./design/popover-view";
+import { LAYER_CLASS } from "./design/surface";
+import { useDialogFocus } from "./design/overlay";
 import { Button, IconButton } from "./design/ui";
 import { copyText } from "./clipboard";
 import { AppIcon } from "./design/icons";
@@ -32,10 +35,19 @@ type FetchState =
   | { kind: "error"; message: string }
   | { kind: "data"; data: Overview };
 
-export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, projectId, name, sessionCount, onRemove }: {
+export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, projectId, name, sessionCount, onRemove, mobile = false }: {
   open: boolean;
   onClose: () => void;
+  /** 桌面用：贴这个锚点（分组头计数药丸）。手机不使用（改为全屏表面）。 */
   anchorRef: React.RefObject<HTMLElement | null>;
+  /**
+   * 手机形态（P7-S2）：`mobile: true` → **全屏表面**而不是贴锚点浮层。
+   *
+   * 为什么不能沿用 Popover：手机上没有"计数药丸"这个锚点（`leftColumns` 不渲染），
+   * 而且 390px 宽下 300px 的浮层会挡住大半个内容区。`mobile.md` §2 的模型是
+   * "全屏表面 + header 返回/关闭 + 滚动锁"——这就是那一支。
+   */
+  mobile?: boolean;
   agentId: string;
   projectId: string;
   name: string;
@@ -83,9 +95,14 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
     window.setTimeout(() => setCopyState("idle"), 1500);
   };
 
-  return (
-    <Popover open={open} onClose={onClose} anchorRef={anchorRef} width={300} label={`${name} 项目概览`}>
-      <div className="flex flex-col gap-3" data-testid="project-overview" data-project-id={projectId}>
+  /**
+   * 卡片主体（两种外壳共用）。
+   *
+   * 抽成一个变量而不是两处复制：卡片有 6 个统计格 + 路径复制 + 移除动作，
+   * 复制一份就会出现"手机上少一个格""手机上不能复制路径"这类不对称缺陷。
+   */
+  const card = (
+    <div className="flex flex-col gap-3" data-testid="project-overview" data-project-id={projectId}>
         {/* 身份区：图标 + 项目名 + 路径（可复制）。默认工作区没有外部路径，写清楚它是什么。 */}
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-nav-accent text-ink-500">
@@ -148,7 +165,53 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
           </div>
         )}
       </div>
-    </Popover>
+  );
+
+  if (!mobile) {
+    return (
+      <Popover open={open} onClose={onClose} anchorRef={anchorRef} width={300} label={`${name} 项目概览`}>
+        {card}
+      </Popover>
+    );
+  }
+  if (!open) return null;
+  /*
+   * 焦点/Esc/滚动锁用**同一个 hook**（`useDialogFocus`），不自己再写一套：
+   * 全屏表面缺 Esc 与焦点陷阱是"看起来能用、键盘用户出不去"的典型缺陷
+   * （`mobile.md` §2 要求：焦点循环、Esc 关闭、锁背景滚动）。
+   * 注意它必须在 `open` 为真的分支里调用——hook 在条件分支里调用会破坏 hooks 顺序，
+   * 所以这里拆成两个组件：`MobileSurface` 只在 open 时才挂载。
+   */
+  /*
+   * 手机：全屏表面（mobile.md §2）。
+   * - `role="dialog" aria-modal`：模态语义（背景不可达）
+   * - 高度走 `--app-height`（键盘/安全区在同一套变量里）
+   * - 顶部 header 有关闭按钮，44 命中
+   * - 内容区自己滚（单一滚动容器）
+   */
+  return <MobileSurface name={name} onClose={onClose}>{card}</MobileSurface>;
+}
+
+/**
+ * 手机全屏表面（P7-S2）。
+ *
+ * 单独一个组件是为了**能条件挂载**：`useDialogFocus` 是 hook，
+ * 在 `if (!open) return null` 之后再调会破坏 hooks 顺序（React 会报错）。
+ */
+function MobileSurface({ name, onClose, children }: { name: string; onClose: () => void; children: ReactNode }) {
+  const panel = useRef<HTMLDivElement>(null);
+  useDialogFocus(panel, onClose);
+  return (
+    <div ref={panel} role="dialog" aria-modal="true" aria-label={`${name} 项目概览`}
+      data-testid="project-overview-surface"
+      className={`fixed inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:hidden`}
+      style={{ height: "var(--app-height, 100dvh)" }}>
+      <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-4 pt-safe">
+        <p className="min-w-0 flex-1 truncate text-body font-semibold text-ink-900">{name}</p>
+        <IconButton label="关闭项目概览" onClick={onClose}><AppIcon name="x" size={18} /></IconButton>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-4">{children}</div>
+    </div>
   );
 }
 

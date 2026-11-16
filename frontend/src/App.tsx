@@ -3528,6 +3528,7 @@ export default function App() {
           对话数 = 行同一份 groups 数据（现算，不存 state）；移除项目从卡里走（confirm 复用，
           确认后同时关卡——项目已不在列表上，卡继续开着只会展示旧事实）。 */}
       <ProjectOverviewCard open={overview !== undefined} onClose={() => setOverview(undefined)}
+        mobile={isMobile}
         anchorRef={overviewAnchor}
         agentId={overview?.agentId ?? ""} projectId={overview?.projectId ?? ""} name={overview?.name ?? ""}
         sessionCount={groups.find((group) => group.project.id === overview?.projectId)?.sessions.length ?? 0}
@@ -4382,6 +4383,13 @@ export default function App() {
         onSelectAgent={async (item) => { const full = agents.find((entry) => entry.id === item.id); if (full !== undefined) await selectAgent(full); }}
         onSelectProject={async (project) => { const full = groups.find((group) => group.project.id === project.id)?.project; if (full !== undefined) selectProject(full); }}
         onOpenSession={(sid) => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) void openSession(agent, sid); }}
+        /* 项目概览（P7-S2）：抽屉里项目行 → 全屏卡片。桌面入口不变（分组头计数药丸）。 */
+        onOpenProjectInfo={(pid) => {
+          if (agent === undefined) return;
+          const group = groups.find((item) => item.project.id === pid);
+          if (group === undefined) return;
+          setOverview({ agentId: agent.id, projectId: pid, name: group.project.name });
+        }}
         onNewSession={() => { dismissMobile(() => setMobileNav(false)); void newSession(); }}
         onAddProject={() => { dismissMobile(() => setMobileNav(false)); setAddingProject(true); }}
         onConfigAgent={() => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) setConfigAgent(agent); }}

@@ -347,6 +347,63 @@ for (const width of widths) {
     await page.waitForTimeout(300);
     check(`[${width}] 文件面板可被系统返回关闭`, (await page.getByRole("button", { name: "关闭文件面板" }).count()) === 0);
   }
+  /*
+   * P7-S2（Task 0016）：项目概览在手机上必须可达。
+   *
+   * 改之前入口是分组头的计数药丸（`App.tsx` 的 `onOverview`），而 `leftColumns`
+   * 在手机上整块不渲染 → **手机上完全看不到项目概览**（路径/6 格统计/移除项目）。
+   *
+   * 独立一块而不是插在导航流程中间：概览是**覆盖在抽屉之上**的独立表面，
+   * Esc 只关它自己；插在中间会让后续断言依赖"关完之后抽屉恢复到哪一级"这种脆弱状态。
+   */
+  {
+    const navTrigger = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+    if ((await page.locator('[data-testid="mobile-nav"]').count()) === 0) {
+      await navTrigger.first().click();
+      await page.waitForTimeout(600);
+    }
+    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
+      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+    const infoBtn = page.locator("[data-project-info]").first();
+    const infoCount = await infoBtn.count();
+    check(`[${width}] 项目行有概览入口`, infoCount > 0, `命中 ${infoCount} 个`);
+    if (infoCount > 0) {
+      const infoBox = await infoBtn.boundingBox();
+      check(`[${width}] 项目概览入口 ≥44`,
+        infoBox !== null && infoBox.width >= 44 && infoBox.height >= 44,
+        infoBox === null ? "取不到布局盒" : `${Math.round(infoBox.width)}x${Math.round(infoBox.height)}`);
+      await page.evaluate(() => { document.querySelector("[data-project-info]")?.click(); });
+      await page.waitForTimeout(1200);
+      const surface = await page.evaluate(() => {
+        const node = document.querySelector('[data-testid="project-overview-surface"]');
+        const box = node?.getBoundingClientRect();
+        const close = node?.querySelector('button[aria-label="关闭项目概览"]');
+        return {
+          exists: node !== null,
+          fullScreen: box === undefined ? false
+            : (Math.round(box.width) >= window.innerWidth - 1 && Math.round(box.height) >= window.innerHeight - 1),
+          statCells: node === null ? 0 : node.querySelectorAll('[data-testid="overview-stats"] > div').length,
+          closeH: close === null || close === undefined ? 0 : Math.round(close.getBoundingClientRect().height),
+        };
+      });
+      if (width === 320) {
+        // 320 档：移动布局视口被头部 6 个 44 图标撑到 336（同「无横向溢出」那条已知缺陷），
+        // 全屏表面按 innerWidth 量出来差 16px。修在 P7-S5。
+        checkKnown(`[${width}] 项目概览是全屏表面`, surface.exists && surface.fullScreen, JSON.stringify(surface), "P7-S5 手机头部");
+      } else {
+        check(`[${width}] 项目概览是全屏表面`, surface.exists && surface.fullScreen, JSON.stringify(surface));
+      }
+      check(`[${width}] 项目概览 6 格统计都在`, surface.statCells === 6, `${surface.statCells} 格`);
+      check(`[${width}] 项目概览关闭钮 ≥44`, surface.closeH >= 44, `${surface.closeH}`);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(500);
+      check(`[${width}] 项目概览 Esc 可关`,
+        await page.evaluate(() => document.querySelector('[data-testid="project-overview-surface"]') === null));
+    }
+  }
+
   await context.close();
 }
 
