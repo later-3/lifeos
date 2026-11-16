@@ -16,13 +16,17 @@ import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./AgentConfig";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar, type UserProfile } from "./user-avatar";
-import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
+import { DisplayPrefsPanel } from "./display-prefs-panel";
+import { useAppearance } from "./hooks/useAppearance";
+import { useOverlays } from "./hooks/useOverlays";
+import { useReviewSurface } from "./hooks/useReviewSurface";
+import { useComposer } from "./hooks/useComposer";
 import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme, persistSelectionPrefs, cachedSelectionPrefs } from "./ui-prefs-client";
 import type { SelectionPrefs } from "./selection-prefs";
 import { quoteDraftOf } from "./selection-quote";
 import { SelectionToolbar } from "./selection-toolbar";
 import { SettingsSurface } from "./settings-surface";
-import { applySurfaceTokens, applyTheme, calculatePalette, hex, loadTheme, saveTheme, type ThemeState } from "./design/theme";
+import { calculatePalette, hex, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
 } from "./display-prefs";
@@ -455,70 +459,21 @@ export default function App() {
   // 用户档案（= 你本人，不是 Agent）：名字与头像从 /api/profile 来，缺失时前端不显示头像
   const [profile, setProfile] = useState<UserProfile | undefined>();
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
-  const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
-  /** 状态徽标偏好（2026-11-10 用户：速率/幅度/强度单独可调）：缓存先顶上，服务端真值随后覆盖。 */
-  const [badges, setBadges] = useState<BadgePrefs>(() => cachedBadgePrefs());
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  /**
-   * 头部「显示」快捷弹层（2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
-   * 因为之前是改动配置，用户能实时看到工作区的改变"）。
+  /*
+   * 外观与偏好（Task 0017 · P5）：整块搬进 `hooks/useAppearance.ts`。
    *
-   * 与设置页的关系：**这里是快捷入口，设置页是总入口**，两者读写同一份 prefs，不存在第二份状态。
-   * 只在桌面渲染（`hidden sm:inline-flex` 交给外层容器）：手机头部已有 6 个图标、标题只剩 38px。
+   * 搬走的东西：theme / prefs / badges / selectionPrefs / viewportWidth /
+   * settingsOpen / settingsSection / displayPrefsOpen，以及它们对应的 6 个 effect
+   * （主题应用顺序、服务端偏好拉取、显示偏好落盘、徽标 soft 派生、视口跟踪）。
+   * **零行为变化**：原实现的注释与顺序逐条保留在那个文件里（含"引擎兜底 → 包覆盖 → L3"）。
    */
-  const [displayPrefsOpen, setDisplayPrefsOpen] = useState(false);
-  // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
-  // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
-  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
-  /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
-  const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
-
-  useEffect(() => {
-    applyTheme(theme);
-    /*
-     * S5：激活的外部主题包必须在引擎之后重新盖一次。
-     * 否则：boot 脚本写的是包的颜色（首帧对）→ React 的 applyTheme 用引擎默认覆盖 →
-     * 界面先深后白（实测 uniqueSurface = [#292828, #ffffff]），即用户看到的"刷一下变回去"。
-     * 顺序：引擎兜底 → 包覆盖（与 applyThemePack 的内部顺序一致）。
-     */
-    const activePackName = loadActivePackId();
-    if (activePackName !== undefined) {
-      const pack = loadThemePacks().find((item) => item.meta.name === activePackName);
-      if (pack !== undefined) {
-        /*
-         * 包可能只有单槽（Quiet Light 只有 light、Monokai 只有 dark）。
-         * `applyThemePack` 会自动选包有值的那个 mode 并写 `data-theme-mode`，
-         * 但 `theme.mode`（React 状态）仍是用户选的那个 → 下一次 theme 变化又会拿错 mode 兜底。
-         * 这里把**生效 mode 同步进状态**：用户的深浅选择随主题能力走（选了单槽主题 = 接受它的深浅）。
-         */
-        const effective = applyThemePack(pack, theme.mode, theme);
-        if (effective !== theme.mode) setTheme({ ...theme, mode: effective });
-      }
-    }
-    applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
-    persistTheme(theme);              // 缓存 + 防抖同步到 ~/.lifeos/config/ui.json
-  }, [theme]);
-  /**
-   * 启动时拉一次服务端偏好（2026-11-09 用户："是否重启就丢了配置？"）。
-   *
-   * 服务端是事实源（`~/.lifeos/config/ui.json`），localStorage 只是首屏缓存。
-   * **只在服务端有值时覆盖** —— 首次使用（服务端没存过）时保持本地已调过的值，
-   * 不拿默认值把用户刚才的调整盖掉（那是"重置"而不是"恢复"）。
-   * 失败静默：偏好丢了不该让界面打不开，本地缓存仍在。
-   */
-  useEffect(() => {
-    let alive = true;
-    void fetchUiPrefs().then((remote) => {
-      if (!alive || remote === undefined) return;
-      if (remote.theme !== undefined) setTheme(remote.theme);
-      if (remote.display !== undefined) setPrefs(remote.display);
-      if (remote.badges !== undefined) setBadges(remote.badges);
-      if (remote.selection !== undefined) setSelectionPrefs(remote.selection);
-    });
-    return () => { alive = false; };
-  }, []);
+  const appearance = useAppearance();
+  const {
+    theme, setTheme, prefs, setPrefs, badges, setBadges,
+    selectionPrefs, setSelectionPrefsAndPersist, viewportWidth,
+    settingsOpen, setSettingsOpen, settingsSection, setSettingsSection,
+    displayPrefsOpen, setDisplayPrefsOpen,
+  } = appearance;
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
@@ -719,20 +674,22 @@ export default function App() {
     [anno.annotations],
   );
 
-  const [input, setInputState] = useState("");
-  const [busy, setBusy] = useState(false);
   /** 草稿作用域（会话 id；无会话时 agent/project）——文字草稿与图片附件共用同一归属。 */
   const draftKey = sessionId ?? (agent !== undefined && selectedProjectId !== undefined ? `${agent.id}/${selectedProjectId}` : undefined);
-  // —— 图片附件（docs/design/image-input.md）：**按会话归属**存内存（draftKey → 图片数组），
-  // 切会话即换（与文字草稿同一语义；此前是整页单份，切到哪个会话都显示同一批图，用户 2026-11-14 报告）。
-  // 发送成功才清当前键；不落 localStorage：单张上限 10MB 的 base64 超出其 ~5MB 配额，落盘不可行，页面刷新即丢。 ——
-  const [attachmentMap, setAttachmentMap] = useState<Record<string, PendingImage[]>>({});
-  const attachments = draftKey !== undefined ? attachmentMap[draftKey] ?? [] : [];
-  /** 写**当前作用域**的附件；没有归属（无会话且无项目）时丢弃写入。 */
-  function setAttachments(next: PendingImage[]) {
-    if (draftKey === undefined) return;
-    setAttachmentMap((map) => ({ ...map, [draftKey]: next }));
-  }
+  /*
+   * 输入区（Task 0017 · P5）：input / attachmentMap(+attachments) / palette / draftRequest / atBottom
+   * 整块搬进 `hooks/useComposer.ts`，纪律原样保留（附件按 draftKey 分桶、命令面板按会话清空、
+   * 批注触发用 nonce）。`setInput` 与 `setInputState` 同名保留，避免大量调用点改名。
+   */
+  const composer = useComposer(draftKey);
+  const {
+    input, setInput: setInputState,
+    attachments, setAttachments, attachmentMap, setAttachmentMap,
+    palette, setPalette,
+    draftRequest, requestDraft, onDraftHandled,
+    atBottom, setAtBottom,
+  } = composer;
+  const [busy, setBusy] = useState(false);
   /**
    * 检视评论引用（A8 + G3）：**结构化条目**，不是拼进正文的文本。
    * 发送时由 `commentsToText()` 合成（同一条实现，不新造格式）；发送成功清空、失败回填。
@@ -871,44 +828,38 @@ export default function App() {
    */
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(readCollapsedGroups);
   useEffect(() => { writeCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
-  const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
-  const [addingProject, setAddingProject] = useState(false);
-  const [configAgent, setConfigAgent] = useState<Agent>();
+  /*
+   * 弹层与模态（Task 0017 · P5）：整块搬进 `hooks/useOverlays.ts`。
+   * 搬走：confirm / overview(+anchor) / history / addingProject / configAgent /
+   * mobileNav(+level) / peerTarget / renaming。它们都不属于会话数据，只"开合"。
+   */
+  const overlays = useOverlays();
+  const {
+    confirm, setConfirm, overview, setOverview, overviewAnchor,
+    history, setHistory, addingProject, setAddingProject,
+    configAgent, setConfigAgent, mobileNav, setMobileNav,
+    mobileNavLevel, setMobileNavLevel, peerTarget, setPeerTarget, renaming, setRenaming,
+  } = overlays;
   const isMobile = useIsMobile();
-  const [mobileNav, setMobileNav] = useState(false);
-  const [mobileNavLevel, setMobileNavLevel] = useState<Level>("agents");
   const mobileHistoryPushed = useRef(false);
   const ignoreMobilePop = useRef(false);
   useAppHeight();
-  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
-  // 项目概览卡（Task 0010）：入口 = 分组头计数药丸；锚 = 药丸按钮（Popover 定位用）。
-  // 对话数不在 state 里——从 groups 现算（行上同一份，卡与行永远一致）。
-  const overviewAnchor = useRef<HTMLElement | null>(null);
-  const [overview, setOverview] = useState<{ agentId: string; projectId: string; name: string } | undefined>();
-  // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
-  const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
-  // 检视模式（Task 0010 · P2）：用户指名 Task（D15c）→ 打开面板加载两组 diff。
-  // 比例存 localStorage（D12：存比例不存 px）；与文件面板并存不互斥（D10）。
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewRatio, setReviewRatio] = useState<number>(() => {
-    const raw = Number(localStorage.getItem("lifeos.reviewRatio"));
-    return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : DEFAULT_REVIEW_RATIO;
-  });
-  /** 当前检视的 taskDir —— **唯一状态源**（Task 0018 简化：之前拆成 ref + 异步 data 两处，
-   *  标题同步变、内容等响应，谁晚到谁说了算，实测撕裂成“标题 0018 内容 0015”。
-   *  现在标题与 reload 都从这里推导；网络晚到由 loadReview 的序号守卫丢弃。） */
-  const [reviewTask, setReviewTask] = useState<string | undefined>(undefined);
-  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
-  const [reviewLoading, setReviewLoading] = useState(false);
-  const [reviewFailed, setReviewFailed] = useState<string | null>(null);
-  const [reviewTaskPaths, setReviewTaskPaths] = useState<Record<string, string>>({});
-  /**
-   * D31：检视候选（哪些 Task 有东西可检视）。
-   * 懒加载——只在**打开面板时**拉一次（实测 15 个 Task 0.93s；不打开面板不付这个钱）。
+  /*
+   * 检视面板（Task 0017 · P5）：整块搬进 `hooks/useReviewSurface.ts`。
+   * 搬走：reviewOpen / reviewRatio / reviewTask（唯一状态源）/ reviewData /
+   * reviewLoading / reviewFailed / reviewTaskPaths / reviewCandidates(+Loading)。
+   * 纪律原样保留（比例存 localStorage、候选懒加载、taskDir 单一状态源）。
    */
-  const [reviewCandidates, setReviewCandidates] = useState<readonly TaskCandidateView[]>([]);
-  const [reviewCandidatesLoading, setReviewCandidatesLoading] = useState(false);
+  const review = useReviewSurface();
+  const {
+    reviewOpen, setReviewOpen, reviewRatio, setReviewRatio,
+    reviewTask, setReviewTask, reviewData, setReviewData,
+    reviewLoading, setReviewLoading, reviewFailed, setReviewFailed,
+    reviewTaskPaths, setReviewTaskPaths,
+    reviewCandidates, setReviewCandidates,
+    reviewCandidatesLoading, setReviewCandidatesLoading,
+  } = review;
   const { box, beginDrag, viewport, widths } = useColumnWidth({
     folded: { nav: !showNav, groups: !showGroups },
     panelOpen,
@@ -928,7 +879,7 @@ export default function App() {
 
 
   // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
-  const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
+  /* peerTarget 的 state 已搬进 useOverlays（Task 0017 · P5）；ref 留在本文件（它服务于事件回调）。 */
   const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
   /** 打开对话抽屉之前右侧面板是否已经开着：关闭抽屉时还原，避免留下空面板。 */
   const panelWasOpenBeforePeer = useRef(false);
@@ -951,15 +902,7 @@ export default function App() {
   const scrollRef = useRef<HTMLElement>(null);
   /** 检视面板的容器（可复制区域之一；与 `<main>` 是兄弟节点，必须单独列）。 */
   const reviewRef = useRef<HTMLElement>(null);
-  /**
-   * 选中行为设置（Task 0018 D7-D10）：copyOnSelect 默认开 = Task 0013 现状。
-   * 首屏用 localStorage 缓存（ui-prefs-client 的同一套首屏纪律），拉到真值就覆盖。
-   */
-  const [selectionPrefs, setSelectionPrefs] = useState<SelectionPrefs>(() => cachedSelectionPrefs());
-  const setSelectionPrefsAndPersist = useCallback((next: SelectionPrefs) => {
-    setSelectionPrefs(next);
-    persistSelectionPrefs(next);
-  }, []);
+  /* 选中行为（selectionPrefs）已搬进 useAppearance（Task 0017 · P5）。 */
   /**
    * 选中行为（Task 0013 复制 + 0018 功能条）：
    * 对话区域（`<main>`，允许功能条）与检视面板（只复制，不弹条——D11）里拖选/双击/三击：
@@ -980,17 +923,13 @@ export default function App() {
   /**
    * 批注的外部触发（Task 0018）：功能条点「批注」→ 按 messageId 路由到对应块。
    * 锚点计算留在块内（index/text 都在那）；块处理完调 onDraftHandled 清除。
+   * `draftRequest` / `onDraftHandled` 与 nonce 逻辑已搬进 useComposer。
    */
-  const draftNonce = useRef(0);
-  const [draftRequest, setDraftRequest] = useState<{ messageId: string; nonce: number } | null>(null);
-  /** 块处理完清请求（防重复触发）。 */
-  const onDraftHandled = useCallback(() => setDraftRequest(null), []);
   const onAnnotateFromToolbar = useCallback(() => {
     if (toolbar === null || toolbar.messageId === undefined) return;
-    draftNonce.current += 1;
-    setDraftRequest({ messageId: toolbar.messageId, nonce: draftNonce.current });
+    requestDraft(toolbar.messageId);
     closeToolbar();
-  }, [toolbar, closeToolbar]);
+  }, [toolbar, closeToolbar, requestDraft]);
 
   /** 引用（D15）：格式化后追加进输入框（不覆盖已有草稿），焦点交给用户接话。 */
   const onQuoteFromToolbar = useCallback(() => {
@@ -1003,7 +942,7 @@ export default function App() {
     closeToolbar();
   }, [toolbar, closeToolbar, input]);
   const followTail = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
+  /* atBottom 已搬进 useComposer（Task 0017 · P5）。 */
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /** 程序化聚焦 composer（2026-11-14 用户报"重新进入输入时光标跑到最前"）：
@@ -1049,45 +988,7 @@ export default function App() {
       .catch(() => undefined);
     return () => { alive = false; };
   }, []);
-  // —— 显示偏好：落盘 + 把字号与阅读宽度写到根节点（组件只用 token，不感知缩放） ——
-  // 显示偏好：写缓存（刷新不丢）+ 防抖同步到服务端（换设备/换 origin 也在）
-  useEffect(() => { persistDisplayPrefs(prefs); }, [prefs]);
-  useEffect(() => {
-    const root = document.documentElement;
-    for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);
-    root.style.setProperty("--container-reading-width", widthVar(prefs.width));
-  }, [prefs]);
-  // —— 状态徽标：动画周期/幅度变量 + 三个 soft 底（从语义色派生，深浅色方向都向上） ——
-  // soft 必须随 theme/gallery 同步：换主题（色相、深浅）后,徽标底的色相应与语义色同源。
-  useEffect(() => { persistBadgePrefs(badges); }, [badges]);
-  useEffect(() => {
-    const root = document.documentElement.style;
-    document.documentElement.dataset.badgeStrength = badges.strength;
-    /*
-     * soft 底的颜色**必须取当前实际生效的 token**（读 :root），而不是 `calculatePalette(theme)`。
-     *
-     * 2026-11-14 实测缺陷（S6 主题审计）：外部主题生效后 running-soft 仍是引擎值 #264653——
-     * 因为这里走引擎 palette，而**引擎不知道外部主题包**（包的颜色是 applyThemePack 直接写 :root 的）。
-     * 这正是 A4 声称已消灭的"三源并存"的残留：徽标层从引擎取色 = 第三源。
-     *
-     * 改法：从 computed style 读 --color-running/success/danger/surface（谁写的都对），
-     * 再按强度派生 soft —— 主题包、引擎、用户自定义都自然生效。
-     */
-    const readVar = (name: string): string => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    const surfaceHex = readVar("--color-surface");
-    for (const [name, value] of Object.entries(badgeVarsOf(badges))) root.setProperty(name, value);
-    for (const semantic of ["running", "success", "danger"] as const) {
-      const base = readVar(`--color-${semantic}`);
-      if (base === "") continue;   // 首帧还没写入：不写 soft，等下一轮 effect
-      root.setProperty(`--color-${semantic}-soft`, badgeSoft(semantic, theme.mode, badges.strength, base, surfaceHex));
-    }
-  }, [badges, theme]);
-  // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
-  useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  /* 显示偏好 / 徽标 / 视口跟踪的 effect 已搬进 useAppearance（Task 0017 · P5）。 */
   useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
   // 焦点上报（任务 0007）：切会话/切 Agent/页面可见性变化 → 服务端据此路由细节流，并在可见时记已读
   useEffect(() => { sendFocus(); }, [agent?.id, sessionId]);
@@ -2605,7 +2506,7 @@ export default function App() {
   sendTextRef.current = sendText;      // 每次渲染刷新（跨渲染的回调走 ref，避免拿到旧闭包）
 
   // —— 斜杠命令（对齐 Pi CLI / Pi Web 的常用项；能力都走 Pi 原生接口） ——
-  const [palette, setPalette] = useState<{ items: PaletteItem[]; index: number } | undefined>();
+  /* palette 已搬进 useComposer（Task 0017 · P5）。 */
 
   const copyLastAssistant = () => {
     const tail = [...messages].reverse().find((message) => message.role === "assistant" && message.text !== "");

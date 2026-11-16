@@ -1038,12 +1038,18 @@ async function auditResizeColumns(page, sceneSetup) {
 {
   const rowPage = await pageFor({ width: 1600, height: 900 });
   await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
-  await rowPage.waitForTimeout(500);
+  /*
+   * 固定等待 500ms 不够了（Task 0017 · P5）：拆 hook 之后首屏多一轮初始化，
+   * 实测 300ms 时 `rows=0`、500ms 才有行。改为**等行真的出现**再量（更稳，也更快）。
+   * 这不是放宽：量之前必须确认被测对象存在（`testing.md` 2.15「0 个 = 没测」）。
+   */
+  await rowPage.waitForSelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])', { timeout: 15000 });
+  await rowPage.waitForTimeout(200);
   // 结构（2026-11-09）：行容器 > [主点击区(role=button), 状态槽]。动作区在槽内绝对定位。
   // 所以"行"取容器（带 data-testid 的那个 div），主点击区是它的**第一个**子元素。
   const probe = async () => await rowPage.evaluate(() => {
     const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
-    if (row === null) return null;
+    if (row === null) return { debug: { url: location.href, rows: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length, body: document.body.innerText.slice(0, 80) } };
     const inner = row.querySelector(':scope > [role="button"]') ?? row.firstElementChild;
     const slot = row.lastElementChild;
     const actions = slot === null ? undefined : [...slot.children].find((child) => child.className.includes("absolute"));
@@ -1456,7 +1462,9 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   // 1) 未覆盖：实际 = 默认，头部显示实际（这就是用户平时看到的样子）
   await mockSession({ model: { provider: "test", id: "display-default" }, modelOverridden: false });
   await displayPage.goto(page.url(), { waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  // 等头部条真的渲染（Task 0017 · P5：拆 hook 后首屏多一轮初始化，固定 400ms 不够）
+  await displayPage.waitForSelector('[data-testid="header-meta"]', { timeout: 15000 });
+  await displayPage.waitForTimeout(200);
   const sameLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("未覆盖会话：头部显示实际模型（与有效默认一致时看不出差别）",
     sameLine.includes("test/display-default"), sameLine);
@@ -1465,7 +1473,23 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   await displayPage.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
   await mockSession({ model: { provider: "actual", id: "substituted-model" }, modelOverridden: false });
   await displayPage.reload({ waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  /*
+   * **等"实际被换掉"这件事反映到头部**，而不是等 header-meta 出现。
+   *
+   * 2026-11-16（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，header-meta 会先渲染一帧
+   * 带**默认**模型（`test/display-default`），随后才被会话 meta 的实际模型覆盖。
+   * 固定等 200ms 会在那一帧上读到旧值 → 假红。
+   * 判据改成"等到它含 expected 值"（这就是断言要判的东西），超时则用最后读到的值去报红。
+   */
+  const mismatchExpected = "actual/substituted-model";
+  const mismatchShown = await displayPage.waitForFunction(
+    (want) => (document.querySelector('[data-testid="header-meta"]')?.textContent ?? "").includes(want),
+    mismatchExpected, { timeout: 8000 },
+  ).then(() => true, () => false);
+  if (!mismatchShown) {
+    // 等到超时仍未出现期望值：等它彻底稳定（避免读到中间帧）再报红，让输出能定位
+    await displayPage.waitForTimeout(600);
+  }
   const mismatchedLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("未覆盖但实际被换掉：头部必须显示实际模型，不能显示默认（Task 0017 事故形状）",
     mismatchedLine.includes("actual/substituted-model") && !mismatchedLine.includes("test/display-default"),
@@ -1474,7 +1498,8 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   // 3) 覆盖过：显示覆盖模型
   await mockSession({ model: { provider: "actual", id: "session-model" }, modelOverridden: true });
   await displayPage.reload({ waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  await displayPage.waitForSelector('[data-testid="header-meta"]', { timeout: 15000 });
+  await displayPage.waitForTimeout(200);
   const overriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("/model 覆盖会话头部显示覆盖模型（不被默认顶掉）",
     overriddenLine.includes("actual/session-model") && !overriddenLine.includes("test/display-default"),
@@ -1509,7 +1534,18 @@ check("头部显示会话实际模型（与接口 meta 一致）",
     body: JSON.stringify({ items: [{ id: "0007", title: "输入框优化", status: "进行中", type: "development", category: "A" }] }),
   }));
   await displayPage.goto(page.url(), { waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  /*
+   * **等标题真的解析出来**，不等"头部出现了"。
+   *
+   * 2026-11-16（Task 0017 · P5）：头部先显示 `0007`（只有 id），Task 标题要等
+   * `/tasks` 回来才补上（`taskTitles` 缓存）。只等 header-meta 出现会读到那一帧 → 假红
+   * （实测：`... · high · 0007`，缺"输入框优化"）。
+   * 判据等的是断言要判的东西本身（`0007 输入框优化`）。
+   */
+  await displayPage.waitForFunction(
+    () => (document.querySelector('[data-testid="header-meta"]')?.textContent ?? "").includes("0007 输入框优化"),
+    undefined, { timeout: 8000 },
+  ).catch(() => undefined);
   const taskLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("task 段显示「0007 输入框优化」（无 Task 前缀）",
     taskLine.includes("0007 输入框优化") && !taskLine.includes("Task "), taskLine);
@@ -2208,7 +2244,14 @@ if (emptyTarget === null) {
   check("没有会话时输入框仍可用（首条消息＝建会话）", true, "没有空项目可测，跳过");
 } else {
   await freshPage.goto(`${APP_URL}/?agent=${emptyTarget.agentId}&project=${emptyTarget.projectId}`, { waitUntil: "networkidle" });
-  await freshPage.waitForTimeout(700);
+  /*
+   * 等"空会话态"的文案出现（Task 0017 · P5）：固定 700ms 在冷启动时读到的是上一屏
+   * （正文里还留着别的项目/会话的名字）→ 假红。等的是断言要判的那句话。
+   */
+  await freshPage.waitForFunction(
+    () => /会自动|写进这个会话/.test(document.body.innerText ?? ""),
+    undefined, { timeout: 15000 },
+  ).catch(() => undefined);
   const emptyState = await freshPage.evaluate(() => ({
     disabled: document.querySelector("textarea")?.disabled ?? true,
     hint: /会自动|写进这个会话/.test(document.body.innerText ?? ""),
@@ -2294,7 +2337,12 @@ await freshPage.close();
   const pressDown = async () => { await chatComposer.press("ArrowDown"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
 
   await page.goto(`${APP_URL}/?agent=${historyAgent}&project=workspace`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(600);
+  /*
+   * 等夹具行真的渲染（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，
+   * 固定 600ms 在冷启动那一次会读到 0 行 → 后续 9 条输入历史断言全部被跳过（**数量都变少**）。
+   * 判据等到"那一行出现"，超时才算失败（`testing.md` 2.15：0 个 = 没测）。
+   */
+  await page.waitForSelector(`[data-testid="${HIST_A}"]`, { timeout: 15000 }).catch(() => undefined);
   const fixtureVisible = await page.locator(`[data-testid="${HIST_A}"]`).count() > 0;
   check("输入历史夹具：两个会话行已渲染", fixtureVisible, `A=${fixtureVisible}`);
 
