@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { IconArrowUp, IconFolder } from "@tabler/icons-react";
 import { Modal } from "./design/overlay";
-import { Button, EmptyState, IconButton, Skeleton, controlClass } from "./design/ui";
+import { Button, EmptyState, IconButton, Skeleton, controlClass, ClickableRow } from "./design/ui";
+import { AppIcon } from "./design/icons";
 
 type BrowseResult = { path: string; parent: string | null; dirs: string[] };
 
@@ -71,7 +71,7 @@ export function DirectoryPicker({ onCancel, onSelect, startPath }: {
         onSubmit={(event) => { event.preventDefault(); void navigate(pathInput.trim() || undefined); }}>
         <IconButton label="上级目录" disabled={parent === null || loading}
           onClick={() => { if (parent !== null) void navigate(parent); }}>
-          <IconArrowUp size={16} />
+          <AppIcon name="arrow-up" size={16} />
         </IconButton>
         <input ref={pathRef} value={pathInput} onChange={(event) => setPathInput(event.target.value)}
           autoComplete="off" spellCheck={false}
@@ -85,11 +85,11 @@ export function DirectoryPicker({ onCancel, onSelect, startPath }: {
         {!loading && dirs.map((name) => {
           const child = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
           return (
-            <button key={name} type="button" onClick={() => void navigate(child)}
-              className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900">
-              <IconFolder size={16} className="shrink-0 text-ink-300" />
+            <ClickableRow key={name} onClick={() => void navigate(child)}
+              className="h-8 px-2 text-body text-ink-700 hover:text-ink-900">
+              <AppIcon name="folder" size={16} className="shrink-0 text-ink-300" />
               <span className="truncate">{name}</span>
-            </button>
+            </ClickableRow>
           );
         })}
       </div>

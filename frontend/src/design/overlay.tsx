@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
-import { IconX } from "@tabler/icons-react";
 import { Button, IconButton } from "./ui";
 import { useIsMobile } from "../use-mobile";
 import { LAYER_CLASS, surfaceStyle } from "./surface";
+import { AppIcon } from "./icons";
 
 /**
  * 模态与确认框（前端开发路径 · 闸 3：键盘断言依赖这里的焦点陷阱 / aria-modal / Esc）。
@@ -82,7 +82,7 @@ export function Modal({ title, subtitle, icon, onClose, children, footer, width 
             <h2 className="truncate text-body font-semibold text-ink-900">{title}</h2>
             {subtitle !== undefined && <p className="truncate text-micro text-ink-500">{subtitle}</p>}
           </div>
-          <IconButton label="关闭" onClick={onClose}><IconX size={16} /></IconButton>
+          <IconButton label="关闭" onClick={onClose}><AppIcon name="x" size={16} /></IconButton>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5 pt-4">{children}</div>
         {footer !== undefined && (

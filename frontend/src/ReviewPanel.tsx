@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EmptyState, IconButton, Segmented, Spinner } from "./design/ui";
-import { IconChevronsDown, IconChevronsUp, IconRefresh, IconX } from "@tabler/icons-react";
+import { ClickableRow, EmptyState, IconButton, MicroButton, Segmented, Spinner, ToggleChip } from "./design/ui";
 import {
   buildSegments, canCollapse, expandActions, expandStep, expansionOf, sliceHiddenLines, type ExpansionAction,
   type Segment, type SegmentLine,
@@ -40,6 +39,7 @@ import type { WordDiff, WordSegment } from "./review-word-diff";
 import { ensureWordDiffLib, wordDiffOf } from "./review-word-diff-lib";
 import { awaitingOfComment, canCloseCommentBy, isClosedComment } from "./review-comment-state";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceClass, surfaceStyle } from "./design/surface";
+import { AppIcon } from "./design/icons";
 
 /**
  * 检视面板（Task 0010 · P2）。
@@ -408,8 +408,7 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
 
   return (
     <div className="overflow-hidden rounded-panel bg-surface ring-1 ring-line" data-review-file={file.path}>
-      <button type="button" onClick={onToggle} aria-expanded={open}
-        className="flex h-11 w-full items-center gap-2 px-3 text-left hover:bg-hover">
+      <ClickableRow onClick={onToggle} aria-expanded={open} className="h-11 gap-2 px-3">
         <span aria-hidden="true" className={`shrink-0 text-micro font-semibold ${open ? "text-ink-500" : "text-ink-300"}`}>{open ? "▾" : "▸"}</span>
         <span className={`shrink-0 rounded-inner px-1.5 py-0.5 text-micro font-semibold ${
           file.status === "added" ? "bg-success-soft text-success"
@@ -465,22 +464,16 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
           点它**不展开文件**（`stopPropagation`）；三态用图标区分：
           ○ 未看 / ✓ 已看 / ↻ 看过但内容变了（difit 的 `changedSinceViewed`）。
         */}
-        <button
-          type="button"
-          onClick={(event) => { event.stopPropagation(); onToggleViewed(); }}
-          aria-pressed={viewedStatus === "viewed"}
+        <ToggleChip
+          pressed={viewedStatus === "viewed"}
           aria-label={viewedStatus === "viewed" ? `取消标记「已看」：${file.path}` : viewedStatus === "changed" ? `内容已变，标记为「已看」：${file.path}` : `标记为「已看」：${file.path}`}
           title={viewedStatus === "viewed" ? "已看（点击取消）" : viewedStatus === "changed" ? "看过之后内容又变了，需要重看（点击重新标记已看）" : "标记为已看"}
+          onClick={(event: React.MouseEvent) => { event.stopPropagation(); onToggleViewed(); }}
           data-review-viewed-toggle={file.path}
           data-review-viewed-status={viewedStatus}
-          className={`shrink-0 rounded-inner px-1 py-0.5 text-micro ring-1 transition-colors ${
-            viewedStatus === "viewed"
-              ? "bg-success-soft text-success ring-success-soft hover:bg-hover"
-              : viewedStatus === "changed"
-              ? "bg-diff-mod-soft text-diff-mod ring-diff-mod-soft hover:bg-hover"
-              : "text-ink-500 ring-line hover:bg-hover hover:text-ink-900"}`}
-        >{viewedStatus === "viewed" ? "✓ 已看" : viewedStatus === "changed" ? "↻ 已变" : "○ 未看"}</button>
-      </button>
+          className={viewedStatus === "viewed" ? "ring-success-soft" : viewedStatus === "changed" ? "text-diff-mod ring-diff-mod-soft" : ""}
+        >{viewedStatus === "viewed" ? "✓ 已看" : viewedStatus === "changed" ? "↻ 已变" : "○ 未看"}</ToggleChip>
+      </ClickableRow>
       {/* G6：占位（滚到 1200px 内自动挂载；difit `LAZY_RENDER_ROOT_MARGIN`） */}
       {open && body === "placeholder" && (
         <div
@@ -501,9 +494,7 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
         */
         <div className="flex flex-wrap items-center gap-2 border-t border-line bg-sunken px-3 py-1.5 text-micro text-ink-700" data-review-large-diff={file.path}>
           <span>改动 {file.additions + file.deletions} 行（超过 {MAX_CHANGED_LINES_BEFORE_COLLAPSE} 行），已默认只展开前 {LARGE_FILE_PREVIEW_LINES} 行</span>
-          <button type="button" onClick={onForceRender} className="rounded-inner bg-surface px-1.5 py-0.5 text-accent ring-1 ring-line hover:bg-hover" data-review-large-force>
-            全部展开
-          </button>
+          <MicroButton tone="accent" onClick={onForceRender} data-review-large-force>全部展开</MicroButton>
         </div>
       )}
       {/* G15：md 渲染态（第三档）——只对 doc 文件、且只在这个档位生效 */}
@@ -964,7 +955,6 @@ function HiddenBar({ count, region, canCollapseRows, onExpandUp, onExpandDown, o
    *  - 已全展开（count === 0）→ 「已全部展开」+ 只留「折叠」。
    */
   const label = count === 0 ? "已全部展开" : `${count} 行未修改`;
-  const btn = "rounded-inner px-2 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-ink-900 disabled:opacity-50";
   return (
     <div className="flex items-center gap-1 bg-sunken px-3 py-0.5 font-mono text-micro" data-review-hidden={region} data-hidden-count={count}>
       <span className="text-ink-500">{label}</span>
@@ -977,16 +967,16 @@ function HiddenBar({ count, region, canCollapseRows, onExpandUp, onExpandDown, o
           `:258/271` 的 `collapseAll`；difit 只有展开、没有折回（`ExpandButton.tsx`）。
         */}
         {canCollapseRows ? (
-          <button type="button" className={btn} onClick={onCollapse} disabled={loading} data-review-expand="collapse">折叠</button>
+          <MicroButton onClick={onCollapse} disabled={loading} data-review-expand="collapse">折叠</MicroButton>
         ) : null}
         {count > 0 && "up" in actions ? (
           <>
-            <button type="button" className={btn} onClick={onExpandUp} disabled={loading} data-review-expand="up">↑ {actions.up} 行</button>
-            <button type="button" className={btn} onClick={onExpandDown} disabled={loading} data-review-expand="down">↓ {actions.down} 行</button>
+            <MicroButton onClick={onExpandUp} disabled={loading} data-review-expand="up">↑ {actions.up} 行</MicroButton>
+            <MicroButton onClick={onExpandDown} disabled={loading} data-review-expand="down">↓ {actions.down} 行</MicroButton>
           </>
         ) : null}
         {count > 0 ? (
-          <button type="button" className={btn} onClick={onExpandAll} disabled={loading} data-review-expand="all">全部 {actions.all} 行</button>
+          <MicroButton onClick={onExpandAll} disabled={loading} data-review-expand="all">全部 {actions.all} 行</MicroButton>
         ) : null}
       </span>
     </div>
@@ -1512,49 +1502,34 @@ function DraftCard({ draft, outdated, authorName, authorNameOf, folded, onToggle
           </span>
         ) : null}
         {/* 复制（A20）与发送到输入框（A21）：两个动作分开，发送不自动发 */}
-        <button
-          type="button"
-          onClick={onCopy}
-          className="ml-auto shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-ink-900"
+        <MicroButton onClick={onCopy}
+          
           aria-label="复制这条评论"
-          data-review-copy
-        >复制</button>
-        <button
-          type="button"
-          onClick={onSend}
-          className="shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-accent"
+          data-review-copy>复制</MicroButton>
+        <MicroButton tone="accent" onClick={onSend}
+          
           aria-label="把这条评论放进输入框"
-          data-review-send
-        >发送</button>
+          data-review-send>发送</MicroButton>
         {canClose && !closed ? (
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-success"
+          <MicroButton onClick={onClose}
+            
             aria-label="关闭这条评论（已解决）"
-            data-review-close
-          >关闭</button>
+            data-review-close>关闭</MicroButton>
         ) : null}
-        <button
-          type="button"
-          onClick={onToggleFold}
-          className="shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-ink-900"
+        <MicroButton onClick={onToggleFold}
+          
           aria-label={folded ? "展开这条评论" : "折叠这条评论"}
           aria-expanded={!folded}
-          data-review-draft-fold
-        >{folded ? "展开" : "折叠"}</button>
+          data-review-draft-fold>{folded ? "展开" : "折叠"}</MicroButton>
         {/* 丢弃只对"根本没落到服务端的草稿"有意义；已打开的线程不该出现它（GitHub/Gitea 也没有"删除意见"，只有 resolve） */}
         {closed || (draft.state ?? "draft") !== "draft" ? null : (
-        <button type="button" onClick={onRemove} className="shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-danger" aria-label="丢弃这条草稿" data-review-draft-discard>丢弃</button>)}
+        <MicroButton tone="danger" onClick={onRemove} aria-label="丢弃这条草稿" data-review-draft-discard>丢弃</MicroButton>)}
         {closed ? (
           /* 已关闭的线程可以重开（作者或用户）；没有它，误关就没有退路 */
-          <button
-            type="button"
-            onClick={onReopen}
-            className="shrink-0 rounded-inner px-1.5 py-0.5 text-ink-500 hover:bg-hover hover:text-accent"
+          <MicroButton tone="accent" onClick={onReopen}
+            
             aria-label="重新打开这条评论"
-            data-review-reopen
-          >重开</button>
+            data-review-reopen>重开</MicroButton>
         ) : null}
       </div>
       {/* 折叠后只显示正文首行（VS Code / difit 同款：折叠不丢信息） */}
@@ -1640,22 +1615,16 @@ function ThreadReplies({ draft, authorNameOf, commentActions, closed }: {
             */}
             {(commentActions.userId !== "" ? true : reply.author.kind === "user") ? (
               <>
-              <button
-                type="button"
-                onClick={() => { setEditingId(reply.id); setEditingText(reply.body); }}
+              <MicroButton onClick={() => { setEditingId(reply.id); setEditingText(reply.body); }}
                 disabled={commentActions.online !== true}
-                className="ml-auto shrink-0 rounded-inner px-1 py-0.5 text-ink-300 hover:bg-hover hover:text-ink-900 disabled:opacity-50"
+                
                 aria-label="编辑这条回复"
-                data-review-reply-edit
-              >编辑</button>
-              <button
-                type="button"
-                onClick={() => commentActions.removeReply(draft.id, reply.id)}
+                data-review-reply-edit>编辑</MicroButton>
+              <MicroButton tone="danger" onClick={() => commentActions.removeReply(draft.id, reply.id)}
                 disabled={commentActions.online !== true}
-                className="shrink-0 rounded-inner px-1 py-0.5 text-ink-300 hover:bg-hover hover:text-danger disabled:opacity-50"
+                
                 aria-label="删除这条回复"
-                data-review-reply-remove
-              >删除</button>
+                data-review-reply-remove>删除</MicroButton>
               </>
             ) : null}
           </div>
@@ -1669,19 +1638,13 @@ function ThreadReplies({ draft, authorNameOf, commentActions, closed }: {
                 rows={1}
                 className="min-w-0 flex-1 resize-y rounded-control bg-sunken px-2 py-1 text-micro text-ink-900 ring-1 ring-line focus:outline-none focus:ring-accent"
               />
-              <button
-                type="button"
-                disabled={editingText.trim() === "" || commentActions.online !== true}
+              <MicroButton tone="accent" disabled={editingText.trim() === "" || commentActions.online !== true}
                 onClick={() => { commentActions.editReply(draft.id, reply.id, editingText); setEditingId(undefined); }}
-                className="shrink-0 rounded-inner px-1.5 py-0.5 text-micro text-accent hover:bg-hover disabled:opacity-40"
-                data-review-reply-edit-save
-              >保存</button>
-              <button
-                type="button"
-                onClick={() => setEditingId(undefined)}
-                className="shrink-0 rounded-inner px-1.5 py-0.5 text-micro text-ink-500 hover:bg-hover"
-                data-review-reply-edit-cancel
-              >取消</button>
+                
+                data-review-reply-edit-save>保存</MicroButton>
+              <MicroButton onClick={() => setEditingId(undefined)}
+                
+                data-review-reply-edit-cancel>取消</MicroButton>
             </div>
           ) : (
             <p className="whitespace-pre-wrap break-words text-micro text-ink-900" data-review-reply-body>{reply.body}</p>
@@ -1701,14 +1664,11 @@ function ThreadReplies({ draft, authorNameOf, commentActions, closed }: {
             rows={1}
             className="min-w-0 flex-1 resize-y rounded-control bg-sunken px-2 py-1 text-micro text-ink-900 ring-1 ring-line placeholder:text-ink-300 focus:outline-none focus:ring-accent"
           />
-          <button
-            type="button"
-            disabled={text.trim() === "" || commentActions.online !== true}
+          <MicroButton tone="accent" disabled={text.trim() === "" || commentActions.online !== true}
             onClick={() => { commentActions.reply(draft.id, text); setText(""); }}
-            className="shrink-0 rounded-inner px-1.5 py-0.5 text-micro text-accent hover:bg-hover disabled:opacity-40"
+            
             aria-label="提交回复"
-            data-review-reply-submit
-          >回复</button>
+            data-review-reply-submit>回复</MicroButton>
         </div>
       )}
     </div>
@@ -1852,16 +1812,16 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
   return (
     <section className="min-w-0" data-review-source={group.source.kind}>
       {/* 组头可点收起/展开（Task 0018）：文件计数与增删留在折叠态可见——收着也知道有东西；degraded/缺失提示在列表外，不受折叠影响 */}
-      <button type="button" onClick={onToggleGroupFold}
+      <ClickableRow onClick={onToggleGroupFold}
         aria-expanded={!folded} aria-label={`${folded ? "展开" : "折叠"}${SOURCE_LABEL[group.source.kind]}`}
         data-review-group-fold={group.source.kind}
-        className="flex w-full items-center gap-2 rounded-control px-1 py-1.5 text-left hover:bg-hover">
+        className="px-1 py-1.5">
         <span aria-hidden="true" className={`shrink-0 text-micro ${folded ? "text-ink-300" : "text-ink-500"}`}>{folded ? "▸" : "▾"}</span>
         <h3 className="text-meta font-semibold text-ink-900">{SOURCE_LABEL[group.source.kind]}</h3>
         {group.source.branch !== undefined && <span className="rounded-inner bg-hover px-1.5 py-0.5 font-mono text-micro text-ink-700">{group.source.branch}</span>}
         <span className="text-micro text-ink-500">{files.length} 个文件</span>
         <StatBadge additions={files.reduce((a, f) => a + f.additions, 0)} deletions={files.reduce((a, f) => a + f.deletions, 0)} />
-      </button>
+      </ClickableRow>
       {group.base !== undefined && (
         <p className="px-1 pb-1 text-micro text-ink-500">
           基线：{group.base.commit.slice(0, 8)}{group.base.at !== undefined ? `（${group.base.at.slice(0, 10)}）` : ""}
@@ -2891,44 +2851,29 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
           </span>
         )}
         {/* 一键复制检视对象（给 Agent 用）：用户原话"不然我们传达起来就很慢" */}
-        <button
-          type="button"
-          onClick={() => void copyTargetText(data, taskDir)}
-          className="ml-1 flex shrink-0 items-center gap-1 rounded-inner px-1.5 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-ink-900"
+        <MicroButton onClick={() => void copyTargetText(data, taskDir)}
+          
           aria-label="复制检视对象信息"
           data-review-copy-target
-          title="复制检视对象（Task / worktree 路径 / 分支 / 文档目录）"
-        >
-          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          title="复制检视对象（Task / worktree 路径 / 分支 / 文档目录）"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <rect x="3.5" y="1.5" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.1" />
             <path d="M1.5 4.5v6h6" stroke="currentColor" strokeWidth="1.1" />
           </svg>
-          复制
-        </button>
+          复制</MicroButton>
         {/*
           G2「复制全部」（difit `CommentsDropdown.tsx:50-53` 的 `Copy All Prompt (N)`）：
           `commentsToText()` 早就支持多条，但之前只有"复制单条"，多条时用户只能一条条复制。
           这里只复制**未关闭**的（已关闭的意见不该再塞给 Agent——与 `commentsToText` 的默认一致）。
         */}
         {resolvedCount > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowResolved((prev) => !prev)}
-            aria-pressed={showResolved}
-            className={`shrink-0 rounded-inner px-1.5 py-0.5 text-micro ${showResolved ? "bg-success-soft text-success" : "text-ink-500 hover:bg-hover hover:text-ink-900"}`}
-            data-review-show-resolved
-            title={showResolved ? "隐藏已关闭的评论" : `显示已关闭的评论（${resolvedCount} 条）`}
-          >{showResolved ? "隐藏已关闭" : `显示已关闭 ${resolvedCount}`}</button>
+          <ToggleChip pressed={showResolved} onClick={() => setShowResolved((prev) => !prev)} data-review-show-resolved>显示已解决 {resolvedCount}</ToggleChip>
         )}
         {openComments > 0 && (
-          <button
-            type="button"
-            onClick={sendAllToComposer}
-            className="shrink-0 rounded-inner px-1.5 py-0.5 text-micro text-ink-500 hover:bg-hover hover:text-accent"
+          <MicroButton tone="accent" onClick={sendAllToComposer}
+            
             aria-label={`把全部未关闭的评论放进输入框（${openComments} 条）`}
             data-review-send-all
-            title={`把全部未关闭的评论放进输入框（${openComments} 条，不自动发送）`}
-          >全部发送 {openComments}</button>
+            title={`把全部未关闭的评论放进输入框（${openComments} 条，不自动发送）`}>全部发送 {openComments}</MicroButton>
         )}
         {openComments > 0 && (
           <button
@@ -2954,13 +2899,13 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
           {hasContent && (
             <IconButton label={allOpen ? "全部折叠" : "全部展开"} data-review-toggle-all aria-pressed={allOpen}
               onClick={() => setAll(!allOpen)}>
-              {allOpen ? <IconChevronsUp size={16} /> : <IconChevronsDown size={16} />}
+              {allOpen ? <AppIcon name="chevrons-up" size={16} /> : <AppIcon name="chevrons-down" size={16} />}
             </IconButton>
           )}
           {/* 刷新 = diff 与评论一起重拉（Task 0018 用户：外部改了评论数，点刷新要能看到）——
               只调 onReload 会漏掉 reloadDrafts（评论只在挂载/taskDir 变化时拉）。 */}
-          <IconButton label="重新加载 diff 与评论" onClick={() => { onReload(); reloadDrafts(); }} disabled={loading}><IconRefresh size={16} /></IconButton>
-          <IconButton label="关闭检视面板" onClick={onClose}><IconX size={16} /></IconButton>
+          <IconButton label="重新加载 diff 与评论" onClick={() => { onReload(); reloadDrafts(); }} disabled={loading}><AppIcon name="refresh" size={16} /></IconButton>
+          <IconButton label="关闭检视面板" onClick={onClose}><AppIcon name="x" size={16} /></IconButton>
         </span>
       </header>
 
@@ -2969,7 +2914,7 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
           <span>把两个工作区合入各自的 main，然后删除工作区。这一步不可撤销。</span>
           <span className="ml-auto flex items-center gap-1">
             <button type="button" onClick={() => void runMerge()} className="rounded-inner bg-accent px-2 py-0.5 text-micro text-white" data-review-merge-yes>确认合入</button>
-            <button type="button" onClick={() => setMerge({ phase: "idle" })} className="rounded-inner px-2 py-0.5 text-micro text-ink-500 hover:bg-hover" data-review-merge-no>取消</button>
+            <MicroButton onClick={() => setMerge({ phase: "idle" })}  data-review-merge-no>取消</MicroButton>
           </span>
         </div>
       )}

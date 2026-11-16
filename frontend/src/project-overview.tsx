@@ -14,10 +14,10 @@
  * 浮层本体 = `design/popover-view.tsx`（定位/Esc/点外关闭/焦点归还是基建）。
  */
 import { useEffect, useState } from "react";
-import { IconCheck, IconCopy, IconFolder, IconTrash } from "@tabler/icons-react";
 import { Popover } from "./design/popover-view";
 import { Button, IconButton } from "./design/ui";
 import { copyText } from "./clipboard";
+import { AppIcon } from "./design/icons";
 
 /** `GET .../overview` 的响应（唯一形状；与 src/projects.ts 的 ProjectOverview 对齐）。 */
 type Overview = {
@@ -89,7 +89,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
         {/* 身份区：图标 + 项目名 + 路径（可复制）。默认工作区没有外部路径，写清楚它是什么。 */}
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-nav-accent text-ink-500">
-            <IconFolder size={16} />
+            <AppIcon name="folder" size={16} />
           </span>
           <span className="min-w-0 truncate text-body font-medium text-ink-900">{name}</span>
         </div>
@@ -100,7 +100,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
               {state.data.path}
             </code>
             <IconButton size="sm" label="复制项目路径" onClick={() => void copyPath()}>
-              {copyState === "ok" ? <IconCheck size={14} /> : <IconCopy size={14} />}
+              {copyState === "ok" ? <AppIcon name="check" size={14} /> : <AppIcon name="copy" size={14} />}
             </IconButton>
             {copyState !== "idle" && (
               <span role="status" aria-live="polite"
@@ -143,7 +143,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
         {onRemove !== undefined && (
           <div className="border-t border-line pt-2">
             <Button variant="ghost-danger" size="sm" className="w-full" onClick={onRemove}>
-              <IconTrash size={14} /> 移除项目
+              <AppIcon name="trash" size={14} /> 移除项目
             </Button>
           </div>
         )}

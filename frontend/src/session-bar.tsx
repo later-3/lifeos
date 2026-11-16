@@ -26,7 +26,6 @@
  * 秒数的锚点 = 本轮用户消息的 `at`（`turnWallMsOf()` 的同一个起点），所以
  * "进行中最后看到的秒数"与"完成后摘要里的秒数"必然一致（案例 C004 的回归点）。
  */
-import { IconInfoCircle, IconPhoto } from "@tabler/icons-react";
 import { IconButton } from "./design/ui";
 import { useToast } from "./design/toast";
 import { payloadStatusText, type PayloadStat } from "./payload-status";
@@ -35,6 +34,7 @@ import { compactTokens, type TurnStep } from "./working";
 import type { SessionTotals } from "./session-totals";
 import type { Phase } from "./stream-blocks";
 import { WorkingRow } from "./working-row";
+import { AppIcon } from "./design/icons";
 
 function Metric({ symbol, value, label, title, tone = "text-ink-500" }: {
   symbol: string; value: string; label: string; title: string; tone?: string;
@@ -159,14 +159,14 @@ export function SessionBar({ totals, context, payload, turnId, onAttachImage, tu
         {hasAnything && (
           <IconButton label="状态条说明" size="sm"
             onClick={() => toast("◎ 轮次 · ⌗ 工具调用 · ◷ 对话墙钟耗时合计（含工具执行）· ↑↓ 会话累计 tokens · ⚡ 平均输出速度（分母只有模型时间）· ▲ 当前请求体 · ◔ 上下文占用")}>
-            <IconInfoCircle size={14} />
+            <AppIcon name="info" size={14} />
           </IconButton>
         )}
       </div>
       {onAttachImage !== undefined && (
         <div data-testid="composer-tools" className="flex shrink-0 items-center gap-1">
           <IconButton label="添加图片" onClick={onAttachImage} data-testid="attach-image" className="shrink-0">
-            <IconPhoto size={16} />
+            <AppIcon name="photo" size={16} />
           </IconButton>
         </div>
       )}

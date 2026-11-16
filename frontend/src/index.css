@@ -1,10 +1,32 @@
 @import "tailwindcss";
 @import "./design/tokens.css";
 
-/* 字体（参考 Daybridge foundations：Inter 优先，中文回落系统字体；不引网络字体） */
-html, body, button, input, textarea, select {
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+/*
+ * 字体（S3 起走变量）：主题包的字体槽 → --font-sans；默认值与改造前完全一致。
+ * 为什么用变量而不是改这里：换字体要能"一处生效"，写在选择器里就只能改代码。
+ */
+:root {
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+html, body {
+  font-family: var(--font-sans);
+  /*
+   * 行高锁定（S5 零跳变）：换成衬线/等宽字体时，字体默认行高不同会让整页高度变化。
+   * 统一 1.5 相对行高 × 固定字号（字号走 --text-*，不由字体决定）→ 换字体不改变行高。
+   *
+   * **只给 html/body**：加在 button/input 上会改变它们的固有高度
+   * （实测 `.chk` 的 label 从 32 掉到 21 = 14px × 1.5，命中区门禁直接红）。
+   * 表单控件的高度由 size/min-height 决定，不该被字体行高侵入。
+   */
+  line-height: 1.5;
+}
+button, input, textarea, select {
+  font-family: var(--font-sans);
+}
+pre, code, .font-mono {
+  font-family: var(--font-mono);
 }
 
 /*
@@ -57,19 +79,7 @@ html, body, button, input, textarea, select {
 .md-body pre code { background: none; padding: 0; font-size: 0.8em; line-height: 1.6; }
 /* 高亮 token 色由 `--color-syn-*`（prism 类映射见 review-highlight-style.ts）——
    浅色值已在 tokens.css；深色值由 index.css 的 [data-theme-mode=dark] 区补（见下）。 */
-/* 深色下的代码高亮派生（统一在 dark 组，浅色静态值见 tokens.css:89-96；
-   深色值 = 同色相的亮版：对比目标为深色代码底 var(--color-hover)（L*≈32））：
-   keyword 换最亮的紫蓝、comment 保持中位灰、其余各色相走 L*66–72 区间。 */
-[data-theme-mode="dark"] {
-  --color-syn-keyword: #c4b5fd;
-  --color-syn-string: #86efac;
-  --color-syn-comment: #9a9daa;  /* 注释灰在深色底上 5.0:1（4.43 不达标，实测调高） */
-  --color-syn-number: #fdba74;
-  --color-syn-function: #93c5fd;
-  --color-syn-type: #67e8f9;
-  --color-syn-constant: #f0abfc;
-  --color-syn-punctuation: #a1a1aa;
-}
+/* 语法高亮的深色值已收编进 design/theme.ts 引擎（A4：三源消亡），按主题深浅自动派生。 */
 .md-body blockquote { border-left: 2px solid var(--color-line); color: var(--color-ink-500); padding-left: 0.85em; }
 /* 引用块里的内联代码：保持正文色（继承的弱化色叠在代码底色上对比度不足 4.5，UI 契约 2026-10-25 实测） */
 .md-body blockquote code { color: var(--color-ink-900); }
@@ -92,9 +102,8 @@ html, body, button, input, textarea, select {
    4.5em ≈ 5 个汉字宽 —— 够放一个短词，又不至于逼出滚动条（三列 4.5em 在 536 宽里放得下）。
    真要更宽的表格（内容本身就长）才走 overflow-x 滚动，那是内容决定，不是压缩决定。 */
 .md-body th, .md-body td { border: 1px solid var(--color-line); padding: 0.3em 0.7em; text-align: left; min-width: 4.5em; }
-.md-body th { background: var(--color-sunken); font-weight: 600; }
-/* 表头也是"明面容器"（spec 2.30）：深色下比所在底**亮**（hover），浅色保留 sunken */
-[data-theme-mode="dark"] .md-body th { background: var(--color-hover); }
+.md-body th { background: var(--color-table-head); font-weight: 600; }
+/* 表头底色已收编为 --color-table-head（引擎：light=sunken、dark=比底亮一档），单一引用。 */
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
@@ -229,23 +238,5 @@ html, body, button, input, textarea, select {
  * 深色模式下如果把浅底原样搬过去，配浅色的 danger/success 文字就只有 1.5–2.5:1。
  * 这里按深色重算：底变深（保留色相）、字仍用 danger/success（它们在深色下是亮的）。
  * ══════════════════════════════════════════════════════════════ */
-[data-theme-mode="dark"] {
-  /* 首帧近似（neutral/palette standard 档的派生值）；React 起来后由徽标偏好层即时覆盖 */
-  --color-danger-soft: #413130;
-  --color-success-soft: #2b3f36;
-  --color-running-soft: #273d46;
-  /*
-   * 状态/内容块的深色映射（2026-11-10，线 B 第 1 项）
-   * —— 这五个 token 此前**没有任何深色重算**（tokens.css 只有浅色静态值）：
-   * 深色下思考块/工具块 = **白色块**（#fafafa/#f4f4f5），是用户截图「黑色模式下不行」的主要观感。
-   * 映射遵守「明面容器深色方向」（spec 2.30）：明面层上的内容容器底**必须比页面底亮**；
-   * 语义块（done/error）直接走对应 `*-soft`（它们已有符合方向的深色派生，规范 2.26）；
-   * 用户气泡换成 `accent-solid`（Telegram/Discord dark 的主力气泡同构：主色底 + 白字，
-   * 且该 token 的白字 AA 由主题引擎保证——浅色气泡保留既有黑底白字，见 tokens.css）。
-   */
-  --color-message-thinking: var(--color-hover);
-  --color-message-tool: var(--color-hover);
-  --color-message-tool-done: var(--color-success-soft);
-  --color-message-tool-error: var(--color-danger-soft);
-  --color-message-user: var(--color-accent-solid);
-}
+/* soft 底与消息块的深色值已收编进 design/theme.ts 引擎（A4），VAR_MAP 统一写入。 */
+

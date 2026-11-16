@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { IconUpload, IconTrash } from "@tabler/icons-react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { ConfirmDialog, Modal } from "./design/overlay";
 import { Button, Field, Label, controlClass } from "./design/ui";
 import { useToast } from "./design/toast";
+import { AppIcon } from "./design/icons";
 
 // Agent 配置（点头像进入）：基础信息（头像/名字/描述/身份）+ 同页运行配置（默认模型）。
 // 布局依据 frontend-spec §3.1 与 reference-baseline：LobeHub Agent Profile 的“顶部 profile
@@ -318,9 +318,9 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
               <AgentAvatar id={agent.id} name={name || agent.name} avatar={avatar} size={72} />
               <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden"
                 onChange={(event) => { const file = event.target.files?.[0]; if (file !== undefined) void uploadAvatar(file); event.currentTarget.value = ""; }} />
-              <Button size="sm" className="w-full" onClick={() => fileRef.current?.click()}><IconUpload size={14} /> 更换</Button>
+              <Button size="sm" className="w-full" onClick={() => fileRef.current?.click()}><AppIcon name="upload" size={14} /> 更换</Button>
               {avatar?.kind === "image" && (
-                <Button size="sm" variant="ghost" className="w-full" onClick={() => void resetAvatar()}><IconTrash size={14} /> 恢复</Button>
+                <Button size="sm" variant="ghost" className="w-full" onClick={() => void resetAvatar()}><AppIcon name="trash" size={14} /> 恢复</Button>
               )}
             </div>
             <div className="min-w-0 flex-1 space-y-3">

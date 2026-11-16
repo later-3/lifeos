@@ -1,3 +1,4 @@
+import { MicroButton, ClickableRow } from "./design/ui";
 /**
  * MarkBar（批注信息条）—— 挂在**被批注的那条消息**底部（Task 0008 · P2）。
  *
@@ -17,7 +18,7 @@ import { useMemo, useState } from "react";
 import type { Annotation } from "./annotations.ts";
 import { markById } from "./marks.ts";
 import { annotationLine } from "./annotation-message.ts";
-import { IconChevronRight } from "@tabler/icons-react";
+import { AppIcon } from "./design/icons";
 
 export type MarkBarProps = {
   /** 这条消息上的全部批注（调用方用 `ofMessage(messageId)` 取好传入）。 */
@@ -76,14 +77,14 @@ export function MarkBar({
     >
       {/* 标题行：折叠/展开 + 数量 + 已发送/待发送概览 + 清空 */}
       <div className="flex items-stretch bg-sunken">
-        <button type="button"
+        <ClickableRow
           aria-expanded={!folded}
           aria-controls="mark-bar-rows"
           onClick={() => setFolded((v) => !v)}
-          className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-meta font-semibold text-ink-500 hover:bg-hover max-sm:min-h-11"
+          className="min-w-0 flex-1 rounded-none px-3 py-1.5 text-meta font-semibold text-ink-500"
           title={folded ? "展开看这条回复上的批注" : "收起"}
         >
-          <IconChevronRight size={14} aria-hidden="true"
+          <AppIcon name="chevron-right" size={14} aria-hidden="true"
             className={`shrink-0 transition-transform duration-150 ${folded ? "" : "rotate-90"}`} />
           <span>标记</span>
           <span data-testid="mark-bar-count"
@@ -92,11 +93,9 @@ export function MarkBar({
           <span className="ml-1 text-micro font-normal text-ink-500">
             {pendingCount > 0 ? `${pendingCount} 条待发送` : consumed > 0 ? "已全部发送" : ""}
           </span>
-        </button>
-        <button type="button" data-testid="mark-bar-clear" onClick={onRemoveAll}
-          className="inline-flex shrink-0 items-center rounded-control px-2 text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11">
-          清空
-        </button>
+        </ClickableRow>
+        <MicroButton tone="danger" data-testid="mark-bar-clear" onClick={onRemoveAll}
+          className="inline-flex shrink-0 items-center rounded-control px-2 text-micro text-ink-500 hover:bg-danger-soft hover:text-danger max-sm:min-h-11">清空</MicroButton>
       </div>
 
       {!folded && (

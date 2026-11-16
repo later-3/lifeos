@@ -1,3 +1,4 @@
+import { ClickableRow } from "./design/ui";
 /**
  * ResponseBar（Task 0008 · P3 创建，Task 0015 · P5 重定边界）—— 一轮回复的**过程入口**，在正文**上方**。
  *
@@ -26,9 +27,9 @@
  * 用户截图抓到 13s vs 17s（案例 C004）—— 砍成一处就不会再漂。
  */
 import { useId } from "react";
-import { IconChevronRight } from "@tabler/icons-react";
 import { processDetail, processSummary, type ProcessStats } from "./process-stats";
 import { processOpenOf } from "./response-fold";
+import { AppIcon } from "./design/icons";
 
 export type ResponseBarProps = {
   /** 过程统计（工具/思考）；`undefined` = 纯聊天轮（没有可折叠的过程）。 */
@@ -93,20 +94,19 @@ export function ResponseBar({
               <span data-testid="turn-status" className="text-meta text-ink-500">{status.text}</span>
             )}
             {summaryRow ? (
-              <button type="button"
+              <ClickableRow
                 aria-expanded={open}
                 aria-controls={panelId}
                 title={processDetail(stats!)}
                 onClick={onToggleProcess}
-                /* 命中区 ≥28（闸 3）：文字行只有 18px，靠 min-h-7 顶到 28；触屏 44 保底同旧 ProcessBar */
-                className="group flex min-h-7 items-center gap-1.5 text-left text-meta text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
-                <IconChevronRight size={14} aria-hidden="true"
+                className="min-h-7 w-auto gap-1.5 text-meta text-ink-500">
+                <AppIcon name="chevron-right" size={14} aria-hidden="true"
                   className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
                 <span data-testid="response-summary" className="min-w-0 truncate tabular-nums">{summary}</span>
                 <span className="shrink-0 whitespace-nowrap text-micro text-ink-500 group-hover:text-ink-700">
                   {open ? "收起过程" : "查看过程"}
                 </span>
-              </button>
+              </ClickableRow>
             ) : null}
           </div>
         </div>

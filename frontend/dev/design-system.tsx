@@ -23,7 +23,8 @@ import "../src/index.css";
 import { applySurfaceTokens, calculatePalette, clampState, hex, THEME_PRESETS } from "../src/design/theme";
 import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceStyle } from "../src/design/surface";
 import { Button, ComposerButton, controlClass, Field, IconButton, Label, Row, Segmented, Skeleton, Spinner, Tabs } from "../src/design/ui";
-import { IconAdjustments, IconCheck, IconPlus, IconTrash } from "@tabler/icons-react";
+import { AppIcon, type IconName } from "../src/design/icons";
+import { SessionRow } from "../src/design/ui";
 
 /* ── 排版小件 ── */
 function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
@@ -168,11 +169,11 @@ function App() {
 
       <Section title="图标按钮" note="命中区 ≥28（sm 28 / md 32 / lg 32 / xl 44）；label 必填（可访问名）。">
         <div className="flex items-center gap-3">
-          <IconButton label="设置" size="sm"><IconAdjustments size={14} /></IconButton>
-          <IconButton label="新增" size="md"><IconPlus size={16} /></IconButton>
-          <IconButton label="完成" size="lg" active><IconCheck size={16} /></IconButton>
-          <IconButton label="删除" size="xl" tone="solid"><IconTrash size={18} /></IconButton>
-          <IconButton label="禁用示例" size="md" disabled><IconPlus size={16} /></IconButton>
+          <IconButton label="设置" size="sm"><AppIcon name="adjustments" size={14} /></IconButton>
+          <IconButton label="新增" size="md"><AppIcon name="plus" size={16} /></IconButton>
+          <IconButton label="完成" size="lg" active><AppIcon name="check" size={16} /></IconButton>
+          <IconButton label="删除" size="xl" tone="solid"><AppIcon name="trash" size={18} /></IconButton>
+          <IconButton label="禁用示例" size="md" disabled><AppIcon name="plus" size={16} /></IconButton>
           <ComposerButton label="发送">↑</ComposerButton>
         </div>
       </Section>
@@ -238,6 +239,8 @@ function App() {
         </div>
       </Section>
 
+      <ListRowCompareSection />
+
       <footer className="py-10 text-micro text-ink-500">
         改动这一页不需要后端：<code className="font-mono">cd frontend &amp;&amp; npx vite --port 5399</code> →
         <code className="font-mono"> /dev/design-system.html</code>
@@ -245,5 +248,69 @@ function App() {
     </div>
   );
 }
+
+/* ── 列表行 A/B 形态对比（Task 0015 · A3，用户实际观感拍板用）────────────
+ * A = 两行社交风（名字行 + preview 行）；B = 单行收敛（preview 不显示）。
+ * 两个形态是同一个组件的不同 props（showPreview/density），结构零差异——
+ * 拍板选的是"默认形态"，不是两套代码。 */
+type RowView = "A" | "B";
+
+function ListRowCompareSection() {
+  /* 列表行形态拍板（2026-11-13）：**B 单行收敛为默认**——真实组件就是
+   * design/ui.tsx 的 Row（助手行）与 SessionRow（会话行，收编自 groups-panel）。
+   * 两行社交风（次行=最后消息）涉及后端数据与内容策略，用户后续单独建 task。 */
+  const [selected, setSelected] = useState(false);
+  return (
+    <Section
+      title="列表行（既有组件：Row / SessionRow）"
+      note="助手行与会话行都是设计系统内的成熟容器（axe 嵌套修复、状态↔动作同格互换、键盘/触屏覆盖分支）。社交风两行（次行=最后消息）涉及后端数据，后续单独 task。"
+    >
+      <div className="flex items-center gap-3">
+        <Button variant="secondary" size="sm" onClick={() => setSelected((v) => !v)}>切换选中态</Button>
+        <span className="text-micro text-ink-500">点击切换选中底（hover 任意行看右侧动作互换；Tab 聚焦同样可见）</span>
+      </div>
+      <div className="flex flex-col gap-1 rounded-panel bg-nav-bg p-2">
+        <Row selected={selected} onClick={() => setSelected((v) => !v)}
+          actions={
+            <>
+              <button type="button" title="设置" aria-label="设置" className="flex h-7 w-7 items-center justify-center rounded-control text-ink-500 hover:bg-hover hover:text-ink-900"><AppIcon name="adjustments" size={14} /></button>
+              <button type="button" title="删除" aria-label="删除" className="flex h-7 w-7 items-center justify-center rounded-control text-ink-500 hover:bg-hover hover:text-ink-900"><AppIcon name="trash" size={14} /></button>
+            </>
+          }
+          status={<span className="text-micro text-nav-muted">3 个会话 · 2 未读</span>}>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-ink-900 text-xs font-semibold text-surface">FD</span>
+          <span className="truncate">Frontend Developer</span>
+        </Row>
+        <SessionRow
+          selected={!selected}
+          title="统一主题架构讨论"
+          titleFallback={false}
+          participants={<span className="flex h-5 w-5 items-center justify-center rounded-full bg-ink-900 text-micro font-semibold text-surface">F</span>}
+          meta="Frontend Developer · Task 0015 · 进行中"
+          status={<span className="text-micro text-nav-muted">16:04</span>}
+          onSelect={() => setSelected((v) => !v)}
+          onRename={() => {}}
+          onHistory={() => {}}
+          onDelete={() => {}}
+          renaming={false}
+          renameValue=""
+          onRenameChange={() => {}}
+          onRenameCommit={() => {}}
+          onRenameCancel={() => {}}
+        />
+      </div>
+    </Section>
+  );
+}
+
+function MiniIcon({ label, name }: { label: string; name: IconName }) {
+  return (
+    <button type="button" title={label} aria-label={label}
+      className="flex h-7 w-7 items-center justify-center rounded-control text-ink-500 hover:bg-hover hover:text-ink-900">
+      <AppIcon name={name} size={14} />
+    </button>
+  );
+}
+
 
 createRoot(document.getElementById("root")!).render(<App />);

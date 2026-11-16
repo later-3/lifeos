@@ -8,7 +8,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type StreamState } from "./stream-blocks";
 import { MessageView, type Block } from "./Message";
-import { Spinner } from "./design/ui";
+import { Spinner, MicroButton } from "./design/ui";
 
 export type PeerTarget = { agentId: string; sessionId: string; agentName: string };
 
@@ -115,8 +115,7 @@ export function PeerPanel({ target, liveEvents, onClose }: {
         </span>
         {running && <Spinner size={12} className="text-accent" />}
         <span className="shrink-0 text-micro text-ink-500">{running ? "对方执行中" : "已完成"}</span>
-        <button type="button" onClick={onClose}
-          className="shrink-0 rounded px-1.5 py-0.5 text-micro text-ink-500 hover:bg-sunken">关闭</button>
+        <MicroButton onClick={onClose}>关闭</MicroButton>
       </header>
 
       <div ref={scrollRef} onScroll={onScroll}

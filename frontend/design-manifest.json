@@ -1,0 +1,586 @@
+{
+ "generated": "2026-11-16",
+ "count": 116,
+ "entries": [
+  {
+   "name": "AppIcon",
+   "kind": "function",
+   "file": "src/design/icons.tsx"
+  },
+  {
+   "name": "applySurfaceTokens",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "applyTheme",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "applyThemePack",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "Button",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "calculatePalette",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "clampPan",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "clampState",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "clampWidth",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "clampZoom",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "ClickableRow",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "ComposerButton",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "ConfirmDialog",
+   "kind": "function",
+   "file": "src/design/overlay.tsx"
+  },
+  {
+   "name": "CONTRACT",
+   "kind": "const",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "contrastOf",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "contrastRatio",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "contrastRgb",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "controlClass",
+   "kind": "const",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "DEFAULT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "DEFAULT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "DEFAULT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "deriveMissingVars",
+   "kind": "function",
+   "file": "src/design/theme-derive.ts"
+  },
+  {
+   "name": "derivePack",
+   "kind": "function",
+   "file": "src/design/theme-derive.ts"
+  },
+  {
+   "name": "displaySize",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "dragCascade",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "DragHandle",
+   "kind": "function",
+   "file": "src/design/resize-column.tsx"
+  },
+  {
+   "name": "dragWidth",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "elevationOf",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "EmptyState",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "extractVscodeSeed",
+   "kind": "function",
+   "file": "src/design/theme-translators.ts"
+  },
+  {
+   "name": "Field",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "fitSize",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "HANDLE",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "HANDLE",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "HANDLE",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "hex",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "ICON",
+   "kind": "const",
+   "file": "src/design/icon-sets.tsx"
+  },
+  {
+   "name": "IconButton",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "iconOf",
+   "kind": "function",
+   "file": "src/design/icon-sets.tsx"
+  },
+  {
+   "name": "ICONS",
+   "kind": "const",
+   "file": "src/design/icons.tsx"
+  },
+  {
+   "name": "IconSetContext",
+   "kind": "const",
+   "file": "src/design/icon-context.tsx"
+  },
+  {
+   "name": "iconSetCoverage",
+   "kind": "function",
+   "file": "src/design/icon-sets.tsx"
+  },
+  {
+   "name": "ImageTrigger",
+   "kind": "function",
+   "file": "src/design/image-viewer.tsx"
+  },
+  {
+   "name": "ImageViewer",
+   "kind": "function",
+   "file": "src/design/image-viewer.tsx"
+  },
+  {
+   "name": "isHexColor",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "Label",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "LAYER",
+   "kind": "const",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "LAYER",
+   "kind": "const",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "layerStyle",
+   "kind": "function",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "layout",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "ListSkeleton",
+   "kind": "function",
+   "file": "src/design/skeleton.tsx"
+  },
+  {
+   "name": "loadActivePackId",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "loadTheme",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "loadThemePacks",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "MAX",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "maxWidthOf",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MessageSkeleton",
+   "kind": "function",
+   "file": "src/design/skeleton.tsx"
+  },
+  {
+   "name": "MicroButton",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "MIN",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "Modal",
+   "kind": "function",
+   "file": "src/design/overlay.tsx"
+  },
+  {
+   "name": "MOTION",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "NavRail",
+   "kind": "function",
+   "file": "src/design/rail.tsx"
+  },
+  {
+   "name": "nextZoom",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "normColor",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "placePopover",
+   "kind": "function",
+   "file": "src/design/popover.ts"
+  },
+  {
+   "name": "Popover",
+   "kind": "function",
+   "file": "src/design/popover-view.tsx"
+  },
+  {
+   "name": "POPOVER",
+   "kind": "const",
+   "file": "src/design/popover-view.tsx"
+  },
+  {
+   "name": "POPOVER",
+   "kind": "const",
+   "file": "src/design/popover.ts"
+  },
+  {
+   "name": "POPOVER",
+   "kind": "const",
+   "file": "src/design/popover.ts"
+  },
+  {
+   "name": "PRESET",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "RADIUS",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "RAIL",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "relLuminance",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "RESIZE",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "ResizeColumn",
+   "kind": "function",
+   "file": "src/design/resize-column.tsx"
+  },
+  {
+   "name": "reviewPxOfRatio",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "reviewRatioOfPx",
+   "kind": "function",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "Row",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "RowSkeleton",
+   "kind": "function",
+   "file": "src/design/skeleton.tsx"
+  },
+  {
+   "name": "saveActivePackId",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "saveTheme",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "saveThemePacks",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "SCRIM",
+   "kind": "const",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "Segmented",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "SessionRow",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "Skeleton",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "Spinner",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "SURFACE",
+   "kind": "const",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "surfaceClass",
+   "kind": "function",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "surfaceStyle",
+   "kind": "function",
+   "file": "src/design/surface.ts"
+  },
+  {
+   "name": "Tabs",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "THEME",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "THEME",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "ThemePreview",
+   "kind": "function",
+   "file": "src/design/theme-preview.tsx"
+  },
+  {
+   "name": "themeToCss",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "ToastProvider",
+   "kind": "function",
+   "file": "src/design/toast.tsx"
+  },
+  {
+   "name": "ToggleChip",
+   "kind": "function",
+   "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "TRACKING",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "translateObsidianTheme",
+   "kind": "function",
+   "file": "src/design/theme-translators.ts"
+  },
+  {
+   "name": "translateVscodeTheme",
+   "kind": "function",
+   "file": "src/design/theme-translators.ts"
+  },
+  {
+   "name": "useDialogFocus",
+   "kind": "function",
+   "file": "src/design/overlay.tsx"
+  },
+  {
+   "name": "useFold",
+   "kind": "function",
+   "file": "src/design/fold.ts"
+  },
+  {
+   "name": "useIconSet",
+   "kind": "function",
+   "file": "src/design/icon-context.tsx"
+  },
+  {
+   "name": "useToast",
+   "kind": "function",
+   "file": "src/design/toast.tsx"
+  },
+  {
+   "name": "validateThemePack",
+   "kind": "function",
+   "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "VAR",
+   "kind": "const",
+   "file": "src/design/theme.ts"
+  },
+  {
+   "name": "WIDTH",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "ZOOM",
+   "kind": "const",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "ZOOM",
+   "kind": "const",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "ZOOM",
+   "kind": "const",
+   "file": "src/design/image-zoom.ts"
+  },
+  {
+   "name": "zoomPercent",
+   "kind": "function",
+   "file": "src/design/image-zoom.ts"
+  }
+ ]
+}

@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { AppIcon } from "./icons";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 /**
@@ -30,6 +31,74 @@ export function Button({ variant = "secondary", size = "md", className = "", chi
   return (
     <button type="button" data-variant={variant} {...rest}
       className={`inline-flex shrink-0 items-center justify-center rounded-control font-medium transition-colors disabled:cursor-not-allowed ${VARIANT[variant]} ${SIZE[size]} ${className}`}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 开关芯片（S4 · 自绘收敛）：带 `aria-pressed` 的单选/多选小片
+ * （外观模式、字体候选、主色圆点、徽标强度、语气选择…）。
+ *
+ * 为什么单列：这一族在设置页出现过 8 次以上，每次都是
+ * `<button aria-pressed={on} className={on ? "选中样式" : "未选样式"}>`；
+ * 差异只在尺寸/形状，用一个 `shape` 变体覆盖即可（规范 2.3：第二次出现立容器）。
+ * 语义：button + aria-pressed（不是 role=radio —— 那是有互斥组时才需要的语义，
+ * 由调用方用 role="group" 包一层即可）。
+ */
+export function ToggleChip({ pressed, shape = "pill", className = "", children, ...rest }: {
+  pressed: boolean;
+  shape?: "pill" | "dot" | "card";
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  const base = shape === "dot"
+    ? "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 transition-colors"
+    : shape === "card"
+      ? "rounded-control px-2.5 py-1.5 text-left text-meta transition-colors"
+      : "flex h-7 shrink-0 items-center rounded-control px-2.5 text-meta transition-colors";
+  const look = shape === "dot"
+    ? pressed ? "border-ink-900" : "border-transparent"
+    : pressed ? "bg-nav-selected text-ink-900 ring-1 ring-accent" : "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover";
+  return (
+    <button type="button" aria-pressed={pressed} {...rest} className={`${base} ${look} ${className}`}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 可点行（S4 · 自绘收敛）：整行可点击的容器（历史回合、分组头、目录选择、列表项）。
+ *
+ * 为什么单列：这些用法在页面里出现过 6 次以上，每次都手写
+ * `<button className="flex w-full items-center gap-2 ...">` ——第二次出现就该立容器（规范 2.3）。
+ * 它的语义是"一行是一个动作"，不是"一个按钮"，但 DOM 上仍是 button（键盘可达）。
+ */
+export function ClickableRow({ className = "", children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button type="button" {...rest}
+      className={`flex w-full min-w-0 items-center gap-2 rounded-control text-left transition-colors hover:bg-hover max-sm:min-h-11 ${className}`}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * 微按钮（S4 · 自绘收敛）：密集区域的小按钮（评审面板的展开/折叠、diff 导航、
+ * 行内次要动作）。为什么单列一档而不是用 Button size="sm"：
+ * 这里的高度 ~20px、字号 micro，比 Button 的 sm（28）更紧凑——但**命中区**由
+ * 外层 padding 补足（评审面板的行高足够），不牺牲可点性。
+ * 命中性上它与 Button 同级（都是真 <button> + disabled/focus 语义）。
+ */
+export function MicroButton({ tone = "quiet", className = "", children, ...rest }: {
+  tone?: "quiet" | "accent" | "danger";
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  const look = tone === "accent"
+    ? "bg-surface text-accent ring-1 ring-line hover:bg-hover"
+    : tone === "danger"
+      ? "text-ink-500 hover:bg-hover hover:text-danger"
+      : "text-ink-500 hover:bg-hover hover:text-ink-900";
+  return (
+    <button type="button" {...rest}
+      className={`shrink-0 rounded-inner px-1.5 py-0.5 text-micro transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${look} ${className}`}>
       {children}
     </button>
   );
@@ -275,7 +344,7 @@ export function Segmented<T extends string>({ value, options, onChange }: {
     <div className="inline-flex shrink-0 items-center rounded-control bg-hover p-0.5">
       {options.map((option) => (
         <button key={option.value} type="button" onClick={() => onChange(option.value)}
-          className={`rounded-inner px-2 py-0.5 text-micro transition-colors ${
+          className={`min-h-7 rounded-inner px-2 text-micro transition-colors ${
             option.value === value ? "bg-surface text-ink-900 shadow-sm" : "text-ink-500 hover:text-ink-900"
           }`}>
           {option.label}
@@ -284,3 +353,115 @@ export function Segmented<T extends string>({ value, options, onChange }: {
     </div>
   );
 }
+
+
+/**
+ * 会话行（收编自 groups-panel.tsx，Task 0015 · A2：跨文件使用的行组件归 design/ 注册表）。
+ *
+ * 结构（2026-11-09 两次审计的实证修正，迁移原样保留）：
+ * - 双行 56：第一行只有标题；第二行 `[参与者头像] 对端 · Task · 状态`；
+ * - 外层容器只管底色与 hover 分组；主点击区与动作区是**兄弟**（axe `nested-interactive`）；
+ * - 状态槽与动作区叠同一格（槽宽 = 动作区 w-21）：hover 状态淡出、动作淡入，几何不随 hover 变；
+ * - 副行用 nav-muted（ink-500 在 nav-accent/nav-selected 上不达 AA）；
+ * - 内联重命名（Enter 提交 / Esc / 失焦取消）。
+ */
+/**
+ * 会话行（双行 56）。
+ *
+ * 第一行：**只有标题**（"是哪件事"）——头像已移到第二行，
+ * 因为它属于元信息，且左边 Agent 列已经表达了"和谁"。
+ * 第二行：`[参与者小头像] 对端 · Task · 状态`（"和谁、属于什么、现在怎样"）。
+ */
+export function SessionRow({ selected, title, titleFallback, participants, meta, status, onSelect, onRename, onHistory, onDelete, renameValue, renaming, onRenameChange, onRenameCommit, onRenameCancel, testId }: {
+  selected: boolean;
+  title: string;
+  titleFallback: boolean;
+  /** 第二行开头的参与者头像（`ParticipantToken`）。 */
+  participants: ReactNode;
+  meta: ReactNode;
+  status: ReactNode;
+  onSelect: () => void;
+  onRename: () => void;
+  onHistory: () => void;
+  onDelete: () => void;
+  testId?: string;
+  renaming: boolean;
+  renameValue: string;
+  onRenameChange: (value: string) => void;
+  onRenameCommit: (value: string) => void;
+  onRenameCancel: () => void;
+}) {
+  /*
+   * 结构：外层是**容器**（只负责底色与 hover 分组），主点击区与动作区是它的两个**兄弟**。
+   *
+   * 2026-11-09 axe `nested-interactive`：行原本是 `role="button"`，里面放着三个 IconButton
+   * （真 `<button>`）→ 交互元素嵌套，读屏与键盘会出现"两个目标叠在一起"。
+   * 拆成兄弟之后：点行 = 选中会话；点图标 = 该动作；两者互不嵌套。
+   */
+  return (
+    <div data-testid={testId} aria-current={selected ? "true" : undefined}
+      className={`group/session flex h-14 w-full items-center rounded-row transition-colors ${
+        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
+      }`}>
+      <div role="button" tabIndex={0} onClick={onSelect}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}
+        // 主点击区不侵入状态槽（槽宽 = 动作区宽 = 3×28）：`pr-0`，两行文字自己会在槽前截断。
+        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-row pl-2 pr-0">
+      <span className="flex min-w-0 flex-1 flex-col">
+        {renaming ? (
+          <input autoFocus value={renameValue}
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => onRenameChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); onRenameCommit(event.currentTarget.value); }
+              if (event.key === "Escape") { event.preventDefault(); onRenameCancel(); }
+            }}
+            onBlur={onRenameCancel}
+            onClick={(event) => event.stopPropagation()}
+            className="min-w-0 rounded-control bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
+        ) : (
+          <span className={`truncate text-body ${titleFallback ? "font-mono text-nav-muted" : "text-ink-900"}`}
+            data-fallback={titleFallback ? "id" : undefined}
+            title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
+        )}
+        {/* 副行用 nav-muted 而不是 ink-500：ink-500 在 nav-accent / nav-selected 上只有 4.10 / 4.03，
+            低于 AA 4.5（导航层专用色 nav-muted 为 4.90 / 4.65）。 */}
+        <span className="flex min-w-0 items-center gap-1.5 text-micro text-nav-muted">
+          {participants}
+          <span className="min-w-0 truncate">{meta}</span>
+        </span>
+      </span>
+      {/*
+        * 状态槽宽度 = 时间串的真实宽度（11px 下的"13小时前"约 40px）+ 呼吸余量。
+        *
+        * 2026-11-09 审核实测的缺陷：槽只有 64px，而 hover 出现的动作区（历史/重命名/删除）
+        * 三个 28px 图标 = 84px，绝对定位后会**向左溢出 20px、压住标题 12px**。
+        * 现在把两种宽度分开：槽按内容自适应（min-w），动作区宽度由自己决定并覆盖在槽上，
+        * 且 hover 时标题侧的两行**收窄**到同一右边界，不再被盖。
+        */}
+      {/*
+        * 槽宽 = **动作区宽度**（3 个 28px 图标 = 84 = w-21），不是时间串宽度。
+        *
+        * 2026-11-09 审核实测的缺陷：槽宽 64（时间"13小时前"够用），hover 出现的
+        * 动作区 84px 绝对定位后向左溢出 20px、压住标题 12px，两串字叠在一起。
+        * 试过的另一种修法（hover 时给标题加 pr-92）会把标题挤到 67px，且行内宽度随 hover 变=抖动。
+        * 现在让槽位本身就按动作区定宽：时间右对齐落在同一格里，hover 只换内容不换几何。
+        */}
+      {/*
+        * 动作区与状态槽**都是主点击区的兄弟**（2026-11-09 axe `nested-interactive`）：
+        * 行是 role=button，里面再放 IconButton 就是嵌套交互元素（读屏/键盘会串）。
+        * 布局不变：槽 84px（动作区宽度），hover 时动作区覆盖在槽上、给实底。
+        */}
+      </div>
+      <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
+        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
+        <span className="absolute right-0 flex items-center rounded-control bg-nav-accent opacity-0 pointer-events-none transition-opacity group-hover/session:bg-nav-selected group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
+          <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><AppIcon name="history" size={14} /></IconButton>
+          <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><AppIcon name="pencil" size={14} /></IconButton>
+          <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><AppIcon name="trash" size={14} /></IconButton>
+        </span>
+      </span>
+    </div>
+  );
+}
+

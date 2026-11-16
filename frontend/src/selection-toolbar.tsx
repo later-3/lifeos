@@ -1,3 +1,4 @@
+import { MicroButton } from "./design/ui";
 /**
  * 选中功能条（Task 0018 · SelectionToolbar）：拖选/双击/三击松手后浮在选区旁的一排功能入口。
  *
@@ -98,22 +99,16 @@ export function SelectionToolbar({ state, onClose, onCopy, onAnnotate, onQuote }
       className="flex items-center gap-0.5 rounded-panel bg-surface px-1 py-1 text-ink-900 ring-1 ring-line"
     >
       {buttons.copy && (
-        <button type="button" onClick={onCopy} aria-label={`复制选中的 ${[...state.text.trim()].length} 字`}
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
-          复制
-        </button>
+        <MicroButton tone="quiet" onClick={onCopy} aria-label={`复制选中的 ${[...state.text.trim()].length} 字`}
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">复制</MicroButton>
       )}
       {buttons.annotate && (
-        <button type="button" onClick={onAnnotate} aria-label="批注选中的文字"
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
-          批注
-        </button>
+        <MicroButton tone="quiet" onClick={onAnnotate} aria-label="批注选中的文字"
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">批注</MicroButton>
       )}
       {buttons.quote && (
-        <button type="button" onClick={onQuote} aria-label="引用到输入框"
-          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">
-          引用
-        </button>
+        <MicroButton tone="quiet" onClick={onQuote} aria-label="引用到输入框"
+          className="flex h-7 items-center gap-1 rounded-control px-2 text-meta font-medium text-ink-900 hover:bg-hover">引用</MicroButton>
       )}
     </div>,
     document.body,

@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceClass, surfaceStyle } from "../frontend/src/design/surface.ts";
-import { calculatePalette, clampState, contrastOf, elevationOf, THEME_PRESETS } from "../frontend/src/design/theme.ts";
+import { calculatePalette, clampState, contrastOf, elevationOf, THEME_PRESETS, THEME_DEFAULTS, hex } from "../frontend/src/design/theme.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = join(ROOT, "frontend/src");
@@ -344,5 +344,24 @@ test("文字选区：普通文本 = accent-solid + 白字 ≥4.5；代码区用 
       const ratio = contrastOf(p.accentSolid, [100, 0, 0]);
       assert.ok(ratio >= 4.5, `${preset}/${mode}: 选区白字 vs accent-solid = ${ratio.toFixed(2)} < 4.5`);
     }
+  }
+});
+
+test("A4 收编族：引擎 light 输出与 tokens.css 静态值逐 hex 一致（三源消亡的一致性锁）", () => {
+  const statics = {
+    synKeyword: "#5b21b6", synString: "#166534", synComment: "#5b6270", synNumber: "#9a3412",
+    synFunction: "#1d4ed8", synType: "#155e75", synConstant: "#86198f", synPunctuation: "#52525b",
+    dangerSoft: "#f8ebeb", successSoft: "#e6f2ec", runningSoft: "#e6eff8", tableHead: "#fafafa",
+    messageUser: "#111113", messageThinking: "#fafafa", messageTool: "#f4f4f5",
+    messageToolDone: "#ecfdf3", messageToolError: "#fef3f2", messageFailure: "#fff1f2",
+    diffAdd: "#067647", diffAddSoft: "#f2faf5", diffDel: "#b42318", diffDelSoft: "#fef4f3",
+    diffMod: "#895503", diffModSoft: "#f6f1eb", diffWordAdd: "#9fccb8", diffWordDel: "#e4aba6",
+    annoQuery: "#b8860b", annoQuerySoft: "#fff6d6", annoCritic: "#c53030", annoCriticSoft: "#ffe8e8",
+    annoPraise: "#2b6a4d", annoPraiseSoft: "#e2f6ea", annoArchive: "#4c51bf", annoArchiveSoft: "#e8eaff",
+    annoTodo: "#805ad5", annoTodoSoft: "#f2e9ff",
+  };
+  const p = calculatePalette({ ...THEME_DEFAULTS, mode: "light" });
+  for (const [k, h] of Object.entries(statics)) {
+    assert.equal(hex(...p[k]).toLowerCase(), h.toLowerCase(), `引擎 ${k} 与 tokens.css 静态不一致`);
   }
 });

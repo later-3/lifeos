@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { IconCopy, IconRefresh, IconTool } from "@tabler/icons-react";
-import { Spinner } from "./design/ui";
+import { Spinner, ClickableRow } from "./design/ui";
 import { ResponseBar } from "./response-bar";
 import { MarkBar } from "./mark-bar";
 import type { ProcessStats } from "./process-stats";
@@ -16,6 +15,7 @@ import type { MessageAction } from "./action-bar";
 import { failureLabel, type FailureKind } from "./failure-text";
 import { toolState } from "./tool-state";
 import { ImageTrigger } from "./design/image-viewer";
+import { AppIcon } from "./design/icons";
 
 /**
  * 消息渲染（Markdown + 结构化块）。
@@ -64,14 +64,14 @@ function actionsOf(text: string, onRetry: (() => void) | undefined): MessageActi
   const actions: MessageAction[] = [];
   if (text !== "") {
     actions.push({
-      key: "copy", label: "复制", icon: <IconCopy size={12} />, title: "复制这条消息",
+      key: "copy", label: "复制", icon: <AppIcon name="copy" size={12} />, title: "复制这条消息",
       testId: "copy-message", doneLabel: "已复制", failedLabel: "复制失败",
       run: () => copyText(text),
     });
   }
   if (onRetry !== undefined) {
     actions.push({
-      key: "resend", label: "重新发送", icon: <IconRefresh size={12} />, title: "重新发送这一轮",
+      key: "resend", label: "重新发送", icon: <AppIcon name="refresh" size={12} />, title: "重新发送这一轮",
       testId: "resend-message",   // 与复制同一条规则：悬停出现（成败都不例外）
       run: onRetry,
     });
@@ -300,12 +300,12 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
   const [open, toggle] = useAutoOpen(live, !forceOpen, forceOpen);
   return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
-      <button type="button" onClick={toggle}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
+      <ClickableRow onClick={toggle}
+        className="gap-1.5 px-3 py-2 text-meta text-ink-500 hover:text-ink-900">
         {live ? <Spinner size={12} className="text-accent" /> : null}
         <span>{live ? "思考中…" : "思考过程"}</span>
         <span className="ml-auto shrink-0 text-micro text-ink-500">{open ? "收起" : "展开"}</span>
-      </button>
+      </ClickableRow>
       {/*
         * 思考过程与正文**同一 Markdown 渲染**（2026-11-10，用户截图发现 `**粗体**` 原样显示）。
         * 四家参考一致（全部源码可核，见 cases/2026-11-10.md）：
@@ -348,9 +348,9 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
   const surface = state === "error" ? "bg-message-tool-error" : state === "done" ? "bg-message-tool-done" : "bg-message-tool";
   return (
     <div className={`overflow-hidden rounded-panel ring-1 ring-line ${surface}`} data-message-kind={`tool-${state}`}>
-      <button type="button" onClick={toggle}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-meta text-ink-700 transition-colors hover:bg-hover max-sm:min-h-11">
-        {running ? <Spinner size={12} className="text-accent" /> : <IconTool size={14} className="shrink-0 text-ink-300" />}
+      <ClickableRow onClick={toggle}
+        className="gap-1.5 px-3 py-2 text-meta text-ink-700">
+        {running ? <Spinner size={12} className="text-accent" /> : <AppIcon name="tool" size={14} className="shrink-0 text-ink-300" />}
         <span className="shrink-0 font-medium">{peerTarget === undefined ? block.name : "与 Agent 对话"}</span>
         {peerTarget !== undefined && (
           <span className="shrink-0 rounded-full bg-sunken px-1.5 py-0.5 font-mono text-micro text-ink-700"
@@ -376,7 +376,7 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
             查看对话过程
           </span>
         )}
-      </button>
+      </ClickableRow>
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>
