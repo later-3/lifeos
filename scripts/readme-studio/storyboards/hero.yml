@@ -1,0 +1,36 @@
+# hero：README 首屏总览动图（≈9 秒）。
+#
+# 演示一条真实回合：选助手 → 开会话 → 打下问题 → 状态条推进 → 思考与工具 → 正文流出来。
+# 审核要点：观众能不能在 9 秒里看出"这不是聊天框，它有自己的工作过程"。
+#
+# 两条拍摄纪律（都是踩出来的）：
+#   1. **必须新建会话再发消息**：演示家目录的历史会话是脚本直接写 JSONL 造的，
+#      在它们上面跑新一轮会撞 Pi 对历史条目的校验（实测 `number 6 is not iterable`）；
+#      新会话走真实链路 + 打桩模型（stub-model.mjs），画面真实且可复现。
+#   2. **总时长要压住**：真实界面的 GIF ≈ 200KB/秒（12fps/1000/192 色，实测），
+#      14 秒就会到 4MB。9 秒 + 10fps + 128 色是 2MB 上下的实测平衡点。
+name: hero
+mode: video
+viewport: { width: 1000, height: 625 }
+size: { width: 1000, height: 625 }
+path: /
+outputs:
+  - { type: gif, file: hero.gif, fps: 10, width: 1000, colors: 128 }
+steps:
+  - waitFor: '[data-testid="groups-panel"]'
+  - pause: 0.7
+  - click: 'text=Architect'
+  - pause: 0.5
+  - click: '[aria-label="在 lifelab 新建会话"]'
+  - pause: 0.5
+  - click: '[data-testid="composer"]'
+  - pause: 0.2
+  - type:
+      into: '[data-testid="composer"]'
+      text: "支付状态机有 11 个态，能收敛成 4 个吗？先看代码再给结论。"
+      delayMs: 32
+  - press: Enter
+  - pause: 1.6
+  - waitFor: '[data-testid="response-bar"]'
+  - move: { x: 690, y: 300, steps: 10 }
+  - pause: 2.2
