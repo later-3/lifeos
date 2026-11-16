@@ -110,10 +110,13 @@ type IconProps = React.ComponentProps<(typeof ICONS)[IconName]> & { name?: never
  */
 export function AppIcon({ name, ...rest }: { name: IconName } & Omit<IconProps, "name">) {
   const set = useIconSet();
+  // 三套都从生成好的静态对象取（不是命名空间导入的 `bag[name]`——那会让 tree-shaking 失效，
+  // 三个库整包进首屏 8572 KB。见 scripts/gen-icon-sets.mjs 的头注）。
   const fromSet = set === "tabler" ? null : iconOf(set, name);
   if (set !== "tabler" && fromSet === null) {
     console.warn(`[icons] 图标集 ${set} 缺语义名 "${name}"，已回退 tabler`);
   }
-  const Component = (fromSet ?? ICONS[name]) as React.ComponentType<Record<string, unknown>>;
+  // tabler 也走生成表：这样三套的取法一致，且 ICONS 只作为"语义名 → 展示/覆盖度"的事实表。
+  const Component = (fromSet ?? iconOf("tabler", name) ?? ICONS[name]) as React.ComponentType<Record<string, unknown>>;
   return <Component {...(rest as Record<string, unknown>)} />;
 }

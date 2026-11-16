@@ -17,7 +17,7 @@
 <!-- design-manifest:auto BEGIN -->
 ## 组件清单（自动生成，pnpm design:list）
 
-共 116 项：
+共 118 项：
 
 - **AppIcon**（function）— `src/design/icons.tsx`
 - **applySurfaceTokens**（function）— `src/design/theme.ts`
@@ -37,6 +37,7 @@
 - **contrastRatio**（function）— `src/design/theme-package.ts`
 - **contrastRgb**（function）— `src/design/theme.ts`
 - **controlClass**（const）— `src/design/ui.tsx`
+- **coverageOf**（function）— `src/design/icon-sets-resolve.ts`
 - **DEFAULT**（const）— `src/design/layout.ts`
 - **DEFAULT**（const）— `src/design/layout.ts`
 - **DEFAULT**（const）— `src/design/layout.ts`
@@ -88,6 +89,7 @@
 - **NavRail**（function）— `src/design/rail.tsx`
 - **nextZoom**（function）— `src/design/image-zoom.ts`
 - **normColor**（function）— `src/design/theme-package.ts`
+- **pickFrom**（function）— `src/design/icon-sets-resolve.ts`
 - **placePopover**（function）— `src/design/popover.ts`
 - **Popover**（function）— `src/design/popover-view.tsx`
 - **POPOVER**（const）— `src/design/popover-view.tsx`

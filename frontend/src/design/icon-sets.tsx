@@ -1,5 +1,5 @@
 /**
- * 多图标集注册表（Task 0015 · S3）。
+ * 多图标集注册表（Task 0015 · S3；Task 0016 · P2-S1 改为命名导入）。
  *
  * A1 建立了"语义名 → 组件"的单源映射；本文件把它扩成**多源**：
  * tabler（默认）/ lucide / phosphor。每个语义名在每个源里都有一条映射（缺项显式写 null）。
@@ -9,13 +9,23 @@
  * - 换集只改这里 + 主题包的 `icons.set`；
  * - 某源缺某个语义名 → 回退 tabler + 控制台 warn（不静默、不空白）。
  *
- * 为什么是这三个源：tabler 是我们既有资产；lucide 是 shadcn 生态默认（参考项目 Cal.com 用它）；
- * phosphor 有 6 种字重、视觉重量更丰富（Twenty 用过它的思路）。
+ * ## 为什么这里只剩"数据"（Task 0016 · P2-S1）
+ *
+ * 改之前：`import * as Tabler/Lucide/Phosphor` + `lookup(bag, name)` 动态索引。
+ * tree-shaking 对动态索引失效 → **三个库整包进首屏 8572 KB**（主 chunk 9.27 MB 的 ≈87%–92%），
+ * 而我们只用 41 个语义名。命名导入后实测 **136 KB / 33 KB gzip**。
+ *
+ * 现在：本文件**只保留两张事实表**（语义名 → 字符串名，人工维护），
+ * 真正的具名 import 与三个静态对象由 `scripts/gen-icon-sets.mjs` 从这两张表 + `icons.tsx` 的 ICONS 生成，
+ * 落在 `icon-sets.generated.ts`。改了表就 `pnpm gen:icons`；`pnpm lint:icons` 会检查两者一致。
+ *
+ * 为什么是"两张字符串表 + 生成"而不是"手写 123 个具名 import"：
+ * 手写会让"加一个语义名"变成三处手工同步的活（且忘了不报错）；
+ * 生成 + `--check` 把这件事变成机器检查。
  */
-import * as Tabler from "@tabler/icons-react";
-import * as Lucide from "lucide-react";
-import * as Phosphor from "@phosphor-icons/react";
 import type { IconName } from "./icons";
+import { LUCIDE_ICONS, PHOSPHOR_ICONS, TABLER_ICONS, type IconComponent } from "./icon-sets.generated";
+import { coverageOf, pickFrom } from "./icon-sets-resolve";
 
 export type IconSetId = "tabler" | "lucide" | "phosphor";
 
@@ -25,9 +35,12 @@ export const ICON_SET_LABELS: Record<IconSetId, string> = {
   phosphor: "Phosphor（六字重）",
 };
 
-type AnyIcon = React.ComponentType<Record<string, unknown>>;
+type AnyIcon = IconComponent;
 
-/** 语义名 → 各源组件。`null` = 该源无对应图标（回退 tabler）。 */
+/**
+ * 语义名 → lucide 组件名（`null` = 该源缺此项，AppIcon 回退 tabler）。
+ * 键类型是 `IconName`（= `keyof typeof ICONS`）：加语义名时漏了这张表，typecheck 直接红。
+ */
 const LUCIDE_MAP: Record<IconName, string | null> = {
   adjustments: "SlidersHorizontal",
   "adjustments-horizontal": "SlidersHorizontal",
@@ -72,6 +85,7 @@ const LUCIDE_MAP: Record<IconName, string | null> = {
   x: "X",
 };
 
+/** 语义名 → phosphor 组件名（同上）。 */
 const PHOSPHOR_MAP: Record<IconName, string | null> = {
   adjustments: "Sliders",
   "adjustments-horizontal": "Faders",
@@ -116,40 +130,22 @@ const PHOSPHOR_MAP: Record<IconName, string | null> = {
   x: "X",
 };
 
-function lookup(bag: Record<string, unknown>, name: string | null): AnyIcon | null {
-  if (name === null) return null;
-  const comp = bag[name];
-  // React 组件在打包后可能是 function 或 object（forwardRef/memo）——两者都算命中
-  return (typeof comp === "function" || (typeof comp === "object" && comp !== null))
-    ? (comp as AnyIcon)
-    : null;
+/**
+ * 三张表按 set id 索引（唯一映射处）。
+ * 判定逻辑在 `icon-sets-resolve.ts`（零依赖、可离线单测）；这里只做"选表 + 查表"。
+ */
+const TABLES: Record<IconSetId, Readonly<Record<string, IconComponent | null>>> = {
+  tabler: TABLER_ICONS,
+  lucide: LUCIDE_ICONS,
+  phosphor: PHOSPHOR_ICONS,
+};
+
+/** 取某图标集下的组件；缺项返回 null（调用方回退 tabler）。 */
+export function iconOf(set: IconSetId, name: string): AnyIcon | null {
+  return pickFrom(TABLES[set], name);
 }
 
-/** 取某图标集下的组件；缺项返回 null（调用方回退）。 */
-export function iconOf(set: IconSetId, name: IconName): AnyIcon | null {
-  if (set === "tabler") return lookup(Tabler as unknown as Record<string, unknown>, tablerNameOf(name));
-  if (set === "lucide") return lookup(Lucide as unknown as Record<string, unknown>, LUCIDE_MAP[name]);
-  return lookup(Phosphor as unknown as Record<string, unknown>, PHOSPHOR_MAP[name]);
-}
-
-/** tabler 侧的名字规则：icons.tsx 的 ICONS 键就是 tabler 组件名（去掉 Icon 前缀后的 kebab）。 */
-function tablerNameOf(name: IconName): string {
-  const pascal = name
-    .split("-")
-    .map((part) => (part.length === 0 ? "" : part[0].toUpperCase() + part.slice(1)))
-    .join("");
-  return `Icon${pascal}`;
-}
-
-/** 覆盖度报告：每个源缺哪些语义名（S3 契约测试用；也用于设置页提示）。 */
-export function iconSetCoverage(): Record<IconSetId, { total: number; missing: IconName[] }> {
-  const names = Object.keys(LUCIDE_MAP) as IconName[];
-  const report = { tabler: { total: names.length, missing: [] as IconName[] }, lucide: { total: names.length, missing: [] as IconName[] }, phosphor: { total: names.length, missing: [] as IconName[] } };
-  for (const name of names) {
-    for (const set of ["tabler", "lucide", "phosphor"] as IconSetId[]) {
-      const mapped = set === "lucide" ? LUCIDE_MAP[name] : set === "phosphor" ? PHOSPHOR_MAP[name] : tablerNameOf(name);
-      if (mapped === null || iconOf(set, name) === null) report[set].missing.push(name);
-    }
-  }
-  return report;
+/** 覆盖度报告：每个源缺哪些语义名（契约测试用；也用于设置页提示）。 */
+export function iconSetCoverage(): Record<IconSetId, { total: number; missing: string[] }> {
+  return coverageOf(Object.keys(TABLER_ICONS), TABLES) as Record<IconSetId, { total: number; missing: string[] }>;
 }

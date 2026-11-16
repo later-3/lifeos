@@ -12,7 +12,13 @@ const DIR = "frontend/src/design";
 const OUT_JSON = "frontend/design-manifest.json";
 const OUT_MD = "frontend/src/design/AGENTS.md";
 
-const files = readdirSync(DIR).filter((f) => /\.(ts|tsx)$/.test(f));
+/**
+ * 生成文件不进清单（Task 0016 · P2-S1）：`*.generated.ts` 是脚本产物，
+ * 它的三个常量（TABLER_ICONS / LUCIDE_ICONS / PHOSPHOR_ICONS）不是"设计系统对外的 API"，
+ * 列进清单只会让 116 → 119 的差额看起来像是新增了组件。
+ * 真正需要登记的对外 API 是 `iconOf` / `iconSetCoverage`（手工文件里，仍在清单中）。
+ */
+const files = readdirSync(DIR).filter((f) => /\.(ts|tsx)$/.test(f) && !f.endsWith(".generated.ts"));
 const entries = [];
 for (const f of files) {
   const s = readFileSync(join(DIR, f), "utf8");

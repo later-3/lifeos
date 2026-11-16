@@ -11,7 +11,10 @@ const ROOT = process.cwd();
 const manifest = JSON.parse(readFileSync(join(ROOT, "frontend/design-manifest.json"), "utf8"));
 
 test("manifest 与 design/ 实际导出一致（新增忘跑清单 = 红）", () => {
-  const files = readdirSync(join(ROOT, "frontend/src/design")).filter((f) => /\.(ts|tsx)$/.test(f));
+  // 生成文件不参与（与 scripts/design-list.mjs 同一口径）：`*.generated.ts` 是脚本产物，
+  // 它的常量不是"设计系统对外 API"，把差额算进清单会让真正的漏跑被噪声掩盖（Task 0016 · P2-S1）。
+  const files = readdirSync(join(ROOT, "frontend/src/design"))
+    .filter((f) => /\.(ts|tsx)$/.test(f) && !f.endsWith(".generated.ts"));
   const actual = new Set();
   for (const f of files) {
     const s = readFileSync(join(ROOT, "frontend/src/design", f), "utf8");

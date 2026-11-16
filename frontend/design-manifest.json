@@ -1,6 +1,6 @@
 {
  "generated": "2026-11-16",
- "count": 116,
+ "count": 118,
  "entries": [
   {
    "name": "AppIcon",
@@ -91,6 +91,11 @@
    "name": "controlClass",
    "kind": "const",
    "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "coverageOf",
+   "kind": "function",
+   "file": "src/design/icon-sets-resolve.ts"
   },
   {
    "name": "DEFAULT",
@@ -346,6 +351,11 @@
    "name": "normColor",
    "kind": "function",
    "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "pickFrom",
+   "kind": "function",
+   "file": "src/design/icon-sets-resolve.ts"
   },
   {
    "name": "placePopover",
