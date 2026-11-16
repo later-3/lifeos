@@ -3625,7 +3625,9 @@ export default function App() {
               followTail.current = bottom;
               setAtBottom(bottom);
             }}
-            className="h-full w-full overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+            /* overscroll-y-contain（Task 0016 · P2-S2）：滚到头不把浏览器手势带出来
+               （Android 下拉刷新 / 边缘返回）。根上的 none 管"页面本身不滚"，这里管"嵌套滚动区不链出"。 */
+            className="h-full w-full overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-6 sm:py-5">
             <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
               {/* 四态判定走纯函数 viewStateOf()（P1-S1）：加载中**永不**落空态，
                   否则用户会看到"发一条消息开始对话"并以为对话丢了（实测 1.4 秒）。 */}

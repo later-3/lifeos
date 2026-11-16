@@ -240,3 +240,80 @@ pre, code, .font-mono {
  * ══════════════════════════════════════════════════════════════ */
 /* soft 底与消息块的深色值已收编进 design/theme.ts 引擎（A4），VAR_MAP 统一写入。 */
 
+/* ══════════════════════════════════════════════════════════════
+ * 手机平台层（Task 0016 · P2-S2）——三条与页面无关的整站行为
+ *
+ * 依据见 `knowledge/reference-mobile.md`；判定逻辑在 `mobile-platform.ts`（可单测）。
+ * 这一节只放 CSS，不改任何视觉：修的是"点按延迟 / 滚动链 / 聚焦缩放"三类手机专属毛病。
+ * ══════════════════════════════════════════════════════════════ */
+
+/*
+ * ① iOS 聚焦 <16px 输入框会自动放大页面，而装成 PWA（standalone）后**不会缩回**。
+ *    用户看到的是"点了输入框，整个界面变大且错位"——和"布局坏了"同一个观感。
+ *
+ * 用 max() 而不是写死 16px：我们允许用户用字号滑块调大正文（`--text-content`），
+ * 写死会把那个能力吃掉。这正是 LibreChat 的写法（`client/src/style.css:1881`，
+ * 原注释："iOS zooms into a focused field under 16px and the installed PWA never zooms back out"）。
+ *
+ * 不写 `!important`，也不用 `maximum-scale=1` 禁缩放——后者伤害可访问性。
+ */
+@media (any-pointer: coarse) {
+  textarea,
+  input[type="text"],
+  input[type="search"],
+  select {
+    font-size: max(16px, var(--text-content));
+  }
+}
+
+/*
+ * ①b 触控目标下限（Task 0016 · P2-S2）。
+ *
+ * `design/ui.tsx` 的 `IconButton` 是 `h-11 w-11 sm:h-7 sm:w-7`——`sm:` 是**宽度**断点，
+ * 于是手机横屏（844 宽、粗指针）会跳到 28px，手指点不到（实测：844×390 下
+ * `返回项目` 28、`完整历史` 32、`设置` 36）。
+ *
+ * 修法：在"粗指针 + 矮视口"这条**平台层**查询里给所有可点元素一个 44 下限，
+ * 而不是逐个组件加变体——逐个加会漏（设置页 Tab 68×36、AgentConfig 的 select 318×36 都是这么漏的）。
+ *
+ * 为什么带 `max-height: 500px`：iPad 横屏（1024×768）也是粗指针，但它有空间用密集档；
+ * 只有"矮视口"才是真正的手横屏（与 `mobile-platform.ts` 的 `MOBILE_QUERY` 第二支同源）。
+ * 为什么用 min-* 而不是 height：不改变已有视觉尺寸，只在不足时托底（`h-7` 变 44、`h-11` 不变）。
+ */
+@media (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  button,
+  [role="button"],
+  [role="tab"],
+  a[href],
+  select {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/*
+ * ② 滚动链与点按延迟。
+ *
+ * - `overscroll-behavior: none` 放根上：我们根容器是固定高（`height: var(--app-height)`），
+ *   本身不滚动，所以"从嵌套滚动区链出去"没有合法去向。不禁掉的话，
+ *   Android Chrome 下拉刷新、横向划入浏览器导航会被消息列表带出来
+ *   （LibreChat 只在抽屉模式锁根，`client/src/style.css:1124-1130`；我们恒锁，因为恒不滚）。
+ * - 消息区 `contain`：滚到头不把页面/浏览器手势带走。
+ * - `touch-action: manipulation` 去掉双击缩放的等待窗口（约 300ms 的"点了像没反应"）。
+ *   pi-web 在可点元素上用它（`app/globals.css:771`）。
+ *   不加在 input/textarea 上：光标拖动与横向滚动要原生行为。
+ */
+html,
+body {
+  overscroll-behavior: none;
+}
+
+button,
+[role="button"],
+a[href] {
+  touch-action: manipulation;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 结束：手机平台层
+ * ══════════════════════════════════════════════════════════════ */

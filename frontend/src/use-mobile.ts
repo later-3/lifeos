@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import { MOBILE_QUERY, mobileQueryOf, resolveAppHeight } from "./mobile-platform";
 
-/** 手机布局断点：<640 走单主列 + 全屏抽屉；与 frontend-spec §3.2 一致。 */
-export function useIsMobile(query = "(max-width: 639px)"): boolean {
+export { MOBILE_QUERY, mobileQueryOf, resolveAppHeight };
+
+/**
+ * 手机布局断点（Task 0016 · P2-S2）。
+ *
+ * 改之前只有 `(max-width: 639px)`：手机横屏（844×390）会掉回桌面三列布局，
+ * 而手指还是手指——实测命中区掉到 32–36px（`设置` 36 / `完整历史` 32 / `显示设置` 32）。
+ * 现在多一支"粗指针 + 矮视口"，判据是参考项目 pi-web 的 `MOBILE_QUERY`
+ * （`hooks/useIsMobile.ts:7`），但我们**保留自己的 639 宽度断点**（不采用它的 768，
+ * 否则 700px 窗口会丢三列）。判定与常量在 `mobile-platform.ts`，可离线单测。
+ */
+export function useIsMobile(query = MOBILE_QUERY): boolean {
   const [mobile, setMobile] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
     const media = window.matchMedia(query);
@@ -13,12 +24,22 @@ export function useIsMobile(query = "(max-width: 639px)"): boolean {
   return mobile;
 }
 
-/** 手机键盘弹起时 visualViewport 变小：用 CSS 变量驱动根容器高度，避免 composer 被遮。 */
+/**
+ * 手机键盘弹起时 visualViewport 变小：用 CSS 变量驱动根容器高度，避免 composer 被遮。
+ *
+ * **必须**经 `resolveAppHeight()` 判定（Task 0016 · P2-S2）：直接取 `visualViewport.height`
+ * 时，**双指放大**也会让它变小 → 整个应用缩水（观感是"布局崩了"）。
+ * pi-web 同样只在 scale≈1 时才信它（`lib/mobile-viewport.ts:11-45`）。
+ */
 export function useAppHeight(): void {
   useEffect(() => {
     const viewport = window.visualViewport;
     const apply = () => {
-      const height = viewport?.height ?? window.innerHeight;
+      const height = resolveAppHeight({
+        innerHeight: window.innerHeight,
+        visualHeight: viewport?.height ?? window.innerHeight,
+        visualScale: viewport?.scale ?? 1,
+      });
       document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
     };
     apply();

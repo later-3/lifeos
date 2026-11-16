@@ -8,11 +8,36 @@
 import pw from "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js";
 const { chromium } = pw;
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
-const widths = [360, 390, 430];
+/**
+ * 覆盖档（Task 0016 · P6-S1）：
+ *  - 320：小屏 iPhone SE 的宽度。实测该档下头部标题可用宽度是 **0px**，
+ *    是"6 个图标挤掉标题"最严重的档，之前没被测到。
+ *  - 360/390/430：existing 的竖屏主力档。
+ *  - 844×390 横屏单列在下面单独跑（粗指针 + 矮视口：命中区必须仍是 44）。
+ */
+const widths = [320, 360, 390, 430];
 const failures = [];
 const check = (name, ok, detail = "") => {
   console.log(`${ok ? "✔" : "✖"} ${name}${detail === "" ? "" : `  → ${detail}`}`);
   if (!ok) failures.push(name);
+};
+
+/**
+ * 已知缺陷（Task 0016 · P6）：断言现在**必然红**，但根因已定位、修复排在别的步骤。
+ *
+ * 为什么不用 `skip`：skip 会让"它其实好了"也看不出来。这里反过来——
+ * 现在的状态必须红（否则说明判定写错了），而一旦变绿就打印提醒去删掉这条豁免。
+ * 每条必须写 `fixedBy`，没人认领的已知缺陷不允许留在门禁里。
+ */
+const known = [];
+const checkKnown = (name, ok, detail, fixedBy) => {
+  if (ok) {
+    console.log(`⚠ KNOWN ${name} —— 已经不红了：请删掉这条豁免（${fixedBy}）${detail === "" ? "" : `  → ${detail}`}`);
+    known.push({ name, fixedBy, resolved: true });
+    return;
+  }
+  console.log(`⚠ KNOWN ${name}（修在 ${fixedBy}）${detail === "" ? "" : `  → ${detail}`}`);
+  known.push({ name, fixedBy, resolved: false });
 };
 const browser = await chromium.launch({ headless: true });
 for (const width of widths) {
@@ -49,7 +74,14 @@ for (const width of widths) {
       .map((button) => ({ text: (button.textContent ?? "").trim().slice(0, 16), w: Math.round(button.getBoundingClientRect().width), h: Math.round(button.getBoundingClientRect().height) }))
       .filter((button) => button.w < 44 || button.h < 44),
   }));
-  check(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`);
+  // 320 档的横向溢出是**已知缺陷**：头部 6 个 44px 图标 + 5 个 8px 间距 + 32px 内边距 = 336px，
+  // 所以 mobile 布局视口被撑到 336（实测 docScrollWidth 336 > 320）。修法是 P7-S5「手机头部更多层」，
+  // 那一步之后这条会变绿，届时 checkKnown 会打印"请删掉豁免"。
+  if (width === 320) {
+    checkKnown(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`, "P7-S5 手机头部");
+  } else {
+    check(`[${width}] 无横向溢出`, base.scroll === base.client, `${base.scroll}/${base.client}`);
+  }
   check(`[${width}] 手机不显示桌面 rail`, base.rail === false);
   check(`[${width}] 有导航入口`, base.menu || base.back);
   check(`[${width}] 可见按钮触控目标 ≥44`, base.small.length === 0, base.small.map((button) => `${button.text}:${button.w}x${button.h}`).join(" / "));
@@ -150,7 +182,11 @@ for (const width of widths) {
   });
   check(`[${width}] 配置是全屏 sheet`, modal.w >= width - 1 && modal.h >= 843, `${modal.w}x${modal.h}`);
   check(`[${width}] 配置按钮 ≥44`, modal.buttons.length > 0 && modal.buttons.every((height) => height >= 44), modal.buttons.join("/"));
-  check(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`);
+  if (width === 320) {
+    checkKnown(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`, "P7-S5 手机头部");
+  } else {
+    check(`[${width}] 配置无横向溢出`, modal.scroll === modal.client, `${modal.scroll}/${modal.client}`);
+  }
   await page.keyboard.press("Escape");
   await page.waitForTimeout(200);
 
@@ -272,9 +308,77 @@ for (const width of widths) {
   }
   await context.close();
 }
+
+// ── 横屏档（Task 0016 · P6-S1）────────────────────────────────────────────────
+// 844×390：iPhone 横屏。宽度超 640，但**粗指针 + 矮视口** → 必须留在移动布局，
+// 且命中区仍要 44（实测改前 28–36px：`返回项目` 28 / `完整历史` 32 / `设置` 36）。
+{
+  const context = await browser.newContext({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  const landscape = await page.evaluate(() => {
+    const vis = (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0;
+    const small = [...document.querySelectorAll("button,a[href],[role='button']")].filter(vis)
+      .map((el) => ({ label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 12), w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height) }))
+      .filter((el) => el.w < 44 || el.h < 44);
+    return {
+      rail: document.querySelector('nav[aria-label="左侧图标轨"]') !== null,
+      mobileNav: document.querySelector('button[aria-label="打开导航"],button[aria-label="返回项目"]') !== null,
+      small,
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+    };
+  });
+  check("[844×390 横屏] 仍走移动布局（无桌面 rail）", landscape.rail === false, String(landscape.rail));
+  check("[844×390 横屏] 有移动导航入口", landscape.mobileNav === true, String(landscape.mobileNav));
+  check("[844×390 横屏] 命中区 ≥44", landscape.small.length === 0, landscape.small.map((el) => `${el.label}:${el.w}x${el.h}`).join(" / "));
+  check("[844×390 横屏] 无横向溢出", landscape.scroll === landscape.client, `${landscape.scroll}/${landscape.client}`);
+  await context.close();
+}
+
+// ── 平台层几何（Task 0016 · P6-S1 / P2-S2）────────────────────────────────────
+// 这四条锁的是"与页面无关的整站行为"。写法遵循规范 2.15：
+// 真实选择器 + 先打印命中数（取不到元素 = 失败，不是恒绿）+ 断言到计算值。
+for (const width of [360, 390]) {
+  const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+  const platform = await page.evaluate(() => {
+    const ta = document.querySelector('textarea[aria-label="输入消息"]');
+    const main = document.querySelector("main");
+    const btn = [...document.querySelectorAll("button")].find((el) => el.offsetParent !== null);
+    return {
+      textareaFound: ta !== null,
+      textareaFont: ta === null ? null : parseFloat(getComputedStyle(ta).fontSize),
+      htmlOverscroll: getComputedStyle(document.documentElement).overscrollBehaviorY,
+      mainOverscroll: main === null ? "no-main" : getComputedStyle(main).overscrollBehaviorY,
+      buttonTouchAction: btn === undefined ? "no-button" : getComputedStyle(btn).touchAction,
+    };
+  });
+  check(`[${width}] 输入框存在（否则下面两条是假绿）`, platform.textareaFound === true);
+  check(`[${width}] 输入框字号 ≥16px（iOS 聚焦不放大）`, (platform.textareaFont ?? 0) >= 16, `${platform.textareaFont}px`);
+  check(`[${width}] 根 overscroll = none（不链出浏览器手势）`, platform.htmlOverscroll === "none", platform.htmlOverscroll);
+  check(`[${width}] 消息区 overscroll = contain`, platform.mainOverscroll === "contain", platform.mainOverscroll);
+  check(`[${width}] 可点元素 touch-action = manipulation`, platform.buttonTouchAction === "manipulation", platform.buttonTouchAction);
+  await context.close();
+}
+
 await browser.close();
+if (known.length > 0) {
+  const open = known.filter((item) => !item.resolved);
+  const resolved = known.filter((item) => item.resolved);
+  console.log(`\n已知缺陷 ${open.length} 项（不计入失败，必须有 fixedBy）：`);
+  for (const item of open) console.log(`  · ${item.name} → ${item.fixedBy}`);
+  if (resolved.length > 0) {
+    console.log(`已修复但豁免还在 ${resolved.length} 项（请删掉对应 checkKnown）：`);
+    for (const item of resolved) console.log(`  · ${item.name}`);
+  }
+}
+
 if (failures.length > 0) {
   console.error(`手机契约失败 ${failures.length} 项`);
   process.exit(1);
 }
-console.log(`手机契约通过（${widths.length} 个宽度）`);
+console.log(`手机契约通过（${widths.length} 个宽度 + 横屏 + 平台层几何）`);
