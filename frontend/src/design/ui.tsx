@@ -189,7 +189,7 @@ export const controlClass =
  * 底色来自 `colorFillSecondary` / `colorFillTertiary`）。
  * 不用阴影（D18），也不加第二通道（左色条）—— 选中的底色差已经比旧实现强 2.9 倍。
  */
-export function Row({ selected = false, className = "", children, onClick, testId, actions, status }: {
+export function Row({ selected = false, className = "", children, onClick, testId, actions, status, actionsAlwaysVisible = false }: {
   selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
   /**
    * 行内动作（hover 出现的图标按钮）。
@@ -210,6 +210,20 @@ export function Row({ selected = false, className = "", children, onClick, testI
    * 与 actions 叠在同一格：hover 时淡出给动作区让位，不与动作争位。
    */
   status?: ReactNode;
+  /**
+   * 动作区**常显**（不靠 hover / focus 触发）。
+   *
+   * 什么时候必须开：**调用方所在表面没有 hover**。典型是手机抽屉
+   * （`mobile-nav.tsx` 的会话行）—— 那里的行是"点一下就进会话"，
+   * 焦点不会留在行上，而 `[@media(hover:none)]` 分支的可见性挂在 `group-focus-within` 上
+   * → 动作永远不可见、也点不到（`pointer-events-none`）。
+   *
+   * 2026-11-16 实测（P7-S1）：不给这个开关时，手机上的 ⋯ 按钮存在但点击穿透到行，
+   * 用户看到的是"点了一下就进了会话"，而不是弹出动作菜单。
+   *
+   * 默认 false：桌面列表保持"悬停才出现"（用户 2026-11-10 明确要求行不要变长）。
+   */
+  actionsAlwaysVisible?: boolean;
 }) {
   const interactive = onClick !== undefined;
   return (
@@ -240,14 +254,19 @@ export function Row({ selected = false, className = "", children, onClick, testI
         // 状态和按钮都不会“额外占一个固定空间”；hover 时状态淡出、动作淡入。
         <span className="relative grid justify-items-end">
           {status !== undefined && (
-            <span className="col-start-1 row-start-1 flex min-w-0 items-center pr-1 transition-opacity
-              group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0
-              [@media(hover:none)]:group-focus-within/row:opacity-0">{status}</span>
+            <span className={`col-start-1 row-start-1 flex min-w-0 items-center pr-1 transition-opacity ${
+              actionsAlwaysVisible
+                ? "opacity-0 pointer-events-none"
+                : "group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0 [@media(hover:none)]:group-focus-within/row:opacity-0"
+            }`}>{status}</span>
           )}
-          <span className={`relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 rounded-control opacity-0 pointer-events-none transition-opacity
-            group-hover/row:opacity-100 group-hover/row:pointer-events-auto
-            group-has-[:focus-visible]/row:opacity-100 group-has-[:focus-visible]/row:pointer-events-auto
-            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto
+          <span className={`relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 rounded-control transition-opacity
+            ${actionsAlwaysVisible
+              ? "opacity-100 pointer-events-auto"
+              : `opacity-0 pointer-events-none
+                 group-hover/row:opacity-100 group-hover/row:pointer-events-auto
+                 group-has-[:focus-visible]/row:opacity-100 group-has-[:focus-visible]/row:pointer-events-auto
+                 [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto`}
             ${selected ? "bg-nav-selected" : "bg-nav-accent"}`}>
             {actions}
           </span>

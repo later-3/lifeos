@@ -59,8 +59,18 @@ test("页面层自绘控件全部登记（未登记即红）", () => {
   assert.deepEqual(unregistered, [], `未登记的自绘控件文件：${unregistered.join("、")}`);
 });
 
-/** 基线：S4 收敛后从 70 降到 25；每轮再降就收紧基线，永不回调。 */
-const BASELINE = 25;
+/**
+ * 基线：S4 收敛后从 70 降到 25；每轮再降就收紧基线，永不回调。
+ *
+ * 2026-11-16（Task 0016 · P7-S1）**向上调 2 次**，理由写在下面，且是"不得不"而不是"顺手"：
+ * 手机抽屉的会话动作菜单需要 `role=menu` + 两个 `role=menuitem` 的行（原生 button 承载），
+ * 这是本项目里第一次出现**菜单语义**的浮层——`MicroButton` 的 tone 枚举装不下 role，
+ * 包一层则会破坏 menuitem 的语义（读屏按 menu 角色导航时子节点必须是 menuitem）。
+ * 因此：白名单登记 `mobile-nav.tsx`（一条具体理由），基线 25 → 27。
+ *
+ * 这是唯一的"涨"：任何再涨都要在这里写出同样的具体理由，否则不许改。
+ */
+const BASELINE = 27;
 
 test("自绘总数不超过基线（只许降不许升）", () => {
   const total = [...countButtons().values()].reduce((a, b) => a + b, 0);

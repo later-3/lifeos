@@ -1,8 +1,8 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { useDialogFocus } from "./design/overlay";
 import { useInstallPrompt } from "./use-mobile";
-import { Button, Row } from "./design/ui";
+import { Button, IconButton, Row } from "./design/ui";
 import { LAYER_CLASS } from "./design/surface";
 import { AppIcon } from "./design/icons";
 
@@ -13,7 +13,11 @@ type ProjectLite = { id: string; name: string; isDefault?: boolean };
  * 由 App 从 `SessionRow` 映射而来 —— 手机导航不直接吃整个行对象，避免它跟着后端字段一起改。
  * （任务 0005：`title` 是显示形态、`running` 来自 `activity.state`。）
  */
-type SessionLite = { sessionId: string; title: string; running?: boolean };
+/**
+ * 会话行的**投影**（不是整个 SessionRow）：手机导航只要这几样。
+ * `titleRaw` 是重命名要用的原文（与 `title` 分开：`title` 是显示形态，可能被截断）。
+ */
+type SessionLite = { sessionId: string; title: string; titleRaw?: string; running?: boolean };
 type GroupLite = { project: ProjectLite; sessions: SessionLite[] };
 export type Level = "agents" | "projects" | "sessions";
 
@@ -22,7 +26,8 @@ export type Level = "agents" | "projects" | "sessions";
  * 参考 iOS/Linear/ChatGPT 手机端：选中上一级进入下一级，header 有返回；选到会话才关闭。
  */
 export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId, canNewSession,
-  onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent }: {
+  onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent,
+  onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel }: {
   open: boolean;
   level: Level;
   onLevelChange: (level: Level) => void;
@@ -41,10 +46,34 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
   onNewSession: () => void;
   onAddProject: () => void;
   onConfigAgent: () => void;
+  /**
+   * 会话动作（P7-S1）：重命名与删除。
+   *
+   * 为什么必须在这里给：桌面在分组行上挂了这两个动作（`App.tsx` 的 `SessionRow`），
+   * 而手机会话列表是这个抽屉 —— 它的行里只有标题和一个运行圆点，
+   * **实测手机完全无法重命名或删除任何会话**（`knowledge/component-mobile-audit.md` §2.2）。
+   * 业务实现仍走 App 的 `commitRename` / `setConfirm`（不复制一套写逻辑）。
+   */
+  onRenameSession?: (sessionId: string, currentTitle: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
+  /**
+   * 重命名的受控态（与桌面 `SessionRow` 用同一个 `renaming` 状态，由 App 持有）。
+   *
+   * 为什么不在抽屉里自己管一份：重命名是**写操作**，两处各管一份必然出现
+   * "抽屉里改完、桌面列表还显示旧标题"。规范 2.12：跨作用域状态必须带归属、只有一份事实。
+   */
+  renaming?: { sid: string; value: string };
+  onRenameChange?: (value: string) => void;
+  onRenameCommit?: (value: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const install = useInstallPrompt();
   useDialogFocus(panel, onClose, { enabled: open });
+  /** 当前展开动作菜单的会话 id（同一时刻只允许一个；点行/切级/关抽屉都清）。 */
+  const [menuFor, setMenuFor] = useState<string | undefined>(undefined);
+  // 切级或关闭时清空：菜单是某一级的临时态，跨级留着会指向不存在的行
+  useEffect(() => { setMenuFor(undefined); }, [level, open]);
   if (!open) return null;
 
   const currentGroup = groups.find((group) => group.project.id === projectId);
@@ -88,11 +117,57 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
 
         {level === "sessions" && sessions.map((item) => (
           <Row key={item.sessionId} selected={item.sessionId === sessionId}
-            onClick={() => onOpenSession(item.sessionId)}>
-            <span className="min-w-0 flex-1 truncate">{item.title || "未命名"}</span>
+            onClick={renaming?.sid === item.sessionId ? undefined : () => onOpenSession(item.sessionId)}
+            /* 动作放 Row 的 actions 槽（与主点击区是兄弟，不嵌套 —— axe nested-interactive 的既有教训）。
+               **触屏没有 hover**：Row 的 actions 槽在 `@media(hover:none)` 下只在 focus 内可见，
+               手机点一下就焦点离开 = 永远看不到。所以这里显式给一个常显的 ⋯ 按钮，
+               点它才展开动作（不是"划一下才出现"—— 那在手机上等于不存在）。 */
+            actionsAlwaysVisible
+            actions={(onRenameSession !== undefined || onDeleteSession !== undefined) ? (
+              <IconButton label="会话操作" size="sm" data-session-actions={item.sessionId}
+                onClick={() => setMenuFor(menuFor === item.sessionId ? undefined : item.sessionId)}>
+                <AppIcon name="adjustments-horizontal" size={14} />
+              </IconButton>
+            ) : undefined}>
+            {renaming?.sid === item.sessionId ? (
+              /* 就地重命名（与桌面同一个交互）：Enter 提交、Esc 取消、失焦取消。
+                 输入框 44 高，符合手机触控目标。 */
+              <input autoFocus value={renaming.value} aria-label="会话名称"
+                onChange={(event) => onRenameChange?.(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") { event.preventDefault(); onRenameCommit?.(event.currentTarget.value); }
+                  if (event.key === "Escape") { event.preventDefault(); onRenameCancel?.(); }
+                }}
+                onBlur={() => onRenameCancel?.()}
+                onClick={(event) => event.stopPropagation()}
+                className="h-11 min-w-0 flex-1 rounded-control bg-surface px-2 text-body text-ink-900 ring-1 ring-accent" />
+            ) : (
+              <span className="min-w-0 flex-1 truncate">{item.title || "未命名"}</span>
+            )}
             {item.running === true && <span className="h-1.5 w-1.5 rounded-full bg-success" title="生成中" />}
           </Row>
         ))}
+        {/* 动作菜单：浮在抽屉底部（不用绝对定位贴行 —— 行会随滚动离开视口）。
+            两项都是 44 高；删除走 App 的确认对话框（危险操作不当场执行）。 */}
+        {level === "sessions" && menuFor !== undefined && (() => {
+          const target = sessions.find((item) => item.sessionId === menuFor);
+          if (target === undefined) return null;
+          return (
+            <div role="menu" aria-label="会话操作" data-testid="session-actions-menu"
+              className="mx-2 my-1 flex flex-col rounded-panel border border-line bg-surface shadow-[var(--shadow-popover,0_8px_24px_rgba(0,0,0,.18))]">
+              <button type="button" role="menuitem"
+                className="flex h-11 items-center gap-2 rounded-t-panel px-3 text-left text-body text-ink-900 hover:bg-hover"
+                onClick={() => { setMenuFor(undefined); onRenameSession?.(target.sessionId, target.titleRaw ?? target.title); }}>
+                <AppIcon name="pencil" size={16} /> 重命名
+              </button>
+              <button type="button" role="menuitem"
+                className="flex h-11 items-center gap-2 rounded-b-panel border-t border-line px-3 text-left text-body text-danger hover:bg-hover"
+                onClick={() => { setMenuFor(undefined); onDeleteSession?.(target.sessionId); }}>
+                <AppIcon name="trash" size={16} /> 删除
+              </button>
+            </div>
+          );
+        })()}
         {level === "sessions" && sessions.length === 0 && <p className="px-3 py-8 text-center text-meta text-ink-500">还没有会话</p>}
       </div>
 

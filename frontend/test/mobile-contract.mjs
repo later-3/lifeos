@@ -228,6 +228,47 @@ for (const width of widths) {
     // （后者是空会话的文案，先看到它会让人以为对话列表丢了）。
     check(`[${width}] 选项目后空态不说"开始对话"`, afterProject.emptyChatCopy === false, String(afterProject.emptyChatCopy));
 
+    /*
+     * P7-S1（Task 0016）：会话动作在手机上必须可达。
+     * 改之前手机会话行只有标题 + 运行圆点，**完全无法重命名或删除**
+     * （`knowledge/component-mobile-audit.md` §2.2 的实测）。
+     *
+     * 三条断言对应三个必须同时成立的条件，缺一条这个功能就是"看着有、其实点不动"：
+     *   a) ⋯ 按钮存在且 44×44（`Row` 的 actions 槽默认靠 hover/focus 显形，
+     *      手机抽屉里点行即离开，必须显式 `actionsAlwaysVisible`）；
+     *   b) 点 ⋯ 真的展开菜单（而不是穿透到行、进了会话）；
+     *   c) 菜单两项（重命名/删除）都 ≥44。
+     */
+    const actionBtn = page.locator("[data-session-actions]").first();
+    const actionCount = await actionBtn.count();
+    check(`[${width}] 会话行有动作入口（⋯）`, actionCount > 0, `命中 ${actionCount} 个`);
+    if (actionCount > 0) {
+      const actionBox = await actionBtn.boundingBox();
+      check(`[${width}] ⋯ 命中区 ≥44`, actionBox !== null && actionBox.width >= 44 && actionBox.height >= 44,
+        actionBox === null ? "取不到布局盒" : `${Math.round(actionBox.width)}x${Math.round(actionBox.height)}`);
+      await actionBtn.click({ force: true });
+      await page.waitForTimeout(400);
+      const menuItems = await page.evaluate(() => {
+        const menu = document.querySelector('[data-testid="session-actions-menu"]');
+        if (menu === null) return null;
+        return [...menu.querySelectorAll("[role='menuitem']")].map((el) => ({
+          label: (el.textContent ?? "").trim(),
+          h: Math.round(el.getBoundingClientRect().height),
+        }));
+      });
+      check(`[${width}] 点 ⋯ 展开动作菜单`, menuItems !== null,
+        menuItems === null ? "菜单没出现（点击可能穿透进了会话）" : "");
+      if (menuItems !== null) {
+        check(`[${width}] 动作菜单两项且都 ≥44`,
+          menuItems.length === 2 && menuItems.every((item) => item.h >= 44),
+          menuItems.map((item) => `${item.label}:${item.h}`).join(" / "));
+        // 关闭菜单：只验证能收（不在这里执行重命名/删除——写操作会改夹具数据）
+        await page.keyboard.press("Escape").catch(() => {});
+        await page.evaluate(() => { document.querySelector("[data-session-actions]")?.click(); });
+        await page.waitForTimeout(250);
+      }
+    }
+
     // 点会话行仍然要能打开（这条是"不许过度收敛"的反向保险）
     const sessionRow = page.locator('[data-mobile-level="sessions"] [role="button"]').first();
     if (await sessionRow.count() > 0) {

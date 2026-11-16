@@ -35,6 +35,7 @@ const ALLOW = new Map([
   ["selection-toolbar.tsx", "划词工具条是浮层，位置由选区决定"],
   ["AgentConfig.tsx", "表单字段用 controlClass + 原生 input/select（需保留 name/autoComplete 语义）"],
   ["DirectoryPicker.tsx", "路径输入框用 controlClass + 原生 input（需保留 ref 与受控输入语义）"],
+  ["mobile-nav.tsx", "会话动作菜单是 role=menu/menuitem 的列表项浮层（微按钮装不下 role 与两项的语义）"],
 ]);
 
 /* 只查 <button：input/select 在本项目里统一用 `controlClass`（design/ui 导出的类），

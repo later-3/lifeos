@@ -4276,6 +4276,7 @@ export default function App() {
           sessions: group.sessions.map((session) => ({
             sessionId: session.sessionId,
             title: titleOf(session),
+            titleRaw: session.title.raw,   // 重命名要原文（`title` 是显示形态，可能被截断）
             ...(session.activity.state === "running" ? { running: true } : {}),
           })),
         }))}
@@ -4288,7 +4289,34 @@ export default function App() {
         onOpenSession={(sid) => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) void openSession(agent, sid); }}
         onNewSession={() => { dismissMobile(() => setMobileNav(false)); void newSession(); }}
         onAddProject={() => { dismissMobile(() => setMobileNav(false)); setAddingProject(true); }}
-        onConfigAgent={() => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) setConfigAgent(agent); }} />
+        onConfigAgent={() => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) setConfigAgent(agent); }}
+        /* 会话动作（P7-S1）：关抽屉后复用桌面同一套实现 —— 重命名进 `renaming` 状态、
+           删除进 `confirm` 对话框。不复制写逻辑，也不在这里直接调 API。 */
+        onRenameSession={(sid, currentTitle) => {
+          // **不关抽屉**：重命名就地在这个抽屉里完成（关掉的话用户看不到输入框，
+          // 而且桌面那份列表在手机上是隐藏的）。
+          setRenaming({ sid, value: currentTitle });
+          setMobileNavLevel("sessions");
+        }}
+        {...(renaming !== undefined ? { renaming } : {})}
+        onRenameChange={(value) => setRenaming((current) => (current === undefined ? current : { ...current, value }))}
+        onRenameCommit={(value) => {
+          const target = groups.flatMap((g) => g.sessions).find((s) => s.sessionId === renaming?.sid);
+          if (target !== undefined) void commitRename(target, value);
+        }}
+        onRenameCancel={() => setRenaming(undefined)}
+        onDeleteSession={(sid) => {
+          const target = groups.flatMap((g) => g.sessions).find((s) => s.sessionId === sid);
+          if (target === undefined) return;
+          dismissMobile(() => setMobileNav(false));
+          setConfirm({
+            title: "删除会话",
+            message: `删除「${titleOf(target)}」？会话文件会一并删除，不能撤销。`,
+            confirmLabel: "删除",
+            danger: true,
+            run: () => { void removeSession(target); },
+          });
+        }} />
     </div>
   );
 }
