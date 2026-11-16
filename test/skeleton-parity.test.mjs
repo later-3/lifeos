@@ -31,6 +31,19 @@ test("App 用的是尺寸对齐的骨架（不是通用 Skeleton）", () => {
   assert.ok(/ListSkeleton/.test(APP), "App 还在用通用 Skeleton（尺寸不对齐 → 刷新跳版）");
 });
 
+/**
+ * Task 0016 · P1-S1：`MessageSkeleton` 从"定义了但没人用"变成会话加载态的宿主。
+ * 这一条同时锁两件事：
+ *  1. 骨架高度与真实用户气泡对齐（`rounded-bubble` + 字号 content 的 2 行 ≈ h-8 起）；
+ *  2. App **确实在用它**——否则加载态会退回空态（P1 的那 1.4 秒问题会复活）。
+ */
+test("MessageSkeleton 与真实气泡同族（rounded-bubble），且 App 真的在用它", () => {
+  assert.ok(/rounded-bubble/.test(SK), "MessageSkeleton 的圆角没跟真实气泡对齐（rounded-bubble）");
+  assert.ok(/data-skeleton="message"/.test(SK), "缺 data-skeleton=message");
+  assert.ok(/MessageSkeleton/.test(APP), "App 没有用 MessageSkeleton——会话加载态会退回空态（P1-S1 回归）");
+  assert.ok(/viewStateOf/.test(APP), "App 没有走 viewStateOf 四态判定（加载中可能被判成空会话）");
+});
+
 test("活性验证：骨架高度若改成自造值（h-13），对齐检查必须红", () => {
   const bad = SK.replace(/h-11/g, "h-13");
   assert.ok(!/h-11/.test(bad), "探测规则失效（改高度检测不出来）");

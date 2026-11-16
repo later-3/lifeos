@@ -524,6 +524,19 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
+  /**
+   * 会话加载态（Task 0016 · P1-S1）。
+   *
+   * 为什么必须有：`resetChatState()` 会先 `setMessages([])`，而 `loadMessages` 只
+   * `await fetch(...).json()`——中间没有任何状态。实测（`evidence/perf-flash2.mjs` 逐帧）：
+   * 切到 322 条的会话时，**1.4 秒里屏幕显示的是"发一条消息开始对话"**，
+   * 用户会以为对话丢了。pi-web 的做法是 `loading` 时整块换文案、**不落空态**
+   * （`components/ChatWindow.tsx:602-608`）。
+   *
+   * 判定用纯函数 `viewStateOf()`（`session-view-state.ts`），四态穷举有测试锁——
+   * 不用"messages 为空就是空会话"这种值比较猜语义（规范 2.1）。
+   */
+  const [sessionLoading, setSessionLoading] = useState(false);
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
   const anno = useAnnotations();
   /**
@@ -1577,8 +1590,15 @@ export default function App() {
     resetChatState();
     setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
+    setSessionLoading(true);              // P1-S1：与 setMessages([]) 同一批渲染，中间不落空态
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
-    const data = await loadMessages(a.id, sid);
+    let data: Awaited<ReturnType<typeof loadMessages>>;
+    try {
+      data = await loadMessages(a.id, sid);
+    } finally {
+      // 只在仍然停在这个会话时才关：切走后新会话自己有它的加载周期（C120 同款守卫）
+      if (current.current === sid) setSessionLoading(false);
+    }
     // 切回来时这一轮可能还在跑：必须恢复生成态，否则下一条会被当成"新回合"（C120）
     if (current.current === sid && data?.meta?.running === true) {
       busyRef.current = true;
@@ -1636,18 +1656,30 @@ export default function App() {
     if (target !== undefined) await openSession(a, target);
   }
 
-  async function selectProject(project: Project) {
+  /**
+   * 选项目 = **只切项目**（Task 0016 · P1-S2，用户 2026-11-16 拍板"桌面同改"）。
+   *
+   * 改之前它末尾还有 `openSession(pickLatest(...))`——点项目顺手打开该项目最新会话。
+   * 代价实测（`evidence/perf-levels.mjs`）：手机上点项目行 **1711 ms**、4 条长任务 / 1497 ms，
+   * 而且这 1.4 秒里屏幕显示"发一条消息开始对话"（用户会以为对话丢了）。
+   *
+   * 语义上也本该分开：`specs/frontend-mobile/mobile.md` §2 的模型 B 是四屏
+   * （消息流 → 聊天 → 详情 → 项目），项目与会话是两个屏，不是一个动作。
+   * 参考项目同样分离：LobeHub `src/routes/(mobile)/page` 与 `/chat` 是两套页面。
+   *
+   * 保持不变的是**清理语义**（清历史/会话/meta + 刷新默认模型）——
+   * 那是"离开上一个上下文"的代价，与会话加载无关，不需要等网络。
+   */
+  function selectProject(project: Project): void {
     if (agent === undefined) return;
     setHistory(undefined);
     setSelectedProjectId(project.id);
     setShowGroups(true);
     setSessionId(undefined);
-    setMessages([]);
-    setMeta(undefined);
+    current.current = undefined;          // 同步失效：在途的 openSession 结果不得写回
+    setSessionLoading(false);             // 目标是无会话的项目级，不是加载中
+    resetChatState();
     void refreshAgentDefaultModel(agent.id);
-    const group = groups.find((item) => item.project.id === project.id);
-    const latest = pickLatest(group?.sessions ?? []);
-    if (latest !== undefined) await openSession(agent, latest.sessionId);
   }
 
   /**
@@ -2321,8 +2353,9 @@ export default function App() {
    * 为什么这样更可靠：入口长在那个项目的分组头里，"点谁就在谁下面开"不再依赖"上次选中了谁"；
    * 改前点会话行/点其他分组头都不会改 `selectedProjectId`，于是草稿会落回上一个项目。
    *
-   * 为什么不用 `selectProject()`：它会 `openSession(最新会话)`——那是"进入项目"，不是"开草稿"。
-   * 这里只复用它的**清理语义**（清会话/清 meta/刷新默认模型），落点是空白草稿。
+   * 为什么自己写而不复用 `selectProject()`：后者是"切到项目级"（Task 0016 之后它已经不打开会话了），
+   * 但它会 `setHistory(undefined)` 并整组重置折叠态；开草稿要保留当前折叠与面板。
+   * 所以这里只复用它那套**清理语义**，落点是空白草稿。
    */
   function newSessionIn(project: Project) {
     if (agent === undefined) return;
@@ -2361,7 +2394,7 @@ export default function App() {
     setAddingProject(false);
     const next = await reloadGroups();
     const target = (next ?? []).find((g) => g.project.id === pid);
-    if (target !== undefined) await selectProject(target.project);
+    if (target !== undefined) selectProject(target.project);
     return null;
   }
 
@@ -2372,7 +2405,7 @@ export default function App() {
     const next = await reloadGroups();
     if (selectedProjectId === project.id) {
       const fallback = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
-      if (fallback !== undefined) await selectProject(fallback.project);
+      if (fallback !== undefined) selectProject(fallback.project);
       else {
         setSelectedProjectId(undefined);
         setSessionId(undefined);
@@ -2409,7 +2442,7 @@ export default function App() {
       const sibling = pickLatest((currentGroup?.sessions ?? []).filter((s) => s.sessionId !== session.sessionId));
       if (sibling !== undefined) { await openSession(agent, sibling.sessionId); return; }
       const fallbackGroup = (next ?? []).find((g) => g.project.isDefault) ?? (next ?? [])[0];
-      if (fallbackGroup !== undefined) await selectProject(fallbackGroup.project);
+      if (fallbackGroup !== undefined) selectProject(fallbackGroup.project);
       else {
         setSessionId(undefined);
         setMessages([]);
@@ -3323,6 +3356,10 @@ export default function App() {
   const closeAllLeft = () => { setShowNav(false); setShowGroups(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
+  /** 会话区四态（P1-S1）：唯一判定处，界面只读它，不再各自判 messages.length。 */
+  const view = viewStateOf({ sessionId, sessionLoading, messageCount: messages.length });
+  /** 当前项目下的对话条数（P1-S2 项目级空态用："有 11 条，去选一条"≠"还没有对话"）。 */
+  const projectSessionCount = groups.find((group) => group.project.id === selectedProjectId)?.sessions.length ?? 0;
   /**
    * 状态条上的回合提示（Task 0007）：**从与按钮同一份数据派生**。
    *
@@ -3590,10 +3627,18 @@ export default function App() {
             }}
             className="h-full w-full overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
             <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
-              {sessionId === undefined && (selectedProjectId === undefined
-                ? <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
-                : <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
-              {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
+              {/* 四态判定走纯函数 viewStateOf()（P1-S1）：加载中**永不**落空态，
+                  否则用户会看到"发一条消息开始对话"并以为对话丢了（实测 1.4 秒）。 */}
+              {view === "empty" && (sessionId === undefined
+                ? (selectedProjectId === undefined
+                  ? <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
+                  /* 项目级：**该项目已有对话**时必须说"选一条"，否则用户刚点进来就看到
+                     "发一条消息开始对话"，会以为对话列表没了（P1-S2 的同款误读）。 */
+                  : projectSessionCount > 0
+                    ? <EmptyState icon={<AppIcon name="message-circle" size={22} />} title={`选一条对话继续（${projectSessionCount} 条）`} hint="或直接输入新消息，会在本项目新建一条对话。" />
+                    : <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)
+                : <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />)}
+              {view === "loading" && <MessageSkeleton rows={5} />}
               {(() => {
                 // 折叠粒度 = **一轮**（用户发一句话 → 下一条用户消息之前）
                 // 实测本会话每轮 assistant 消息数中位 6、最多 198：按消息折会碎成上百块，必须按轮分。
@@ -4237,7 +4282,7 @@ export default function App() {
         {...(sessionId !== undefined ? { sessionId } : {})}
         canNewSession={sessionId !== undefined}
         onSelectAgent={async (item) => { const full = agents.find((entry) => entry.id === item.id); if (full !== undefined) await selectAgent(full); }}
-        onSelectProject={async (project) => { const full = groups.find((group) => group.project.id === project.id)?.project; if (full !== undefined) await selectProject(full); }}
+        onSelectProject={async (project) => { const full = groups.find((group) => group.project.id === project.id)?.project; if (full !== undefined) selectProject(full); }}
         onOpenSession={(sid) => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) void openSession(agent, sid); }}
         onNewSession={() => { dismissMobile(() => setMobileNav(false)); void newSession(); }}
         onAddProject={() => { dismissMobile(() => setMobileNav(false)); setAddingProject(true); }}
@@ -4272,4 +4317,5 @@ import { busyBelongsTo, isStaleTerminal } from "./event-guards";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";
 import { AppIcon } from "./design/icons";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";
-import { ListSkeleton } from "./design/skeleton";
+import { ListSkeleton, MessageSkeleton } from "./design/skeleton";
+import { viewStateOf } from "./session-view-state";

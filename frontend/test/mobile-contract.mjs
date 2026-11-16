@@ -172,9 +172,43 @@ for (const width of widths) {
     await projectRow.click();
     await page.waitForTimeout(400);
     check(`[${width}] 选项目后导航仍在、进入会话级`, (await page.locator('[data-testid="mobile-nav"]').count()) === 1 && (await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "sessions");
+    /**
+     * P1-S2（Task 0016）：选项目 = **只切项目**。
+     * 改之前 `selectProject()` 末尾会 `openSession(pickLatest(...))`，于是点项目顺手打开了
+     * 该项目最新会话——手机上实测 1711 ms + 1497 ms 长任务，期间屏幕显示"发一条消息开始对话"。
+     * 三条断言缺一不可，否则"看起来还在会话级"也能过：
+     *   a) URL 不带 `session`（指针真的没指向任何会话）；
+     *   b) 消息区**没有**消息节点（没有偷偷渲染旧会话）；
+     *   c) 不出现"发一条消息开始对话"（那是空会话的文案，会让人以为对话丢了）。
+     */
+    const afterProject = await page.evaluate(() => ({
+      hasSessionParam: new URLSearchParams(window.location.search).has("session"),
+      messageNodes: document.querySelectorAll('[data-testid="message"]').length,
+      emptyChatCopy: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
+    }));
+    check(`[${width}] 选项目后 URL 不带 session`, afterProject.hasSessionParam === false, JSON.stringify(afterProject));
+    check(`[${width}] 选项目后不渲染任何消息`, afterProject.messageNodes === 0, `${afterProject.messageNodes}`);
+    // 空态文案必须是"选一条对话"（有对话时），**不是**"发一条消息开始对话"
+    // （后者是空会话的文案，先看到它会让人以为对话列表丢了）。
+    check(`[${width}] 选项目后空态不说"开始对话"`, afterProject.emptyChatCopy === false, String(afterProject.emptyChatCopy));
+
+    // 点会话行仍然要能打开（这条是"不许过度收敛"的反向保险）
+    const sessionRow = page.locator('[data-mobile-level="sessions"] [role="button"]').first();
+    if (await sessionRow.count() > 0) {
+      await sessionRow.click();
+      await page.waitForTimeout(600);
+      const opened = await page.evaluate(() => ({
+        drawerClosed: document.querySelector('[data-testid="mobile-nav"]') === null,
+        hasSessionParam: new URLSearchParams(window.location.search).has("session"),
+      }));
+      check(`[${width}] 点会话行仍能打开会话`, opened.drawerClosed && opened.hasSessionParam, JSON.stringify(opened));
+      // 点会话行会关闭抽屉（预期）。后面的用例会 goto targetUrl 恢复，
+      // 这里不试图把抽屉恢复到特定层级——那会让后续断言依赖脆弱的中间态。
+    }
   }
-  await page.getByRole("button", { name: "关闭导航" }).click();
-  await page.waitForTimeout(200);
+  // 抽屉可能已被"点会话行"用例关掉（那是预期行为）：只在还开着时关闭。
+  const closeNav = page.getByRole("button", { name: "关闭导航" });
+  if (await closeNav.count() > 0) { await closeNav.click(); await page.waitForTimeout(200); }
   // 导航测试可能切到没有会话的 Agent/项目；回到有会话的目标，再测全屏面板。
   if (targetUrl !== null) {
     await page.goto(targetUrl, { waitUntil: "networkidle" });
