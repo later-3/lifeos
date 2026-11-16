@@ -48,7 +48,8 @@
     "design:list": "node scripts/design-list.mjs",
     "design:preview": "echo 样板间: cd frontend && npx vite --port 5399 → /dev/design-system.html",
     "lint:primitives": "node scripts/lint-primitives.mjs",
-    "test:layer": "node frontend/test/layer-paint.mjs"
+    "test:layer": "node frontend/test/layer-paint.mjs",
+    "probe:frontend": "node scripts/frontend-probes.mjs"
   },
   "type": "module",
   "devDependencies": {
