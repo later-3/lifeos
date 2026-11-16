@@ -308,6 +308,54 @@ if (RUN === "all" || RUN === "T3") {
   await done.close();
 }
 
+if (RUN === "all" || RUN === "T5") {
+  /*
+   * T5（R5）：**流式中已显示的文字不得被改写**。
+   *
+   * 用户 2026-11-16 补充："思考块在不断追加的时候，某些情况下它就不断地闪"。
+   * 成因是 Markdown 分隔符回吞（`**` / 反引号只到一半时是字面，闭合那一刻被吃掉）。
+   * 修法：流式渲染前补齐未闭合结构（`md-stream.ts`），定稿仍走原文。
+   */
+  const app = await openApp();
+  await app.page.evaluate(() => {
+    window.__seen = [];
+    const tick = () => {
+      // 思考块的内容不是 `message-text`（那是正文块的 testid），要单独取
+      const bodies = [...document.querySelectorAll('[data-testid="message-text"], [data-message-kind="thinking"] .md-body')];
+      window.__seen.push(bodies.map((el) => (el.textContent ?? "").replace(/\s+/g, "")).join("\u0000"));
+      window.__raf = requestAnimationFrame(tick);
+    };
+    window.__raf = requestAnimationFrame(tick);
+  });
+  await app.push("message_start", app.base({ type: "message_start", segment: "msg-1" }));
+  // 真实形态的思考文本：小标题 + 粗体 + 行内码 + 列表（模型常用排版）
+  const THINKING = "### 定位思路\n先确认 **渲染入口** 在 `Message.tsx`，再看 `stream-blocks.ts`。\n- 检查 A 的 key\n- 检查 B 的 effect\n";
+  for (let i = 0; i < THINKING.length; i += 6) {
+    await app.push("thinking", app.base({ type: "thinking", index: 0, text: THINKING.slice(i, i + 6), segment: "msg-1" }));
+    await app.page.waitForTimeout(30);
+  }
+  await app.page.waitForTimeout(300);
+  const probe = await app.page.evaluate(() => {
+    cancelAnimationFrame(window.__raf);
+    const frames = window.__seen.filter((value, i, all) => i === 0 || value !== all[i - 1]);
+    // 已显示文字被改写 = 这一帧不是"在上一帧末尾追加"，且少掉的不只是标记字符
+    const lostWords = [];
+    for (let i = 1; i < frames.length; i += 1) {
+      const prev = frames[i - 1];
+      const cur = frames[i];
+      let k = 0;
+      while (k < Math.min(prev.length, cur.length) && prev[k] === cur[k]) k += 1;
+      const lost = prev.slice(k).replace(/[*`~#-]/g, "");
+      if (lost !== "") lostWords.push({ frame: i, lost: lost.slice(0, 12) });
+    }
+    return { frames: frames.length, lostWords };
+  });
+  check("T5 思考块追加期间，已显示的正文文字不被改写（只允许标记字符变化）", probe.lostWords.length === 0,
+    probe.lostWords.length === 0 ? `${probe.frames} 帧` : JSON.stringify(probe.lostWords.slice(0, 4)));
+  check("T5 无页面异常", app.errors.length === 0, app.errors[0] ?? "");
+  await app.close();
+}
+
 if (RUN === "all" || RUN === "T4") {
   // 长会话（60 轮）里推一个 delta，看触发多少次索引重建
   const history = [];
