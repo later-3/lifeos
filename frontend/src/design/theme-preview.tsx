@@ -62,21 +62,21 @@ export function ThemePreview() {
           <Field label="输入框" hint="提示文字用 ink-500，边框用 line">
             <input
               defaultValue="示例内容"
-              className="h-9 w-full rounded-control bg-sunken px-2.5 text-body text-ink-900 ring-1 ring-line placeholder:text-ink-300 focus:outline-none focus:ring-accent"
+              className="h-11 w-full rounded-control bg-sunken px-2.5 text-body text-ink-900 ring-1 ring-line placeholder:text-ink-300 focus:outline-none focus:ring-accent sm:h-9"
             />
           </Field>
           <Field label="下拉">
-            <select className="h-9 w-full rounded-control bg-sunken px-2 text-body text-ink-900 ring-1 ring-line focus:outline-none focus:ring-accent">
+            <select className="h-11 w-full rounded-control bg-sunken px-2 text-body text-ink-900 ring-1 ring-line focus:outline-none focus:ring-accent sm:h-9">
               <option>选项一</option>
               <option>选项二</option>
             </select>
           </Field>
           <div className="flex items-center gap-3">
             {/* 命中区：复选框/单选本体是浏览器默认 14×14，由 label 撑到 ≥28（规范 2.15 次级密集控件档） */}
-            <label className="flex min-h-8 cursor-pointer items-center gap-2 text-body text-ink-700">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-body text-ink-700 sm:min-h-8">
               <input type="checkbox" defaultChecked className="h-3.5 w-3.5 accent-accent" /> 复选
             </label>
-            <label className="flex min-h-8 cursor-pointer items-center gap-2 text-body text-ink-700">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-body text-ink-700 sm:min-h-8">
               <input type="radio" defaultChecked className="h-3.5 w-3.5 accent-accent" /> 单选
             </label>
             <Segmented value="a" options={[{ value: "a", label: "分段" }, { value: "b", label: "控件" }]} onChange={() => undefined} />

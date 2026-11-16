@@ -325,11 +325,11 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
             </div>
             <div className="min-w-0 flex-1 space-y-3">
               <Field label="名字">
-                <input ref={nameRef} name="agent-name" autoComplete="off" className={`${controlClass} h-10 text-title font-semibold`}
+                <input ref={nameRef} name="agent-name" autoComplete="off" className={`${controlClass} h-11 text-title font-semibold sm:h-10`}
                   value={name} maxLength={60} onChange={(event) => setName(event.target.value)} placeholder="展示名" />
               </Field>
               <Field label="描述" hint="一句话说明这个助手负责什么">
-                <input name="agent-description" autoComplete="off" className={`${controlClass} h-9`} value={description} maxLength={300}
+                <input name="agent-description" autoComplete="off" className={`${controlClass} h-11 sm:h-9`} value={description} maxLength={300}
                   onChange={(event) => setDescription(event.target.value)} placeholder="一句话介绍" />
               </Field>
               <p className="text-micro text-ink-500">png / jpg / webp，≤2MB · 更换后立即生效</p>
@@ -362,7 +362,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <Field label="服务">
-                      <select name="agent-provider" className={`${controlClass} h-9`} value={provider}
+                      <select name="agent-provider" className={`${controlClass} h-11 sm:h-9`} value={provider}
                         onChange={(event) => {
                           const next = event.target.value;
                           setProvider(next);
@@ -373,7 +373,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
                       </select>
                     </Field>
                     <Field label="模型">
-                      <select name="agent-model" className={`${controlClass} h-9`} value={model}
+                      <select name="agent-model" className={`${controlClass} h-11 sm:h-9`} value={model}
                         onChange={(event) => { setModel(event.target.value); setThinking(""); }}>
                         {providerModels.map((entry) => (
                           <option key={entry.id} value={entry.id}>{entry.name !== undefined && entry.name !== "" ? entry.name : entry.id}</option>
@@ -382,7 +382,7 @@ export function AgentConfigModal({ agent, onSaved, onClose }: {
                     </Field>
                   </div>
                   <Field label="思考级别" hint={thinkingOptions.length === 0 ? "该模型未声明思考档位" : `该模型支持：${thinkingOptions.join(" / ")}`}>
-                    <select name="agent-thinking" className={`${controlClass} h-9`} value={thinking} onChange={(event) => setThinking(event.target.value)}>
+                    <select name="agent-thinking" className={`${controlClass} h-11 sm:h-9`} value={thinking} onChange={(event) => setThinking(event.target.value)}>
                       <option value="">未设置（跟随系统默认）</option>
                       {thinkingOptions.map((level) => <option key={level} value={level}>{THINKING_LABEL[level] ?? level}</option>)}
                     </select>

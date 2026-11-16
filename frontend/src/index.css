@@ -163,6 +163,14 @@ pre, code, .font-mono {
 /* 命中区 ≥28（frontend-spec §2 次级密集控件档）：旧值 4px 上下内边距实测算出 46×25，
    比 28 的下限还小 —— 触摸设备上点不中。高度改为 min-height 撑到 28。 */
 .mode-seg button { border: 0; background: transparent; min-height: 28px; padding: 0 12px; font-size: var(--text-micro); border-radius: var(--radius-inner); cursor: pointer; color: var(--color-ink-500); }
+/* 手机命中区（Task 0016 · P7-S3）：`.mode-seg` 是"深浅色"这类分段，实测 46×28 —— 手指点不准。
+   桌面保持 28（次级密集控件档已拍板），只在触屏抬到 44。 */
+@media (any-pointer: coarse) {
+  .mode-seg button { min-height: 44px; }
+  .accent-dot { width: 44px; height: 44px; }
+  .chk { min-height: 44px; }
+  .swatch { min-height: 44px; }
+}
 .mode-seg button.on { background: var(--color-surface); color: var(--color-ink-900); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); font-weight: 500; }
 
 .swatch-row { display: flex; gap: 10px; }

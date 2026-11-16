@@ -429,7 +429,11 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
               <div className="px-2 pb-1 pt-3 text-micro font-semibold tracking-wide text-nav-muted max-sm:hidden">{g.g}</div>
               {g.items.map((it) => (
                 <button key={it.k} type="button"
-                  className={`relative flex h-9 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors ${
+                  /*
+                   * 命中区（Task 0016 · P7-S3）：手机 44 / 桌面 36。
+                   * 改之前 `h-9`（36px）——实测分区 Tab 在手机上 **68×36**，低于 44。
+                   */
+                  className={`relative flex h-11 shrink-0 items-center gap-2 rounded-control px-2 text-left text-body transition-colors sm:h-9 ${
                     section === it.k
                       // 选中态文字用 ink-900（accent 在 nav-bg 上只有 4.33，不到 AA 4.5）；
                       // 强调交给左侧 2px 指示条 —— 颜色是稀缺信号，不该由文字颜色承担

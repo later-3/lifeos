@@ -363,7 +363,12 @@ export function Segmented<T extends string>({ value, options, onChange }: {
     <div className="inline-flex shrink-0 items-center rounded-control bg-hover p-0.5">
       {options.map((option) => (
         <button key={option.value} type="button" onClick={() => onChange(option.value)}
-          className={`min-h-7 rounded-inner px-2 text-micro transition-colors ${
+          /*
+           * 命中区（Task 0016 · P7-S3）：手机 44 / 桌面 28。
+           * 改之前写死 `min-h-7`（28px）——设置页的"浅色/深色"分段实测 **46×28**，
+           * 手指点不准（`mobile.md` §3：手机所有可点元素 ≥44）。
+           */
+          className={`min-h-11 px-2 text-micro transition-colors sm:min-h-7 rounded-inner ${
             option.value === value ? "bg-surface text-ink-900 shadow-sm" : "text-ink-500 hover:text-ink-900"
           }`}>
           {option.label}

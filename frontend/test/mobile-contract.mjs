@@ -435,6 +435,66 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 全屏表面内的触控目标（Task 0016 · P7-S3）──────────────────────────────────
+// `mobile-contract` 原来只查 main 与导航抽屉里的 button，**不查全屏表面内部**，
+// 于是设置页 Tab 68×36、深浅色分段 46×28、AgentConfig 的 select 318×36 全部漏过去了。
+// 这一块专查"手机上的全屏表面"：设置页 + 助手配置。
+//
+// 判据用"可点目标"而不是"所有 input"：复选框/单选框本体是 14×14（浏览器默认），
+// 由 `<label>` 撑命中区 —— 点 label 也算点控件，所以 label 与 input 都不单独算不合格。
+for (const width of [360, 390]) {
+  const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(700);
+
+  const auditSurface = async (selector) => page.evaluate((sel) => {
+    const root = document.querySelector(sel);
+    if (root === null) return { missing: true, smallCount: -1, small: [] };
+    const targets = [...root.querySelectorAll(
+      "button,[role='button'],[role='tab'],[role='radio'],[role='switch'],select,input[type='text'],input[type='search'],input[type='range'],label",
+    )].filter((el) => el.offsetParent !== null);
+    const small = targets.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { tag: el.tagName, label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 12), w: Math.round(r.width), h: Math.round(r.height) };
+    }).filter((x) => x.h < 44 || x.w < 44);
+    return { total: targets.length, smallCount: small.length, small: small.slice(0, 6) };
+  }, selector);
+
+  // 设置页
+  const settingsBtn = page.getByRole("button", { name: "打开设置" });
+  if (await settingsBtn.count() > 0) {
+    await settingsBtn.first().click({ force: true });
+    await page.waitForTimeout(900);
+    const settings = await auditSurface('[data-testid="settings-surface"]');
+    check(`[${width}] 设置页触控目标 ≥44`, settings.missing !== true && settings.total > 0 && settings.smallCount === 0,
+      settings.missing === true ? "设置页没打开" : `共 ${settings.total} 个，小于 44 的 ${settings.smallCount}：${settings.small.map((x) => `${x.label}:${x.w}x${x.h}`).join(" / ")}`);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(400);
+  }
+
+  // 助手配置（从抽屉进）
+  const navEntry2 = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+  if (await navEntry2.count() > 0) {
+    await navEntry2.first().click({ force: true });
+    await page.waitForTimeout(700);
+    if ((await page.locator('[data-mobile-level="agents"]').count()) === 0) {
+      await page.getByRole("button", { name: "返回上一级" }).click().catch(() => {});
+      await page.waitForTimeout(400);
+    }
+    const cfg = page.getByRole("button", { name: "配置当前助手" });
+    if (await cfg.count() > 0) {
+      await cfg.click({ force: true });
+      await page.waitForTimeout(1000);
+      const config = await auditSurface('[role="dialog"]');
+      check(`[${width}] 助手配置触控目标 ≥44`, config.missing !== true && config.total > 0 && config.smallCount === 0,
+        config.missing === true ? "配置弹窗没打开" : `共 ${config.total} 个，小于 44 的 ${config.smallCount}：${config.small.map((x) => `${x.tag}:${x.w}x${x.h}`).join(" / ")}`);
+      await page.keyboard.press("Escape");
+    }
+  }
+  await context.close();
+}
+
 // ── 平台层几何（Task 0016 · P6-S1 / P2-S2）────────────────────────────────────
 // 这四条锁的是"与页面无关的整站行为"。写法遵循规范 2.15：
 // 真实选择器 + 先打印命中数（取不到元素 = 失败，不是恒绿）+ 断言到计算值。
