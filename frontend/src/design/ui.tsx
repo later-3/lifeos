@@ -471,7 +471,14 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
         */}
       </div>
       <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
-        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
+        {/*
+          * `pr-1.5`（6px）不是审美，是**几何前提**（Task 0017 · P1，层模型 L3 不得溢出 L2）：
+          * 运行态的点在呼吸时 `scale(1.30)` 放大 —— 6px → 7.8px，以中心为原点向两侧各外扩 0.9px；
+          * 扩散环（`badge-ring`）再向外吐 `--badge-ring-spread`（默认 ≈3.5px）。
+          * 点在行右缘时这两者会跑出行矩形（实测越界 0.8px，`frontend/test/layer-paint.mjs` 抓到），
+          * 看起来就是"状态点/光环骑在行边界上"。留 6px 后，峰值与光环都在行内。
+          */}
+        <span className="flex items-center pr-1.5 transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
         {/* 覆盖层不画底色（Task 0017 · P1 / 层模型 L4，同 Row 的修法）。 */}
         <span className="absolute right-0 flex items-center opacity-0 pointer-events-none transition-opacity group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><AppIcon name="history" size={14} /></IconButton>
