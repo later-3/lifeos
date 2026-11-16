@@ -34,6 +34,17 @@ check("index：manifest 带凭据（Cloudflare Access）", html.includes('crosso
 check("index：apple touch icon", html.includes('rel="apple-touch-icon"'));
 check("index：iOS standalone meta", html.includes('name="apple-mobile-web-app-capable"'));
 check("index：全面屏安全区", html.includes("viewport-fit=cover"));
+/*
+ * 缩放策略（Task 0016 · P6-S5）：我们靠**输入框 16px**（`frontend/src/index.css` 的
+ * `@media (any-pointer: coarse)`）解决 iOS 聚焦放大，**不靠禁缩放**。
+ * `maximum-scale` / `user-scalable=no` 会让视力不好的用户无法放大页面
+ * （WCAG 1.4.4 Resize Text 明确要求可放大到 200%）。
+ * 这条锁住"不要为了方便偷偷禁掉缩放"。
+ */
+const viewportMeta = /<meta name="viewport" content="([^"]*)"/.exec(html)?.[1] ?? "";
+check("index：不禁用缩放（靠 16px 而非 maximum-scale）",
+  !/maximum-scale/.test(viewportMeta) && !/user-scalable\s*=\s*no/.test(viewportMeta),
+  viewportMeta);
 check("service worker 存在", existsSync(join(pub, "sw.js")));
 const sw = readFileSync(join(pub, "sw.js"), "utf8");
 check("service worker：只走同源 GET / 有 fetch", sw.includes('addEventListener("fetch"') && sw.includes('request.method !== "GET"'));
