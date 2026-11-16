@@ -220,6 +220,10 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
       draftRequest={draftRequest !== null && draftRequest.messageId === messageId ? draftRequest : null}
       {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
       {...(onOpenPeer !== undefined ? { onOpenPeer } : {})}
+      /* 轮级 live（Task 0018 · T2）：思考卡只在**整轮结束**时收起。
+         `process.live` 是轮级（App 传的 replyLive），`busy` 是这条消息段级——
+         折叠视图下容器可能挂着第一段（已结束）而后续段仍在跑，所以取轮级优先。 */
+      turnLive={process?.live ?? busy}
       live={block.type === "thinking" ? block.live === true : block.type === "toolCall" ? block.running === true : busy}
       forceOpen={failure !== undefined} />
   );
@@ -295,10 +299,21 @@ function useAutoOpen(live: boolean, closeOnEnd: boolean, initialOpen = live): [b
   return [open, toggle];
 }
 
-function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: boolean; forceOpen?: boolean }) {
-  // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
-  const [open, toggle] = useAutoOpen(live, !forceOpen, forceOpen);
-  return (
+function ThinkingBlock({ text, live, turnLive = live, forceOpen = false }: { text: string; live: boolean; turnLive?: boolean; forceOpen?: boolean }) {
+  /*
+   * 自动开合的两个时机（Task 0018 · T2 修正）：
+   *  - **展开条件**：这一段思考在流（`live`）**或**这一轮还在跑（`turnLive`）；
+   *  - **收起时机**：**这一轮结束**（不是这一段思考结束）。
+   *
+   * 为什么以前在 `thinking_end` 就收：那时判据只有“这一段是否在流”。代价是**一次工具型回合里
+   * 每个思考段一结束就塌陷一次**，实测 12 行思考（207px）→ 34px，下方正文整体上跳 173px；
+   * 一次回复里 4 段就是 4 次（Task 0018 evidence/diag7、diag13 的数字）。用户看到的就是“闪屏”。
+   *
+   * 参考同款做法（A 级，源码可核）：LobeChat `Conversation/components/Thinking/index.tsx:47-49`
+   * 的 `useEffect(() => setShowDetail(!!thinking), [thinking])`，`thinking` 是**这条消息是否仍在生成**，
+   * 所以它也是“整条消息生成完才收”，不是每个思考块结束就收（commit 867a15a）。
+   */
+  const [open, toggle] = useAutoOpen(live || turnLive, !forceOpen, forceOpen);  return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <ClickableRow onClick={toggle}
         className="gap-1.5 px-3 py-2 text-meta text-ink-500 hover:text-ink-900">
@@ -319,7 +334,7 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
         */}
       {open && (
         <div className="border-t border-line px-3 py-2 text-ink-700">
-          <Markdown text={text} className="md-body--compact" />
+          <Markdown text={text} className="md-body--compact" streaming={live || turnLive} />
         </div>
       )}
     </div>
@@ -425,8 +440,11 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
  * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
-  block: Block; live: boolean; forceOpen?: boolean;
+function BlockView({ block, live, turnLive = false, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
+  block: Block; live: boolean;
+  /** 这一轮是否还在跑（Task 0018 · T2）：思考卡只在**整轮结束**时收起，不在每段思考结束时收起。 */
+  turnLive?: boolean;
+  forceOpen?: boolean;
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
    *  批注要定位到"哪条消息的第几个 text 块"，只给 text 块（thinking/工具/图片不批）。 */
@@ -446,9 +464,10 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
     return (
       <AnnotatedTextBlock text={block.text} blockIndex={blockIndex} messageId={messageId}
         annotations={blockAnnotations} actions={blockActions} busy={live}
+        {...(turnLive ? { streaming: true } : {})}
         draftRequest={draftRequest} {...(onDraftHandled !== undefined ? { onDraftHandled } : {})} />
     );
   }
-  if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
+  if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} turnLive={turnLive} forceOpen={forceOpen} />;
   return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
 }

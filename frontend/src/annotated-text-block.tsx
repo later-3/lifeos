@@ -54,6 +54,11 @@ type AnnotatedTextBlockProps = {
    * 处理完调 onDraftHandled（App 清除请求，防重复触发）。
    */
   draftRequest?: { nonce: number } | null;
+  /**
+   * 这一整轮还在跑（Task 0018 · T3）：流式期不做代码语法着色（逐 delta 闪色）；
+   * 无代码块的正文不受影响。`busy` 是段落级（这一段是否在流），`streaming` 是轮级。
+   */
+  streaming?: boolean;
   onDraftHandled?: () => void;
 };
 
@@ -80,7 +85,7 @@ export type AnnotationActions = {
  * **无批注且无 actions 时行为与改造前完全一致**（不加节点、不挂监听）。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions, busy = false, draftRequest = null, onDraftHandled }: AnnotatedTextBlockProps) {
+export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, actions, busy = false, streaming = false, draftRequest = null, onDraftHandled }: AnnotatedTextBlockProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const indexRef = useRef<BlockIndex | null>(null);
@@ -120,14 +125,30 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
     if (hideTimer.current !== undefined) { window.clearTimeout(hideTimer.current); hideTimer.current = undefined; }
   };
 
-  // 上色：每次渲染后重算 Range。
+  // 上色：渲染后重算 Range。
   // **不加 deps 数组**：除了 text/annotations 变化，还有"同一批批注但组件被重建"的情形
   //（发送失败时消息列表先插后替，批注渲染层会卸载重建；实测此时只靠 deps 不会重画）。
-  // 每次渲染都跑一遍的代价很小：一次 TreeWalker + 一次 set，实测 6190 字符 0.4ms。
+  //
+  // **但代价必须 ∝ 真实变化**（Task 0018 · T4）：流式期间 App 每个 delta 都重建整张列表，
+  // 于是**每一个历史正文块**都会重渲染 → 每个块一次 TreeWalker + 一次 paint。
+  // 实测 120 个正文块时 **61 次/delta**，与会话长度线性相关（长会话里这就是掉帧）。
+  // 所以这里加一道**内存围欄**：宿主节点、文本、批注集合、可见文本长度四者都没变，就跳过
+  // （DOM 由 `dangerouslySetInnerHTML` 维护，没变时旧 Range 仍然有效）。
+  // 为什么要带 `visibleLength`：表情短码目录异步到达时，同一段 text 的 html 会变（短码→图），
+  // 只拿 text 作签名会漏掉那次 DOM 替换。
+  const indexCache = useRef<{ host: HTMLElement; text: string; annotations: readonly Annotation[]; visibleLength: number; index: BlockIndex } | null>(null);
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (host === null) return;
+    const visibleLength = host.textContent?.length ?? 0;
+    const cached = indexCache.current;
+    if (cached !== null && cached.host === host && cached.text === text
+      && cached.annotations === annotations && cached.visibleLength === visibleLength) {
+      indexRef.current = cached.index;
+      return;
+    }
     const index = buildIndex(host);
+    indexCache.current = { host, text, annotations, visibleLength, index };
     indexRef.current = index;
     paintAnnotations(index, annotations, undefined, `${messageId ?? "anon"}:${blockIndex ?? "x"}`);
   });
@@ -338,7 +359,7 @@ export function AnnotatedTextBlock({ text, blockIndex, messageId, annotations, a
       <div ref={hostRef} data-testid="message-text" data-block-index={blockIndex}
         data-anno-busy={busy ? "1" : undefined}
         onMouseUp={actions !== undefined ? onUp : undefined}>
-        <Markdown text={text} />
+        <Markdown text={text} {...(streaming ? { streaming: true } : {})} />
       </div>
 
       {/* 虚线指引：每个展开的框各一条 */}

@@ -3687,18 +3687,40 @@ export default function App() {
                     // 失败/中断的轮次保持展开：用户要能看到它做过什么（沿用现有 forceOpen 语义）
                     const failed = replyMessages.some((m) => m.failure !== undefined || m.error !== undefined);
                     if (hasProcess(stats) && !failed) {
-                      // "最终正文"= 本轮**最后一段** text（chat.md §3.3：最终回答取最后一段 text），
-                      // 其余所有块进过程区。中间过渡语是过程独白，不是回复。
+                      /**
+                       * "最终正文"= 本轮**最后一段** text（chat.md §3.3），其余块进过程区。
+                       *
+                       * **流式期间不搬家**（Task 0018 · T1）：轮还在跑时，所有 text 块都留在正文里。
+                       *
+                       * 为什么（用户 2026-11-16 报"回复过程中文字区域一直在花屏"）：
+                       * 模型每开始一个新 text 段（思考→说一句→调工具→再说一句），上一段就从正文
+                       * **消失、出现在上方过程区**，同时 React key 从 `t-1` 变成 `p-1` → 整块卸载重建
+                       *（Markdown 重解析、代码高亮重画、高度变化）。一轮里 assistant 消息数实测中位 6、
+                       * 最多 198（`turn-group.ts` 注释），于是"一直在跳"。
+                       * 流式期保持"只追加"，折叠只在**这一轮结束**时发生一次（Measurement: 4 段回复
+                       * 产生 22 次位置跳变与 2 次整块重挂，见 Task 0018 evidence/diag13）。
+                       */
                       const textIndexes: number[] = [];
-                      let cursor = 0;
-                      let lastText = -1;
-                      for (const m of replyMessages) {
-                        m.blocks.forEach((block, bi) => {
-                          if (block.type === "text" && block.text.trim() !== "") lastText = cursor + bi;
-                        });
-                        cursor += m.blocks.length;
+                      if (replyLive) {
+                        // 流式：全部 text 留在正文（过程区只剩思考/工具）
+                        let cursor = 0;
+                        for (const m of replyMessages) {
+                          m.blocks.forEach((block, bi) => {
+                            if (block.type === "text" && block.text.trim() !== "") textIndexes.push(cursor + bi);
+                          });
+                          cursor += m.blocks.length;
+                        }
+                      } else {
+                        let cursor = 0;
+                        let lastText = -1;
+                        for (const m of replyMessages) {
+                          m.blocks.forEach((block, bi) => {
+                            if (block.type === "text" && block.text.trim() !== "") lastText = cursor + bi;
+                          });
+                          cursor += m.blocks.length;
+                        }
+                        if (lastText >= 0) textIndexes.push(lastText);
                       }
-                      if (lastText >= 0) textIndexes.push(lastText);
                       process = { stats, live, textIndexes };
                       // 这一轮的块已合并：渲染时用**全部回复的块**，否则最终正文在后面的回复里就丢了
                       mergedBlocks = allBlocks;
