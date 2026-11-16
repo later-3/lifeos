@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  IconArrowDown, IconArrowLeft, IconChevronLeft, IconFileText, IconFolder, IconFolderPlus, IconHistory, IconLayoutSidebarRight, IconMessageCircle,
-  IconGitCompare, IconInfoCircle, IconMenu2, IconPencil, IconPhoto, IconSettings, IconSelector, IconTrash, IconX,
-} from "@tabler/icons-react";
-import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
   CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
 } from "./attachments";
@@ -46,7 +42,7 @@ import { ReviewPanel, type ReviewData, type TaskCandidateView } from "./ReviewPa
 import { DEFAULT_REVIEW_RATIO, MIN_REVIEW, reviewRatioOfPx } from "./design/layout";
 import { useColumnWidth } from "./useColumnWidth";
 import {
-  AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken, SessionRow,
+  AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken,
 } from "./groups-panel";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
@@ -62,7 +58,7 @@ import { PeerPanel, type PeerTarget } from "./PeerPanel";
 import { NavRail } from "./design/rail";
 import { DragHandle, ResizeColumn } from "./design/resize-column";
 import { ConfirmDialog } from "./design/overlay";
-import { ComposerButton, EmptyState, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { ComposerButton, EmptyState, IconButton, Label, Row, SessionRow, Skeleton, ClickableRow } from "./design/ui";
 import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
 import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
 import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
@@ -390,7 +386,7 @@ function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: st
       )}
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
       <span className="ml-auto" />
-      <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
+      <IconButton size="sm" label="收起此列" onClick={onHide}><AppIcon name="chevron-left" size={16} /></IconButton>
     </div>
   );
 }
@@ -450,7 +446,11 @@ function userBlocks(text: string, images: readonly PendingImage[]): Block[] {
 }
 
 export default function App() {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agents, setAgents] = useState<Agent[]>(() => {
+    // 缓存优先：上次的数据立即渲染（对标 Notion/Linear 的刷新体验——零白闪）
+    try { const cached = localStorage.getItem("lifeos.agents"); return cached ? JSON.parse(cached) : []; }
+    catch { return []; }
+  });
   const [agent, setAgent] = useState<Agent>();
   // 用户档案（= 你本人，不是 Agent）：名字与头像从 /api/profile 来，缺失时前端不显示头像
   const [profile, setProfile] = useState<UserProfile | undefined>();
@@ -474,8 +474,29 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
   /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
   const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
+
   useEffect(() => {
     applyTheme(theme);
+    /*
+     * S5：激活的外部主题包必须在引擎之后重新盖一次。
+     * 否则：boot 脚本写的是包的颜色（首帧对）→ React 的 applyTheme 用引擎默认覆盖 →
+     * 界面先深后白（实测 uniqueSurface = [#292828, #ffffff]），即用户看到的"刷一下变回去"。
+     * 顺序：引擎兜底 → 包覆盖（与 applyThemePack 的内部顺序一致）。
+     */
+    const activePackName = loadActivePackId();
+    if (activePackName !== undefined) {
+      const pack = loadThemePacks().find((item) => item.meta.name === activePackName);
+      if (pack !== undefined) {
+        /*
+         * 包可能只有单槽（Quiet Light 只有 light、Monokai 只有 dark）。
+         * `applyThemePack` 会自动选包有值的那个 mode 并写 `data-theme-mode`，
+         * 但 `theme.mode`（React 状态）仍是用户选的那个 → 下一次 theme 变化又会拿错 mode 兜底。
+         * 这里把**生效 mode 同步进状态**：用户的深浅选择随主题能力走（选了单槽主题 = 接受它的深浅）。
+         */
+        const effective = applyThemePack(pack, theme.mode, theme);
+        if (effective !== theme.mode) setTheme({ ...theme, mode: effective });
+      }
+    }
     applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
     persistTheme(theme);              // 缓存 + 防抖同步到 ~/.lifeos/config/ui.json
   }, [theme]);
@@ -512,6 +533,17 @@ export default function App() {
    */
   /** toast 在下面才 useToast()，这里用 ref 转发，避免 TDZ（定义顺序问题）。 */
   const toastRef = useRef<((text: string, tone?: "success" | "error") => void) | undefined>(undefined);
+  /*
+   * 滚动位置（S5）：刷新后回到上次位置。键带 agentId（跨 Agent 不串），
+   * 恢复只在首次挂载做一次（之后由用户滚动接管）。
+   */
+  const agentListRef = useRef<HTMLDivElement | null>(null);
+  /** 保存滚动位置（节流：只用 rAF 标记，写 localStorage 在卸载/切换时） */
+  const onAgentListScroll = useCallback(() => {
+    const el = agentListRef.current;
+    if (el === null || agent?.id === undefined) return;
+    try { sessionStorage.setItem(`lifeos.scroll.agents.${agent.id}`, String(el.scrollTop)); } catch { /* 隐私模式 */ }
+  }, [agent?.id]);
 
   const persistAnnotation = useCallback((
     op: "add" | "update" | "remove",
@@ -797,7 +829,9 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(() => {
+    try { return localStorage.getItem("lifeos.agents") !== null; } catch { return false; }
+  });
   const [showNav, setShowNav] = useFold("agents");
   /*
    * 面板合并（Task 0015 · T15）：项目列 + 会话列 → 一列「项目分组 → 会话」。
@@ -992,16 +1026,24 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement.style;
     document.documentElement.dataset.badgeStrength = badges.strength;
-    const palette = calculatePalette(theme);
-    const toHex = (key: keyof typeof palette): string => hex(palette[key][0], palette[key][1], palette[key][2]);
-    const surfaceHex = toHex("surface");
+    /*
+     * soft 底的颜色**必须取当前实际生效的 token**（读 :root），而不是 `calculatePalette(theme)`。
+     *
+     * 2026-11-14 实测缺陷（S6 主题审计）：外部主题生效后 running-soft 仍是引擎值 #264653——
+     * 因为这里走引擎 palette，而**引擎不知道外部主题包**（包的颜色是 applyThemePack 直接写 :root 的）。
+     * 这正是 A4 声称已消灭的"三源并存"的残留：徽标层从引擎取色 = 第三源。
+     *
+     * 改法：从 computed style 读 --color-running/success/danger/surface（谁写的都对），
+     * 再按强度派生 soft —— 主题包、引擎、用户自定义都自然生效。
+     */
+    const readVar = (name: string): string => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const surfaceHex = readVar("--color-surface");
     for (const [name, value] of Object.entries(badgeVarsOf(badges))) root.setProperty(name, value);
-    root.setProperty("--color-running-soft",
-      badgeSoft("running", theme.mode, badges.strength, toHex("running"), surfaceHex));
-    root.setProperty("--color-success-soft",
-      badgeSoft("success", theme.mode, badges.strength, toHex("success"), surfaceHex));
-    root.setProperty("--color-danger-soft",
-      badgeSoft("danger", theme.mode, badges.strength, toHex("danger"), surfaceHex));
+    for (const semantic of ["running", "success", "danger"] as const) {
+      const base = readVar(`--color-${semantic}`);
+      if (base === "") continue;   // 首帧还没写入：不写 soft，等下一轮 effect
+      root.setProperty(`--color-${semantic}-soft`, badgeSoft(semantic, theme.mode, badges.strength, base, surfaceHex));
+    }
   }, [badges, theme]);
   // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
   useEffect(() => {
@@ -1332,11 +1374,18 @@ export default function App() {
   }, [input]);
 
   async function fetchGroups(id: string): Promise<Group[]> {
-    const projects = (await (await fetch(`/api/agents/${id}/projects`)).json()) as { items: Project[] };
-    return await Promise.all(projects.items.map(async (project) => {
-      const list = (await (await fetch(`/api/agents/${id}/projects/${project.id}/sessions`)).json()) as { items: SessionItem[] };
-      return { project, sessions: list.items };
-    }));
+    // S5：接口失败时返回空数组（不让 undefined 传下去炸渲染），失败原因由调用方的提示承担
+    try {
+      const projectsRes = await fetch(`/api/agents/${id}/projects`);
+      if (!projectsRes.ok) return [];
+      const projects = (await projectsRes.json()) as { items?: Project[] };
+      if (!Array.isArray(projects.items)) return [];
+      return await Promise.all(projects.items.map(async (project) => {
+        const listRes = await fetch(`/api/agents/${id}/projects/${project.id}/sessions`);
+        const list = listRes.ok ? (await listRes.json()) as { items?: SessionItem[] } : {};
+        return { project, sessions: Array.isArray(list.items) ? list.items : [] };
+      }));
+    } catch { return []; }
   }
 
   async function loadMessages(id: string, sid: string) {
@@ -1530,8 +1579,13 @@ export default function App() {
     setAgentDefaultModel(undefined);
     setShowGroups(true);
     void refreshAgentDefaultModel(a.id);
-    const next = await fetchGroups(a.id);
-    rememberGroups(a.id, next);
+    // S5 缓存优先：先用上次的列表渲染（零白屏），API 回来立刻覆盖
+    const cached = readGroupsCache(a.id);
+    if (cached !== undefined) setGroups(cached);
+    const fetched = await fetchGroups(a.id);
+    // 同启动路径：空结果 + 有缓存 = 接口失败，保留缓存
+    const next = fetched.length === 0 && cached !== undefined ? cached : fetched;
+    if (fetched.length > 0) rememberGroups(a.id, next);
     setGroups(next);
     const remembered = readLast(lastSessionKey(a.id));
     const owner = next.find((group) => group.sessions.some((item) => item.sessionId === remembered));
@@ -1605,6 +1659,18 @@ export default function App() {
   /** 记下列表里每个会话属于哪个 Agent（Agent 级注意点用）。 */
   function rememberGroups(agentId: string, next: Group[]): void {
     setRunFacts((f) => rememberMeta(f, next.flatMap((group) => group.sessions.map((item) => ({ sessionId: item.sessionId, agentId, projectId: group.project.id })))));
+    // 缓存（S5：刷新时先渲染缓存，API 回来再覆盖）——键带 agentId，跨 Agent 不串
+    try { localStorage.setItem(`lifeos.groups.${agentId}`, JSON.stringify(next)); } catch { /* 隐私模式 */ }
+  }
+
+  /** 读缓存（S5）：只在切 Agent 的第一时间用，API 回来后必然覆盖。 */
+  function readGroupsCache(agentId: string): Group[] | undefined {
+    try {
+      const raw = localStorage.getItem(`lifeos.groups.${agentId}`);
+      if (raw === null) return undefined;
+      const parsed = JSON.parse(raw) as Group[];
+      return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined;
+    } catch { return undefined; }
   }
 
   // —— 全局事件流（任务 0007）——
@@ -2066,6 +2132,7 @@ export default function App() {
   async function onAgentsChanged(): Promise<void> {
     const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
     setAgents(data.items);
+    try { localStorage.setItem("lifeos.agents", JSON.stringify(data.items)); } catch { /* 隐私模式 */ }
     if (agent !== undefined && !data.items.some((item) => item.id === agent.id) && data.items[0] !== undefined) {
       await selectAgent(data.items[0]);
     } else {
@@ -2132,17 +2199,45 @@ export default function App() {
       const wantAgent = params.get("agent");
       const wantProject = params.get("project");
       const wantSession = params.get("session");
-      const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
-      setAgents(data.items);
-      const found = data.items.find((item) => item.id === wantAgent)
-        ?? data.items.find((item) => item.id === readLast(LAST_AGENT))
-        ?? data.items[0];
+      /*
+       * 启动取数（S5）：**后端不可用不能白屏**。
+       * 之前用 `data.items.find(...)` 直取——500 时 body 是 `{error}`，`items` 是 undefined，
+       * 整个 App 抛 TypeError 白屏（实测：打桩全 500 → rootHTML=0）。
+       * 现在的分级：
+       * ① 成功 → 正常流程（并写缓存）；
+       * ② 失败但有缓存 → 用缓存渲染 + 顶部提示"后端不可用（显示的是上次数据）"；
+       * ③ 失败且无缓存 → 骨架/空态 + 错误出口（不白屏）。
+       */
+      let items: Agent[] = [];
+      let offline = false;
+      try {
+        const response = await fetch("/api/agents");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as { items?: Agent[] };
+        items = Array.isArray(payload.items) ? payload.items : [];
+      } catch {
+        offline = true;
+        items = JSON.parse(localStorage.getItem("lifeos.agents") ?? "[]") as Agent[];
+      }
+      if (offline) setTailError("后端暂时不可用" + (items.length > 0 ? "，当前显示的是上次的数据" : "") + "。检查服务是否在运行，恢复后刷新即可。");
+      setAgents(items);
+      if (!offline) { try { localStorage.setItem("lifeos.agents", JSON.stringify(items)); } catch { /* 隐私模式 */ } }
+      const found = items.find((item) => item.id === wantAgent)
+        ?? items.find((item) => item.id === readLast(LAST_AGENT))
+        ?? items[0];
       if (found === undefined) { setLoaded(true); return; }
       setAgent(found);
       ctx.current = { agentId: found.id };
       void refreshAgentDefaultModel(found.id);
-      const groups = await fetchGroups(found.id);
+      // S5：缓存优先——先渲染上次的列表（零白屏），API 回来立刻覆盖
+      const cachedGroups = readGroupsCache(found.id);
+      if (cachedGroups !== undefined) { setGroups(cachedGroups); setLoaded(true); }
+      const fetched = await fetchGroups(found.id);
+      // 拉回空数组且我们有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：
+      // 保留缓存不覆盖，否则"后端挂了"会变成"项目全没了"这种更吓人的假象
+      const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
       setGroups(groups);
+      if (fetched.length > 0) rememberGroups(found.id, groups);
       // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
       // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
       const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
@@ -2897,13 +2992,13 @@ export default function App() {
         {
           key: "nav", label: "助手", mode: "toggle" as const, active: showNav,
           icon: agent === undefined
-            ? <IconMessageCircle size={18} />
+            ? <AppIcon name="message-circle" size={18} />
             : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={20} />,
           onClick: () => toggleRail("nav"),
         },
         {
           key: "groups", label: "对话", mode: "toggle" as const, active: showGroups,
-          icon: <IconMessageCircle size={18} />,
+          icon: <AppIcon name="message-circle" size={18} />,
           onClick: () => toggleRail("groups"),
         },
       ],
@@ -2912,7 +3007,7 @@ export default function App() {
   const railBottom = [
     {
       key: "settings", label: "设置", mode: "tab" as const, active: settingsOpen,
-      icon: <IconSettings size={18} />,
+      icon: <AppIcon name="settings" size={18} />,
       onClick: () => setSettingsOpen((open) => !open),
     },
   ];
@@ -2967,6 +3062,27 @@ export default function App() {
     ),
   };
 
+  /**
+   * 滚动位置恢复（S5）：列表渲染完（groups 有内容）后恢复一次。
+   * 只用 sessionStorage（同一标签页），刷新后仍有效、关标签页即清——不会让用户下次打开停在半截。
+   */
+  useEffect(() => {
+    const el = agentListRef.current;
+    if (el === null || agent?.id === undefined || groups.length === 0) return;
+    let cancelled = false;
+    // 双 rAF：等布局稳定（列表渲染完、字体应用完）再恢复，否则 scrollTop 会被后续布局重置为 0
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled || agentListRef.current === null) return;
+        try {
+          const saved = sessionStorage.getItem(`lifeos.scroll.agents.${agent.id}`);
+          if (saved !== null && Number(saved) > 0) agentListRef.current.scrollTop = Number(saved);
+        } catch { /* 隐私模式 */ }
+      });
+    });
+    return () => { cancelled = true; };
+  }, [agent?.id, groups.length]);
+
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
   const leftColumns = (
     <>
@@ -2978,15 +3094,15 @@ export default function App() {
             className="flex-col border-r border-nav-line bg-nav-bg">
             <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
-            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
-              {!loaded && <Skeleton rows={3} />}
+            <div ref={agentListRef} onScroll={onAgentListScroll} className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
+              {!loaded && <ListSkeleton rows={6} />}
               {agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}
                   status={<StatusMarks status={derived.agents[item.id]} unit="会话" />}
                   actions={
                     <>
                       <IconButton label={`配置 ${item.name}`} size="sm" onClick={() => setConfigAgent(item)}>
-                        <IconSettings size={14} />
+                        <AppIcon name="settings" size={14} />
                       </IconButton>
                       <IconButton label="删除助手" size="sm"
                       onClick={() => {
@@ -2998,7 +3114,7 @@ export default function App() {
                           run: () => void removeAgent(item),
                         });
                       }}>
-                        <IconTrash size={14} />
+                        <AppIcon name="trash" size={14} />
                       </IconButton>
                     </>
                   }>
@@ -3032,7 +3148,7 @@ export default function App() {
             <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
-              {!loaded && <Skeleton rows={3} />}
+              {!loaded && <ListSkeleton rows={6} />}
               {loaded && groups.length === 0 && (
                 <PanelEmpty title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />
               )}
@@ -3282,9 +3398,9 @@ export default function App() {
       <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
         <header className="flex h-11 shrink-0 items-center gap-2 px-4 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
           {isMobile && (sessionId !== undefined ? (
-            <IconButton label="返回项目" onClick={() => openMobileNav("projects")}><IconArrowLeft size={18} /></IconButton>
+            <IconButton label="返回项目" onClick={() => openMobileNav("projects")}><AppIcon name="arrow-left" size={18} /></IconButton>
           ) : (
-            <IconButton label="打开导航" onClick={() => openMobileNav("agents")}><IconMenu2 size={18} /></IconButton>
+            <IconButton label="打开导航" onClick={() => openMobileNav("agents")}><AppIcon name="menu" size={18} /></IconButton>
           ))}
           {/* 头部的标题与元信息是用户数据（会话标题、模型、任务名）：截图基线只比骨架 */}
           <div className="min-w-0" data-shot-mask="header-data">
@@ -3325,32 +3441,53 @@ export default function App() {
           )}
           <IconButton label="完整历史" size="lg" active={history !== undefined} disabled={sessionId === undefined}
             onClick={() => { if (sessionId !== undefined) { if (history !== undefined) closeHistory(); else openHistory(sessionId, sessionTitle); } }}>
-            <IconHistory size={16} />
+            <AppIcon name="history" size={16} />
           </IconButton>
           <IconButton label="检视当前 Task 的改动" size="lg" active={reviewOpen}
             onClick={() => {
               const aid = agent?.id;
-              const pid = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
-              const taskId = meta?.activeTaskId ?? projectDefaultTasks[taskTitleKey(aid ?? "", pid, "default")]?.id;
+              const taskId = meta?.activeTaskId ?? projectDefaultTasks[taskTitleKey(aid ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", "default")]?.id;
               if (aid === undefined || taskId === undefined) { toast("当前没有可检视的 Task", "error"); return; }
-              const key = taskTitleKey(aid, pid, taskId);
-              const known = reviewTaskPaths[key];
+              /*
+               * Task 归属的 project **不能只看当前选中的列**（2026-11-15 用户实测 workspace/0015）：
+               * 会话的 `activeTaskId` 记的是 Task 编号，而 Task 编号**只在 Agent × Project 内唯一**——
+               * 当前列是 workspace 时会话却指向 lifeos 的 0015，于是请求打到 workspace/0015 → 404
+               * `task_not_found` → 用户看到"检视接口没响应"，而那个 Task 明明存在。
+               *
+               * 现在：先试当前列（最常见，一次请求），404 时**按已知 project 逐个试**——
+               * 找到哪一个能返回 lifeos 源就用它。请求数有界（project 数 + 1）。
+               */
+              const preferred = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
+              const candidates = [preferred, ...[...new Set(groups.map((g) => g.project.id))].filter((p) => p !== preferred)];
+
+              // 快路径：本会话已经解析过这个 Task 的目录 → 直接开（省一次往返）
+              const knownKey = taskTitleKey(aid, preferred, taskId);
+              const known = reviewTaskPaths[knownKey];
               if (known !== undefined) { if (!reviewOpen) openReview(known); else closeReview(); return; }
-              void fetch(`/api/agents/${aid}/projects/${pid}/tasks/${taskId}/review-sources`)
-                .then((response) => response.ok ? response.json() as Promise<{ taskDir?: string; items?: Array<{ kind: string; path: string }> }> : undefined)
-                .then((data) => {
-                  const lifeos = data?.items?.find((item) => item.kind === "lifeos");
-                  if (lifeos === undefined) { toast("拿不到这个 Task 的目录", "error"); return; }
-                  // 面板要的是 **taskDir**（diff 接口的口径）：items[].path 是源目录（lifeos 源 =
-                  // <taskDir>/home），拿它开面板等于把 worktree 根当 Task 目录 → 永远空
-                  //（2026-11-12 实测：手点按钮后面板全空）。新后端直接回 taskDir；老后端回退拼回去。
-                  const taskDir = typeof data?.taskDir === "string" ? data.taskDir : lifeos.path.replace(/\/home$/, "");
+
+              type SourceResp = { taskDir?: string; items?: Array<{ kind: string; path: string }> };
+              const probe = (pid: string): Promise<{ pid: string; data: SourceResp } | undefined> =>
+                fetch(`/api/agents/${aid}/projects/${pid}/tasks/${taskId}/review-sources`)
+                  .then((response) => response.ok ? response.json() as Promise<SourceResp> : undefined)
+                  .then((data) => data === undefined ? undefined : { pid, data })
+                  .catch(() => undefined);
+
+              void (async () => {
+                for (const pid of candidates) {
+                  const hit = await probe(pid);
+                  if (hit === undefined) continue;
+                  const lifeos = hit.data.items?.find((item) => item.kind === "lifeos");
+                  if (lifeos === undefined) continue;
+                  const key = taskTitleKey(aid, hit.pid, taskId);
+                  const taskDir = typeof hit.data.taskDir === "string" ? hit.data.taskDir : lifeos.path.replace(/\/home$/, "");
                   setReviewTaskPaths((prev) => ({ ...prev, [key]: taskDir }));
                   if (!reviewOpen) openReview(taskDir); else closeReview();
-                })
-                .catch(() => toast("检视面板打开失败", "error"));
+                  return;
+                }
+                toast(`Task ${taskId} 在 ${candidates.join(" / ")} 都没找到：可能刚被合并/归档，或后端在重启。刷新后再试`, "error");
+              })();
             }}>
-            <IconGitCompare size={18} />
+            <AppIcon name="git-compare" size={18} />
           </IconButton>
           {/*
             A3 的「箭头」：主按钮看当前 Task，这个按钮打开面板并把焦点放到"检视对象"选择器上。
@@ -3366,7 +3503,7 @@ export default function App() {
                 document.querySelector<HTMLSelectElement>("[data-review-switcher-select]")?.focus();
               }, 350);
             }}>
-            <IconSelector size={16} />
+            <AppIcon name="selector" size={16} />
           </IconButton>
           <IconButton label={panelOpen ? "收起文件面板" : "展开文件面板"} size="lg" active={panelOpen}
             onClick={() => {
@@ -3374,7 +3511,7 @@ export default function App() {
               if (!panelOpen && isMobile && fileTabs.length === 0) setShowTree(true);
               if (panelOpen) closeFilePanel(); else setPanelOpen(true);
             }}>
-            <IconLayoutSidebarRight size={16} />
+            <AppIcon name="layout-sidebar-right" size={16} />
           </IconButton>
           {/* 设置入口（Task 0009 · 2026-11-09 用户裁决）：桌面在图标轨底部；
               手机无图标轨，只有头部入口。**条件渲染**而不是 hidden 类——
@@ -3382,7 +3519,7 @@ export default function App() {
           {isMobile && (
             <IconButton label="打开设置" size="lg" active={settingsOpen}
               onClick={() => setSettingsOpen((open) => !open)}>
-              <IconSettings size={16} />
+              <AppIcon name="settings" size={16} />
             </IconButton>
           )}
         </header>
@@ -3398,9 +3535,9 @@ export default function App() {
             className="h-full w-full overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
             <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
               {sessionId === undefined && (selectedProjectId === undefined
-                ? <EmptyState icon={<IconMessageCircle size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
-                : <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
-              {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<IconMessageCircle size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
+                ? <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
+                : <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
+              {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
               {(() => {
                 // 折叠粒度 = **一轮**（用户发一句话 → 下一条用户消息之前）
                 // 实测本会话每轮 assistant 消息数中位 6、最多 198：按消息折会碎成上百块，必须按轮分。
@@ -3631,7 +3768,7 @@ export default function App() {
                 onClick={jumpToLatest}
                 className="pointer-events-auto rounded-full border border-line bg-surface sm:h-9 sm:w-9"
                 style={surfaceStyle("popover")}>
-                <IconArrowDown size={16} />
+                <AppIcon name="arrow-down" size={16} />
               </IconButton>
             </div>
           )}
@@ -3661,12 +3798,11 @@ export default function App() {
             {tailError !== undefined && (
               <div data-testid="send-error" role="alert"
                 className="mb-1 flex items-start gap-2 rounded-panel bg-danger-soft px-3 py-2 text-micro text-danger ring-1 ring-danger/30">
-                <IconInfoCircle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <AppIcon name="info" size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1">{tailError}</span>
-                <button type="button" aria-label="关闭提示" onClick={() => setTailError(undefined)}
-                  className="shrink-0 rounded p-0.5 text-danger transition-colors hover:bg-danger/10">
-                  <IconX size={12} />
-                </button>
+                <IconButton label="关闭提示" size="sm" onClick={() => setTailError(undefined)} className="text-danger">
+                  <AppIcon name="x" size={12} />
+                </IconButton>
               </div>
             )}
             {/* 排队区（P2·2.2）：本期仅可见（显示≠功能）；回合收尾/打断自动清 */}
@@ -3694,24 +3830,24 @@ export default function App() {
                   {/* 草稿态：一句说明放在面板顶部，下面各行只留命令名（不逐行重复“发送后可用”） */}
                   {draftMode && (
                     <p className="mb-1 flex items-center gap-1.5 border-b border-line px-2 pb-1.5 pt-1 text-micro text-ink-700">
-                      <IconInfoCircle size={12} className="shrink-0 text-ink-500" aria-hidden="true" />
+                      <AppIcon name="info" size={12} className="shrink-0 text-ink-500" aria-hidden="true" />
                       发送第一条消息后，命令才可用
                     </p>
                   )}
                   {palette.items.map((item, index) => {
                     const off = item.disabled === true;
                     return (
-                      <button key={item.key} type="button" disabled={off}
+                      <ClickableRow key={item.key} disabled={off}
                         onMouseEnter={() => { if (!off) setPalette({ ...palette, index }); }}
                         onClick={() => { setPalette(undefined); item.run(); }}
-                        className={`flex w-full items-center gap-2 rounded-control px-2 py-1.5 text-left text-meta transition-colors max-sm:min-h-11 disabled:cursor-not-allowed ${
+                        className={`gap-2 px-2 py-1.5 text-meta disabled:cursor-not-allowed ${
                           off ? "text-ink-500" : index === palette.index ? "bg-hover text-ink-900" : "text-ink-700"
                         }`}>
                         <span className="shrink-0 font-mono">{item.label}</span>
                         {item.hint !== undefined && (
                           <span className={`ml-auto min-w-0 truncate text-micro ${off ? "text-ink-500/70" : "text-ink-500"}`}>{item.hint}</span>
                         )}
-                      </button>
+                      </ClickableRow>
                     );
                   })}
                 </div>
@@ -3724,12 +3860,11 @@ export default function App() {
                       className="group/ref relative flex max-w-full items-center gap-1 rounded-inner bg-anno-query-soft px-1.5 py-0.5 text-micro text-anno-query ring-1 ring-anno-query-soft">
                       <span className="shrink-0 font-mono" data-comment-ref-label>{commentRefLabel(ref)}</span>
                       <span className="min-w-0 truncate text-ink-700" data-comment-ref-preview>{commentRefPreview(ref)}</span>
-                      <button type="button" aria-label={`移除评论引用 ${commentRefLabel(ref)}`}
+                      <IconButton label={`移除评论引用 ${commentRefLabel(ref)}`} size="sm"
                         onClick={() => setCommentRefs((prev) => removeCommentRef(prev, ref.id))}
-                        data-comment-ref-remove
-                        className="shrink-0 rounded-full p-0.5 text-anno-query hover:bg-hover hover:text-danger">
-                        <IconX size={10} />
-                      </button>
+                        data-comment-ref-remove className="text-anno-query hover:text-danger">
+                        <AppIcon name="x" size={10} />
+                      </IconButton>
                     </span>
                   ))}
                   <span className="pb-0.5 text-micro text-ink-500">{commentRefs.length} 条评论引用（发送时一并带上）</span>
@@ -3747,7 +3882,7 @@ export default function App() {
                       <button type="button" aria-label="移除图片"
                         onClick={() => { const next = removeImage(attachmentsRef.current, image.id); setAttachments(next); attachmentsRef.current = next; }}
                         className="absolute -right-1 -top-1 rounded-full bg-ink-900 p-0.5 text-surface ring-1 ring-line">
-                        <IconX size={10} />
+                        <AppIcon name="x" size={10} />
                       </button>
                     </div>
                   ))}
@@ -3858,7 +3993,7 @@ export default function App() {
                   {(isMobile || sessionTotals.turns === 0) && (
                     <IconButton label="添加图片" onClick={() => fileInputRef.current?.click()}
                       data-testid="attach-image" className="shrink-0">
-                      <IconPhoto size={16} />
+                      <AppIcon name="photo" size={16} />
                     </IconButton>
                   )}
                   {busy ? (
@@ -3933,7 +4068,7 @@ export default function App() {
                   </>
                 ) : (
                   <nav aria-label="收起的列" className="flex w-11 shrink-0 flex-col items-center border-r border-nav-line bg-nav-bg py-1.5">
-                    <IconButton label="展开文件树" onClick={() => setShowTree(true)}><IconFileText size={18} /></IconButton>
+                    <IconButton label="展开文件树" onClick={() => setShowTree(true)}><AppIcon name="file-text" size={18} /></IconButton>
                   </nav>
                 )}
                 <div className="min-w-0 flex-1 overflow-hidden">
@@ -4078,3 +4213,6 @@ import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./event-guards";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";
+import { AppIcon } from "./design/icons";
+import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";
+import { ListSkeleton } from "./design/skeleton";

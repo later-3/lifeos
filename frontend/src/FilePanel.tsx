@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { IconCopy, IconFile, IconFileText, IconTextWrap, IconX } from "@tabler/icons-react";
 import { isMarkdown } from "./fs-utils";
 import { Button, EmptyState, IconButton, Segmented } from "./design/ui";
 import { useDialogFocus } from "./design/overlay";
 import { useIsMobile } from "./use-mobile";
+import { AppIcon } from "./design/icons";
 
 export type FileTab = { id: string; fileName: string; filePath: string; mode?: "render" | "source"; wrap?: boolean };
 type FileData = { content: string; size: number; truncated: boolean; isBinary: boolean };
@@ -133,12 +133,12 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
               title={tab.filePath}
               className={`group relative flex h-10 max-w-44 shrink-0 cursor-pointer items-center gap-1.5 px-3 text-meta transition-colors max-sm:h-11 ${isActive ? "bg-surface font-medium text-ink-900" : "text-ink-500 hover:bg-hover"}`}>
               {isActive && <span className="absolute inset-x-0 bottom-0 h-0.5 bg-accent" />}
-              {isMarkdown(tab.fileName) ? <IconFileText size={14} className="shrink-0" /> : <IconFile size={14} className="shrink-0" />}
+              {isMarkdown(tab.fileName) ? <AppIcon name="file-text" size={14} className="shrink-0" /> : <AppIcon name="file" size={14} className="shrink-0" />}
               <span className="truncate">{tab.fileName}</span>
               <button aria-label={`关闭 ${tab.fileName}`} title="关闭" tabIndex={isActive ? 0 : -1}
                 onClick={(event) => { event.stopPropagation(); onCloseTab(tab.id); }}
                 className="flex h-11 w-11 items-center justify-center rounded p-0 text-ink-300 opacity-100 transition-opacity hover:bg-hover hover:text-ink-700 focus-visible:opacity-100 sm:h-auto sm:w-auto sm:p-0.5 sm:opacity-0 sm:group-hover:opacity-100">
-                <IconX size={14} />
+                <AppIcon name="x" size={14} />
               </button>
             </div>
           );
@@ -152,7 +152,7 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
       {/* 查看器 */}
       {active === undefined ? (
         <div className="flex flex-1 items-center justify-center">
-          <EmptyState icon={<IconFileText size={22} />} title="还没有打开文件"
+          <EmptyState icon={<AppIcon name="file-text" size={22} />} title="还没有打开文件"
             hint="从左侧文件树点一个文件，会在这里以页签打开（可多开）。" />
         </div>
       ) : (
@@ -169,7 +169,7 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
             )}
             {data !== null && !data.isBinary && mode === "source" && (
               <IconButton label={wrap ? "关闭自动换行" : "自动换行"} active={wrap} onClick={() => setWrap(!wrap)}>
-                <IconTextWrap size={14} />
+                <AppIcon name="text-wrap" size={14} />
               </IconButton>
             )}
             <IconButton label="复制内容" tone={copied ? "accent" : "default"} active={copied} disabled={data === null || data.isBinary}
@@ -180,7 +180,7 @@ export function FilePanel({ tabs, activeId, onSelectTab, onCloseTab, onPrefsChan
                   setTimeout(() => setCopied(false), 1500);
                 });
               }}>
-              <IconCopy size={14} />
+              <AppIcon name="copy" size={14} />
             </IconButton>
           </div>
 

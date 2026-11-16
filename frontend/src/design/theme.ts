@@ -168,6 +168,45 @@ export type Palette = {
   success: PaletteColor;
   danger: PaletteColor;
   running: PaletteColor;
+  /* A4 收编（0011 三源消亡）：语法色 8 族 / soft 底 3 / 消息块 6 / diff 8 / 批注 10——
+   * 全部进引擎派生（此前：tokens.css 静态 + index.css dark 手写补丁 + badge-prefs 三源并存）。
+   * 深色档 = 现行 index.css 手写值转 OKLCH（观感零变化）；浅色档 = tokens.css 静态值（同源）。 */
+  synKeyword: PaletteColor;
+  synString: PaletteColor;
+  synComment: PaletteColor;
+  synNumber: PaletteColor;
+  synFunction: PaletteColor;
+  synType: PaletteColor;
+  synConstant: PaletteColor;
+  synPunctuation: PaletteColor;
+  dangerSoft: PaletteColor;
+  successSoft: PaletteColor;
+  runningSoft: PaletteColor;
+  tableHead: PaletteColor;
+  messageUser: PaletteColor;
+  messageThinking: PaletteColor;
+  messageTool: PaletteColor;
+  messageToolDone: PaletteColor;
+  messageToolError: PaletteColor;
+  messageFailure: PaletteColor;
+  diffAdd: PaletteColor;
+  diffAddSoft: PaletteColor;
+  diffDel: PaletteColor;
+  diffDelSoft: PaletteColor;
+  diffMod: PaletteColor;
+  diffModSoft: PaletteColor;
+  diffWordAdd: PaletteColor;
+  diffWordDel: PaletteColor;
+  annoQuery: PaletteColor;
+  annoQuerySoft: PaletteColor;
+  annoCritic: PaletteColor;
+  annoCriticSoft: PaletteColor;
+  annoPraise: PaletteColor;
+  annoPraiseSoft: PaletteColor;
+  annoArchive: PaletteColor;
+  annoArchiveSoft: PaletteColor;
+  annoTodo: PaletteColor;
+  annoTodoSoft: PaletteColor;
   /**
    * 头像底色三档（按 id 派生，同一个助手永远同色）。
    *
@@ -345,12 +384,56 @@ export function calculatePalette(state: ThemeState): Palette {
     success: dark ? [72, 0.16, 158] : [42, 0.13, 158],
     danger: dark ? [70, 0.17, 25] : [46, 0.17, 25],
     running: dark ? [72, 0.15, 232] : [40, 0.17, 244],
+    /* ── A4 收编族 ──
+     * 浅色档 = tokens.css 静态值（hex→OKLCH 由 hex() 反解不可行——直接以 OKLCH 写入，
+     * 一致性由 design-system 测试断言"引擎 light == tokens.css 静态 hex"锁）；
+     * 深色档 = index.css 现行手写值（hex→OKLCH 用 lstar近似：以固定 OKLCH 值写入，
+     * 观感由矩阵测试与截图核对）。
+     * 批注/diff 的深色档：现行无值（模块私设"永远浅色"），按"明面容器深色方向"
+     * （spec 2.30：明面层上的内容底比页面底亮）推导：soft 底 = 同色相 L*≈24（亮于深底 16）、
+     * 字色 = 同色相 L*78。 */
+    synKeyword: dark ? [78.1, 0.1013, 293.6] : [34.1, 0.2106, 292.8],
+    synString: dark ? [85.1, 0.1363, 154.4] : [36, 0.1083, 151.3],
+    synComment: dark ? [64.9, 0.0192, 275.5] : [41.4, 0.024, 264.3],
+    synNumber: dark ? [81, 0.1165, 66.3] : [38.5, 0.143, 37.3],
+    synFunction: dark ? [77.9, 0.0956, 251.8] : [40.6, 0.2172, 264.4],
+    synType: dark ? [84.3, 0.1153, 207.1] : [36.2, 0.0771, 224.3],
+    synConstant: dark ? [80.6, 0.1322, 321.4] : [36.4, 0.1922, 324.6],
+    synPunctuation: dark ? [66.6, 0.0129, 286.1] : [35.3, 0.0146, 285.8],
+    dangerSoft: dark ? [22.4, 0.0235, 22.6] : [94.2, 0.0141, 17.4],
+    successSoft: dark ? [24.3, 0.03, 165.1] : [94.3, 0.015, 164.7],
+    runningSoft: dark ? [24.1, 0.0318, 225.5] : [94, 0.0155, 248],
+    tableHead: dark ? [hoverL + 1, 0.01, nH] : [98.3, 0, 89.9],
+    messageUser: dark ? [55, 0.14, state.accentH] : [4.7, 0.0041, 286],
+    messageThinking: dark ? [hoverL + 1, 0.01, nH] : [98.3, 0, 89.9],
+    messageTool: dark ? [hoverL + 1, 0.01, nH] : [96.2, 0.0013, 286.4],
+    messageToolDone: dark ? [17, 0.02, 158] : [97.5, 0.0221, 160.2],
+    messageToolError: dark ? [17, 0.02, 25] : [96.8, 0.0119, 23.7],
+    messageFailure: dark ? [17, 0.02, 25] : [96.5, 0.0152, 12.4],
+    diffAdd: dark ? [76, 0.13, 152] : [41.9, 0.1168, 157.1],
+    diffAddSoft: dark ? [22, 0.05, 152] : [97.4, 0.0107, 158.9],
+    diffDel: dark ? [72, 0.15, 27] : [42, 0.1821, 29.5],
+    diffDelSoft: dark ? [22, 0.06, 27] : [97.1, 0.0109, 24.3],
+    diffMod: dark ? [78, 0.11, 75] : [41.6, 0.1072, 68.9],
+    diffModSoft: dark ? [22, 0.05, 75] : [95.4, 0.0096, 72.7],
+    diffWordAdd: dark ? [45, 0.09, 152] : [77.7, 0.0552, 166.1],
+    diffWordDel: dark ? [45, 0.10, 27] : [76, 0.0678, 24.4],
+    annoQuery: dark ? [80, 0.12, 85] : [59.6, 0.1322, 81.6],
+    annoQuerySoft: dark ? [24, 0.07, 85] : [96.7, 0.0427, 94.1],
+    annoCritic: dark ? [76, 0.16, 27] : [47.1, 0.1859, 26],
+    annoCriticSoft: dark ? [22, 0.07, 27] : [94.1, 0.0252, 17.6],
+    annoPraise: dark ? [74, 0.11, 155] : [39, 0.0808, 161],
+    annoPraiseSoft: dark ? [21, 0.05, 155] : [94.8, 0.0264, 159.6],
+    annoArchive: dark ? [74, 0.12, 275] : [41.3, 0.1693, 276.3],
+    annoArchiveSoft: dark ? [22, 0.06, 275] : [93.2, 0.0284, 281.5],
+    annoTodo: dark ? [78, 0.12, 300] : [50, 0.1812, 294.1],
+    annoTodoSoft: dark ? [22, 0.06, 300] : [93.9, 0.0308, 304.3],
   };
 }
 
 /* ── 应用到 :root（副作用层，唯一入口）── */
 
-const VAR_MAP: Array<[string, keyof Palette]> = [
+export const VAR_MAP: Array<[string, keyof Palette]> = [
   ["--color-surface", "surface"],
   ["--color-sunken", "sunken"],
   ["--color-hover", "hover"],
@@ -374,6 +457,43 @@ const VAR_MAP: Array<[string, keyof Palette]> = [
   ["--color-avatar-1", "avatar1"],
   ["--color-avatar-2", "avatar2"],
   ["--color-avatar-3", "avatar3"],
+  /* A4 收编族（0011 三源消亡）：此前由 index.css 的 [data-theme-mode=dark] 手写补丁 */
+  ["--color-syn-keyword", "synKeyword"],
+  ["--color-syn-string", "synString"],
+  ["--color-syn-comment", "synComment"],
+  ["--color-syn-number", "synNumber"],
+  ["--color-syn-function", "synFunction"],
+  ["--color-syn-type", "synType"],
+  ["--color-syn-constant", "synConstant"],
+  ["--color-syn-punctuation", "synPunctuation"],
+  ["--color-danger-soft", "dangerSoft"],
+  ["--color-success-soft", "successSoft"],
+  ["--color-running-soft", "runningSoft"],
+  ["--color-table-head", "tableHead"],
+  ["--color-message-user", "messageUser"],
+  ["--color-message-thinking", "messageThinking"],
+  ["--color-message-tool", "messageTool"],
+  ["--color-message-tool-done", "messageToolDone"],
+  ["--color-message-tool-error", "messageToolError"],
+  ["--color-message-failure", "messageFailure"],
+  ["--color-diff-add", "diffAdd"],
+  ["--color-diff-add-soft", "diffAddSoft"],
+  ["--color-diff-del", "diffDel"],
+  ["--color-diff-del-soft", "diffDelSoft"],
+  ["--color-diff-mod", "diffMod"],
+  ["--color-diff-mod-soft", "diffModSoft"],
+  ["--color-diff-word-add", "diffWordAdd"],
+  ["--color-diff-word-del", "diffWordDel"],
+  ["--color-anno-query", "annoQuery"],
+  ["--color-anno-query-soft", "annoQuerySoft"],
+  ["--color-anno-critic", "annoCritic"],
+  ["--color-anno-critic-soft", "annoCriticSoft"],
+  ["--color-anno-praise", "annoPraise"],
+  ["--color-anno-praise-soft", "annoPraiseSoft"],
+  ["--color-anno-archive", "annoArchive"],
+  ["--color-anno-archive-soft", "annoArchiveSoft"],
+  ["--color-anno-todo", "annoTodo"],
+  ["--color-anno-todo-soft", "annoTodoSoft"],
 ];
 
 /** 把主题写到 :root。幂等；任何值变化即全站生效（Tailwind utility 引用 var）。 */

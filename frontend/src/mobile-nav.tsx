@@ -1,10 +1,10 @@
 import { useRef } from "react";
-import { IconArrowLeft, IconPlus, IconX } from "@tabler/icons-react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { useDialogFocus } from "./design/overlay";
 import { useInstallPrompt } from "./use-mobile";
 import { Button, Row } from "./design/ui";
 import { LAYER_CLASS } from "./design/surface";
+import { AppIcon } from "./design/icons";
 
 type AgentLite = { id: string; name: string; avatar?: AgentAvatarSpec };
 type ProjectLite = { id: string; name: string; isDefault?: boolean };
@@ -59,13 +59,13 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
       data-mobile-level={level} style={{ height: "var(--app-height, 100dvh)" }}>
       <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-4 pt-safe">
         {level !== "agents" ? (
-          <Button variant="ghost" size="sm" aria-label="返回上一级" onClick={onBack}><IconArrowLeft size={18} /> 返回</Button>
+          <Button variant="ghost" size="sm" aria-label="返回上一级" onClick={onBack}><AppIcon name="arrow-left" size={18} /> 返回</Button>
         ) : null}
         <div className="min-w-0 flex-1">
           <p className="truncate text-body font-semibold text-ink-900">{title}</p>
           <p className="truncate text-micro text-ink-500">{subtitle}</p>
         </div>
-        <Button variant="ghost" onClick={onClose} aria-label="关闭导航"><IconX size={18} /> 关闭</Button>
+        <Button variant="ghost" onClick={onClose} aria-label="关闭导航"><AppIcon name="x" size={18} /> 关闭</Button>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
@@ -103,9 +103,9 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
         {level === "agents" ? (
           <Button className="w-full" disabled={agent === undefined} onClick={onConfigAgent}>配置当前助手</Button>
         ) : level === "projects" ? (
-          <Button className="w-full" onClick={onAddProject}><IconPlus size={16} /> 添加项目</Button>
+          <Button className="w-full" onClick={onAddProject}><AppIcon name="plus" size={16} /> 添加项目</Button>
         ) : (
-          <Button className="w-full disabled:bg-sunken disabled:ring-0" disabled={!canNewSession} onClick={onNewSession}><IconPlus size={16} /> 新建会话</Button>
+          <Button className="w-full disabled:bg-sunken disabled:ring-0" disabled={!canNewSession} onClick={onNewSession}><AppIcon name="plus" size={16} /> 新建会话</Button>
         )}
       </footer>
     </div>

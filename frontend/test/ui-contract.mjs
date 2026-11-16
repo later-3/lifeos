@@ -475,7 +475,10 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
         .filter((el) => {
           const box = el.getBoundingClientRect();
           // 复选框本体小于 28 是浏览器默认；它的命中区由外层 label 撑（下面单独断言）
-          return box.width > 0 && el.getAttribute("type") !== "checkbox" && (box.width < 28 || box.height < 28);
+          // checkbox 与 radio 的本体都是浏览器默认（14×14 左右），命中区由外层 label 撑——
+          // 两者同族，排除规则也必须同族（旧版只排除 checkbox，漏了 radio）
+          const t = el.getAttribute("type");
+          return box.width > 0 && t !== "checkbox" && t !== "radio" && (box.width < 28 || box.height < 28);
         })
         .map((el) => `${(el.innerText || el.getAttribute("aria-label") || el.id || "").trim().slice(0, 12)} ${
           Math.round(el.getBoundingClientRect().width)}×${Math.round(el.getBoundingClientRect().height)}`),

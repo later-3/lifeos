@@ -10,11 +10,7 @@
  * 入口：头部"显示设置"按钮（保留 aria-label，ui-contract 契约依赖）→ 打开本表面并落在"显示"分区。
  * 打开时是全页表面（覆盖 main 区），关闭回到原位；手机上同样全页。
  */
-import { useEffect, useMemo } from "react";
-import {
-  IconAdjustmentsHorizontal, IconCheck, IconLanguage, IconPalette, IconRefresh,
-  IconBell, IconPlug, IconInfoCircle, IconWand, IconX,
-} from "@tabler/icons-react";
+import { useEffect, useMemo, useState } from "react";
 import {
   PRESET_LABELS, THEME_DEFAULTS, THEME_PRESETS, calculatePalette, contrastOf,
   type ThemePreset, type ThemeState,
@@ -26,9 +22,18 @@ import {
 import {
   badgePeriodS, badgeBreatheMax, dotBreatheMax, BADGE_DEFAULTS, type BadgePrefs, type BadgeStrength,
 } from "./badge-prefs";
-import { Button, IconButton } from "./design/ui";
+import { Button, IconButton, Segmented, ClickableRow, ToggleChip } from "./design/ui";
 import { LAYER_CLASS } from "./design/surface";
+import { ThemePreview } from "./design/theme-preview";
+import { ICON_SET_LABELS, iconSetCoverage, type IconSetId } from "./design/icon-sets";
+import type { IconName } from "./design/icons";
 import type { SelectionPrefs } from "./selection-prefs";
+import { AppIcon } from "./design/icons";
+import { applyThemePack, loadThemePacks, loadActivePackId, saveActivePackId, saveThemePacks, validateThemePack, type ThemePack } from "./design/theme-package.ts";
+import { VAR_MAP } from "./design/theme.ts";
+import preloadedThemes from "./design/preloaded-themes.json";
+import { translateVscodeTheme, translateObsidianTheme, extractVscodeSeed } from "./design/theme-translators.ts";
+import { useState as useSt } from "react";
 
 /* ── 分区注册表（数据驱动；新板块加一条即可）── */
 type SectionKey = "appearance" | "display" | "interaction" | "motion" | "language" | "models" | "notify" | "about";
@@ -97,17 +102,72 @@ function AppearanceSection({ theme, onChange }: { theme: ThemeState; onChange: (
   const palette = useMemo(() => calculatePalette(theme), [theme]);
   const set = (patch: Partial<ThemeState>) => onChange({ ...theme, ...patch });
   const pickPreset = (name: ThemePreset) => set({ ...THEME_PRESETS[name], preset: name });
-  /** 预设卡迷你预览：轨 / 列 / 内容 / 主色 四段（与右侧实际生效值同源同公式）。 */
   const previewColors = (name: ThemePreset) => {
     const p = calculatePalette({ ...THEME_DEFAULTS, ...THEME_PRESETS[name], preset: name, mode: theme.mode });
     return [p.navEdge, p.navBg, p.surface, p.accentSolid].map(([l, c, h]) => rgbHex(l, c, h));
   };
+  /* ── 统一主题管理（用户拍板 2026-11-13）：一个列表、一个口子，改色=保存为新主题 ── */
+  const [packs, setPacksState] = useState(() => loadThemePacks());
+  const [activePackName, setActivePackName] = useState<string | undefined>(() => loadActivePackId());
+  const [customizing, setCustomizing] = useState(false);
+  const [customName, setCustomName] = useState("");
+
+  const allThemes = useMemo(() => {
+    const effectivePacks = packs.length > 0 ? packs : (preloadedThemes as ThemePack[]);
+    const builtIn = (Object.keys(THEME_PRESETS) as ThemePreset[]).map((name) => ({
+      kind: "preset" as const, name: PRESET_LABELS[name], id: name,
+      colors: previewColors(name),
+    }));
+    const external = effectivePacks.map((p) => ({
+      kind: "external" as const, name: p.meta.name, id: "ext:" + p.meta.name,
+      // 色带取该主题有值的 mode（dark-only 主题显示 dark 色带）
+      colors: ["--color-nav-edge", "--color-nav-bg", "--color-surface", "--color-accent-solid"].map(
+        (k) => ((p.modes[theme.mode] ?? p.modes.dark ?? p.modes.light) as Record<string, string> | undefined)?.[k] ?? "transparent",
+      ),
+    }));
+    return [...builtIn, ...external];
+  }, [packs, theme.mode, theme.preset, theme.accentH, theme.accentC]);
+
+  function applyPreset(name: ThemePreset) {
+    pickPreset(name);
+    setActivePackName(undefined); saveActivePackId(undefined);
+  }
+  function applyExternal(name: string) {
+    const pack = packs.find((p) => p.meta.name === name);
+    if (pack === undefined) return;
+    // 有种子 ThemeState → 走标准 React 状态流（onChange → applyTheme → 全站生效，与内置预设同管道）
+    if (pack.seedThemeState !== undefined) {
+      onChange(pack.seedThemeState);
+    } else {
+      applyThemePack(pack, theme.mode, theme);
+    }
+    setActivePackName(name); saveActivePackId(name);
+  }
+  function saveCustom() {
+    if (customName.trim() === "") return;
+    const existing = loadThemePacks();
+    const vars: Record<string, string> = {};
+    const paletteNow = calculatePalette(theme);
+    for (const [varName, key] of VAR_MAP) {
+      const v = paletteNow[key as keyof typeof paletteNow];
+      if (v) vars[varName] = rgbHex(v[0], v[1], v[2]);
+    }
+    const pack: ThemePack = {
+      kind: "lifeos-theme-pack", version: 1,
+      meta: { name: customName.trim(), source: "custom", sourceRef: "基于内置预设自定义" },
+      modes: { [theme.mode]: vars } as ThemePack["modes"],
+    };
+    const all = [...existing.filter((p) => p.meta.name !== pack.meta.name), pack];
+    setPacksState(all); saveThemePacks(all);
+    setCustomizing(false); setCustomName("");
+  }
+
   return (
-    <Section title="主题" desc="预设与深浅色即时生效；主色与底色台阶可微调。改动持久化到本浏览器。">
+    <Section title="主题" desc="选一个主题即全站生效。改颜色 → 保存为新的自定义主题。">
       <div className="flex flex-col gap-4">
-        <Card title="外观模式" hint="深色由同一套语义公式派生，不是第二套手挑值">
+        <Card title="深浅色" hint="每个主题都有深浅两套（引擎从同一公式派生）">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-meta text-ink-700">深浅色</span>
+            <span className="text-meta text-ink-700">模式</span>
             <span className="mode-seg" role="radiogroup" aria-label="深浅色">
               <button type="button" className={theme.mode === "light" ? "on" : ""} aria-pressed={theme.mode === "light"}
                 onClick={() => set({ mode: "light" })}>浅色</button>
@@ -117,68 +177,66 @@ function AppearanceSection({ theme, onChange }: { theme: ThemeState; onChange: (
           </div>
         </Card>
 
-        <Card title="主题预设" hint="一套预设 = 一组主色与中性色；点卡片立即换">
-          <div className="swatch-row" role="radiogroup" aria-label="主题预设">
-            {(Object.keys(THEME_PRESETS) as ThemePreset[]).map((name) => {
-              const colors = previewColors(name);
-              const on = theme.preset === name;
-              return (
-                <button key={name} type="button" role="radio" aria-checked={on}
-                  className={`swatch ${on ? "on" : ""}`} data-preset={name}
-                  onClick={() => pickPreset(name)}>
-                  <span className="prev" aria-hidden>{colors.map((c, i) => <i key={i} style={{ background: c }} />)}</span>
-                  <span className="nm">{PRESET_LABELS[name]}</span>
-                </button>
-              );
-            })}
-          </div>
+        <Card title="主题" hint="内置 + 导入 + 自定义，选一个就是全部。点卡片立即换。">
+        {/* 主题选择器（Popover 模式，对标 VSCode theme picker / Astryx ThemeSwitcher） */}
+        <ThemeSelector
+          themes={allThemes}
+          activeId={activePackName !== undefined ? "ext:" + activePackName : theme.preset}
+          onSelect={(id) => {
+            if (id.startsWith("ext:")) { applyExternal(id.slice(4)); }
+            else { applyPreset(id as ThemePreset); }
+          }}
+        />
+      </Card>
+
+        {!customizing && !activePackName ? (
+          <Button variant="ghost" size="sm" onClick={() => setCustomizing(true)}>
+            <AppIcon name="pencil" size={14} /> 自定义当前主题的颜色
+          </Button>
+        ) : null}
+        {customizing && (
+          <Card title="自定义颜色" hint="调整 → 保存 → 变成新的自定义主题（加进上面的列表）">
+            <div className="accent-dots">
+              {ACCENT_DOTS.map((d) => {
+                const on = theme.accentH === d.h && theme.accentC === d.c;
+                const bg = rgbHex(theme.mode === "dark" ? 60 : 52, (d.c / 100) * 0.22, d.h);
+                return (
+                  <ToggleChip key={d.label} shape="dot" pressed={on} title={d.label} aria-label={`主色 ${d.label}`}
+                    style={{ background: bg }} onClick={() => set({ accentH: d.h, accentC: d.c })}>
+                    {on ? <AppIcon name="check" size={14} /> : null}
+                  </ToggleChip>
+                );
+              })}
+            </div>
+            <SetSlider id="theme-accent-h" label="色相" min={0} max={360} step={1} value={theme.accentH}
+              onChange={(v) => set({ accentH: v })} format={(v) => `${v}°`} />
+            <SetSlider id="theme-accent-c" label="饱和" min={0} max={100} step={1} value={theme.accentC}
+              onChange={(v) => set({ accentC: v })} format={(v) => (v === 0 ? "灰" : `${v}%`)} />
+            <SetSlider id="theme-l-surface" label="内容" min={88} max={100} step={0.5} value={theme.lSurface} onChange={(v) => set({ lSurface: v })} format={(v) => v.toFixed(1)} />
+            <SetSlider id="theme-l-nav" label="列" min={88} max={100} step={0.5} value={theme.lNav} onChange={(v) => set({ lNav: v })} format={(v) => v.toFixed(1)} />
+            <div className="flex items-center gap-2">
+              <input value={customName} onChange={(e) => setCustomName(e.target.value)}
+                placeholder="给这个主题取个名字…"
+                className="min-w-0 flex-1 rounded-control bg-sunken px-2 py-1.5 text-body text-ink-900 ring-1 ring-line focus:outline-none focus:ring-accent" />
+              <Button variant="primary" size="sm" onClick={saveCustom} disabled={customName.trim() === ""}>保存主题</Button>
+              <Button variant="ghost" size="sm" onClick={() => setCustomizing(false)}>取消</Button>
+            </div>
+          </Card>
+        )}
+
+        {/* 字体与图标集（S3）：换字体、换图标集，都写进主题包 */}
+        <TypographyAndIconCard theme={theme} onTheme={onChange} />
+
+        {/* 当前主题效果预览（S2）：选主题即所见——13 类代表 primitive 全是活组件 */}
+        <Card title="当前主题效果" hint="下面全部是活组件，不是截图——选任何主题、切深浅，这里立刻变。">
+          <ThemePreview />
         </Card>
 
-        <Card title="主色" hint="默认近黑（最安静）；选了色相后中性色会跟着走，两个色系读成一个 palette">
-          <div className="accent-dots">
-            {ACCENT_DOTS.map((d) => {
-              const on = theme.accentH === d.h && theme.accentC === d.c;
-              const bg = rgbHex(theme.mode === "dark" ? 60 : 52, (d.c / 100) * 0.22, d.h);
-              return (
-                <button key={d.label} type="button" title={d.label} aria-label={`主色 ${d.label}`} aria-pressed={on}
-                  className={`accent-dot ${on ? "on" : ""}`} style={{ background: bg }}
-                  onClick={() => set({ accentH: d.h, accentC: d.c })}>
-                  {on ? <IconCheck size={14} /> : null}
-                </button>
-              );
-            })}
-          </div>
-          <SetSlider id="theme-accent-h" label="色相" min={0} max={360} step={1} value={theme.accentH}
-            onChange={(v) => set({ accentH: v })} format={(v) => `${v}°`} />
-          <SetSlider id="theme-accent-c" label="饱和" min={0} max={100} step={1} value={theme.accentC}
-            onChange={(v) => set({ accentC: v })} format={(v) => (v === 0 ? "灰" : `${v}%`)} />
-          <label className="chk flex items-center gap-2 text-meta text-ink-700">
-            <input type="checkbox" checked={theme.lockNeutral} aria-label="中性色相跟随主色"
-              onChange={(e) => set({ lockNeutral: e.currentTarget.checked })} />
-            中性色相跟随主色
-          </label>
-        </Card>
-
-        <Card title="底色台阶（L*）" hint="四档深度：内容 / 列 / 图标轨 / 边界线。台阶差决定「分层」是否看得见">
-          <SetSlider id="theme-l-surface" label="内容" min={88} max={100} step={0.5} value={theme.lSurface} onChange={(v) => set({ lSurface: v })} format={(v) => v.toFixed(1)} />
-          <SetSlider id="theme-l-nav" label="列" min={88} max={100} step={0.5} value={theme.lNav} onChange={(v) => set({ lNav: v })} format={(v) => v.toFixed(1)} />
-          <SetSlider id="theme-l-rail" label="图标轨" min={84} max={100} step={0.5} value={theme.lRail} onChange={(v) => set({ lRail: v })} format={(v) => v.toFixed(1)} />
-          <SetSlider id="theme-l-line" label="边界线" min={72} max={100} step={0.5} value={theme.lLine} onChange={(v) => set({ lLine: v })} format={(v) => v.toFixed(1)} />
-          {/* 实时读数：调参时知道自己越线没有（<4.5 标红） */}
-          <div className="rounded-control bg-sunken px-3 py-2 text-micro text-ink-500" data-testid="theme-readout">
-            <span>列→内容 ΔL* {Math.abs(palette.surface[0] - palette.navBg[0]).toFixed(1)} · </span>
-            <span>轨→列 ΔL* {Math.abs(palette.navBg[0] - palette.navEdge[0]).toFixed(1)} · </span>
-            <span>悬停 ΔL* {Math.abs(palette.navBg[0] - palette.navAccent[0]).toFixed(1)} · </span>
-            <span>选中 ΔL* {Math.abs(palette.navBg[0] - palette.navSelected[0]).toFixed(1)} · </span>
-            <span className={contrastOf(palette.navMuted, palette.navSelected) < 4.5 ? "text-danger" : ""}>
-              副行/选中 {contrastOf(palette.navMuted, palette.navSelected).toFixed(2)}:1
-            </span>
-          </div>
-        </Card>
+        <ExternalThemeCard theme={theme} onTheme={onChange} packs={packs} onPacksChange={(next) => { setPacksState(next); saveThemePacks(next); }} />
 
         <div>
-          <Button variant="ghost" size="sm" onClick={() => onChange({ ...THEME_DEFAULTS })}>
-            <IconRefresh size={14} /> 恢复默认主题
+          <Button variant="ghost" size="sm" onClick={() => { onChange({ ...THEME_DEFAULTS }); setActivePackName(undefined); saveActivePackId(undefined); }}>
+            <AppIcon name="refresh" size={14} /> 恢复默认主题
           </Button>
         </div>
       </div>
@@ -286,26 +344,23 @@ function DisplaySection({ prefs, badges, viewport, onBadges, onChange, onReset, 
             </div>
             <div className="flex flex-wrap items-center gap-2" role="radiogroup" aria-label="配色强度">
               {(["soft", "standard", "vivid"] as const).map((strengthValue) => (
-                <button key={strengthValue} type="button" role="radio" aria-checked={badges.strength === strengthValue}
+                <ToggleChip key={strengthValue} role="radio" aria-checked={badges.strength === strengthValue}
+                  pressed={badges.strength === strengthValue}
                   data-testid={`badge-strength-${strengthValue}`}
-                  onClick={() => onBadges({ ...badges, strength: strengthValue as BadgeStrength })}
-                  className={`h-7 rounded-control px-2.5 text-meta transition-colors ${
-                    badges.strength === strengthValue
-                      ? "bg-nav-selected font-semibold text-ink-900"
-                      : "text-ink-700 hover:bg-nav-accent"}`}>
+                  onClick={() => onBadges({ ...badges, strength: strengthValue as BadgeStrength })}>
                   {strengthValue === "soft" ? "柔和" : strengthValue === "standard" ? "标准" : "鲜明"}
-                </button>
+                </ToggleChip>
               ))}
             </div>
             <div>
               <Button variant="ghost" size="sm" onClick={onBadgesReset}>
-                <IconRefresh size={14} /> 徽标恢复默认
+                <AppIcon name="refresh" size={14} /> 徽标恢复默认
               </Button>
             </div>
           </Card>
         )}
         <div>
-          <Button variant="ghost" size="sm" onClick={onReset}><IconRefresh size={14} /> 恢复默认</Button>
+          <Button variant="ghost" size="sm" onClick={onReset}><AppIcon name="refresh" size={14} /> 恢复默认</Button>
         </div>
       </div>
     </Section>
@@ -348,8 +403,8 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
   }, [onClose]);
   // 每个分区一个不同图标（旧版"显示"与"动效"共用 IconWand，实测是视觉噪音）
   const icons: Record<SectionKey, React.ReactNode> = {
-    appearance: <IconPalette size={16} />, display: <IconAdjustmentsHorizontal size={16} />, interaction: <IconWand size={16} />, motion: <IconWand size={16} />,
-    language: <IconLanguage size={16} />, models: <IconPlug size={16} />, notify: <IconBell size={16} />, about: <IconInfoCircle size={16} />,
+    appearance: <AppIcon name="palette" size={16} />, display: <AppIcon name="adjustments-horizontal" size={16} />, interaction: <AppIcon name="wand" size={16} />, motion: <AppIcon name="wand" size={16} />,
+    language: <AppIcon name="language" size={16} />, models: <AppIcon name="plug" size={16} />, notify: <AppIcon name="bell" size={16} />, about: <AppIcon name="info" size={16} />,
   };
   return (
     <div className={`absolute inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:flex-row`}
@@ -361,7 +416,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
         * （layout-model §1.2-2 明令禁止跨 tab 浮层）。
         */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-2 sm:hidden">
-        <IconButton label="关闭设置" onClick={onClose}><IconX size={18} /></IconButton>
+        <IconButton label="关闭设置" onClick={onClose}><AppIcon name="x" size={18} /></IconButton>
         <span className="text-body font-semibold text-ink-900">设置</span>
       </header>
       {/* 分区导航（数据驱动）：手机横向条 / 桌面 230 纵栏（同一份数据，两种排布） */}
@@ -409,5 +464,225 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── 主题选择器（Popover 模式）────────────────────────────────────────
+ * 一个按钮显示当前主题名 + 色带；点击弹出完整列表（每主题：色带 + 名字 + 来源）。
+ * 对标 VSCode theme picker / Astryx ThemeSwitcher——不是并排卡片挤一行。 */
+function ThemeSelector({ themes, activeId, onSelect }: {
+  themes: Array<{ kind: "preset" | "external"; name: string; id: string; colors: string[] }>;
+  activeId: string;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const active = themes.find((t) => t.id === activeId) ?? themes[0];
+  return (
+    <div className="relative">
+      <button type="button" onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-3 rounded-control border border-line bg-surface px-3 py-2 text-left transition-colors hover:border-nav-muted">
+        <span className="flex h-6 w-10 shrink-0 overflow-hidden rounded-inner border border-line" aria-hidden>
+          {(active?.colors ?? ["var(--color-line)", "var(--color-line)", "var(--color-line)", "var(--color-line)"]).map((c, i) => <i key={i} className="flex-1" style={{ background: c }} />)}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-body text-ink-900">{active?.name ?? "选择主题"}</span>
+        <AppIcon name="chevron-down" size={14} className="shrink-0 text-ink-300" />
+      </button>
+      {open && (
+        <div className="absolute mt-1 w-full rounded-panel border border-line bg-surface"
+          style={{ boxShadow: "var(--surface-popover)", zIndex: "var(--z-popover)", maxHeight: "280px", overflowY: "auto" }}>
+          {themes.map((t) => (
+            <ClickableRow key={t.id}
+              className={`gap-3 px-3 py-2 ${t.id === activeId ? "bg-nav-selected" : ""}`}
+              onClick={() => { onSelect(t.id); setOpen(false); }}>
+              <span className="flex h-5 w-9 shrink-0 overflow-hidden rounded-inner border border-line" aria-hidden>
+                {t.colors.map((c, i) => <i key={i} className="flex-1" style={{ background: c }} />)}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-body text-ink-900">{t.name}</span>
+              {t.kind === "external" && <span className="shrink-0 text-micro text-ink-300">外部</span>}
+              {t.id === activeId && <AppIcon name="check" size={14} className="shrink-0 text-accent" />}
+            </ClickableRow>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 外部主题导入卡（Task 0015 · B1）────────────────────────────────────
+ * 粘贴 VSCode JSON 或 Obsidian CSS → 转译 → 校验报告 → 预览（即时生效）→ 保存。
+ * 用户可基于内置主题自定义（切深浅 → 预览）→ "保存为我的主题" 存档。
+ */
+function ExternalThemeCard({ theme, onTheme, packs, onPacksChange }: { theme: ThemeState; onTheme: (next: ThemeState) => void; packs: ThemePack[]; onPacksChange: (next: ThemePack[]) => void }) {
+  const [pasted, setPasted] = useSt("");
+  const [activeId, setActiveId] = useSt<string | undefined>(() => loadActivePackId());
+  const [report, setReport] = useSt<{ name: string; ok: boolean; summary: string } | undefined>();
+
+  async function importPasted() {
+    const text = pasted.trim();
+    if (text === "") return;
+    let pack: ThemePack;
+    try {
+      if (text.startsWith("{")) {
+        const json = JSON.parse(text);
+        // VSCode：种子提取 + 引擎再生（不是逐域映射——覆盖全族 59 个变量）
+        const seed = extractVscodeSeed(json, "用户导入");
+        const fullSeed = { ...THEME_DEFAULTS, ...seed.themeState } as ThemeState;
+        const generated = calculatePalette(fullSeed);
+        const vars: Record<string, string> = {};
+        // 从引擎 Palette 生成全族变量值
+        for (const [varName, key] of VAR_MAP) {
+          const v = generated[key as keyof typeof generated];
+          if (v) {
+            // OKLCH → hex（简化：用 theme.ts 内部的 hex 函数不可直接调——用 rgbHex 替代）
+            vars[varName] = rgbHex(v[0], v[1], v[2]);
+          }
+        }
+        pack = {
+          kind: "lifeos-theme-pack", version: 1,
+          meta: { name: json.name ?? "未命名 VSCode 主题", source: "vscode", sourceRef: "用户导入" },
+          modes: { [seed.themeState.mode]: vars } as ThemePack["modes"],
+          seedThemeState: fullSeed,
+        };
+      } else {
+        const result = translateObsidianTheme(text, "用户导入", "用户导入的 Obsidian 主题");
+        pack = result.pack;
+      }
+    } catch (e) {
+      setReport({ name: "解析失败", ok: false, summary: String(e).slice(0, 120) });
+      return;
+    }
+    const r = validateThemePack(pack);
+    const summary = r.ok
+      ? `覆盖：light ${r.coverage.light} / dark ${r.coverage.dark}（共 ${r.coverage.total}）` + (r.contrastChecks.some(c => !c.pass) ? "（部分对比度警告）" : "")
+      : r.issues.filter(i => i.level === "error").map(i => i.message.slice(0, 80)).join("；");
+    setReport({ name: pack.meta.name, ok: r.ok, summary });
+    if (r.ok) {
+      const all = [...packs.filter(p => p.meta.name !== pack.meta.name), pack];
+      onPacksChange(all);
+      setPasted("");
+      // 立即应用——**直接写 :root CSS 变量**（绕过 React 状态流，所见即所得）
+      // 原理：外部主题的变量覆盖在引擎值之上；刷新后引擎恢复默认（后续接持久化）。
+      const applyPackDirect = (p: ThemePack) => {
+        const mode = p.modes.dark && Object.keys(p.modes.dark).length > 0 ? "dark" : "light";
+        const vars = p.modes[mode] ?? {};
+        const root = document.documentElement.style;
+        for (const [k, v] of Object.entries(vars)) {
+          if (typeof v === "string" && v.startsWith("#")) root.setProperty(k, v);
+        }
+        document.documentElement.dataset.themeMode = mode;
+      };
+      if (pack.seedThemeState !== undefined) {
+        // VSCode 种子：用引擎 calculatePalette 从种子参数生成全族变量再写 :root
+        const fullSeed = { ...THEME_DEFAULTS, ...pack.seedThemeState } as ThemeState;
+        const generated = calculatePalette(fullSeed);
+        const root = document.documentElement.style;
+        for (const [varName, key] of VAR_MAP) {
+          const v = generated[key as keyof typeof generated];
+          if (v) root.setProperty(varName, rgbHex(v[0], v[1], v[2]));
+        }
+        document.documentElement.dataset.themeMode = pack.seedThemeState.mode ?? "dark";
+      } else {
+        applyPackDirect(pack);
+      }
+    }
+  }
+
+  return (
+    <Card title="外部主题（VSCode / Obsidian）" hint="粘贴 JSON 或 CSS → 转译 → 预览 → 保存。基于内置主题自定义：先切深浅再预览。">
+      <div className="flex flex-col gap-3">
+        <textarea
+          value={pasted}
+          onChange={(e) => setPasted(e.target.value)}
+          placeholder={'粘贴 VSCode 主题 JSON 或 Obsidian CSS…'}
+          className="min-h-16 w-full resize-y rounded-control bg-sunken px-2 py-1.5 text-micro text-ink-900 ring-1 ring-line placeholder:text-ink-300 focus:outline-none focus:ring-accent"
+          rows={3}
+        />
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={importPasted} disabled={pasted.trim() === ""}>导入并校验</Button>
+          {report !== undefined && (
+            <span className={`text-micro ${report.ok ? "text-success" : "text-danger"}`}>
+              {report.name}：{report.summary}
+            </span>
+          )}
+        </div>
+        {/* 已保存主题的切换在上面的统一列表里（一个口子），这里只负责导入 */}
+      </div>
+    </Card>
+  );
+}
+
+/* ── 字体与图标集（S3）──────────────────────────────────────────────
+ * 字体：写到 --font-sans/--font-mono（主题包 fonts 槽）。
+ * 图标集：派发 lifeos:icon-set 事件（main.tsx 的 Root 监听并切 Context）+ 写进主题包 icons 槽。
+ */
+const FONT_CHOICES = [
+  { id: "system", label: "系统默认", sans: undefined, note: "Inter / PingFang（默认，零加载成本）" },
+  { id: "serif-cjk", label: "宋体优先", sans: "\"Songti SC\", \"SimSun\", Georgia, serif", note: "中文衬线，阅读感更接近纸面" },
+  { id: "hei-cjk", label: "黑体优先", sans: "\"PingFang SC\", \"Microsoft YaHei\", \"Helvetica Neue\", sans-serif", note: "中文无衬线，屏幕可读性优先" },
+  { id: "mono-ui", label: "等宽优先", sans: "ui-monospace, SFMono-Regular, Menlo, monospace", note: "整站等宽（实验性）" },
+] as const;
+
+function TypographyAndIconCard({ theme, onTheme }: { theme: ThemeState; onTheme: (next: ThemeState) => void }) {
+  const [fontId, setFontId] = useSt<string>(() => {
+    try { return localStorage.getItem("lifeos.fontId") ?? "system"; } catch { return "system"; }
+  });
+  const [iconSet, setIconSetState] = useSt<IconSetId>(() => {
+    try { return (localStorage.getItem("lifeos.iconSet") as IconSetId) ?? "tabler"; } catch { return "tabler"; }
+  });
+
+  function applyFont(id: string) {
+    setFontId(id);
+    try { localStorage.setItem("lifeos.fontId", id); } catch { /* 隐私模式 */ }
+    const choice = FONT_CHOICES.find((f) => f.id === id);
+    const root = document.documentElement.style;
+    if (choice?.sans === undefined) {
+      root.removeProperty("--font-sans");
+    } else {
+      root.setProperty("--font-sans", choice.sans);
+    }
+  }
+
+  function applyIconSet(id: IconSetId) {
+    setIconSetState(id);
+    window.dispatchEvent(new CustomEvent("lifeos:icon-set", { detail: id }));
+  }
+
+  const coverage = iconSetCoverage();
+
+  return (
+    <Card title="字体与图标" hint="字体与图标集也是主题的一部分（写进主题包的 fonts / icons 槽）。">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2">
+          <span className="text-meta font-medium text-ink-700">字体</span>
+          <div className="flex flex-wrap gap-2">
+            {FONT_CHOICES.map((f) => (
+              <ToggleChip key={f.id} shape="card" pressed={fontId === f.id} onClick={() => applyFont(f.id)}>
+                <span className="block font-medium">{f.label}</span>
+                <span className="block text-micro text-ink-500">{f.note}</span>
+              </ToggleChip>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className="text-meta font-medium text-ink-700">图标集</span>
+          <Segmented
+            value={iconSet}
+            options={(Object.keys(ICON_SET_LABELS) as IconSetId[]).map((id) => ({ value: id, label: ICON_SET_LABELS[id] }))}
+            onChange={(id) => applyIconSet(id as IconSetId)}
+          />
+          <div className="flex items-center gap-3 rounded-control bg-sunken px-3 py-2">
+            {(["settings", "folder", "trash", "check", "pencil", "info"] as IconName[]).map((name) => (
+              <AppIcon key={name} name={name} size={16} className="text-ink-700" />
+            ))}
+            <span className="text-micro text-ink-500">
+              {coverage[iconSet].missing.length === 0
+                ? `${coverage[iconSet].total} 个语义名全部覆盖`
+                : `${coverage[iconSet].missing.length} 个语义名该集缺失（回退 Tabler）`}
+            </span>
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }

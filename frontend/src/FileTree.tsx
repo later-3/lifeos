@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IconChevronDown, IconChevronLeft, IconChevronRight, IconFile, IconFileText, IconFolder, IconFolderOpen, IconRefresh, IconX } from "@tabler/icons-react";
 import { DirectoryPicker } from "./DirectoryPicker";
 
-import { Button, IconButton, Label, Row, Skeleton } from "./design/ui";
+import { Button, IconButton, Label, Row, Skeleton, ClickableRow } from "./design/ui";
 import { Modal, useDialogFocus } from "./design/overlay";
 import { useIsMobile } from "./use-mobile";
 import { isMarkdown } from "./fs-utils";
 import { TREE_INDENT_BASE, TREE_INDENT_DISCLOSURE, TREE_INDENT_STEP } from "./avatar-style";
+import { AppIcon } from "./design/icons";
 
 type TreeEntry = { name: string; isDir: boolean };
 type TreeResult = { path: string; entries: TreeEntry[]; error?: { message: string } };
@@ -124,18 +124,18 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
         const isOpen = expanded.has(childPath);
         return (
           <div key={childPath}>
-            <button onClick={() => void toggle(childPath)}
-              className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
+            <ClickableRow onClick={() => void toggle(childPath)}
+              className="h-8 gap-1.5 pr-1.5 text-body text-ink-700 hover:text-ink-900"
               style={{ paddingLeft: TREE_INDENT_BASE + depth * TREE_INDENT_STEP }}>
-              <IconChevronRight size={14}
+              <AppIcon name="chevron-right" size={14}
                 className={`shrink-0 text-ink-500 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`} />
               {pending.has(childPath)
-                ? <IconFolder size={14} className="shrink-0 animate-pulse text-ink-300" />
+                ? <AppIcon name="folder" size={14} className="shrink-0 animate-pulse text-ink-300" />
                 : isOpen
-                  ? <IconFolderOpen size={14} className="shrink-0 text-ink-500" />
-                  : <IconFolder size={14} className="shrink-0 text-ink-500" />}
+                  ? <AppIcon name="folder-open" size={14} className="shrink-0 text-ink-500" />
+                  : <AppIcon name="folder" size={14} className="shrink-0 text-ink-500" />}
               <span className="truncate">{entry.name}</span>
-            </button>
+            </ClickableRow>
             {isOpen && (
               <>
                 {(entries[childPath] ?? []).length === 0 && !pending.has(childPath) && (
@@ -148,14 +148,14 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
         );
       }
       return (
-        <button key={childPath} onClick={() => onOpenFile(childPath, entry.name)}
-          className="flex h-8 w-full items-center gap-1.5 rounded-control pr-1.5 text-left text-body text-ink-700 transition-colors hover:bg-hover hover:text-ink-900 max-sm:min-h-11"
+        <ClickableRow key={childPath} onClick={() => onOpenFile(childPath, entry.name)}
+          className="h-8 gap-1.5 pr-1.5 text-body text-ink-700 hover:text-ink-900"
           style={{ paddingLeft: TREE_INDENT_BASE + depth * TREE_INDENT_STEP + TREE_INDENT_DISCLOSURE }}>
           {isMarkdown(entry.name)
-            ? <IconFileText size={14} className="shrink-0 text-ink-500" />
-            : <IconFile size={14} className="shrink-0 text-ink-500" />}
+            ? <AppIcon name="file-text" size={14} className="shrink-0 text-ink-500" />
+            : <AppIcon name="file" size={14} className="shrink-0 text-ink-500" />}
           <span className="truncate">{entry.name}</span>
-        </button>
+        </ClickableRow>
       );
     });
   }
@@ -172,7 +172,7 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
           <div className="space-y-0.5">
             {roots.map((path) => (
               <Row key={path} selected={path === root} onClick={() => void switchRoot(path)}>
-                <IconFolder size={14} className="shrink-0 text-ink-300" />
+                <AppIcon name="folder" size={14} className="shrink-0 text-ink-300" />
                 <span className="max-w-40 shrink-0 truncate font-mono text-meta">{rootName(path)}</span>
                 <span className="min-w-0 flex-1 truncate text-right font-mono text-micro text-ink-500" title={path}>{path}</span>
               </Row>
@@ -187,10 +187,10 @@ export function FileTree({ onOpenFile, onHide, hideLabel = "收起文件树" }: 
           <button type="button" onClick={() => void openSwitcher()} title={root ?? ""}
             className="flex min-w-0 flex-1 items-center gap-0.5 rounded-control px-0.5 text-left text-micro text-ink-500 transition-colors hover:text-ink-900 max-sm:min-h-11">
             <span className="min-w-0 truncate font-mono">· {rootLabel}</span>
-            <IconChevronDown size={12} className="shrink-0" />
+            <AppIcon name="chevron-down" size={12} className="shrink-0" />
           </button>
-          <IconButton label="刷新文件树" active={refreshing} onClick={() => void refresh()}><IconRefresh size={14} /></IconButton>
-          {onHide !== undefined && <IconButton size="sm" label={hideLabel} onClick={onHide}>{mobile ? <IconX size={16} /> : <IconChevronLeft size={16} />}</IconButton>}
+          <IconButton label="刷新文件树" active={refreshing} onClick={() => void refresh()}><AppIcon name="refresh" size={14} /></IconButton>
+          {onHide !== undefined && <IconButton size="sm" label={hideLabel} onClick={onHide}>{mobile ? <AppIcon name="x" size={16} /> : <AppIcon name="chevron-left" size={16} />}</IconButton>}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
           {error !== null && <p className="px-2 py-3 text-center text-micro text-danger">{error}</p>}

@@ -20,6 +20,11 @@ import { join, relative } from "node:path";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "frontend/src");
 const ALLOW_DIRS = [join(SRC, "design")];                 // primitive 层可以写布局常量，但仍不许调色板
+/* 主题引擎/转译器/派生器：与 tokens.css 同性质——**它们就是生成颜色值的地方**。
+ * 真正的纪律是"页面层不写字面量"，不是"设计系统层不能有 hex 兜底值"。 */
+const COLOR_SOURCE_FILES = new Set([
+  "theme.ts", "theme-package.ts", "theme-translators.ts", "theme-derive.ts", "tokens.css",
+]);
 
 const RULES = [
   { id: "arbitrary-value", re: /\b(?:text|bg|border|ring|rounded|w|h|max-w|max-h|min-w|min-h|p|px|py|m|mx|my|gap|top|left|right|bottom|inset|shadow|leading|tracking|z)-\[[^\]]+\]/g, hint: "改用 token（设计 tokens.css 或 design/ui.tsx 的 primitive）" },
@@ -47,6 +52,8 @@ for (const file of files) {
     for (const rule of RULES) {
       if (isCss && rule.id !== "raw-palette") continue;                                   // CSS 里允许变量与布局常量
       if (rule.id === "raw-palette" && isDesign) continue;
+      const baseName = file.split("/").pop();
+      if (rule.id === "hex-color" && COLOR_SOURCE_FILES.has(baseName)) continue;   // 颜色源文件（引擎/转译器/派生器）
       const matches = text.match(rule.re);
       if (matches === null) continue;
       const hit = matches.filter((match) => (rule.id === "hex-color" ? !/^#(?:fff|000)$/.test(match) : true));

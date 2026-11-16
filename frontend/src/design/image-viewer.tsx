@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { IconMinus, IconPlus, IconX } from "@tabler/icons-react";
 import { useDialogFocus } from "./overlay";
 import {
   ZOOM_STEP, clampZoom, clampPan, displaySize, fitSize, nextZoom, zoomPercent,
 } from "./image-zoom";
+import { AppIcon } from "./icons";
 
 /**
  * 图片查看器（悬浮放大缩小）——用户 2026-10-27 要求：
@@ -116,7 +116,7 @@ export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; o
           onClick={() => setZoomClamped(nextZoom(zoom, -1))}
           className="h-11 w-11 sm:h-9 sm:w-9 rounded text-surface hover:bg-surface/20"
         >
-          <IconMinus size={16} className="mx-auto" />
+          <AppIcon name="minus" size={16} className="mx-auto" />
         </button>
         <button
           type="button" data-testid="zoom-reset" title="重置为适应窗口"
@@ -130,14 +130,14 @@ export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; o
           onClick={() => setZoomClamped(nextZoom(zoom, 1))}
           className="h-11 w-11 sm:h-9 sm:w-9 rounded text-surface hover:bg-surface/20"
         >
-          <IconPlus size={16} className="mx-auto" />
+          <AppIcon name="plus" size={16} className="mx-auto" />
         </button>
         <button
           type="button" data-testid="image-viewer-close" aria-label="关闭图片" title="关闭图片"
           onClick={onClose}
           className="ml-3 h-11 w-11 sm:h-9 sm:w-9 rounded text-surface hover:bg-surface/20"
         >
-          <IconX size={16} className="mx-auto" />
+          <AppIcon name="x" size={16} className="mx-auto" />
         </button>
         </div>
       </div>

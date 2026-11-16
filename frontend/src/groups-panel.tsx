@@ -18,11 +18,11 @@
  * - 组内行双行 56；组间距 8；列内边距 8。
  */
 import type { ReactNode } from "react";
-import { IconChevronLeft, IconChevronRight, IconFolderPlus, IconHistory, IconInfoCircle, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { UserAvatar } from "./user-avatar";
-import { Button, IconButton, Label } from "./design/ui";
+import { Button, IconButton, Label, SessionRow, ClickableRow } from "./design/ui";
 import { avatarBoxStyle, avatarOverlapOffset } from "./avatar-style";
+import { AppIcon } from "./design/icons";
 
 /** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数药丸（可点开概览卡）。 */
 export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onOverview, actions }: {
@@ -76,27 +76,27 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
       {/* 折叠列 = 28 = 命中盒档位；点击整行折叠（不只点箭头）。
           名字不再 flex-1（徽标要贴着名字）：min-w-0 让长名在徽标前截断；
           按钮本身仍 flex-1——空白中段仍是折叠点击区，悬停底色仍覆盖整行。 */}
-      <button type="button"
+      <ClickableRow
         onClick={() => { if (onSelect !== undefined && !selected) { onSelect(); return; } onToggle(); }}
         aria-expanded={open}
         aria-current={selected ? "true" : undefined}
         aria-label={`${name}，${open ? "折叠" : "展开"}分组`}
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-control text-left hover:bg-nav-accent">
+        className="h-8 min-w-0 flex-1 hover:bg-nav-accent">
         <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
-          {open ? <IconChevronRight size={16} className="rotate-90" /> : <IconChevronRight size={16} />}
+          {open ? <AppIcon name="chevron-right" size={16} className="rotate-90" /> : <AppIcon name="chevron-right" size={16} />}
         </span>
         {/* 分组头 = **容器**，字级要比行标题**小一号**、颜色更弱（2026-11-09 实测修正）：
             text-meta(12px)/500 + nav-muted（字级与颜色两条都弱下去，名字仍可扫）。 */}
         <span className="min-w-0 shrink truncate text-meta font-medium text-nav-muted">{name}</span>
         {actions}
-      </button>
+      </ClickableRow>
       {/* 右区固定锚（Task 0010 · 三轮拍板）：[计数（纯数据）][ⓘ 概览钮（常显）][＋ 新建]。
          用户原话"直接固定吧，不要鼠标移动上去再显示"——可发现性优先于密度；
          三样全部右锚定成列。移除 ✕ 已搬进概览卡（低频危险动作离开行尾）。 */}
       <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
         className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
       <IconButton size="sm" label={`${name} 项目概览`} onClick={(event) => onOverview(event.currentTarget)}>
-        <IconInfoCircle size={14} />
+        <AppIcon name="info" size={14} />
       </IconButton>
       {/* 新建会话：在计数之后（Task 0010：计数左·动作右，行尾成熟排法）。
           旧顺序（＋在计数前）读起来像 "workspace ＋ 12" 算式。 */}
@@ -104,7 +104,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         <span className="shrink-0">
           <IconButton size="sm" label={`在 ${name} 新建会话`} onClick={onNewSession}
             {...(onNewSessionDisabled === true ? { disabled: true } : {})}>
-            <IconPlus size={14} />
+            <AppIcon name="plus" size={14} />
           </IconButton>
         </span>
       )}
@@ -124,7 +124,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
 export function GroupBody({ children }: { children: ReactNode }) {
   // 缩进 = 折叠列 28（w-7）。行内部再 px-2（8）→ 标题落在 8(列) + 28 + 8 = **44**，
   // 与分组头名字同一左缘（分组头：8 + 28 + gap8 = 44）。一列只剩两条左缘：列头 8 / 内容 44（D21）。
-  return <div className="pb-1 pl-7 pr-2">{children}</div>;
+  return <div className="pb-1">{children}</div>; // 水平 padding 下沉到行内（选中背景满宽）
 }
 
 /** 参与者叠放双头像（会话行第一行的锚点）：表达"这条是两个参与者在谈"。 */
@@ -179,105 +179,6 @@ function ThemAvatar({ id, name, avatar, size }: { id: string; name: string; avat
   return <AgentAvatar id={id} name={name} avatar={avatar} size={size} />;
 }
 
-/**
- * 会话行（双行 56）。
- *
- * 第一行：**只有标题**（"是哪件事"）——头像已移到第二行，
- * 因为它属于元信息，且左边 Agent 列已经表达了"和谁"。
- * 第二行：`[参与者小头像] 对端 · Task · 状态`（"和谁、属于什么、现在怎样"）。
- */
-export function SessionRow({ selected, title, titleFallback, participants, meta, status, onSelect, onRename, onHistory, onDelete, renameValue, renaming, onRenameChange, onRenameCommit, onRenameCancel, testId }: {
-  selected: boolean;
-  title: string;
-  titleFallback: boolean;
-  /** 第二行开头的参与者头像（`ParticipantToken`）。 */
-  participants: ReactNode;
-  meta: ReactNode;
-  status: ReactNode;
-  onSelect: () => void;
-  onRename: () => void;
-  onHistory: () => void;
-  onDelete: () => void;
-  testId?: string;
-  renaming: boolean;
-  renameValue: string;
-  onRenameChange: (value: string) => void;
-  onRenameCommit: (value: string) => void;
-  onRenameCancel: () => void;
-}) {
-  /*
-   * 结构：外层是**容器**（只负责底色与 hover 分组），主点击区与动作区是它的两个**兄弟**。
-   *
-   * 2026-11-09 axe `nested-interactive`：行原本是 `role="button"`，里面放着三个 IconButton
-   * （真 `<button>`）→ 交互元素嵌套，读屏与键盘会出现"两个目标叠在一起"。
-   * 拆成兄弟之后：点行 = 选中会话；点图标 = 该动作；两者互不嵌套。
-   */
-  return (
-    <div data-testid={testId} aria-current={selected ? "true" : undefined}
-      className={`group/session flex h-14 w-full items-center rounded-row transition-colors ${
-        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
-      }`}>
-      <div role="button" tabIndex={0} onClick={onSelect}
-        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}
-        // 主点击区不侵入状态槽（槽宽 = 动作区宽 = 3×28）：`pr-0`，两行文字自己会在槽前截断。
-        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-row pl-2 pr-0">
-      <span className="flex min-w-0 flex-1 flex-col">
-        {renaming ? (
-          <input autoFocus value={renameValue}
-            onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => onRenameChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") { event.preventDefault(); onRenameCommit(event.currentTarget.value); }
-              if (event.key === "Escape") { event.preventDefault(); onRenameCancel(); }
-            }}
-            onBlur={onRenameCancel}
-            onClick={(event) => event.stopPropagation()}
-            className="min-w-0 rounded-control bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
-        ) : (
-          <span className={`truncate text-body ${titleFallback ? "font-mono text-nav-muted" : "text-ink-900"}`}
-            data-fallback={titleFallback ? "id" : undefined}
-            title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
-        )}
-        {/* 副行用 nav-muted 而不是 ink-500：ink-500 在 nav-accent / nav-selected 上只有 4.10 / 4.03，
-            低于 AA 4.5（导航层专用色 nav-muted 为 4.90 / 4.65）。 */}
-        <span className="flex min-w-0 items-center gap-1.5 text-micro text-nav-muted">
-          {participants}
-          <span className="min-w-0 truncate">{meta}</span>
-        </span>
-      </span>
-      {/*
-        * 状态槽宽度 = 时间串的真实宽度（11px 下的"13小时前"约 40px）+ 呼吸余量。
-        *
-        * 2026-11-09 审核实测的缺陷：槽只有 64px，而 hover 出现的动作区（历史/重命名/删除）
-        * 三个 28px 图标 = 84px，绝对定位后会**向左溢出 20px、压住标题 12px**。
-        * 现在把两种宽度分开：槽按内容自适应（min-w），动作区宽度由自己决定并覆盖在槽上，
-        * 且 hover 时标题侧的两行**收窄**到同一右边界，不再被盖。
-        */}
-      {/*
-        * 槽宽 = **动作区宽度**（3 个 28px 图标 = 84 = w-21），不是时间串宽度。
-        *
-        * 2026-11-09 审核实测的缺陷：槽宽 64（时间"13小时前"够用），hover 出现的
-        * 动作区 84px 绝对定位后向左溢出 20px、压住标题 12px，两串字叠在一起。
-        * 试过的另一种修法（hover 时给标题加 pr-92）会把标题挤到 67px，且行内宽度随 hover 变=抖动。
-        * 现在让槽位本身就按动作区定宽：时间右对齐落在同一格里，hover 只换内容不换几何。
-        */}
-      {/*
-        * 动作区与状态槽**都是主点击区的兄弟**（2026-11-09 axe `nested-interactive`）：
-        * 行是 role=button，里面再放 IconButton 就是嵌套交互元素（读屏/键盘会串）。
-        * 布局不变：槽 84px（动作区宽度），hover 时动作区覆盖在槽上、给实底。
-        */}
-      </div>
-      <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
-        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
-        <span className="absolute right-0 flex items-center rounded-control bg-nav-accent opacity-0 pointer-events-none transition-opacity group-hover/session:bg-nav-selected group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
-          <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><IconHistory size={14} /></IconButton>
-          <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><IconPencil size={14} /></IconButton>
-          <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><IconTrash size={14} /></IconButton>
-        </span>
-      </span>
-    </div>
-  );
-}
 
 /** 空态行（组内没有会话，或整列没有项目）。 */
 export function PanelEmpty({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
@@ -298,7 +199,7 @@ export function PanelFooter({ children }: { children: ReactNode }) {
 export function AddProjectButton({ onClick }: { onClick: () => void }) {
   return (
     <Button size="sm" className="w-full" onClick={onClick}>
-      <IconFolderPlus size={14} /> 添加项目
+      <AppIcon name="folder-plus" size={14} /> 添加项目
     </Button>
   );
 }
@@ -315,7 +216,7 @@ export function GroupsColumnHeader({ count, onHide }: { count?: number; onHide: 
           className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
       <span className="ml-auto" />
-      <IconButton size="sm" label="收起此列" onClick={onHide}><IconChevronLeft size={16} /></IconButton>
+      <IconButton size="sm" label="收起此列" onClick={onHide}><AppIcon name="chevron-left" size={16} /></IconButton>
     </div>
   );
 }

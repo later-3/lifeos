@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { IconCheck } from "@tabler/icons-react";
 import {
   actionLabel, actionTone, revealActions, visibleActions,
   type ActionFeedback, type ActionTone, type MessageAction,
 } from "./action-bar";
+import { AppIcon } from "./design/icons";
 
 /**
  * 动作条容器：功能往这里**注册描述**（`MessageAction[]`），容器负责其余一切。
@@ -92,7 +92,7 @@ export function MessageActionBar({ side, actions, hovered, suppressed = false }:
             title={action.title ?? action.label}
             {...(action.testId !== undefined ? { "data-testid": action.testId } : {})}
             className={`flex min-h-7 items-center gap-1 rounded-control px-2 text-micro transition-colors max-sm:min-h-11 ${TONE_CLASS[actionTone(state)]}`}>
-            {state === "done" ? <IconCheck size={12} /> : action.icon}
+            {state === "done" ? <AppIcon name="check" size={12} /> : action.icon}
             <span aria-live="polite">{actionLabel(action, state)}</span>
           </button>
         );

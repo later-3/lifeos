@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IconArrowLeft, IconChevronRight, IconHistory, IconX } from "@tabler/icons-react";
 import { MessageView, type Block } from "./Message";
 import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
-import { Button, EmptyState, IconButton, Skeleton } from "./design/ui";
+import { Button, EmptyState, IconButton, Skeleton, ClickableRow } from "./design/ui";
 import { estimateTokens, formatPercent, formatTokens, isSameScale, normalizeTo } from "./token-estimate";
 import { regionOf } from "./prompt-regions";
 import { applySectionPatch, type Sections } from "./prompt-patches";
 import { useIsMobile } from "./use-mobile";
 import { useDialogFocus } from "./design/overlay";
 import { TREE_INDENT_BASE_COMPACT, TREE_INDENT_STEP_COMPACT } from "./avatar-style";
+import { AppIcon } from "./design/icons";
 
 /**
  * 完整历史 = 回合检查器（与对话区**并排**，不覆盖）。
@@ -258,10 +258,9 @@ function BlockHeader({ open, label, tag, sub, meta, depth = 0, strong = false, o
   depth?: number; strong?: boolean; onToggle: () => void;
 }) {
   return (
-    <button type="button" onClick={onToggle}
+    <ClickableRow onClick={onToggle}
       className={`flex w-full items-center gap-1.5 rounded-control pr-1 text-left transition-colors hover:bg-hover max-sm:min-h-11 ${sub === undefined ? "h-7" : "py-1"}`}
-      style={{ paddingLeft: TREE_INDENT_BASE_COMPACT + depth * TREE_INDENT_STEP_COMPACT }}>
-      <IconChevronRight size={12} className={`shrink-0 self-start text-ink-500 transition-transform ${open ? "rotate-90" : ""} ${sub === undefined ? "" : "mt-1"}`} />
+      style={{ paddingLeft: TREE_INDENT_BASE_COMPACT + depth * TREE_INDENT_STEP_COMPACT }}><AppIcon name="chevron-right" size={12} className={`shrink-0 self-start text-ink-500 transition-transform ${open ? "rotate-90" : ""} ${sub === undefined ? "" : "mt-1"}`} />
       <span className="min-w-0 flex-1">
         <span className={`flex items-baseline gap-1.5 ${sub === undefined ? "text-micro" : "text-meta"}`}>
           <span className={`min-w-0 truncate ${strong ? "font-semibold text-ink-900" : "font-medium text-ink-700"}`}>{label}</span>
@@ -269,8 +268,7 @@ function BlockHeader({ open, label, tag, sub, meta, depth = 0, strong = false, o
         </span>
         {sub !== undefined && <span className="block truncate text-micro text-ink-500">{sub}</span>}
       </span>
-      <span className="ml-auto min-w-16 shrink-0 self-start text-right tabular-nums text-micro text-ink-500 max-sm:hidden">{meta}</span>
-    </button>
+      <span className="ml-auto min-w-16 shrink-0 self-start text-right tabular-nums text-micro text-ink-500 max-sm:hidden">{meta}</span></ClickableRow>
   );
 }
 
@@ -342,7 +340,7 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
       className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-x-hidden bg-surface">
       <header className="flex h-11 w-full min-w-0 shrink-0 items-center gap-2 pl-4 pr-2 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
         {mobile && (
-          <Button variant="ghost" size="sm" aria-label="返回" onClick={onClose}><IconArrowLeft size={16} /> 返回</Button>
+          <Button variant="ghost" size="sm" aria-label="返回" onClick={onClose}><AppIcon name="arrow-left" size={16} /> 返回</Button>
         )}
         <div className="min-w-0">
           <h2 className="truncate text-body font-semibold text-ink-900">完整历史</h2>
@@ -351,14 +349,14 @@ export function TurnInspector({ agentId, sessionId, title, agentName, avatar, on
           </p>
         </div>
         <span className="ml-auto" />
-        {!mobile && <IconButton label="关闭完整历史" onClick={onClose}><IconX size={15} /></IconButton>}
+        {!mobile && <IconButton label="关闭完整历史" onClick={onClose}><AppIcon name="x" size={15} /></IconButton>}
       </header>
 
       <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto px-2 pb-3" data-shot-mask="history-body">
         {loading && entries.length === 0 && <Skeleton rows={5} />}
         {failed !== null && <p className="py-6 text-center text-meta text-danger">{failed}</p>}
         {!loading && failed === null && turns.length === 0 && (
-          <EmptyState icon={<IconHistory size={20} />} title="还没有回合" hint="发一条消息后，这里会出现「请求 → 回复」的完整记录。" />
+          <EmptyState icon={<AppIcon name="history" size={20} />} title="还没有回合" hint="发一条消息后，这里会出现「请求 → 回复」的完整记录。" />
         )}
 
         {turns.map((turn, turnIndex) => {

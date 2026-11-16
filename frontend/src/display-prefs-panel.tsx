@@ -11,15 +11,15 @@
  * 不存在第二份状态（用户原话："这里的设置里面的显示设置可以先保留，毕竟是总入口"）。
  */
 import { useRef } from "react";
-import { IconAdjustments, IconMinus, IconPlus } from "@tabler/icons-react";
 
-import { IconButton } from "./design/ui";
+import { IconButton, MicroButton } from "./design/ui";
 import { Popover } from "./design/popover-view";
 import { LAYER_CLASS } from "./design/surface";
 import {
   DEFAULT_PREFS, FONT_SCALE_MAX, FONT_SCALE_MIN, focusWidthOf, fontFromSlider, fontLabel,
   sliderFromFont, sliderFromWidth, widthFromSlider, widthLabel, type DisplayPrefs,
 } from "./display-prefs";
+import { AppIcon } from "./design/icons";
 
 /** 弹层宽度：320（2026-11-09 拍板）。理由：滑块行程从 288 的 ~180 增到 ~210，
  *  而正文区在 1440 窗口下 864 → 320 只占 37%，右侧仍看得见正文变化（"边调边看"的前提）。 */
@@ -43,12 +43,12 @@ function SliderRow({ id, label, value, display, onChange, hintLeft, hintRight }:
         <span className="tabular-nums text-micro text-ink-500" data-testid={`pref-value-${id}`}>{display}</span>
       </div>
       <div className="flex items-center gap-2">
-        <IconMinus size={12} aria-hidden="true" className="shrink-0 text-ink-300" />
+        <AppIcon name="minus" size={12} aria-hidden="true" className="shrink-0 text-ink-300" />
         <input id={id} type="range" min={0} max={100} step={1} value={value}
           aria-label={display}
           onChange={(event) => onChange(Number(event.currentTarget.value))}
           className="h-11 w-full cursor-pointer accent-accent sm:h-7" />
-        <IconPlus size={12} aria-hidden="true" className="shrink-0 text-ink-300" />
+        <AppIcon name="plus" size={12} aria-hidden="true" className="shrink-0 text-ink-300" />
       </div>
       <div className="flex justify-between text-micro text-ink-500">
         <span>{hintLeft}</span>
@@ -77,7 +77,7 @@ export function DisplayPrefsPanel({ prefs, viewport, onChange, open = false, onO
         <IconButton label="显示设置" size="lg" active={open}
           aria-expanded={open} aria-haspopup="dialog"
           onClick={() => onOpenChange?.(!open)}>
-          <IconAdjustments size={16} />
+          <AppIcon name="adjustments" size={16} />
         </IconButton>
       </span>
       <Popover open={open} onClose={() => onOpenChange?.(false)} anchorRef={anchorRef}
@@ -92,11 +92,7 @@ export function DisplayPrefsPanel({ prefs, viewport, onChange, open = false, onO
             hintLeft={`${Math.round(FONT_SCALE_MIN * 100)}%`} hintRight={`${Math.round(FONT_SCALE_MAX * 100)}%`}
             onChange={(next) => onChange({ ...prefs, font: fontFromSlider(next) })} />
           <div className="flex items-center justify-between border-t border-line pt-2">
-            <button type="button"
-              className="rounded-control px-1.5 py-1 text-micro text-ink-500 transition-colors hover:bg-hover hover:text-ink-900"
-              onClick={() => onChange(DEFAULT_PREFS)}>
-              恢复默认
-            </button>
+            <MicroButton onClick={() => onChange(DEFAULT_PREFS)}>恢复默认</MicroButton>
             <span className={`text-micro text-ink-300 ${LAYER_CLASS.popover}`} aria-hidden="true">Esc 关闭</span>
           </div>
         </div>

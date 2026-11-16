@@ -41,7 +41,11 @@
     "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs",
     "test:md": "node frontend/test/md-render-contract.mjs",
     "test:visual": "node scripts/visual-matrix.mjs",
-    "test:visual:update": "node scripts/visual-matrix.mjs --update"
+    "test:visual:update": "node scripts/visual-matrix.mjs --update",
+    "lint:icons": "node scripts/lint-icons.mjs frontend/src",
+    "design:list": "node scripts/design-list.mjs",
+    "design:preview": "echo 样板间: cd frontend && npx vite --port 5399 → /dev/design-system.html",
+    "lint:primitives": "node scripts/lint-primitives.mjs"
   },
   "type": "module",
   "devDependencies": {

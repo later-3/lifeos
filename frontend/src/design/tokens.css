@@ -28,6 +28,7 @@
   --color-danger-soft: #f8ebeb;
   --color-success: #067647;
   --color-success-soft: #e6f2ec;
+  --color-table-head: #fafafa;
 
   /*
    * 「正在跑」的语义色（Task 0005 · 徽标改版，用户 2026-11-05 裁决 P1 蓝）。
@@ -175,6 +176,11 @@
    * 基准值单独一组（--text-*-base）：字号滑块改的是 --text-scale，
    * 每个档位用 calc(base * scale) 派生（见 frontend/src/display-prefs.ts 的 fontVars）；
    * 组件仍然只用 --text-*，不感知缩放，也不允许出现第二份 px。 */
+  /*
+   * 字体族（S3）：主题包的字体槽写这两个变量。
+   * 默认 = 系统栈（Inter 优先，中文回落）——与改造前完全一致，没选字体时不改变任何东西。
+   * 放在 :root（不是 @theme）：它们是运行时可变值，Tailwind 不需要为字体族生成 utility。
+   */
   --text-scale: 1;
   --text-micro-base: 11px;
   --text-meta-base: 12px;

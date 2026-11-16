@@ -31,6 +31,16 @@ export const NEW_VERSION_EVENT = "lifeos:new-version";
 export function startVersionCheck(win: Window = window): () => void {
   const current = currentBuildId();
   if (!current) return () => {};
+  /*
+   * 自动化环境下不轮询（Task 0015 · S6 实测）：版本提示条是 `fixed top-0` 的浮层，
+   * 出现时会**盖住列头/顶部控件**——而 Playwright 一类测试会点击那些控件，
+   * 于是"版本刚好不同"这一环境状态会让点击契约随机失败（实测 4176 上 6 处超时）。
+   *
+   * 为什么用 navigator.webdriver 而不是环境变量：它由浏览器自己置位，测试无需在
+   * 启动脚本里记得传参；且这是**仅影响提示条**的行为，不影响任何功能路径。
+   * 真实用户（非自动化）永远走完整轮询。
+   */
+  if ((win.navigator as { webdriver?: boolean }).webdriver === true) return () => {};
   let timer: number | undefined;
   const check = async () => {
     try {
