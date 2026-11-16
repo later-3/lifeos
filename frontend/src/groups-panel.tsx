@@ -81,7 +81,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         aria-expanded={open}
         aria-current={selected ? "true" : undefined}
         aria-label={`${name}，${open ? "折叠" : "展开"}分组`}
-        className="h-8 min-w-0 flex-1 hover:bg-nav-accent">
+        className="h-8 min-w-0 flex-1 hover:bg-wash-hover">
         <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
           {open ? <AppIcon name="chevron-right" size={16} className="rotate-90" /> : <AppIcon name="chevron-right" size={16} />}
         </span>
@@ -102,7 +102,7 @@ export function GroupHeader({ name, count, open, onToggle, onSelect, selected = 
         * `frontend/test/layer-paint.mjs` 断言「药丸与宿主悬停不同 token」。
         */}
       <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
-        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-sunken px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
+        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
       <IconButton size="sm" label={`${name} 项目概览`} onClick={(event) => onOverview(event.currentTarget)}>
         <AppIcon name="info" size={14} />
       </IconButton>
@@ -221,7 +221,7 @@ export function GroupsColumnHeader({ count, onHide }: { count?: number; onHide: 
       <Label tone="nav" className="min-w-0 truncate">会话</Label>
       {count !== undefined && (
         <span aria-label={`会话 ${count} 个`} data-shot-mask="column-count"
-          className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
+          className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
       <span className="ml-auto" />
       <IconButton size="sm" label="收起此列" onClick={onHide}><AppIcon name="chevron-left" size={16} /></IconButton>

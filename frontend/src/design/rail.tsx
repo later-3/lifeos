@@ -60,7 +60,7 @@ export function NavRail({ groups, bottom }: {
         //   深色下 ink-900 是近白 → 底色变亮 4.4–6.4（同向、同样明显）。
         // 一套规则在 2 个状态 × 2 种深浅色下都成立，不需要为每个分支各写一遍。
         className={`group relative flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:text-ink-900 ${
-          tab.active ? "bg-nav-selected text-ink-900" : ""
+          tab.active ? "bg-wash-selected text-ink-900" : ""
         }`}>
         <span aria-hidden
           className="pointer-events-none absolute inset-0 rounded-control bg-ink-900/6 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />

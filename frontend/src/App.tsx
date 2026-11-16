@@ -382,7 +382,7 @@ function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: st
       <Label tone="nav" className="min-w-0 truncate">{label}</Label>
       {/* 数据统计：列头里的总数（助手/会话各自有多少个），安静地跟在标题后面 */}
       {count !== undefined && (
-        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
+        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
       <span className="ml-auto" />

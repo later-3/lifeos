@@ -57,7 +57,7 @@ export function ToggleChip({ pressed, shape = "pill", className = "", children, 
       : "flex h-7 shrink-0 items-center rounded-control px-2.5 text-meta transition-colors";
   const look = shape === "dot"
     ? pressed ? "border-ink-900" : "border-transparent"
-    : pressed ? "bg-nav-selected text-ink-900 ring-1 ring-accent" : "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover";
+    : pressed ? "bg-wash-selected text-ink-900 ring-1 ring-accent" : "bg-surface text-ink-700 ring-1 ring-line hover:bg-wash-hover";
   return (
     <button type="button" aria-pressed={pressed} {...rest} className={`${base} ${look} ${className}`}>
       {children}
@@ -75,7 +75,7 @@ export function ToggleChip({ pressed, shape = "pill", className = "", children, 
 export function ClickableRow({ className = "", children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button type="button" {...rest}
-      className={`flex w-full min-w-0 items-center gap-2 rounded-control text-left transition-colors hover:bg-hover max-sm:min-h-11 ${className}`}>
+      className={`flex w-full min-w-0 items-center gap-2 rounded-control text-left transition-colors hover:bg-wash-hover max-sm:min-h-11 ${className}`}>
       {children}
     </button>
   );
@@ -226,7 +226,7 @@ export function Row({ selected = false, className = "", children, onClick, testI
      * （`frontend/test/layer-paint.mjs` 断言「行级填充只声明在行根」）。
      */
     <div className={`group/row relative flex h-11 w-full items-center rounded-row text-body transition-colors sm:h-8 ${
-      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
+      selected ? "bg-wash-selected font-medium text-ink-900" : "text-ink-700 hover:bg-wash-hover"
     } ${className}`}>
       <div
         {...(interactive
@@ -418,7 +418,7 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
   return (
     <div data-testid={testId} aria-current={selected ? "true" : undefined}
       className={`group/session flex h-14 w-full items-center rounded-row transition-colors ${
-        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
+        selected ? "bg-wash-selected font-medium text-ink-900" : "text-ink-700 hover:bg-wash-hover"
       }`}>
       <div role="button" tabIndex={0} onClick={onSelect}
         onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}

@@ -17,12 +17,14 @@
 <!-- design-manifest:auto BEGIN -->
 ## 组件清单（自动生成，pnpm design:list）
 
-共 116 项：
+共 124 项：
 
+- **alphaVar**（const）— `src/design/wash.ts`
 - **AppIcon**（function）— `src/design/icons.tsx`
 - **applySurfaceTokens**（function）— `src/design/theme.ts`
 - **applyTheme**（function）— `src/design/theme.ts`
 - **applyThemePack**（function）— `src/design/theme-package.ts`
+- **applyWashAlphas**（function）— `src/design/theme.ts`
 - **Button**（function）— `src/design/ui.tsx`
 - **calculatePalette**（function）— `src/design/theme.ts`
 - **clampPan**（function）— `src/design/image-zoom.ts`
@@ -31,6 +33,7 @@
 - **clampZoom**（function）— `src/design/image-zoom.ts`
 - **ClickableRow**（function）— `src/design/ui.tsx`
 - **ComposerButton**（function）— `src/design/ui.tsx`
+- **compositeOver**（function）— `src/design/wash.ts`
 - **ConfirmDialog**（function）— `src/design/overlay.tsx`
 - **CONTRACT**（const）— `src/design/theme-package.ts`
 - **contrastOf**（function）— `src/design/theme.ts`
@@ -88,6 +91,8 @@
 - **NavRail**（function）— `src/design/rail.tsx`
 - **nextZoom**（function）— `src/design/image-zoom.ts`
 - **normColor**（function）— `src/design/theme-package.ts`
+- **oklchOf**（function）— `src/design/wash.ts`
+- **parseColor**（function）— `src/design/wash.ts`
 - **placePopover**（function）— `src/design/popover.ts`
 - **Popover**（function）— `src/design/popover-view.tsx`
 - **POPOVER**（const）— `src/design/popover-view.tsx`
@@ -119,6 +124,7 @@
 - **THEME**（const）— `src/design/theme.ts`
 - **ThemePreview**（function）— `src/design/theme-preview.tsx`
 - **themeToCss**（function）— `src/design/theme.ts`
+- **themeWashEnvelope**（function）— `src/design/theme.ts`
 - **ToastProvider**（function）— `src/design/toast.tsx`
 - **ToggleChip**（function）— `src/design/ui.tsx`
 - **TRACKING**（const）— `src/design/theme.ts`
@@ -130,6 +136,8 @@
 - **useToast**（function）— `src/design/toast.tsx`
 - **validateThemePack**（function）— `src/design/theme-package.ts`
 - **VAR**（const）— `src/design/theme.ts`
+- **washAlphaFor**（function）— `src/design/wash.ts`
+- **washAlphasOf**（function）— `src/design/wash.ts`
 - **WIDTH**（const）— `src/design/layout.ts`
 - **ZOOM**（const）— `src/design/image-zoom.ts`
 - **ZOOM**（const）— `src/design/image-zoom.ts`

@@ -62,7 +62,7 @@ const browser = await playwright.chromium.launch({
  * `rowFillClasses`: 判定一个元素是否**声明**行级填充（悬停底/选中底都算）。
  * 只要它在行根之外出现，就是"第二个绘制者"。
  */
-const ROW_FILL_RE = /(?:^|\s)(?:hover:bg-[\w-]+|group-hover\/[\w-]+:bg-[\w-]+|bg-nav-selected|bg-nav-accent)(?:\s|$)/;
+const ROW_FILL_RE = /(?:^|\s)(?:hover:bg-[\w-]+|group-hover\/[\w-]+:bg-[\w-]+|bg-wash-[\w-]+|bg-nav-selected|bg-nav-accent)(?:\s|$)/;
 
 const probeRow = async (page, selector) => await page.evaluate(({ sel, fillSrc }) => {
   const fillRe = new RegExp(fillSrc);

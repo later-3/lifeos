@@ -20,7 +20,7 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 
 import "../src/index.css";
-import { applySurfaceTokens, calculatePalette, clampState, hex, THEME_PRESETS } from "../src/design/theme";
+import { applySurfaceTokens, applyWashAlphas, calculatePalette, clampState, hex, THEME_PRESETS } from "../src/design/theme";
 import { applyThemePack } from "../src/design/theme-package";
 import preloadedThemes from "../src/design/preloaded-themes.json";
 import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceStyle } from "../src/design/surface";
@@ -136,6 +136,11 @@ function App() {
         ["--color-running", palette.running],
       ];
       for (const [name, color] of map) root.setProperty(name, hex(...color));
+      // wash 的 α 与产品同一条路径（Task 0017 · P2）：内置主题恒为 100%（视觉零变化）
+      applyWashAlphas(root, {
+        navAccent: hex(...palette.navAccent), navSelected: hex(...palette.navSelected),
+        sunken: hex(...palette.sunken), navBg: hex(...palette.navBg),
+      }, next);
       document.documentElement.dataset.themeMode = next;
       applySurfaceTokens(next);
       return;

@@ -52,12 +52,31 @@ export function isHexColor(v: string): boolean {
  * 把带 alpha 的值写进实底 = 深色主题下那块变成"几乎透明"，文字浮在页面底上（S6 审计实测）。
  * 契约只接受 `#rrggbb`（4 位简写会展开）——alpha 由派生层按底色混合表达，不在 token 里存。
  */
-export function normColor(v: string): string {
+export function normColor(v: string, options: { keepAlpha?: boolean } = {}): string {
   const t = v.trim().toLowerCase();
   if (t in NAMED_COLORS) return NAMED_COLORS[t];
   const m = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(t);
   if (m === null) return t;
   const hexPart = m[1];
+  /*
+   * `keepAlpha`（Task 0017 · P2）：**wash 与 fill 是两类东西**。
+   *
+   * 旧实现一刀切剥掉 alpha，理由（对 fill 成立）是"8 位 hex 写进实底 = 深色主题下那块
+   * 几乎透明、文字浮在页面底上"（S6 审计实测，见 applyThemePack 的注释）。
+   * 但对 **wash（状态薄涂）** 恰恰相反：半透明是它的语义本身 ——
+   * VSCode 的 `list.hoverBackground: #ffffff14`（8% 白）本来就该当薄涂用，
+   * 剥成 `#ffffff` 会让整行变成纯白块（VSCode 2026 Dark 的选中底实测就是这个结果：
+   * raw `#ffffff22` → 派生后 `#ffffff`，全白）。
+   */
+  if (options.keepAlpha === true) {
+    if (hexPart.length === 4) {
+      const [r, g, b, a] = hexPart.split("").map((c) => c + c);
+      return `#${r}${g}${b}${a}`;
+    }
+    if (hexPart.length === 8) return `#${hexPart}`;
+    if (hexPart.length === 3) return "#" + hexPart.split("").map((c) => c + c).join("");
+    return "#" + hexPart;
+  }
   if (hexPart.length === 4) return "#" + hexPart.slice(0, 3).split("").map((c) => c + c).join("");
   if (hexPart.length === 8) return "#" + hexPart.slice(0, 6);
   if (hexPart.length === 3) return "#" + hexPart.split("").map((c) => c + c).join("");
@@ -89,11 +108,27 @@ export type PackReport = {
 };
 
 /** 关键对比对（校验器抽检；pass 线 ≥4.5 WCAG AA 正文）。 */
+/*
+ * 关键对比对（校验器抽检；pass 线 ≥4.5 = WCAG AA 正文）。
+ *
+ * **2026-11-16（Task 0017 · P2）：原来只有 4 对，全是 ink × surface。**
+ * 承托层（选中底 / 悬停底）一对都没有 —— 于是"选中底变成荧光绿、压在上面的状态点
+ * 与光环全部失真"这件事，校验器一个字都说不出。现在补上承托层这一族。
+ *
+ * 为什么放在这里而不是只放在 P2 的生成式矩阵里：这里查的是**包本身**（导入时就能报），
+ * 生成式矩阵查的是**8 个预置主题 × 4 主题态**（回归门）。两处互补，都留。
+ */
 const CONTRAST_PAIRS: Array<{ name: string; fg: ContractVar; bg: ContractVar; dark: boolean; severity: "error" | "warn" }> = [
   { name: "正文/内容底 (dark)", fg: "--color-ink-900", bg: "--color-surface", dark: true, severity: "error" },
   { name: "正文/内容底 (light)", fg: "--color-ink-900", bg: "--color-surface", dark: false, severity: "error" },
   { name: "辅助字/内容底 (dark)", fg: "--color-ink-500", bg: "--color-surface", dark: true, severity: "warn" },
   { name: "辅助字/内容底 (light)", fg: "--color-ink-500", bg: "--color-surface", dark: false, severity: "warn" },
+  /* ── 承托层 × 压在其上的东西（P2 新增）──
+   * 门槛 3.0 而不是 4.5：这些是**图形/标记**（状态点 6px、徽标 16px），
+   * 不是正文。WCAG 1.4.11 Non-text Contrast 的界就是 3:1。
+   * 用 4.5 会把这些有意义的小标记判成缺陷（它们本来就小，够粗就行）。 */
+  { name: "导航辅助字/选中底 (dark)", fg: "--color-nav-muted", bg: "--color-nav-selected", dark: true, severity: "warn" },
+  { name: "导航辅助字/选中底 (light)", fg: "--color-nav-muted", bg: "--color-nav-selected", dark: false, severity: "warn" },
 ];
 
 export function validateThemePack(pack: ThemePack): PackReport {
@@ -151,7 +186,7 @@ export function validateThemePack(pack: ThemePack): PackReport {
  * 先 applyTheme(currentState) 写引擎全量（兜底缺省变量），再覆盖包有值的变量。
  * 切深浅 = 换 modes 槽（另一个槽的值覆盖）。
  */
-import { applyTheme, type ThemeState } from "./theme.ts";
+import { applyTheme, applyWashAlphas, type ThemeState } from "./theme.ts";
 import { derivePack } from "./theme-derive.ts";
 
 export function applyThemePack(rawPack: ThemePack, requestedMode: "light" | "dark", currentState: ThemeState): "light" | "dark" {
@@ -181,6 +216,23 @@ export function applyThemePack(rawPack: ThemePack, requestedMode: "light" | "dar
   for (const [name, value] of Object.entries(vars)) {
     if (value !== undefined && isHexColor(value)) root.setProperty(name, normColor(value));
   }
+  /*
+   * wash 的 α 必须在**包覆盖之后**再算一次（Task 0017 · P2）。
+   *
+   * `applyTheme` 已经算过一次，但那是按**引擎**的 fill 算的；包把 `nav-selected` 换成
+   * 自己的值之后，同一个 α 就不对应了。顺序错了的表现：Quiet Light 的选中底是
+   * 派生后的 `#e3e3e3`，但 α 仍按引擎的 `#e4e8f5` 算成 100% —— 恰好没收敛到最该收敛的地方。
+   *
+   * 取值用 `getPropertyValue` 读**此刻真正生效的** fill（引擎写过、包又覆盖过），
+   * 所以内置与外部走同一条路径，不存在第二份判断。
+   */
+  const readVar = (name: string) => (root.getPropertyValue(name) ?? "").trim();
+  applyWashAlphas(root, {
+    navAccent: readVar("--color-nav-accent"),
+    navSelected: readVar("--color-nav-selected"),
+    sunken: readVar("--color-sunken"),
+    navBg: readVar("--color-nav-bg"),
+  }, mode);
   document.documentElement.dataset.themeMode = mode;
   // 字体槽（S3）：包里有就写，没有就保持主题引擎/默认值
   if (pack.fonts?.sans !== undefined) root.setProperty("--font-sans", pack.fonts.sans);

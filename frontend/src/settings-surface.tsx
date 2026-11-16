@@ -434,7 +434,7 @@ export function SettingsSurface({ section, onSection, theme, onTheme, prefs, bad
                       // 选中态文字用 ink-900（accent 在 nav-bg 上只有 4.33，不到 AA 4.5）；
                       // 强调交给左侧 2px 指示条 —— 颜色是稀缺信号，不该由文字颜色承担
                       ? "font-semibold text-ink-900 max-sm:bg-surface"
-                      : "text-ink-700 hover:bg-nav-accent"} sm:w-full`}
+                      : "text-ink-700 hover:bg-wash-hover"} sm:w-full`}
                   aria-current={section === it.k ? "page" : undefined}
                   onClick={() => onSection(it.k)}>
                   {/* 激活指示条：2px、贴左缘、上下内缩（Hoppscotch TabsNav.vue:78-90 的内缩手法，竖向变体）。
@@ -492,7 +492,7 @@ function ThemeSelector({ themes, activeId, onSelect }: {
           style={{ boxShadow: "var(--surface-popover)", zIndex: "var(--z-popover)", maxHeight: "280px", overflowY: "auto" }}>
           {themes.map((t) => (
             <ClickableRow key={t.id}
-              className={`gap-3 px-3 py-2 ${t.id === activeId ? "bg-nav-selected" : ""}`}
+              className={`gap-3 px-3 py-2 ${t.id === activeId ? "bg-wash-selected" : ""}`}
               onClick={() => { onSelect(t.id); setOpen(false); }}>
               <span className="flex h-5 w-9 shrink-0 overflow-hidden rounded-inner border border-line" aria-hidden>
                 {t.colors.map((c, i) => <i key={i} className="flex-1" style={{ background: c }} />)}

@@ -88,7 +88,7 @@ export function ProjectOverviewCard({ open, onClose, anchorRef, agentId, project
       <div className="flex flex-col gap-3" data-testid="project-overview" data-project-id={projectId}>
         {/* 身份区：图标 + 项目名 + 路径（可复制）。默认工作区没有外部路径，写清楚它是什么。 */}
         <div className="flex items-center gap-2">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-nav-accent text-ink-500">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-wash-chip text-ink-500">
             <AppIcon name="folder" size={16} />
           </span>
           <span className="min-w-0 truncate text-body font-medium text-ink-900">{name}</span>

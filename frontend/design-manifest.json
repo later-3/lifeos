@@ -1,7 +1,12 @@
 {
  "generated": "2026-11-16",
- "count": 116,
+ "count": 124,
  "entries": [
+  {
+   "name": "alphaVar",
+   "kind": "const",
+   "file": "src/design/wash.ts"
+  },
   {
    "name": "AppIcon",
    "kind": "function",
@@ -21,6 +26,11 @@
    "name": "applyThemePack",
    "kind": "function",
    "file": "src/design/theme-package.ts"
+  },
+  {
+   "name": "applyWashAlphas",
+   "kind": "function",
+   "file": "src/design/theme.ts"
   },
   {
    "name": "Button",
@@ -61,6 +71,11 @@
    "name": "ComposerButton",
    "kind": "function",
    "file": "src/design/ui.tsx"
+  },
+  {
+   "name": "compositeOver",
+   "kind": "function",
+   "file": "src/design/wash.ts"
   },
   {
    "name": "ConfirmDialog",
@@ -348,6 +363,16 @@
    "file": "src/design/theme-package.ts"
   },
   {
+   "name": "oklchOf",
+   "kind": "function",
+   "file": "src/design/wash.ts"
+  },
+  {
+   "name": "parseColor",
+   "kind": "function",
+   "file": "src/design/wash.ts"
+  },
+  {
    "name": "placePopover",
    "kind": "function",
    "file": "src/design/popover.ts"
@@ -503,6 +528,11 @@
    "file": "src/design/theme.ts"
   },
   {
+   "name": "themeWashEnvelope",
+   "kind": "function",
+   "file": "src/design/theme.ts"
+  },
+  {
    "name": "ToastProvider",
    "kind": "function",
    "file": "src/design/toast.tsx"
@@ -556,6 +586,16 @@
    "name": "VAR",
    "kind": "const",
    "file": "src/design/theme.ts"
+  },
+  {
+   "name": "washAlphaFor",
+   "kind": "function",
+   "file": "src/design/wash.ts"
+  },
+  {
+   "name": "washAlphasOf",
+   "kind": "function",
+   "file": "src/design/wash.ts"
   },
   {
    "name": "WIDTH",
