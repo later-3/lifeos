@@ -15,6 +15,7 @@ import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { decorateCodeBlocks } from "./md-highlight";
 import { fixCjkEmphasis } from "./md-cjk";
+import { expandShortcodes } from "./emoji-catalog";
 
 /** marked v18 的 code renderer 收**对象**参数；HTML 全部 `escaped`，不做原始透传。 */
 function codeRenderer({ text, lang }: { text: string; lang?: string }): string {
@@ -26,11 +27,30 @@ function codeRenderer({ text, lang }: { text: string; lang?: string }): string {
   return `<pre data-md-code="${language}"><code class="language-${language} md-hl-pending">${escaped}\n</code></pre>`;
 }
 
-const marked = new Marked({ renderer: { code: codeRenderer } });
+/**
+ * 图片 renderer：表情（`/api/media/<id>`）加 `md-emoji` 类做行内尺寸，
+ * 其余图保持默认行为（`![](…)` 仍然按普通图片渲染，`src` 原样交给 DOMPurify 校验协议）。
+ *
+ * 为什么要接管 img：短码替换出来的是 markdown 图片（`emoji-shortcode.ts`），
+ * 只有能区分"表情"与"普通图"才做得出 1em 的行内尺寸（`index.css` 的 `.md-body img.md-emoji`）。
+ */
+function imageRenderer(token: { href?: string | null; text?: string | null }): string {
+  const rawHref = token.href ?? "";
+  const alt = (token.text ?? "").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const isEmoji = rawHref.startsWith("/api/media/");
+  const className = isEmoji ? ' class="md-emoji"' : "";
+  const href = rawHref.replaceAll('"', "&quot;");
+  return `<img src="${href}" alt="${alt}"${className} loading="lazy">`;
+}
+
+const marked = new Marked({ renderer: { code: codeRenderer, image: imageRenderer } });
 
 export function renderMarkdown(text: string): string {
+  // 短码（`:blush:`）先换成 markdown 图片：模型只发几个字符，图由界面按 id 拉（`emoji-shortcode.ts`）。
+  // 替换发生在 `fixCjkEmphasis` 之前，后者的零宽连接符规则只作用于文本。
+  const expanded = expandShortcodes(text);
   // CJK 边界修正先于 marked（这层处理只插零宽连接符，先于 sanitize；见 md-cjk.ts 的规范摘录）
-  return DOMPurify.sanitize(marked.parse(fixCjkEmphasis(text), { async: false }) as string, { USE_PROFILES: { html: true } });
+  return DOMPurify.sanitize(marked.parse(fixCjkEmphasis(expanded), { async: false }) as string, { USE_PROFILES: { html: true } });
 }
 
 export function Markdown({ text, inverse = false, className = "" }: { text: string; inverse?: boolean; className?: string }) {

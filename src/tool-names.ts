@@ -9,4 +9,5 @@ export const LIFEOS_TOOL_NAMES = [
   "lifeos_memory_search", "lifeos_memory_record", "lifeos_memory_delete",
   "lifeos_ask", "lifeos_send", "lifeos_agent_list", "lifeos_ask_list",
   "lifeos_review_state", "lifeos_review_open", "lifeos_review_comments", "lifeos_review_comment_add", "lifeos_review_comment_reply", "lifeos_review_comment_resolve",
+  "lifeos_media_catalog", "lifeos_media_avatar_set",
 ] as const;

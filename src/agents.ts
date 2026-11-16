@@ -28,6 +28,8 @@ export type AgentDefinition = {
   defaultSessionId?: string;
   hiddenProjectIds?: string[];
   archivedAt?: string;
+  /** 图片头像（缺省 = 首字母色块）。写入唯一实现见 `src/avatar.ts`。 */
+  avatar?: { kind: "image"; file: string; revision: number };
 };
 export type AgentRecord = AgentDefinition;
 export type AgentError = { code: string; message: string; status: 400 | 404 | 409 };

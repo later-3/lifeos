@@ -30,6 +30,8 @@ import { getSession, queueSessionInput, reserveTurn, runTurn } from "./agent-hos
 import { resolveHome } from "./home.ts";
 import { log } from "./logging.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
+import { findEntry, isMediaId, readCatalog, readMediaBytes, searchEntries, type MediaEntry } from "./media.ts";
+import { setAgentAvatar } from "./avatar.ts";
 
 export { LIFEOS_TOOL_NAMES };
 
@@ -615,6 +617,97 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
+  /**
+   * 媒体目录（Task 0016 · P1）：**不返回图片，只返回可用的 id 与关键词**。
+   *
+   * 为什么非要这么做：让 Agent"读图选图"会按 4800 字符/张烧上下文
+   *（`pi/packages/ai/src/utils/estimate.ts:16`），选一张烧一次；而它真正需要的只是**编号与语义**。
+   */
+  const mediaCatalog = defineTool({
+    name: "lifeos_media_catalog",
+    label: "Search the Life OS media library",
+    description:
+      "Search the local media library for avatar candidates or emoji/sticker images. "
+      + "Returns ids, packs, keywords, source and license — never the image bytes, so nothing is added to the model context. "
+      + "Use it when you need to pick an avatar or find the shortcode of a feeling to send.",
+    promptSnippet: "Search avatar/emoji assets by keyword (no image bytes)",
+    promptGuidelines: [
+      "Prefer this over reading image files: reading an image costs ~4800 chars of context each, this costs a few lines of text.",
+      "For an avatar, search kind=avatar, then set it with lifeos_media_avatar_set using the returned id — never read the image first.",
+      "For a feeling, search kind=emoji and reply with the asset id wrapped in colons (e.g. :blush:) — the UI renders the image.",
+    ],
+    parameters: Type.Object({
+      kind: Type.Optional(Type.String({ description: "avatar | emoji. Omit for both." })),
+      query: Type.Optional(Type.String({ description: "Keywords, Chinese or English (e.g. 猫 / calm / 开心). Space-separated terms are ANDed." })),
+      pack: Type.Optional(Type.String({ description: "Restrict to one asset pack (e.g. dicebear-shapes)." })),
+      limit: Type.Optional(Type.Number({ description: "Max results (default 20)." })),
+    }),
+    async execute(_toolCallId, params) {
+      const kind = params.kind;
+      if (kind !== undefined && kind !== "avatar" && kind !== "emoji") throw new Error("kind must be avatar or emoji");
+      const catalog = await readCatalog(resolveHome());
+      const items = searchEntries(catalog, {
+        ...(params.query !== undefined ? { query: params.query } : {}),
+        ...(kind !== undefined ? { kind: kind as "avatar" | "emoji" } : {}),
+        ...(params.pack !== undefined ? { pack: params.pack } : {}),
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      });
+      if (items.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No media matched. Library currently holds ${catalog.entries.length} entries — ask the user to seed it with \`pnpm media:seed\` if that is unexpected.` }],
+          details: { items: [] as MediaEntry[], total: catalog.entries.length },
+        };
+      }
+      const lines = items.map((entry) =>
+        `- ${entry.id} [${entry.kind}/${entry.pack}] ${entry.keywords.slice(0, 8).join(", ")} (${entry.license})`);
+      return {
+        content: [{ type: "text" as const, text: `Media matches (${items.length}/${catalog.entries.length}):\n${lines.join("\n")}` }],
+        details: { items, total: catalog.entries.length },
+      };
+    },
+  });
+
+  /**
+   * 把库里的一件素材设成某个 Agent 的头像（Task 0016 · P1）。
+   *
+   * 与 HTTP 上传调**同一个** `setAgentAvatar()`：文件 + agent.json + 广播只有一处实现。
+   * 模型只传两个 id，图片字节全程不经过上下文。
+   */
+  const mediaAvatarSet = defineTool({
+    name: "lifeos_media_avatar_set",
+    label: "Set an agent avatar from the media library",
+    description:
+      "Set an agent's avatar to an image already in the local media library. "
+      + "Writes agents/<id>/avatar/avatar.<ext>, updates agent.json and broadcasts agents_changed so every open tab swaps the image immediately. "
+      + "The image bytes never enter the model context. Defaults to your own agent when agentId is omitted.",
+    promptSnippet: "Set an agent avatar from a library asset id",
+    promptGuidelines: [
+      "Find the asset with lifeos_media_catalog first; do not read the image itself.",
+      "Omit agentId to change your own avatar; pass another agent id only when the user asked for it.",
+    ],
+    annotations: { destructiveHint: false, readOnlyHint: false, idempotentHint: true, openWorldHint: false },
+    parameters: Type.Object({
+      mediaId: Type.String({ description: "Asset id from lifeos_media_catalog (e.g. 'calm-otter')." }),
+      agentId: Type.Optional(Type.String({ description: "Target agent id; defaults to the current agent." })),
+    }),
+    async execute(_toolCallId, params) {
+      if (!isMediaId(params.mediaId)) throw new Error(`Invalid media id: ${params.mediaId}`);
+      const catalog = await readCatalog(resolveHome());
+      const entry = findEntry(catalog, params.mediaId);
+      if (entry === undefined) throw new Error(`No media ${params.mediaId}. Use lifeos_media_catalog to find an id.`);
+      if (entry.kind !== "avatar") throw new Error(`${params.mediaId} is an ${entry.kind} asset, not an avatar.`);
+      const buffer = await readMediaBytes(resolveHome(), entry);
+      if (buffer === undefined) throw new Error(`Media ${params.mediaId} is registered but its file is missing; re-seed the library.`);
+      const target = params.agentId !== undefined && params.agentId !== "" ? params.agentId : ctx.agentId;
+      const written = await setAgentAvatar(target, buffer);
+      if (!written.ok) throw new Error(written.message);
+      return {
+        content: [{ type: "text" as const, text: `Avatar of ${target} is now ${entry.id} (${entry.keywords.slice(0, 4).join(", ")}).` }],
+        details: { agentId: target, mediaId: entry.id, avatar: written.avatar },
+      };
+    },
+  });
+
   const agentList = defineTool({
     name: "lifeos_agent_list",
     label: "List Life OS agents",
@@ -934,5 +1027,5 @@ export function createAgentTools(ctx: ToolContext) {
     },
   });
 
-  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send, agentList, askList, reviewState, reviewOpen, reviewComments, reviewCommentAdd, reviewCommentReply, reviewCommentResolve];
+  return [create, remove, taskCreate, taskList, taskEnter, projectAdd, projectRemove, projectList, memorySearch, memoryRecord, memoryDelete, ask, send, agentList, askList, reviewState, reviewOpen, reviewComments, reviewCommentAdd, reviewCommentReply, reviewCommentResolve, mediaCatalog, mediaAvatarSet];
 }

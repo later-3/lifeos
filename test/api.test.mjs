@@ -1087,3 +1087,45 @@ test("会话列表的失败态：最后一条 assistant 以 error 结束才带 f
       "失败过且未查看 → 即使后来成功，仍要显示失败（直到用户查看）");
   } finally { server.close(); }
 });
+
+test("媒体库接口：目录查询（中文关键词）+ 素材字节 + 非法/缺失路径的失败语义", async () => {
+  const { server, base, home } = await start();
+  try {
+    const { addEntry } = await import("../src/media.ts");
+    const PNG_1PX = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    await addEntry(home, { id: "calm-otter", kind: "avatar", pack: "test", buffer: PNG_1PX, keywords: ["海豹", "平静", "calm"], source: "test", license: "CC0-1.0" });
+    await addEntry(home, { id: "blush", kind: "emoji", pack: "test", buffer: PNG_1PX, keywords: ["微笑", "smile"], source: "test", license: "CC-BY-4.0" });
+
+    // 中文检索命中
+    const catalog = await fetch(`${base}/api/media/catalog?q=${encodeURIComponent("海豹")}`);
+    assert.equal(catalog.status, 200);
+    const catalogBody = await catalog.json();
+    assert.deepEqual(catalogBody.items.map((item) => item.id), ["calm-otter"]);
+    assert.deepEqual(catalogBody.stats, { avatar: 1, emoji: 1, totalBytes: PNG_1PX.length * 2, packs: ["test"] });
+
+    // kind 过滤
+    const emojiOnly = await (await fetch(`${base}/api/media/catalog?kind=emoji`)).json();
+    assert.deepEqual(emojiOnly.items.map((item) => item.id), ["blush"]);
+
+    // 素材字节：200 + 正确 mime
+    const image = await fetch(`${base}/api/media/calm-otter`);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+    assert.equal((await image.arrayBuffer()).byteLength, PNG_1PX.length);
+
+    // 失败语义：非法 kind / 非法 id / 不存在 / 登记了但文件丢了
+    assert.equal((await fetch(`${base}/api/media/catalog?kind=nope`)).status, 400);
+    const badId = await fetch(`${base}/api/media/Bad`);
+    assert.equal(badId.status, 400);
+    assert.equal((await badId.json()).error.code, "invalid_media_id");
+    const missing = await fetch(`${base}/api/media/nope`);
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).error.code, "media_not_found");
+    const { rm } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await rm(join(home, "media", "avatar", "calm-otter.png"));
+    const gone = await fetch(`${base}/api/media/calm-otter`);
+    assert.equal(gone.status, 404);
+    assert.equal((await gone.json()).error.code, "media_file_missing");
+  } finally { server.close(); }
+});

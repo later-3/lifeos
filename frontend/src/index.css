@@ -98,6 +98,12 @@ html, body, button, input, textarea, select {
 .md-body a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
 .md-body hr { border: none; border-top: 1px solid var(--color-line); margin: 1.1em 0; }
 .md-body img { max-width: 100%; }
+/*
+ * 表情图（短码 `:id:` → markdown 图，见 emoji-shortcode.ts）：
+ * 用 1em 的行内尺寸而不是 100%——表情是**文字的一部分**，不该撑成一张大图。
+ * alt 保留短码 id：图挂了仍有可读文字，读屏也能念出来。
+ */
+.md-body img.md-emoji { display: inline-block; width: 1.15em; height: 1.15em; margin: 0 0.08em; vertical-align: -0.18em; object-fit: contain; }
 .md-body input[type="checkbox"] { margin-right: 0.4em; }
 
 /* 用户消息（深色气泡内） */

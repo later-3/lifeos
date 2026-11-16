@@ -34,6 +34,8 @@ import { listTasks } from "./tasks.ts";
 import { readUiPrefs, writeUiPrefs } from "./ui-prefs.ts";
 import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
+import { clearAgentAvatar, setAgentAvatar } from "./avatar.ts";
+import { ensureMediaDir, findEntry, mediaStats, isMediaId, readCatalog, readMediaBytes, searchEntries } from "./media.ts";
 import { appendFrontendRows, log } from "./logging.ts";
 import { cacheControlOf, looksLikeFile, REVALIDATE_CACHE } from "./static.ts";
 import { randomUUID } from "node:crypto";
@@ -142,14 +144,6 @@ async function readModelsProviders(): Promise<Record<string, string[]>> {
   return out;
 }
 const agentConfigPath = (id: string) => join(agentsRoot(), id, "projects", "workspace", "config.json");
-
-/** 头像魔数嗅探：png / jpeg / webp。 */
-function sniffImage(buffer: Buffer): { ext: string; mime: string } | undefined {
-  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return { ext: "png", mime: "image/png" };
-  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return { ext: "jpg", mime: "image/jpeg" };
-  if (buffer.length >= 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return { ext: "webp", mime: "image/webp" };
-  return undefined;
-}
 
 function problem(code: string, message: string, status: 400 | 403 | 404 | 409 | 413 | 422 | 503) {
   return { body: { error: { code, message } }, status } as const;
@@ -869,35 +863,23 @@ app.use(async (c, next) => {
   });
 
   // 头像：上传（png/jpg/webp，≤2MB，魔数校验）或 reset（回自动头像）
+  // 写入错统一下沉到 `src/avatar.ts`（工具 `lifeos_media_avatar_set` 调同一份实现）：
+  // 文件 + agent.json + broadcast 三件事只有一处，避免「只改一处漏广播」再次发生。
   app.post("/api/agents/:id/avatar", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     const body = await c.req.json().catch(() => undefined) as { data?: unknown; reset?: unknown } | undefined;
-    const avatarDir = join(agentsRoot(), agent.id, "avatar");
     if (body?.reset === true) {
-      await rm(avatarDir, { recursive: true, force: true });
-      const updated = { ...agent } as AgentDefinition & { avatar?: unknown };
-      delete updated.avatar;
-      await writeAgent(updated);
-      broadcast({ type: "agents_changed" });   // 头像变了要告诉前端重取列表（revision 变 → img src 变 → 即时换图）
+      const cleared = await clearAgentAvatar(agent.id);
+      if (!cleared.ok) { const error = problem(cleared.code, cleared.message, cleared.status); return c.json(error.body, error.status); }
       return c.json({ avatar: null });
     }
     if (body === undefined || typeof body.data !== "string" || body.data.length === 0) {
       const error = problem("invalid_request", "需要 data（base64）或 reset", 400); return c.json(error.body, error.status);
     }
-    const buffer = Buffer.from(body.data, "base64");
-    if (buffer.length > 2 * 1024 * 1024) { const error = problem("image_too_large", "头像不能超过 2MB", 400); return c.json(error.body, error.status); }
-    const sniffed = sniffImage(buffer);
-    if (sniffed === undefined) { const error = problem("invalid_image", "仅支持 png/jpg/webp", 400); return c.json(error.body, error.status); }
-    await mkdir(avatarDir, { recursive: true, mode: 0o700 });
-    await rm(avatarDir, { recursive: true, force: true });
-    await mkdir(avatarDir, { recursive: true, mode: 0o700 });
-    const file = `avatar.${sniffed.ext}`;
-    await writeFile(join(avatarDir, file), buffer, { mode: 0o600 });
-    const avatar = { kind: "image", file, revision: Date.now() };
-    await writeAgent({ ...agent, avatar } as AgentDefinition);
-    broadcast({ type: "agents_changed" });   // 同上：写操作必须闭环到界面（api.md 2.6）
-    return c.json({ avatar });
+    const written = await setAgentAvatar(agent.id, Buffer.from(body.data, "base64"));
+    if (!written.ok) { const error = problem(written.code, written.message, written.status); return c.json(error.body, error.status); }
+    return c.json({ avatar: written.avatar });
   });
   // ===== 用户档案（2026-11-02）：你本人，不是 Agent =====
   // 用户是**实体**（Task 0015 · T9）：`users/<id>/user.json` + `avatar.*`；不再写 config/profile.json。
@@ -976,6 +958,45 @@ app.use(async (c, next) => {
     if (buffer === undefined) { const error = problem("no_avatar", "头像文件不存在", 404); return c.json(error.body, error.status); }
     const mime = avatar.file.endsWith(".png") ? "image/png" : avatar.file.endsWith(".webp") ? "image/webp" : "image/jpeg";
     return c.body(buffer, 200, { "Content-Type": mime });
+  });
+
+  // ===== 媒体库（Task 0016 · P1）：头像与表情素材的唯一来源，模型不接触图片字节 =====
+  /** 目录查询：`?kind=avatar|emoji&q=关键词&pack=包名&limit=N` → `{items:[...]}`（api 规范 2.1）。 */
+  app.get("/api/media/catalog", async (c) => {
+    const kind = c.req.query("kind");
+    if (kind !== undefined && kind !== "avatar" && kind !== "emoji") {
+      const error = problem("invalid_request", "kind 只能是 avatar 或 emoji", 400); return c.json(error.body, error.status);
+    }
+    const limitRaw = c.req.query("limit");
+    const limit = limitRaw === undefined ? undefined : Number.parseInt(limitRaw, 10);
+    if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+      const error = problem("invalid_request", "limit 必须是正数", 400); return c.json(error.body, error.status);
+    }
+    const catalog = await readCatalog(resolveHome());
+    const items = searchEntries(catalog, {
+      ...(c.req.query("q") !== undefined ? { query: c.req.query("q") } : {}),
+      ...(kind !== undefined ? { kind: kind as "avatar" | "emoji" } : {}),
+      ...(c.req.query("pack") !== undefined ? { pack: c.req.query("pack") } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    });
+    return c.json({ items, stats: await mediaStats(resolveHome()) });
+  });
+
+  /** 素材字节：`/api/media/<id>`。id 不合法 → 400；没登记或文件丢了 → 404（不猜、不回落）。 */
+  app.get("/api/media/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!isMediaId(id)) { const error = problem("invalid_media_id", "素材 id 不合法", 400); return c.json(error.body, error.status); }
+    const catalog = await readCatalog(resolveHome());
+    const entry = findEntry(catalog, id);
+    if (entry === undefined) { const error = problem("media_not_found", "找不到这件素材", 404); return c.json(error.body, error.status); }
+    const buffer = await readMediaBytes(resolveHome(), entry);
+    if (buffer === undefined) { const error = problem("media_file_missing", "素材已登记但文件不见了", 404); return c.json(error.body, error.status); }
+    // 素材按 id 取、内容不变（同 id 覆盖会换 id 语义之外的文件名）→ 可以长期缓存；用 ETag 兜住覆盖的情况
+    return c.body(new Uint8Array(buffer), 200, {
+      "Content-Type": entry.mime,
+      "Cache-Control": "public, max-age=3600",
+      "ETag": `"${entry.bytes}-${entry.addedAt}"`,
+    });
   });
 
   // 模型解析（只读用户 models.json；响应经 stripSecrets，apiKey 永不外带）+ settings 默认

@@ -4,6 +4,7 @@ import { installProxyIfConfigured } from "./http-proxy.ts";
 import { pathExists, resolveHome } from "./home.ts";
 import { createApp } from "./server.ts";
 import { initLogs } from "./logging.ts";
+import { ensureMediaDir } from "./media.ts";
 
 const portArg = process.argv.find((arg) => arg.startsWith("--port="));
 const port = portArg === undefined ? 43120 : Number(portArg.slice("--port=".length));
@@ -19,6 +20,7 @@ if (!await pathExists(home)) {
   process.exit(1);
 }
 await initLogs();
+await ensureMediaDir(home);   // 媒体库目录与说明文件（协议 §5.2）；已存在不覆盖
 serve({ fetch: createApp().fetch, port, hostname: "127.0.0.1" }, (info) => {
   console.log(`Life OS 后端已启动: http://127.0.0.1:${info.port}（家目录 ${home}）`);
   if (proxySetup.installed) {
