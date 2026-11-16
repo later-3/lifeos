@@ -28,6 +28,24 @@ import { AppIcon } from "./design/icons";
  * - 消息尾：工作指示行（旋转弧 + 阶段文案 + 秒数），只在 busy 时存在。
  */
 
+/*
+ * 为什么 `MessageView` **没有**加 `memo`（Task 0016 · P4-S3 实测结论，别再加了）：
+ *
+ * 加了 memo 之后用 `areEqual` 探针数"每敲一个字符，哪些 props 变了"，结果：
+ *
+ *   annotationsOfBlock : 50/50 条   ← 每帧都是新的闭包（`(blockIndex) => anno.ofBlock(id, blockIndex)`）
+ *   avatar             : 50/50 条   ← `avatarNode` 是渲染期算出的 JSX，每次渲染都是新元素
+ *   responseBar        : 45/50 条   ← 每个 assistant 消息一个 object literal
+ *
+ * 三条里有两条**不该**为了 memo 去强行稳定：`avatar` 是 JSX 元素（把它 useMemo 起来只是把
+ * 成本从子组件搬到父组件），`responseBar` 依赖循环内的 index（硬记比按引用重算更易错）。
+ * 而 memo 若某条消息的 props 恰好全等，它就会**停止更新**——这在流式/批注场景是错的。
+ *
+ * 真正解决"一次按键重渲染整棵树"的是 **P4-S2 的窗口**（322 → 50 条）：
+ * 实测 322 条 73 ms → 50 条 25–33 ms，与短会话同一档。
+ * 后续若要再往下压，方向是"把输入框 state 从 App 拆出去"（todo #1），不是给消息加 memo。
+ */
+
 export type Block =
   | { type: "text"; text: string }
   /**

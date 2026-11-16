@@ -33,6 +33,9 @@ import { processOpenOf } from "./response-fold";
 import { SessionBar, type SessionBarTurn } from "./session-bar";
 import { sessionTotalsOf } from "./session-totals";
 import { groupIntoSpans } from "./turn-group";
+import {
+  VISIBLE_PAGE_SIZE, captureScrollDistance, nextVisibleCount, restoreScrollTop, visibleStartOf,
+} from "./chat-lazy-load";
 import { lastUserAtMs, turnWallMsOf } from "./turn-duration";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
@@ -1017,6 +1020,21 @@ export default function App() {
   }, [toolbar, closeToolbar, input]);
   const followTail = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  /**
+   * 消息渲染窗口（Task 0016 · P4-S2）：只渲染最近几**轮**。
+   *
+   * 实测（CPU 4x）：322 条消息 = 9036 DOM 节点 → 逐字输入中位 73 ms；
+   * 61 条只有 25 ms。拐点在 61–322 之间，所以默认只渲染最近 50 条所在的整轮
+   * （`VISIBLE_PAGE_SIZE` 的推导见 `chat-lazy-load.ts` 头注）。
+   *
+   * 切会话时必须**重置**：否则从长会话切到短会话会带着一个过大的窗口（无害但语义混乱），
+   * 反过来从短切长又可能因为大窗口一次渲染全部。
+   */
+  const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  /** 顶部哨兵：滚到这里就再加载一页（IntersectionObserver，root = 消息区）。 */
+  const loadEarlierRef = useRef<HTMLDivElement>(null);
+  /** 前置内容后要恢复的"距底部距离"；`undefined` = 没有待恢复的锚点。 */
+  const pendingScrollAnchor = useRef<number | undefined>(undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /** 程序化聚焦 composer（2026-11-14 用户报"重新进入输入时光标跑到最前"）：
@@ -1512,6 +1530,39 @@ export default function App() {
   }, []);
 
   /**
+   * 分页渲染：顶部哨兵进入视口 → 再加载一页（Task 0016 · P4-S2）。
+   *
+   * 为什么用 IntersectionObserver 而不是 onScroll 判断 scrollTop：
+   * 滚动事件每帧都在发，判断逻辑放进渲染路径会让"滚动"本身成为 JS 成本；
+   * 哨兵只在真正靠近顶部时回调一次（pi-web `ChatWindow.tsx:320-358` 同结构）。
+   *
+   * 关键：加载前先记下"距底部距离"，`visibleCount` 变大、内容前置之后用它恢复——
+   * 否则视口里的内容会整体下移（用户感觉"页面自己滚走了"）。
+   */
+  useEffect(() => {
+    const sentinel = loadEarlierRef.current;
+    const container = scrollRef.current;
+    if (sentinel === null || container === null) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting !== true) return;
+      pendingScrollAnchor.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
+      setVisibleCount((current) => nextVisibleCount(current));
+    }, { root: container, threshold: 0 });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [visibleCount, messages.length, sessionId]);
+
+  /** 窗口变大后恢复滚动位置（前置内容不跑）。 */
+  useLayoutEffect(() => {
+    const saved = pendingScrollAnchor.current;
+    if (saved === undefined) return;
+    const container = scrollRef.current;
+    if (container === null) { pendingScrollAnchor.current = undefined; return; }
+    container.scrollTop = restoreScrollTop(container.scrollHeight, saved);
+    pendingScrollAnchor.current = undefined;
+  }, [visibleCount]);
+
+  /**
    * 运行耗时的本地心跳（任务 0005）：每秒让"在跑多久"重算一次。
    * 只在**真有会话在跑**时才启动 —— 空闲页面上不该有每秒的 setState。
    */
@@ -1568,6 +1619,8 @@ export default function App() {
    *  `current` / `sessionId` 由调用方设置——两者必须同步生效，异步结果据此判断“是否已切走”（C120）。 */
   function resetChatState() {
     setHistory(undefined);
+    setVisibleCount(VISIBLE_PAGE_SIZE);   // P4-S2：窗口按会话重置（见可见窗口状态的注释）
+    pendingScrollAnchor.current = undefined;
     streamRef.current = createStreamState();
     setPhase("waiting");
     setRetry(undefined);
@@ -3356,6 +3409,28 @@ export default function App() {
   const closeAllLeft = () => { setShowNav(false); setShowGroups(false); };
   // 重发计划：指向"最后一条用户消息"（失败属于那一轮；动作挂在被重发的那条消息上）
   const resend = resendPlan(messages, busy);
+  /*
+   * 消息视图的稳定回调（Task 0016 · P4-S3）。
+   *
+   * **实测结论：只稳回调不足以让 `MessageView` 的 memo 生效**——
+   * 探针数"每敲一个字符哪些 props 变了"：`annotationsOfBlock` 50/50、
+   * `avatar` 50/50（渲染期算出的 JSX）、`responseBar` 45/50（object literal）。
+   * 详见 `Message.tsx` 顶部那段结论。所以最终没有加 memo，
+   * 真正解决问题的是 P4-S2 的窗口（322 → 50 条：73 ms → 25–33 ms）。
+   *
+   * 这两个 useCallback 仍然保留：它们本身无害，且能减少每次渲染的闭包分配。
+   * 若将来 App 拆分（todo #1）后 avatar/responseBar 也变成稳定引用，memo 才有意义。
+   */
+  const annotationsOfBlockOf = useCallback((messageId: string | undefined) =>
+    (messageId === undefined ? undefined : (blockIndex: number) => anno.ofBlock(messageId, blockIndex)),
+  [anno]);
+  const openPeerPanel = useCallback((target: { agentId: string; sessionId: string; agentName: string }) => {
+    // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
+    panelWasOpenBeforePeer.current = panelOpen;
+    setPeerTarget(target);
+    setPanelOpen(true);
+  }, [panelOpen]);
+
   /** 会话区四态（P1-S1）：唯一判定处，界面只读它，不再各自判 messages.length。 */
   const view = viewStateOf({ sessionId, sessionLoading, messageCount: messages.length });
   /** 当前项目下的对话条数（P1-S2 项目级空态用："有 11 条，去选一条"≠"还没有对话"）。 */
@@ -3645,6 +3720,20 @@ export default function App() {
                 // 折叠粒度 = **一轮**（用户发一句话 → 下一条用户消息之前）
                 // 实测本会话每轮 assistant 消息数中位 6、最多 198：按消息折会碎成上百块，必须按轮分。
                 const spans = groupIntoSpans(messages);
+                /*
+                 * 渲染窗口（P4-S2）：只渲染最近几**轮**。
+                 *
+                 * 为什么按轮切而不是按消息条切：本轮折叠以轮为单位（`groupIntoSpans`），
+                 * 按条切会把一轮劈成两半 —— 过程条与它的最终正文分离，用户看到"半轮"。
+                 * `visibleStartOf` 会从 naive 下标**往前取整到轮起点**，多渲染一点但不会劈开。
+                 */
+                const turnStartOf = messages.map((_, index) => {
+                  for (const span of spans) {
+                    if (span.userIndex === index || span.replyIndexes.includes(index)) return Math.max(0, span.userIndex);
+                  }
+                  return index;
+                });
+                const windowStart = visibleStartOf(messages.length, visibleCount, turnStartOf);
                 // 反查：任意一条消息（包括没有 user 的孤儿段）→ 它属于哪一轮
                 const spanByIndex = new Map<number, (typeof spans)[number]>();
                 for (const span of spans) {
@@ -3699,7 +3788,8 @@ export default function App() {
                 // 会话级指标挂哪一条：最后一条 assistant（全列表唯一，避免重复）
                 let lastAssistantIndex = -1;
                 messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
-                return messages.map((message, index) => {
+                const rendered = messages.map((message, index) => {
+                  if (index < windowStart.startIndex) return null;   // P4-S2：窗口外不渲染
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
                   const plan = resend?.index === index ? resend : undefined;
@@ -3838,18 +3928,13 @@ export default function App() {
 
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
-                      annotationsOfBlock={message.id === undefined ? undefined : (blockIndex) => anno.ofBlock(message.id as string, blockIndex)}
+                      annotationsOfBlock={annotationsOfBlockOf(message.id)}
                       annotationActions={annoActions}
                       draftRequest={draftRequest !== null && draftRequest.messageId === message.id ? draftRequest : null}
                       {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
                       {...(messageResponseBar !== undefined ? { responseBar: messageResponseBar } : {})}
                       {...(messageMarkBar !== undefined ? { markBar: messageMarkBar } : {})}
-                      onOpenPeer={(target) => {
-                        // 抽屉靠右侧面板承载（layout.ts：panel 宽度要求 panelOpen），所以必须一并打开
-                        panelWasOpenBeforePeer.current = panelOpen;
-                        setPeerTarget(target);
-                        setPanelOpen(true);
-                      }}
+                      onOpenPeer={openPeerPanel}
                       {...(avatarNode !== undefined ? { avatar: avatarNode } : {})}
                       {...(authorName !== undefined ? { authorName } : {})}
                       {...(process !== undefined ? { process } : {})}
@@ -3862,6 +3947,16 @@ export default function App() {
                       {...(plan !== undefined ? { onRetry: () => void sendText(plan.text) } : {})} />
                   );
                 });
+                // 顶部哨兵 + 提示（P4-S2）：只有真的还有更早的内容才出现。
+                // 放"渲染数组的最前"而不是 message 列表里，避免被过程条折叠逻辑影响。
+                if (!windowStart.hasMore) return rendered;
+                return [
+                  <div key="load-earlier" ref={loadEarlierRef} data-testid="load-earlier"
+                    className="flex items-center justify-center rounded-control bg-sunken py-2 text-micro text-ink-500">
+                    加载更早的消息…
+                  </div>,
+                  ...rendered,
+                ];
               })()}
             </div>
           </main>}
