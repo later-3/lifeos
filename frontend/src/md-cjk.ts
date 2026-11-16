@@ -74,6 +74,38 @@ function fixPairs(text: string): string {
   // ③ strong **以空格收尾**：把内部尾空格搬到 `**` 之后（字符序列不变、只换位置——
   //    LLM 输出的高频排版误差），使 (1)「闭合 run 前侧非空白」成立。
   //    仅动「strong 主要内容非空、**以空白收尾**」这一形态；纯空白内容不候选。
-  out = out.replace(/(\*\*)([^*\n]*[\p{L}\p{N}\p{P}])([\t ]+)(\*\*)/gu, "$1$2$4$3");
+  out = moveStrongTrailingSpace(out);
   return out;
+}
+
+/**
+ * 规则 ③ 的实现（2026-11-16 修：原实现用一条正则，会把**前一个粗体的闭合 `**`** 当成开启）。
+ *
+ * 实测反例（修复前）：
+ *   `**A**（说明）；B **C**` → `**A**（说明）；B** C**`
+ *   —— 两个粗体同一行、中间那段以「）」收尾并以空格结尾时，正则从第 1 个粗体的闭合标记
+ *   一路吃到第 2 个粗体的开启标记，把中间的文字当成了「粗体内容」，于是两个粗体一起坏掉。
+ *   今天之前没人撞上，是因为要同时满足「一行两个粗体 + 中间以标点收尾 + 中间以空格结尾」；
+ *   表情短码（`**:airplane:**`）正好密集命中这个形态。
+ *
+ * 现在的做法：按 `**` 切开**配对**（偶数下标 = 粗体外面，奇数下标 = 粗体内容），
+ * 只对真正的「粗体内容」搬空格。`**` 个数为奇数（有未闭合）时整段不动——那一轮的语法
+ * 本来就不确定，不猜。
+ */
+function moveStrongTrailingSpace(text: string): string {
+  if (!text.includes("**")) return text;
+  const parts = text.split("**");
+  if (parts.length % 2 === 0) return text;          // `**` 个数是奇数 → 有未闭合，不动
+  let changed = false;
+  for (let i = 1; i < parts.length - 1; i += 2) {
+    const inner = parts[i] ?? "";
+    const match = /^([^*\n]*[\p{L}\p{N}\p{P}])([\t ]+)$/u.exec(inner);
+    if (match === null) continue;
+    const [, body, spaces] = match;
+    if (body === undefined || spaces === undefined) continue;
+    parts[i] = body;
+    parts[i + 1] = spaces + (parts[i + 1] ?? "");
+    changed = true;
+  }
+  return changed ? parts.join("**") : text;
 }
