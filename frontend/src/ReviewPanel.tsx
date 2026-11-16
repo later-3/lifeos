@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ClickableRow, EmptyState, IconButton, MicroButton, Segmented, Spinner, ToggleChip } from "./design/ui";
+import { Button, ClickableRow, EmptyState, IconButton, MicroButton, Segmented, Spinner, ToggleChip } from "./design/ui";
 import {
   buildSegments, canCollapse, expandActions, expandStep, expansionOf, sliceHiddenLines, type ExpansionAction,
   type Segment, type SegmentLine,
@@ -1762,7 +1762,7 @@ function TreeNodes({ nodes, depth, onToggleViewed }: {
   );
 }
 
-function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, onHiddenExpand, draftsOfFile, onAddDraft, onChangeDraft, onRemoveDraft, authorNameOf, foldedOf, onToggleFold, onChangeMarks, onPinHover, onRevealComments, commentActions, drag, onDragStart, onDragExtend, mountedOf, forcedOf, onForceRender, onFileMount, viewedOf, onToggleViewed, viewMode, renderAs, folded, onToggleGroupFold }: {
+function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, onHiddenExpand, draftsOfFile, onAddDraft, onChangeDraft, onRemoveDraft, authorNameOf, foldedOf, onToggleFold, onChangeMarks, onPinHover, onRevealComments, commentActions, drag, onDragStart, onDragExtend, mountedOf, forcedOf, onForceRender, onFileMount, viewedOf, onToggleViewed, viewMode, renderAs, folded, onToggleGroupFold, onlyPath }: {
   group: ReviewSourceDiff;
   /** 组级折叠（Task 0018 用户：两组文件多时列表太长，可收起只留组头）。 */
   folded: boolean;
@@ -1771,6 +1771,11 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
    *  参照 opencode `open()` 单一数组：`packages/session-ui/src/components/session-review.tsx:276-279`） */
   isOpen: (path: string) => boolean;
   onToggle: (path: string) => void;
+  /**
+   * 手机两屏下钻（P7-S6）：只渲染这一个文件（`undefined` = 列表屏，全部收起）。
+   * 桌面不传 → 行为不变（同一屏里可以多个文件展开）。
+   */
+  onlyPath?: string;
   filter: string;
   expandMode: "all" | "diff";
   hiddenOf: (path: string, key: string) => HiddenState | undefined;
@@ -1804,11 +1809,18 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
   /** G15：渲染档位 */
   renderAs: ReviewRenderMode;
 }) {
+  /**
+   * 本组要渲染的文件。
+   *
+   * 手机两屏下钻（P7-S6）：`onlyPath !== undefined` 时只渲染那一个文件。
+   * 列表屏由面板外层决定不渲染 `SourceGroup`（见 `mobile` 分支）。
+   */
   const files = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    if (needle === "") return group.files;
-    return group.files.filter((file) => file.path.toLowerCase().includes(needle));
-  }, [group.files, filter]);
+    const base = needle === "" ? group.files : group.files.filter((file) => file.path.toLowerCase().includes(needle));
+    if (onlyPath !== undefined) return base.filter((file) => file.path === onlyPath);
+    return base;
+  }, [group.files, filter, onlyPath]);
   return (
     <section className="min-w-0" data-review-source={group.source.kind}>
       {/* 组头可点收起/展开（Task 0018）：文件计数与增删留在折叠态可见——收着也知道有东西；degraded/缺失提示在列表外，不受折叠影响 */}
@@ -1895,7 +1907,7 @@ function SourceGroup({ group, isOpen, onToggle, filter, expandMode, hiddenOf, on
   );
 }
 
-export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose, onInsertComment, onAttachComments, onSwitchTask, candidates, candidatesLoading, currentTaskId }: {
+export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose, onInsertComment, onAttachComments, onSwitchTask, candidates, candidatesLoading, currentTaskId, mobile = false }: {
   /** 要检视的 Task 目录（进入检视时由调用方给出：D15c 用户指名） */
   taskDir: string;
   data: ReviewData | null;
@@ -1918,6 +1930,18 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
   candidatesLoading?: boolean;
   /** 当前检视对象的 Task ID（用于在选择器里高亮） */
   currentTaskId?: string;
+  /**
+   * 手机形态（Task 0016 · P7-S6）。
+   *
+   * 改之前：`App.tsx` 的 `reviewOpen && !isMobile` 让面板**在手机上永不渲染**，
+   * 而 `openReview()` 照样执行 → `box.reviewFits` 为 false → 弹错
+   * "右侧放不下检视面板……或把窗口放宽"。手机上那句提示**永远不成立**（没有"右侧"）。
+   *
+   * 手机形态 = 全屏（由 App 侧包一层 `fixed inset-0`）+ **两屏下钻**：
+   * 默认显示文件列表，点一个文件进 diff，header 给"返回列表"。
+   * 不做左右并排（手机上并排 = 每边 180px，diff 没法读）。
+   */
+  mobile?: boolean;
   /**
    * 兜底：把**合成好的文本**放进输入框（保留给"没有 App 注入"的宿主，如未来的嵌入式面板）。
    * 只在没有 `onAttachComments` 时使用。
@@ -2003,10 +2027,20 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
   useEffect(() => {
     if (data === null) { setOpenMap({}); return; }
     const files = data.items.flatMap((group) => group.files);
-    const defaultOpen = files.length <= 5;
+    // 手机形态（P7-S6）：**默认全部收起** —— 手机上默认是"文件列表"屏，
+    // 展开一屏 diff 会让人找不到别的文件（下钻由 `mobileOpenPath` 控制）。
+    const defaultOpen = mobile ? false : files.length <= 5;
     setOpenMap(Object.fromEntries(files.map((file) => [file.path, defaultOpen])));
-  }, [data]);
+  }, [data, mobile]);
   const isOpen = useCallback((path: string) => openMap[path] === true, [openMap]);
+  /**
+   * 手机两屏下钻（P7-S6）：`undefined` = 文件列表屏；有值 = 那个文件的 diff 屏。
+   *
+   * 为什么不复用 `openMap`：`openMap` 是"折叠/展开"的语义（桌面一屏里可以多个都开），
+   * 而手机是"当前在看哪一个"（同一时刻只看一个）。混用会让"返回列表"变成"收起这个文件"，
+   * 回到列表后行还开着，与"下钻"的心智不一致。
+   */
+  const [mobileOpenPath, setMobileOpenPath] = useState<string | undefined>(undefined);
   const toggle = useCallback((path: string) => {
     setOpenMap((prev) => ({ ...prev, [path]: !(prev[path] === true) }));
   }, []);
@@ -3030,8 +3064,23 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         </div>
       )}
 
+      {/*
+        手机两屏下钻（P7-S6）：diff 屏时 header 给"返回列表"。
+        放在这个位置（而不是调换整个 header 结构）是为了让桌面的 header 零变化——
+        手机的返回只在"看具体文件"时出现，列表屏的关闭由头部 X 承担。
+      */}
+      {mobile && mobileOpenPath !== undefined && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-surface px-2 py-1.5">
+          <Button variant="ghost" size="sm" data-review-mobile-back
+            onClick={() => { setMobileOpenPath(undefined); setOpenMap((prev) => ({ ...prev, [mobileOpenPath]: false })); }}>
+            <AppIcon name="arrow-left" size={16} /> 文件列表
+          </Button>
+          <span className="min-w-0 flex-1 truncate font-mono text-micro text-ink-700" title={mobileOpenPath}>{mobileOpenPath}</span>
+        </div>
+      )}
+
       {/* 内容 */}
-      <div className="min-h-0 flex-1 overflow-auto px-2 py-2" data-review-scroll>
+      <div className="min-h-0 flex-1 overflow-auto overscroll-y-contain px-2 py-2" data-review-scroll>
         {loading && data === null && (
           <div className="flex items-center justify-center gap-2 py-8 text-micro text-ink-500"><Spinner /> 正在计算 diff…</div>
         )}
@@ -3041,10 +3090,38 @@ export function ReviewPanel({ taskDir, data, loading, failed, onReload, onClose,
         {!loading && failed === null && data !== null && !hasContent && (
           <EmptyState icon="✓" title="没有可检视的改动" hint="这个 Task 的 worktree 和文档相对基线没有差异。" />
         )}
-        {data !== null && data.items.map((group) => (
+        {/*
+          手机列表屏（P7-S6）：文件列表（带增删与已看状态），点一行进 diff。
+          为什么单独一屏而不是"折叠着的文件卡"：手机上折叠行与"可点的列表项"是同一个视觉，
+          点开才发现是文件卡会让人以为"怎么只展开了一个"。
+        */}
+        {mobile && mobileOpenPath === undefined && data !== null && hasContent && (
+          <div className="flex flex-col gap-0.5" data-testid="review-mobile-filelist">
+            {data.items.flatMap((group) => group.files.map((file) => (
+              /*
+               * 用 `ClickableRow`（primitive）而不是原生 button：页面层自绘 button 有基线门禁
+               * （`design-discipline`：只许降不许升），而这里的语义就是"可点的行"。
+               * `min-h-11`：手机命中区 44。
+               */
+              <ClickableRow key={`${group.source.kind}:${file.path}`}
+                data-review-mobile-file={file.path}
+                onClick={() => { setMobileOpenPath(file.path); setOpenMap((prev) => ({ ...prev, [file.path]: true })); }}
+                className="min-h-11 items-center gap-2 px-2 text-meta text-ink-900">
+                <span className="shrink-0 font-mono text-micro text-ink-500">{group.source.kind === "worktree" ? "码" : "文"}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-micro" title={file.path}>{file.path}</span>
+                <StatBadge additions={file.additions} deletions={file.deletions} />
+                {viewedByPath.get(file.path)?.status === "viewed" && <span className="shrink-0 text-micro text-success">已看</span>}
+              </ClickableRow>
+            )))}
+          </div>
+        )}
+        {(mobile ? mobileOpenPath !== undefined : true) && data !== null && data.items.map((group) => (
           <SourceGroup key={group.source.kind} group={group} isOpen={isOpen}
             folded={groupFoldedOf(group.source.kind)} onToggleGroupFold={() => toggleGroupFold(group.source.kind)}
-            onToggle={toggle} filter={filter} expandMode={expandMode}
+            onToggle={mobile ? (path) => { setMobileOpenPath(path); setOpenMap((prev) => ({ ...prev, [path]: true })); } : toggle}
+            filter={filter} expandMode={expandMode}
+            /* 手机上只看当前下钻的那个文件（其余不渲染 —— 这就是"两屏"）*/
+            {...(mobile ? { onlyPath: mobileOpenPath } : {})}
             hiddenOf={hiddenOf} onHiddenExpand={onHiddenExpand}
             draftsOfFile={draftsForFile}
             onAddDraft={onAddDraft} onChangeDraft={onChangeDraft} onRemoveDraft={onRemoveDraft}

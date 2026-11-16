@@ -1399,11 +1399,15 @@ export default function App() {
       setShowNav(false); setShowGroups(false);
       return;
     }
-    if (!reviewWarned.current) {
+    /*
+     * 只在**桌面**弹这条提示（P7-S6）：手机上检视走全屏表面，没有"右侧"这回事，
+     * 那句"把窗口放宽"永远不成立 —— 弹出来只会让人以为功能坏了。
+     */
+    if (!isMobile && !reviewWarned.current) {
       reviewWarned.current = true;
       toast("右侧放不下检视面板：先关掉文件面板或完整历史，或把窗口放宽", "error");
     }
-  }, [reviewOpen, box.reviewFits, showNav, showGroups, setShowNav, setShowGroups, toast]);
+  }, [reviewOpen, box.reviewFits, showNav, showGroups, setShowNav, setShowGroups, toast, isMobile]);
 
   function closeHistory() {
     dismissMobile(() => {
@@ -3461,7 +3465,11 @@ export default function App() {
     const aid = agent?.id;
     const taskId = meta?.activeTaskId
       ?? projectDefaultTasks[taskTitleKey(aid ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", "default")]?.id;
-    if (aid === undefined || taskId === undefined) { toast("当前没有可检视的 Task", "error"); return; }
+    if (aid === undefined || taskId === undefined) {
+      // eslint 不适用：这里要给用户可行动的原因（不是静默 return）
+      toast("当前没有可检视的 Task（这条会话还没有归属 Task）", "error");
+      return;
+    }
     const preferred = currentGroup?.project.id ?? selectedProjectId ?? "workspace";
     const candidates = [preferred, ...[...new Set(groups.map((g) => g.project.id))].filter((p) => p !== preferred)];
     const knownKey = taskTitleKey(aid, preferred, taskId);
@@ -3711,7 +3719,11 @@ export default function App() {
             onClick={() => {
               const aid = agent?.id;
               const taskId = meta?.activeTaskId ?? projectDefaultTasks[taskTitleKey(aid ?? "", currentGroup?.project.id ?? selectedProjectId ?? "workspace", "default")]?.id;
-              if (aid === undefined || taskId === undefined) { toast("当前没有可检视的 Task", "error"); return; }
+              if (aid === undefined || taskId === undefined) {
+      // eslint 不适用：这里要给用户可行动的原因（不是静默 return）
+      toast("当前没有可检视的 Task（这条会话还没有归属 Task）", "error");
+      return;
+    }
               /*
                * Task 归属的 project **不能只看当前选中的列**（2026-11-15 用户实测 workspace/0015）：
                * 会话的 `activeTaskId` 记的是 Task 编号，而 Task 编号**只在 Agent × Project 内唯一**——
@@ -4391,6 +4403,31 @@ export default function App() {
       )}
 
       {/* 检视面板（Task 0010）：与文件面板并存不互斥（D10）；手机上走全屏表面（mobile 模型，D17a 本期不做手机——这段只在桌面渲染） */}
+      {/*
+        检视面板（P7-S6）：手机会话**不再是"永不渲染"**，而是全屏表面（mobile.md §2）。
+        改之前这里是 `reviewOpen && !isMobile && ...` —— 手机上点检视会走到下面那个
+        `box.reviewFits` 的兜底 toast，弹"右侧放不下检视面板…或把窗口放宽"：
+        那句提示在手机上**永远不成立**（没有"右侧"）。
+      */}
+      {reviewOpen && isMobile && (
+        <div className={`fixed inset-0 ${LAYER_CLASS.drawer} flex flex-col bg-surface sm:hidden`}
+          style={{ height: "var(--app-height, 100dvh)" }}>
+          <ReviewPanel taskDir={reviewTask ?? ""} data={reviewData}
+            mobile
+            loading={reviewLoading} failed={reviewFailed} onReload={() => { if (reviewTask !== undefined) void loadReview(reviewTask); }}
+            onClose={closeReview}
+            onSwitchTask={(taskDir) => openReview(taskDir)}
+            candidates={reviewCandidates}
+            candidatesLoading={reviewCandidatesLoading}
+            currentTaskId={reviewCandidates.find((item) => item.taskDir === reviewTask)?.taskId}
+            onAttachComments={(refs) => {
+              const usable = refs.filter((ref) => attachableComment(ref));
+              if (usable.length === 0) return;
+              setCommentRefs((prev) => usable.reduce((list, ref) => addCommentRef(list, ref), prev));
+              focusComposer();
+            }} />
+        </div>
+      )}
       {reviewOpen && !isMobile && box.review > 0 && (
         <>
           {/* 把手必须贴面板左缘且命中区在面板内：DragHandle 是 absolute，

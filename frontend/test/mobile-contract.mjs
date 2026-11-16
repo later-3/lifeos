@@ -454,6 +454,37 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
+// 改之前：`App.tsx` 的 `reviewOpen && !isMobile` 让面板**在手机上永不渲染**，
+// 而 `openReview()` 照样执行 → 弹错"右侧放不下检视面板…或把窗口放宽"（手机上永远不成立）。
+// 断言两条：面板真的出现（全屏）／**没有**那句错误提示。
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  await page.evaluate(() => { document.querySelector("[data-mobile-toolbar-more]")?.click(); });
+  await page.waitForTimeout(350);
+  await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="review"]')?.click(); });
+  await page.waitForTimeout(2500);
+  const review = await page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="review-panel"]');
+    const box = panel?.getBoundingClientRect();
+    const alerts = [...document.querySelectorAll('[role="alert"]')].map((el) => (el.textContent ?? "").trim());
+    return {
+      panel: panel !== null,
+      fullScreen: box === undefined ? false : (Math.round(box.width) >= 389 && Math.round(box.height) >= 700),
+      wrongHint: alerts.some((text) => text.includes("右侧放不下")),
+      scrollW: document.documentElement.scrollWidth,
+      clientW: document.documentElement.clientWidth,
+    };
+  });
+  check("[390] 检视面板在手机上能打开（全屏）", review.panel && review.fullScreen, JSON.stringify(review));
+  check("[390] 检视不再弹「右侧放不下」", review.wrongHint === false, String(review.wrongHint));
+  check("[390] 检视面板无横向溢出", review.scrollW === review.clientW, `${review.scrollW}/${review.clientW}`);
+  await context.close();
+}
+
 // ── 手机头部（Task 0016 · P7-S5）─────────────────────────────────────────────
 // 改之前头部平铺 6 个图标，标题可用宽度实测 430→78px / 390→38px / 360→8px / ≤336→0px。
 // 现在只留「返回/菜单 · 标题 · ⋯」，其余动作进"原地覆盖的动作层"。
