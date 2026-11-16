@@ -197,6 +197,42 @@ const SCENES = [
 const VIEWPORTS = [1280, 1920];
 const MODES = ["light", "dark"];
 
+/**
+ * 手机场景（Task 0016 · P6-S2）。
+ *
+ * 为什么单独一套 enter：桌面场景的入口大量依赖 `nav[aria-label="左侧图标轨"]`（手机没有），
+ * 直接复用会全部 skip —— 那等于"手机没有基线"，与没做这件事一样。
+ *
+ * 三个场景覆盖手机上最容易出问题的三种表面：
+ *   chat      —— 对话页（头部、消息、composer）
+ *   nav       —— 抽屉（三级下钻的列表）
+ *   settings  —— 全屏表面（表单类）
+ */
+const MOBILE_SCENES = [
+  { name: "m-chat", enter: async () => {} },
+  {
+    name: "m-nav",
+    enter: async (page) => {
+      await page.locator('button[aria-label="打开导航"],button[aria-label="返回项目"]').first().click();
+      await page.waitForSelector('[data-testid="mobile-nav"]', { timeout: 8000 });
+    },
+  },
+  {
+    name: "m-settings",
+    enter: async (page) => {
+      await page.evaluate(() => { document.querySelector("[data-mobile-toolbar-more]")?.click(); });
+      await page.waitForTimeout(250);
+      await page.evaluate(() => { document.querySelector('[data-mobile-toolbar-action="settings"]')?.click(); });
+      await page.waitForSelector('[data-testid="settings-surface"]', { timeout: 8000 });
+    },
+  },
+];
+/**
+ * 手机视觉基线**单独一个目录**（`mobile/`）：与桌面基线的视口尺寸不同，
+ * 混在一个目录里会让"哪张是谁的"只能靠文件名猜。
+ */
+const MOBILE_VIEWPORTS = [360, 390, 430];
+
 mkdirSync(BASELINE, { recursive: true });
 mkdirSync(SHOTS, { recursive: true });
 
@@ -241,6 +277,49 @@ for (const viewport of VIEWPORTS) {
   }
 }
 
+/* ── 手机矩阵（Task 0016 · P6-S2）──────────────────────────────────────── */
+const MOBILE_BASELINE = join(BASELINE, "mobile");
+const MOBILE_SHOTS = join(SHOTS, "mobile");
+mkdirSync(MOBILE_BASELINE, { recursive: true });
+mkdirSync(MOBILE_SHOTS, { recursive: true });
+const mobileResults = [];
+for (const viewport of MOBILE_VIEWPORTS) {
+  for (const mode of MODES) {
+    for (const scene of MOBILE_SCENES) {
+      const page = await browser.newPage({ viewport: { width: viewport, height: 844 }, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
+      await page.clock.install({ time: new Date("2026-11-09T12:00:00+08:00") });
+      await page.addInitScript((value) => {
+        localStorage.setItem("lifeos.theme", JSON.stringify({ mode: value }));
+        localStorage.removeItem("lifeos.columnWidths");
+        localStorage.removeItem("lifeos.collapsedGroups");
+      }, mode);
+      await installFixtures(page);
+      await page.goto(APP_URL, { waitUntil: "networkidle" });
+      await page.waitForTimeout(700);
+      try {
+        await scene.enter(page);
+      } catch {
+        await page.close();
+        mobileResults.push({ viewport, mode, scene: scene.name, status: "skipped" });
+        continue;
+      }
+      await page.waitForTimeout(300);
+      const file = `${scene.name}-${mode}-${viewport}.png`;
+      const buffer = await page.screenshot({ animations: "disabled", caret: "hide" });
+      writeFileSync(join(MOBILE_SHOTS, file), buffer);
+      const basePath = join(MOBILE_BASELINE, file);
+      if (UPDATE || !existsSync(basePath)) {
+        writeFileSync(basePath, buffer);
+        mobileResults.push({ viewport, mode, scene: scene.name, status: UPDATE ? "updated" : "created", file });
+      } else {
+        const diff = pixelDiff(readFileSync(basePath), buffer);
+        mobileResults.push({ viewport, mode, scene: scene.name, file, status: diff.ratio <= 0.0005 ? "same" : "diff", ratio: diff.ratio, maxDelta: diff.maxDelta });
+      }
+      await page.close();
+    }
+  }
+}
+
 await browser.close();
 
 /* ── 报告 ─────────────────────────────────────────────────────────────── */
@@ -270,10 +349,12 @@ td,th{border:1px solid #ddd;padding:6px;vertical-align:top}img{border:1px solid 
 <p>左图为基线、右图为本次（仅 diff/same 时展示）。判定阈值 0.05%。</p>
 <table><tr><th>场景</th><th>结果</th><th>基线 / 本次</th></tr>${rows}</table>`);
 
-const diffed = results.filter((item) => item.status === "diff");
-const skipped = results.filter((item) => item.status === "skipped");
-console.log(`视觉矩阵：${results.length} 张（${VIEWPORTS.length} 视口 × ${MODES.length} 模式 × ${SCENES.length} 场景）`);
-console.log(`一致 ${results.filter((item) => item.status === "same").length} · 差异 ${diffed.length} · 跳过 ${skipped.length}${UPDATE ? " · 已更新基线" : ""}`);
+const all = [...results, ...mobileResults];
+const diffed = all.filter((item) => item.status === "diff");
+const skipped = all.filter((item) => item.status === "skipped");
+console.log(`视觉矩阵：桌面 ${results.length} 张 + 手机 ${mobileResults.length} 张 = ${all.length} 张`
+  + `（桌面 ${VIEWPORTS.length} 视口 × ${SCENES.length} 场景；手机 ${MOBILE_VIEWPORTS.length} 视口 × ${MOBILE_SCENES.length} 场景；各 ${MODES.length} 模式）`);
+console.log(`一致 ${all.filter((item) => item.status === "same").length} · 差异 ${diffed.length} · 跳过 ${skipped.length}${UPDATE ? " · 已更新基线" : ""}`);
 for (const item of diffed) console.log(`  ✖ ${item.scene}/${item.mode}/${item.viewport}：差异 ${(item.ratio * 100).toFixed(2)}%（最大通道差 ${item.maxDelta}）`);
 for (const item of skipped) console.log(`  — ${item.scene}/${item.mode}/${item.viewport}：场景进不去（不是回归）`);
 console.log(`报告：${REPORT}`);
