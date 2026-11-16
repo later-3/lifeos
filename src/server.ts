@@ -24,6 +24,7 @@ import {
   setSessionModel, setSessionThinking, globalSnapshot, THINKING_LEVELS, markSessionViewed, projectIdOfSession,
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
+import { loadAttachmentForServe } from "./attachment-serve.ts";
 import { bindProject, listAgentProjects, projectOverview, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import {
@@ -1442,6 +1443,32 @@ app.use(async (c, next) => {
       details: { taskDir: basename(taskDir), count: entries.length, viewed, total: items.length },
     });
     return c.json({ items });
+  });
+
+  /*
+   * 会话图片的只读取回（Task 0016 · P3-S1）。
+   *
+   * 为什么有它：`GET /sessions/:sid` 之前把每张图 base64 内联（最大会话 33.58 MB 图片），
+   * 实测上行 5.26 MB/s → 一次打开光上传就 4.1 s。现在响应里只有 URL，图片按需取。
+   *
+   * 边界：只读；只允许图片扩展名；路径必须落在已注册的根内（与文件浏览器同一套 `readRoots`）；
+   * 大小上限与工具图一致。四条失败路径都有断言（`test/attachment-serve.test.mjs`）。
+   * 缓存：路径由内容决定（附件按 hash 命名）→ 但引用行也可能是任意路径，
+   * 所以用 ETag（size+mtime）而不是 `immutable`，允许 HTTP 重新校验。
+   */
+  app.get("/api/attachment", async (c) => {
+    const raw = c.req.query("path");
+    const result = await loadAttachmentForServe(raw);
+    if ("code" in result) {
+      log.warn("http", "attachment", "图片取回被拒", { details: { code: result.code } });
+      const error = problem(result.code, result.message, result.status);
+      return c.json(error.body, error.status);
+    }
+    return c.body(new Uint8Array(result.bytes), 200, {
+      "Content-Type": result.mimeType,
+      "Cache-Control": "private, max-age=0, must-revalidate",
+      "ETag": `"${result.bytes.length}-${Math.round(result.mtimeMs)}"`,
+    });
   });
 
   app.get("/api/fs/roots", async (c) => c.json({ roots: await readRoots() }));

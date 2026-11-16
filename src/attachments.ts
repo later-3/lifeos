@@ -14,6 +14,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { imageNoteSuffix, parseImageRefs } from "./image-note.ts";
+import { imageRefOfPath } from "./attachment-ref.ts";
 
 /** 附件目录名（相对家目录）。 */
 export const ATTACHMENTS_DIR = "attachments";
@@ -348,6 +349,79 @@ export function imageBlocksOfRefs(message: unknown): Array<{ type: "image"; data
     }
   }
   return out;
+}
+
+/**
+ * 消息里的图片引用 → **URL 引用块**（Task 0016 · P3-S1）。
+ *
+ * 与 `imageBlocksOfRefs` 的区别只有一处：**不读盘、不转 base64**。
+ * 老会话的内联图块（D8）原样返回 `data`，前端两种形态都认。
+ *
+ * 纯逻辑（不碰文件系统），所以能离线单测；"这个路径允不允许被取回"由服务端端点判定。
+ */
+export function imageRefBlocksOf(message: unknown): Array<{ type: "image"; url?: string; data?: string; mimeType: string }> {
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  const out: Array<{ type: "image"; url?: string; data?: string; mimeType: string }> = [];
+  for (const block of content) {
+    const part = block as { type?: string; data?: unknown; mimeType?: unknown; text?: unknown };
+    // 老会话：本来就有内联图块 → 原样带上（不迁移，D8）
+    if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") {
+      out.push({ type: "image", data: part.data, mimeType: part.mimeType });
+      continue;
+    }
+    if (part.type !== "text" || typeof part.text !== "string") continue;
+    for (const ref of parseImageRefs(part.text)) {
+      if (out.length >= 4) break;
+      const ref0 = imageRefOfPath(ref);
+      if (ref0 === undefined || ref0.url === undefined) continue;   // 非图片扩展名 → 不当作图片
+      if (out.some((item) => item.url === ref0.url)) continue;
+      out.push({ type: "image", url: ref0.url, mimeType: ref0.mimeType });
+    }
+  }
+  return out;
+}
+
+/**
+ * 工具结果里的图片 → **URL 引用块**（P3-S1）。
+ *
+ * 优先从结果文本的引用行取（那是 D7 之后工具图的唯一存储形态）；
+ * 老会话的结果里可能还有内联 image 内容块 → 保留内联（D8 不迁移）。
+ * `resultText` 传 `call.result`（`messagesOf` 已经取到的那份文本），避免再算一次。
+ */
+export function toolResultImageRefs(
+  message: unknown,
+  resultText?: string,
+): Array<{ url?: string; data?: string; mimeType: string }> {
+  const out: Array<{ url?: string; data?: string; mimeType: string }> = [];
+  // 1) 内联块（老会话）
+  for (const inline of toolResultImagesOfMessage(message)) {
+    out.push({ data: inline.data, mimeType: inline.mimeType });
+  }
+  // 2) 引用行（D7 之后的正常形态）
+  const text = resultText ?? "";
+  for (const ref of parseImageRefs(text)) {
+    if (out.length >= 4) break;
+    const ref0 = imageRefOfPath(ref);
+    if (ref0 === undefined || ref0.url === undefined) continue;
+    if (out.some((item) => item.url === ref0.url)) continue;
+    out.push({ url: ref0.url, mimeType: ref0.mimeType });
+  }
+  return out;
+}
+
+/** 工具结果消息里的内联图片块（只在老会话存在；新会话结果里只有引用行）。 */
+function toolResultImagesOfMessage(message: unknown): Array<{ data: string; mimeType: string }> {
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  for (const block of content) {
+    const part = block as { type?: unknown; data?: unknown; mimeType?: unknown } | null;
+    if (part === null || part.type !== "image") continue;
+    if (typeof part.data !== "string" || typeof part.mimeType !== "string") continue;
+    images.push({ data: part.data, mimeType: part.mimeType });
+  }
+  return images;
 }
 
 /** 附件文件大小（字节，二进制——入站 16MB 准入预算与 inline 图同口径）。内容不可变 → 永久缓存。 */

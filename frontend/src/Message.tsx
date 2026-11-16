@@ -30,15 +30,19 @@ import { AppIcon } from "./design/icons";
 
 export type Block =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string }
+  /**
+   * 图片块（Task 0016 · P3-S1）：`url` = 按需取回，`data` = 老会话内联。
+   * 两者必有其一；渲染统一走 `imageSrcOf()`。
+   */
+  | { type: "image"; url?: string; data?: string; mimeType: string }
   | { type: "thinking"; text: string; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
       result?: string; isError?: boolean; truncated?: boolean; durationMs?: number;
       /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）：墙钟耗时的终点（Task 0015 · P4） */
       resultAt?: number;
-      /** 工具读到的图片（Pi 的 read）：与 result 文字并列展示 */
-      images?: Array<{ data: string; mimeType: string }>;
+      /** 工具读到的图片（Pi 的 read）：与 result 文字并列展示。`url` 按需取 / `data` 老会话内联。 */
+      images?: Array<{ url?: string; data?: string; mimeType: string }>;
       /** 仅客户端：由 tool_execution_start/update/end 驱动，不靠整轮 busy */
       running?: boolean;
     };
@@ -389,26 +393,47 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
         // 工具读到的图片（Pi 的 read）：不受收起状态控制（Task 0002 2026-10-26 用户拍板 a）。
         // 图片是一等输出，存在就要看得见；不能躲在需要点击才展开的容器里。
         <div className="flex flex-wrap gap-2 border-t border-line bg-sunken px-3 py-2" data-testid="tool-image">
-          {block.images.map((image, index) => (
-            <ImageTrigger key={index} src={`data:${image.mimeType};base64,${image.data}`}
-              alt={`工具读到的图片 ${index + 1}`} testId="tool-image-trigger">
-              <img src={`data:${image.mimeType};base64,${image.data}`} alt={`工具读到的图片 ${index + 1}`}
-                data-shot-mask="tool-image"
-                className="max-h-48 max-w-full rounded border border-line object-contain" />
-            </ImageTrigger>
-          ))}
+          {block.images.map((image, index) => {
+            const src = imageSrcOf(image);
+            if (src === undefined) return null;
+            return (
+              <ImageTrigger key={index} src={src}
+                alt={`工具读到的图片 ${index + 1}`} testId="tool-image-trigger">
+                {/* loading="lazy"：引用化之后图片是独立请求，进视口才拉——这正是 P3 的收益来源之一 */}
+                <img src={src} alt={`工具读到的图片 ${index + 1}`} loading="lazy" decoding="async"
+                  data-shot-mask="tool-image"
+                  className="max-h-48 max-w-full rounded border border-line object-contain" />
+              </ImageTrigger>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
+/**
+ * 图片的实际 `src`（Task 0016 · P3-S1）：引用走 URL，老会话走 data URI。
+ *
+ * 为什么必须有这一个函数：两种形态在代码里出现 4 处（用户图、工具图、查看器、放大层），
+ * 每处各写一遍 `data:${mime};base64,${data}` 就会在"引用化"之后静默渲染成
+ * `data:image/png;base64,undefined`（浏览器不报错，只是空白）。
+ */
+function imageSrcOf(image: { url?: string; data?: string; mimeType: string }): string | undefined {
+  if (image.url !== undefined && image.url !== "") return image.url;
+  if (image.data !== undefined && image.data !== "") return `data:${image.mimeType};base64,${image.data}`;
+  return undefined;
+}
+
 function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> }) {
   // 用户发的图：缩略图一屏可见；点击 = 页面内浮层放大（不新开页面，用户 2026-10-27 指定）
+  const src = imageSrcOf(block);
+  // 两种形态都认（D8 不迁移老会话）；都没有就是一个占位，不渲染空 img
+  if (src === undefined) return null;
   return (
-    <ImageTrigger src={`data:${block.mimeType};base64,${block.data}`} alt="用户发送的图片"
+    <ImageTrigger src={src} alt="用户发送的图片"
       testId="message-image" className="mt-1 inline-block">
-      <img src={`data:${block.mimeType};base64,${block.data}`} alt="用户发送的图片"
+      <img src={src} alt="用户发送的图片" loading="lazy" decoding="async"
         data-shot-mask="message-image"
         className="max-h-64 max-w-full rounded border border-line object-contain" />
     </ImageTrigger>

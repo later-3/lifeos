@@ -2,7 +2,7 @@
 // 默认会话不是运行时生成的：出厂即随模板预置在 workspace/sessions/（协议 §12.2），这里只负责加载。
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { planElision } from "./image-budget.ts";
-import { appendAttachmentRefs, attachmentFileSizeCached, gcAttachments, imageBlocksOfRefs } from "./attachments.ts";
+import { appendAttachmentRefs, attachmentFileSizeCached, gcAttachments, imageBlocksOfRefs, imageRefBlocksOf, toolResultImageRefs } from "./attachments.ts";
 import { parseImageRefs } from "./image-note.ts";
 import { readLimits, recordObservedToFile, resolveBudget, type Budget } from "./payload-limit.ts";
 import { buildPromptParts, createLifeOsImageBudgetExtension, createLifeOsPromptExtension, createLifeOsReadPathExtension, resolveModelChoice } from "./assembly.ts";
@@ -1698,11 +1698,13 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string };
-type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean; images?: Array<{ data: string; mimeType: string }>;
+type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean;
+  /** 图片：`url` = 按需取回（P3-S1）；`data` = 老会话内联（D8 不迁移）。两者必有其一。 */
+  images?: Array<{ url?: string; data?: string; mimeType: string }>;
   /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）。
    *  墙钟耗时要靠它做终点：工具执行时间不在 assistant.durationMs 里（Task 0015 · P4）。 */
   resultAt?: number; };
-type ImageBlock = { type: "image"; data: string; mimeType: string };
+type ImageBlock = { type: "image"; data?: string; url?: string; mimeType: string };
 type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
 
 /** 会话历史里已有的图片总字节：会话图片预算（不是张数）的计量依据。 */
@@ -1808,8 +1810,12 @@ export function messagesOf(state: SessionState) {
           blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
         }
       }
-      // D7：引用化后用户消息里只有引用行 —— 显示时按附件目录还原（老会话已有图块则原样，见 imageBlocksOfRefs）
-      for (const refBlock of imageBlocksOfRefs(message)) blocks.push(refBlock);
+      /*
+       * 用户图（P3-S1 同改）：D7 之后用户消息里只有引用行，改之前这里按附件目录**读回 base64**；
+       * 现在同样换成 URL（同一类字节，没有理由只改工具图）。
+       * 老会话的内联图块（上面那个 for 循环）原样保留 —— 不迁移历史（D8）。
+       */
+      for (const refBlock of imageRefBlocksOf(message)) blocks.push(refBlock);
       out.push({
         role: "user", text, blocks, id,
         ...(at !== undefined ? { at } : {}),
@@ -1863,9 +1869,18 @@ export function messagesOf(state: SessionState) {
         //（实测：墙钟 34417ms vs Σassistant.durationMs 28323ms，差的 6 秒正是工具执行）。
         const resultAt = (message as { timestamp?: unknown }).timestamp;
         if (typeof resultAt === "number" && Number.isFinite(resultAt) && resultAt > 0) call.resultAt = resultAt;
-        // 工具读到的图片（Pi 的 read）：不带上就等于界面永远看不到
-        const direct = toolResultImages(message);
-        const images = direct.length > 0 ? direct : imageBlocksOfRefs(message);   // D7：引用行 → 附件还原
+        /*
+         * 工具读到的图片（P3-S1）：**改成引用，不再内联**。
+         *
+         * 改之前（实测，案例 C002）：这里用 `imageBlocksOfRefs` 把文件读回来转 base64，
+         * 于是"存储不存 base64"（0012 · D7）在接口边界上被撤销：
+         * 单会话响应 35.79 MB、全库 63 个会话 152.1 MB（图片 66%）；
+         * 上行 5.26 MB/s → 22 MB 光上传就 4.1 s。
+         *
+         * 现在：引用行里本来就有路径 → 直接换成 URL，前端 `<img src>` 按需取（原生懒加载）。
+         * 老会话若仍是内联 base64（D8 不迁移），保持内联返回，前端两种形态都认。
+         */
+        const images = toolResultImageRefs(message, call.result);
         if (images.length > 0) call.images = images;
         break;
       }

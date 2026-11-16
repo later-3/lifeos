@@ -1,7 +1,7 @@
 // 起真实服务（随机端口）测只读接口与错误路径。
 import { test } from "node:test";
 import { start, startOn } from "./server-harness.mjs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { installHome } from "../src/home.ts";
 import { join, basename } from "node:path";
@@ -1127,5 +1127,102 @@ test("媒体库接口：目录查询（中文关键词）+ 素材字节 + 非法
     const gone = await fetch(`${base}/api/media/calm-otter`);
     assert.equal(gone.status, 404);
     assert.equal((await gone.json()).error.code, "media_file_missing");
+  } finally { server.close(); }
+});
+
+/**
+ * 会话图片的只读取回（Task 0016 · P3-S1）。
+ *
+ * 这个端点的存在理由是**减体积**：`GET /sessions/:sid` 之前把每张图 base64 内联
+ * （最大会话 33.58 MB 图片、全库 63 个会话 152 MB、图片占 66%），
+ * 上行 5.26 MB/s → 一次打开光上传 4.1 s。改成引用后响应回到 KB 级。
+ *
+ * 但它同时是**文件系统的只读出口**，所以四条失败路径一条都不能少。
+ */
+test("GET /api/attachment：根内的图片能取回，字节与源文件一致", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-attach-api-"));
+  await installHome(process.cwd(), home);
+  await mkdir(join(home, "img"), { recursive: true });
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  await writeFile(join(home, "img", "shot.png"), bytes);
+  const { server, base } = await startOn(home);
+  try {
+    const response = await fetch(`${base}/api/attachment?path=${encodeURIComponent(join(home, "img", "shot.png"))}`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "image/png");
+    assert.equal(Buffer.from(await response.arrayBuffer()).equals(bytes), true);
+  } finally { server.close(); }
+});
+
+test("GET /api/attachment 失败路径：缺参数 400 / 非图片 400 / 越界 403 / 不存在 404", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-attach-api-"));
+  await installHome(process.cwd(), home);
+  await writeFile(join(home, "note.txt"), "hi");
+  const { server, base } = await startOn(home);
+  try {
+    const cases = [
+      ["", 400, "invalid_request"],
+      [`?path=${encodeURIComponent(join(home, "note.txt"))}`, 400, "not_an_image"],
+      // `/etc/hosts.png` 在根外：先过"是不是图片"，再被根判定拒
+      ["?path=%2Fetc%2Fhosts.png", 403, "path_not_allowed"],
+      [`?path=${encodeURIComponent(join(home, "gone.png"))}`, 404, "attachment_not_found"],
+    ];
+    for (const [query, status, code] of cases) {
+      const response = await fetch(`${base}/api/attachment${query}`);
+      assert.equal(response.status, status, `query=${query}`);
+      assert.equal((await response.json()).error.code, code, `query=${query}`);
+    }
+  } finally { server.close(); }
+});
+
+test("会话详情响应里不再内联图片（引用化回归锁）", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-attach-api-"));
+  await installHome(process.cwd(), home);
+  process.env.LIFEOS_HOME = home;
+
+  // 图片放在家目录内（等注册根 = 家目录，所以 URL 一定允许取回）
+  await mkdir(join(home, "shots"), { recursive: true });
+  const imagePath = join(home, "shots", "a.png");
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  await writeFile(imagePath, imageBytes);
+
+  /*
+   * 直接写会话文件（不走 API 建会话）：Pi 对"还没有消息的会话"延迟落盘，
+   * 而我们要的正是**已有历史**的会话详情。
+   * 写进去的内容是 D7 之后的真实形态：toolResult 里**只有引用行**，没有 base64。
+   */
+  const sessionsDir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+  await mkdir(sessionsDir, { recursive: true });
+  const sessionId = "01a1ffff-0000-7000-8000-000000000001";
+  const file = join(sessionsDir, `2026-11-16T00-00-00-000Z_${sessionId}.jsonl`);
+  const entries = [
+    { type: "session", version: 3, id: sessionId, timestamp: "2026-11-16T00:00:00.000Z", cwd: "" },
+    { type: "message", id: "t1", parentId: sessionId, timestamp: "2026-11-16T00:00:01.000Z",
+      message: { role: "assistant", content: [
+        { type: "text", text: "看图" },
+        { type: "toolCall", id: "c1", name: "read", arguments: { path: imagePath } }] } },
+    { type: "message", id: "t2", parentId: "t1", timestamp: "2026-11-16T00:00:02.000Z",
+      message: { role: "toolResult", toolCallId: "c1", toolName: "read", isError: false,
+        content: [{ type: "text", text: `screenshot ${imagePath} 10x10 1KB` }] } },
+  ];
+  await writeFile(file, entries.map((line) => JSON.stringify(line)).join("\n") + "\n");
+
+  const { server, base } = await startOn(home);
+  try {
+    const detail = await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}`);
+    assert.equal(detail.status, 200);
+    const text = await detail.text();
+    // 三条锁：没有内联 base64 / 有引用 URL / 引用点进去真的能取回同一份字节
+    assert.equal(text.includes("data:image/"), false, "响应里仍有内联 base64 —— P3-S1 被回退了");
+    const parsed = JSON.parse(text);
+    const images = parsed.messages.flatMap((message) => message.blocks ?? [])
+      .flatMap((block) => block.images ?? []);
+    assert.equal(images.length, 1, "应有一条工具图");
+    assert.ok(typeof images[0].url === "string" && images[0].url.startsWith("/api/attachment?path="), "工具图不是引用形态");
+    assert.equal(images[0].data, undefined, "引用形态不应同时带 base64");
+
+    const fetched = await fetch(`${base}${images[0].url}`);
+    assert.equal(fetched.status, 200);
+    assert.equal(Buffer.from(await fetched.arrayBuffer()).equals(imageBytes), true);
   } finally { server.close(); }
 });
