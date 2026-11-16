@@ -21,6 +21,8 @@ import { useAppearance } from "./hooks/useAppearance";
 import { useOverlays } from "./hooks/useOverlays";
 import { useReviewSurface } from "./hooks/useReviewSurface";
 import { useComposer } from "./hooks/useComposer";
+import { legacyGroupsOpen } from "./layout-storage";
+import { useWorkspace } from "./hooks/useWorkspace";
 import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme, persistSelectionPrefs, cachedSelectionPrefs } from "./ui-prefs-client";
 import type { SelectionPrefs } from "./selection-prefs";
 import { quoteDraftOf } from "./selection-quote";
@@ -337,47 +339,6 @@ function timeAgo(iso: string): string {
 }
 
 /** 列头：40px，11px 小标签 + 收起钮（唯一收起入口）。列头只写"这一列是什么"，徽标留给行内数据。 */
-/**
- * 折叠键迁移（Task 0015 · T15）：旧的两个键 `projects` / `sessions` → 一个 `groups`。
- *
- * 为什么"任一展开就展开"：合并后一列同时承担两个作用。宁可多开一列（用户点一下就能收），
- * 也不要让老用户的展开状态在升级后变成"点了没反应"。
- * 只在读不到 `groups` 键时参考旧键（`useFold` 的 initial 只在没有存量值时生效）。
- */
-function legacyGroupsOpen(): boolean {
-  try {
-    if (localStorage.getItem("lifeos.fold.groups") !== null) return true;   // 有存量就不看旧键
-    const projects = localStorage.getItem("lifeos.fold.projects");
-    const sessions = localStorage.getItem("lifeos.fold.sessions");
-    return projects !== "0" || sessions !== "0";
-  } catch { return true; }
-}
-
-/** 分组折叠状态的持久化键（只存收起的项目 id）。 */
-const COLLAPSED_GROUPS_KEY = "lifeos.collapsedGroups";
-
-function readCollapsedGroups(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
-    if (raw === null) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, boolean> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === true) out[key] = true;   // 只认 true；其它一律当展开
-    }
-    return out;
-  } catch { return {}; }
-}
-
-function writeCollapsedGroups(value: Record<string, boolean>): void {
-  try {
-    const keys = Object.keys(value).filter((key) => value[key] === true);
-    if (keys.length === 0) localStorage.removeItem(COLLAPSED_GROUPS_KEY);
-    else localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Object.fromEntries(keys.map((key) => [key, true]))));
-  } catch { /* 忽略：存不下时退化为不持久，不影响功能 */ }
-}
-
 function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
     // 列内边距 8（design-language §5.1 / D21）：与助手行、分组头同一左缘。
@@ -450,14 +411,17 @@ function userBlocks(text: string, images: readonly PendingImage[]): Block[] {
 }
 
 export default function App() {
-  const [agents, setAgents] = useState<Agent[]>(() => {
-    // 缓存优先：上次的数据立即渲染（对标 Notion/Linear 的刷新体验——零白闪）
-    try { const cached = localStorage.getItem("lifeos.agents"); return cached ? JSON.parse(cached) : []; }
-    catch { return []; }
-  });
-  const [agent, setAgent] = useState<Agent>();
-  // 用户档案（= 你本人，不是 Agent）：名字与头像从 /api/profile 来，缺失时前端不显示头像
-  const [profile, setProfile] = useState<UserProfile | undefined>();
+  /*
+   * 工作区（Task 0017 · P5）：agents / agent / profile / groups / selectedProjectId /
+   * collapsedGroups / loaded 整块搬进 `hooks/useWorkspace.ts`；折叠持久化抽到
+   * `layout-storage.ts`（纯 localStorage，可单测）。纪律原样保留（缓存优先、空数组不覆盖缓存）。
+   */
+  const workspace = useWorkspace();
+  const {
+    agents, setAgents, agent, setAgent, profile, setProfile,
+    groups, setGroups, selectedProjectId, setSelectedProjectId,
+    collapsedGroups, setCollapsedGroups, loaded, setLoaded,
+  } = workspace;
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   /*
    * 外观与偏好（Task 0017 · P5）：整块搬进 `hooks/useAppearance.ts`。
@@ -475,8 +439,6 @@ export default function App() {
     displayPrefsOpen, setDisplayPrefsOpen,
   } = appearance;
 
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
@@ -798,9 +760,7 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
-  const [loaded, setLoaded] = useState(() => {
-    try { return localStorage.getItem("lifeos.agents") !== null; } catch { return false; }
-  });
+  /* loaded 已搬进 useWorkspace（Task 0017 · P5）。 */
   const [showNav, setShowNav] = useFold("agents");
   /*
    * 面板合并（Task 0015 · T15）：项目列 + 会话列 → 一列「项目分组 → 会话」。
@@ -826,8 +786,7 @@ export default function App() {
    * 为什么不能只放 state：刷新/切 tab/切助手后折叠全被重置，用户每次都要重新收一遍。
    * 只存**收起的**那几个（默认全展开）——项目通常 3–5 个，全展开是常态。
    */
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(readCollapsedGroups);
-  useEffect(() => { writeCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
+  /* collapsedGroups 与其落盘 effect 已搬进 useWorkspace（Task 0017 · P5）。 */
   /*
    * 弹层与模态（Task 0017 · P5）：整块搬进 `hooks/useOverlays.ts`。
    * 搬走：confirm / overview(+anchor) / history / addingProject / configAgent /

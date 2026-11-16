@@ -20,12 +20,9 @@
  */
 import { useRef, useState } from "react";
 
-import type { AgentAvatarSpec } from "../agent-avatar";
 import type { Level } from "../mobile-nav";
 import type { PeerTarget } from "../PeerPanel";
-
-/** 助手（与 App.tsx 内的局部 type 同一形状；搬出来供本 hook 用）。 */
-export type Agent = { id: string; name: string; description?: string; avatar?: AgentAvatarSpec };
+import type { Agent } from "./types";
 
 export type { Level, PeerTarget };
 

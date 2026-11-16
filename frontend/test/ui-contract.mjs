@@ -2152,6 +2152,11 @@ if (overviewOpen === false) {
 } else {
   await page.waitForSelector('[data-testid="project-overview"]', { timeout: 3000 });
   /*
+   * 等身份区那一格渲染出来（Task 0017 · P5）：概览卡是**异步取数**的（`/overview`），
+   * 面板先出现、路径/默认工作区随后到。固定时序会读到空字符串 → 假红。
+   */
+  await page.waitForSelector('[data-testid="overview-location"]', { timeout: 8000 }).catch(() => undefined);
+  /*
    * 2026-11-16（Task 0017 · P3）：判据从「整卡 textContent 里有没有 `默认工作区` 或 `/`」
    * 改为「身份区下方**那一格**存在且非空」。
    *
@@ -3149,7 +3154,12 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
   });
 
   await page.goto(`${APP_URL}/?agent=${agentId}&project=workspace&session=${SID}`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
+  /*
+   * 等消息头真的渲染（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，固定 700ms 在冷启动
+   * 会读到 0 个消息头 → 身份两条 + 失败可见三条一起假红。等的是被测对象本身。
+   */
+  await page.waitForSelector('[data-testid="message-header"]', { timeout: 15000 }).catch(() => undefined);
+  await page.waitForTimeout(200);
 
   const heads = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-header"]')]
     .map((node) => (node.textContent ?? "").trim()));
