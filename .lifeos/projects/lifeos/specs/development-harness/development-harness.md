@@ -148,8 +148,9 @@ cp -Rn .lifeos/projects/lifeos/. "$HOME/.lifeos/projects/lifeos/"
 - **必须** 工作区里的提交作者 = 这个工作区所属的 Agent（`user.name=<agentId>`、`user.email=<agentId>@lifeos.local`）。身份由建工作区的动作写进该工作区（`src/worktree-identity.ts`），**不靠 Agent 传参**。
 - **必须** 新 Task 若回执里带了身份没写成功的提示，就按提示显式传 `-c user.name=<agentId> -c user.email=<agentId>@lifeos.local` 提交，并把这件事记进 `log.md`。
 - **应该** 提交正文带 trailer `Task: <agentId>/<projectId>/<NNNN>`。
-- **必须** 存量工作区（2026-11-16 之前建的）提交前跑一次 `pnpm worktree:identity` 看它有没有身份；缺就 `pnpm worktree:identity:fix`（只写配置，不改历史）。
 - **必须** 不改写存量无署名提交（协议 §11）：314 条作者是用户身份的提交保持原样，反查靠分支名与 Task 目录归属。
+- **可以** 2026-11-16 之前建的存量工作区不补身份（用户 2026-11-16 拍板：存量不管，只要求新建的守规范）；
+  需要时 `pnpm worktree:identity` 看现状、`pnpm worktree:identity:fix` 补，**它不是提交前的规定步骤**。
 
 > 为什么这事必须由机制而不是记性保证：2026-11-16 实测 378 条提交里 314 条落成用户的全局身份，
 > 带 Agent 名的 64 条全是 Agent 自己记得传 `-c`；改用工作区后（11-12 起）署名归零。
