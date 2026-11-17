@@ -1,9 +1,8 @@
-# peer-delegate：Agent 之间的对话。
+# peer-delegate：Agent ↔ Agent 的会话（DIRECTOR.md 类型：静态形态 / 跨区流转）。
 #
-# **诚实边界**：打桩模型不会真的触发 `lifeos_ask` 工具链，所以拍不出"派活 → 回流"的完整过程。
-# 这条素材拍的是**真实存在的东西**：coder 与 Life Agent 之间的那条会话，
-# 包括会话行上的叠放头像、头部对端信息、以及消息里的双头像。
-# 文案里不写"派活"，只写"Agent 之间也有对话"——不假装拍到了没有的东西。
+# 边界（诚实标注）：打桩模型不会触发真的 `lifeos_ask` 工具链，所以拍不出「派活 → 回流」全过程。
+# 这条素材演的是**真实存在的东西**：两个 Agent 之间的会话（叠放头像、头部对端、双头像消息）。
+# 文案也只写「Agent 之间也有对话」，不写「派活」。
 name: peer-delegate
 mode: video
 viewport: { width: 1000, height: 625 }
@@ -14,13 +13,17 @@ outputs:
 steps:
   - waitFor: '[data-testid="groups-panel"]'
   - pause: 1.0
-  - click: 'text=coder'
-  - pause: 1.2
-  - move: { x: 400, y: 200, steps: 10 }
-  - pause: 0.8
-  - click: 'text=与 Life Agent 的对话'
-  - pause: 2.0
-  - move: { x: 700, y: 300, steps: 12 }
-  - pause: 1.4
-  - move: { x: 640, y: 120, steps: 8 }
+  - click: 'text=云起'
   - pause: 1.0
+  - click: 'text=与 云起 的对话'
+  - pause: 1.8
+  - move: { x: 700, y: 300, steps: 10 }
+  - pause: 0.6
+  - move: { x: 640, y: 100, steps: 8 }
+  - pause: 1.2
+  - click: 'text=Home Devices'
+  - pause: 1.0
+  - click: 'text=与 Home Devices 的对话'
+  - pause: 1.6
+  - move: { x: 700, y: 300, steps: 10 }
+  - pause: 1.2

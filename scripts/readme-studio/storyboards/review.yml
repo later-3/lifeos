@@ -1,7 +1,8 @@
-# review：检视模式。打开检视面板 → 两组源 → 展开文档 diff → 拖选一段行区间 → 写评论。
+# review：检视模式（DIRECTOR.md 类型：操作演示 + 细节强调）。
+# 演：打开检视 → 两组源（项目代码 / Task 文档）→ 展开文档 diff → 绿色新增行可评论。
 #
-# 前置：演示家目录必须是 git 仓且有一个「基线之后改动过」的 Task 文档
-# （scripts/readme-demo-home.mjs 已负责造这个改动；没有它检视面板只会显示"没有可检视的改动"）。
+# 数据来源：showcase 家目录里 architect/lifeos/0002 的 04-contract.md 有一处未提交改动
+# （由 scripts/readme-studio/showcase-changes.mjs 每次重造，保证可复现）。
 name: review
 mode: video
 viewport: { width: 1000, height: 625 }
@@ -12,13 +13,15 @@ outputs:
 steps:
   - waitFor: '[data-testid="groups-panel"]'
   - pause: 0.9
-  - click: 'text=0002 的设计：状态机与回调'
-  - pause: 1.0
+  - click: 'text=Architect'
+  - pause: 0.8
+  - click: 'text=我在想一个问题，Obsidian Codex Z-Code'
+  - pause: 1.4
   - click: '[aria-label="检视当前 Task 的改动"]'
-  - pause: 2.0
+  - pause: 2.2
   - move: { x: 640, y: 300, steps: 10 }
-  - pause: 0.9
+  - pause: 0.7
   - click: '[data-review-file]'
   - pause: 1.8
-  - move: { x: 700, y: 430, steps: 14 }
-  - pause: 1.2
+  - move: { x: 700, y: 430, steps: 12 }
+  - pause: 1.4

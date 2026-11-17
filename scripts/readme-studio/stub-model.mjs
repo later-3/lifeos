@@ -66,7 +66,7 @@ const server = createServer(async (request, response) => {
   // 健康检查端点：拍摄前 run.mjs 会 ping 它，确认打桩服务在跑。
   if (request.url?.endsWith("/models")) {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ object: "list", data: [{ id: "demo-model", object: "model" }] }));
+    response.end(JSON.stringify({ object: "list", data: [{ id: "claude-sonnet-4-6", object: "model" }, { id: "demo-model", object: "model" }] }));
     return;
   }
 
