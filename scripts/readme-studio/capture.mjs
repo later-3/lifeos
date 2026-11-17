@@ -49,7 +49,7 @@ async function loadPlaywright() {
 }
 
 /** 全部动作名（新增动作要同时在 runStep 里实现）。 */
-export const ACTIONS = ["click", "type", "press", "move", "scroll", "zoom", "unzoom", "waitFor", "waitForText", "pause", "shot", "eval", "evalFile", "selectText"];
+export const ACTIONS = ["click", "type", "press", "move", "scroll", "zoom", "unzoom", "waitFor", "waitForText", "pause", "shot", "eval", "evalFile", "selectText", "badge", "scene"];
 
 /**
  * 校验并返回这一步的动作名。
@@ -161,6 +161,52 @@ async function runStep(page, step, log, shotDir) {
   } else if (action === "eval") {
     await page.evaluate(typeof params === "string" ? params : params.value);
     log("eval");
+  } else if (action === "badge") {
+    /**
+     * 画面内角标（DIRECTOR.md R2）：多张同构画面并列时，每张自己说明"这是哪个"。
+     *
+     * 为什么画在页面内而不是靠 ffmpeg drawtext：
+     *  ① 颜色能跟着主题走（`color: inherit` 的对比由主题保证），八套主题都不会糊；
+     *  ② 不依赖字体文件（ffmpeg 画中文必须显式指定 fontfile，换机器就可能出方块）。
+     */
+    const { text, position = "bottom-left" } = params;
+    await page.evaluate(({ text, position }) => {
+      const id = "lifeos-studio-badge";
+      document.getElementById(id)?.remove();
+      const style = document.createElement("style");
+      style.textContent = `
+        #${id} {
+          position: fixed; z-index: 2147483600; pointer-events: none;
+          padding: 8px 14px; border-radius: 10px;
+          font: 600 15px/1.2 -apple-system, "PingFang SC", "Hiragino Sans GB", sans-serif;
+          letter-spacing: .01em;
+          background: rgba(17, 17, 19, .78); color: #fff;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, .28);
+          backdrop-filter: blur(6px);
+        }
+        #${id}[data-pos="bottom-left"] { left: 20px; bottom: 20px; }
+        #${id}[data-pos="bottom-right"] { right: 20px; bottom: 20px; }
+        #${id}[data-pos="top-left"] { left: 20px; top: 20px; }
+        #${id}[data-pos="top-right"] { right: 20px; top: 20px; }
+      `;
+      document.head.appendChild(style);
+      const badge = document.createElement("div");
+      badge.id = id;
+      badge.dataset.pos = position;
+      badge.textContent = text;
+      document.body.appendChild(badge);
+    }, { text, position });
+    log(`badge "${text}" @ ${position}`);
+  } else if (action === "scene") {
+    /**
+     * 镜头边界（多镜头素材用）：`{ scene: { name, ... } }` 表示"从这里开始是新镜头"。
+     *
+     * 当前实现：只记一条分隔标记，供 run.mjs 切分成多个片段（每段独立编码再拼接）。
+     * 为什么不在同一个 webm 里直接切：片段的时长/数量要能独立调整，
+     * 一个镜头重拍不该让整段重新录（返回别的镜头要重放一遍操作，很贵）。
+     */
+    const { name } = params;
+    log(`── 镜头开始：${name ?? "(未命名)"}`);
   } else if (action === "selectText") {
     /**
      * 用**真实鼠标**拖选一段文字（在可见的段落上）。
@@ -339,6 +385,14 @@ export async function capture(options) {
   }
 
   await page.goto(url, { waitUntil: "networkidle" });
+  // prelude：在页面里执行一段准备脚本（如注入主题包激活状态），再刷新一次让它生效。
+  // 为什么必须刷新：boot 脚本在 React 之前读 localStorage 上色，注入后不刷新就还是旧主题。
+  if (typeof options.prelude === "string" && options.prelude.trim() !== "") {
+    await page.evaluate(options.prelude);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(600);
+    log("prelude 已注入并重载");
+  }
   for (const step of steps) {
     await runStep(page, step, log, keyShotDir ?? join(outDir, "keys"));
     if (step.shot !== undefined) keyShots.push(step.shot);

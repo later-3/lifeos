@@ -1,0 +1,113 @@
+# theme-tour：主题系统（按 DIRECTOR.md 的导演规范）。
+#
+# 要说明的事：① 主题在哪里换（只演一次）；② 八套主题下界面分别长什么样（每张打角标）。
+#
+# 做法：主题包只存在前端 localStorage，所以用 `prelude` 注入 `lifeos.themePackActive`，
+# 等价于"用户真的选过它"——走的是真实生效路径，不是伪造截图。
+# 多镜头由 `scenes` 驱动：每个 scene 独立开 context 录一段，最后拼接（run.mjs）。
+#
+# 用法：STUDIO_APP=http://127.0.0.1:5182 node scripts/readme-studio/run.mjs theme-tour
+name: theme-tour
+mode: video
+viewport: { width: 1000, height: 625 }
+size: { width: 1000, height: 625 }
+path: /
+outputs:
+  - { type: gif, file: theme.gif, fps: 10, width: 1000, colors: 128 }
+
+scenes:
+  # 镜头 1：演"怎么换"——全窗、无角标（观众正看着操作本身）
+  - name: 切换
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.0
+      - click: '[aria-label="设置"]'
+      - pause: 1.1
+      - move: { x: 640, y: 300, steps: 8 }
+      - pause: 0.4
+      - click: 'button:has-text("冷蓝")'
+      - pause: 0.9
+      - click: 'text=Gruvbox'
+      - pause: 1.4
+
+  # 镜头 2..7：只演结果（取 6 套代表性主题；其余名字在 README 文字里列全）——同一个画面在不同主题下，每张打角标（R2）
+  # 每段只取末尾 1.5s：前面等加载的时间对观众没有信息量，留着只会让 GIF 又大又慢。
+  - name: VSCode 2026 Dark
+    badge: "VSCode 2026 Dark · VS Code"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "VSCode 2026 Dark");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6
+
+
+  - name: Monokai
+    badge: "Monokai · VS Code"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "Monokai");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6
+
+
+  - name: Minimal
+    badge: "Minimal · Obsidian"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "Minimal");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6
+
+  - name: Graphite Pie
+    badge: "Graphite Pie · Obsidian"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "Graphite Pie");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6
+
+  - name: Gruvbox
+    badge: "Gruvbox · Obsidian"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "Gruvbox");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6
+
+  - name: Sanctum
+    badge: "Sanctum · Obsidian"
+    trimEnd: 1.5
+    prelude: |
+      localStorage.setItem("lifeos.themePackActive", "Sanctum");
+    steps:
+      - waitFor: '[data-testid="groups-panel"]'
+      - pause: 1.2
+      - click: 'text=最近成都的天气'
+      - pause: 1.4
+      - click: 'text=草稿契约'
+      - pause: 1.6

@@ -122,7 +122,6 @@ What happens inside a turn, and when you can step in.
 > Code: `src/agents.ts` · `src/peer.ts` · `src/peer-completion.ts` · `src/memory/resolve.ts` · `src/projects.ts`
 
 <p align="center"><img src="docs/images/peer-delegate.gif" width="100%" alt="An agent-to-agent conversation: stacked avatars on the row, the peer in the header"></p>
-<p align="center"><img src="docs/images/theme-light.webp" width="100%" alt="Theme settings, light"></p>
 
 ### Look & feel
 
@@ -136,8 +135,7 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/design/theme.ts` · `frontend/src/design/theme-translators.ts` · `frontend/src/display-prefs.ts` · `frontend/src/badge-prefs.ts` · `frontend/src/ui-prefs-client.ts`
 
-<p align="center"><img src="docs/images/theme-dark.webp" width="100%" alt="Theme settings, dark"></p>
-<p align="center"><img src="docs/images/theme-import.gif" width="100%" alt="Theme import: paste a VS Code theme JSON, preview it, save it"></p>
+<p align="center"><img src="docs/images/theme.gif" width="100%" alt="Theme tour: switch once in settings, then six themes shown side by side with labels"></p>
 
 ### Sessions & navigation
 

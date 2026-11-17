@@ -15,9 +15,9 @@
  * 关键帧（`--keys` 或 storyboard 里的 `shot:`）是**给你审核用的**：
  * 每一步操作后抓一张 PNG，配合时长与体积判断"这个动作讲清楚了没有"。
  */
-import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { capture } from "./capture.mjs";
@@ -128,7 +128,15 @@ function parseYaml(text, file = "storyboard") {
             if (peerIndent !== indent + 2 || peer.raw.trimStart().startsWith("- ")) break;
             const peerBody = peer.raw.trim();
             const [peerKey, ...peerValue] = peerBody.split(":");
-            const peerParsed = parseScalar(peerValue.join(":"));
+            const peerRaw = peerValue.join(":").trim();
+            // 列表项里的 block scalar（`prelude: |`）——实测缺这一条会让多镜头 storyboard 直接解析失败
+            if (peerRaw === "|" || peerRaw === ">") {
+              const [text, after] = takeBlock(lines, index + 1, peerIndent);
+              item[peerKey.trim()] = peerRaw === ">" ? text.replace(/\n/g, " ") : text;
+              index = after;
+              continue;
+            }
+            const peerParsed = parseScalar(peerRaw);
             if (peerParsed === undefined) {
               const [nested, next] = parseBlock(index + 1, indent + 4);
               item[peerKey.trim()] = nested;
@@ -174,6 +182,76 @@ function parseYaml(text, file = "storyboard") {
 
 export function loadStoryboard(path) {
   return { ...parseYaml(readFileSync(path, "utf8"), basename(path)), __path: path };
+}
+
+
+/** ffprobe 取时长（本机 ffprobe 是 wrapper，无视 -of csv，必须按 JSON 解析）。 */
+function probeDuration(videoPath) {
+  try {
+    const raw = execFileSync("ffprobe", ["-v", "error", "-print_format", "json", "-show_format", videoPath]).toString();
+    const seconds = Number(JSON.parse(raw).format.duration);
+    return Number.isFinite(seconds) ? seconds : 0;
+  } catch { return 0; }
+}
+
+/** 给某个镜头的 steps 补上关键帧名（带镜头号，避免多镜头覆盖同名 png）。 */
+function withShotsFor(steps, sceneIndex) {
+  return steps.map((step, index) => (
+    step.shot === undefined
+      ? { ...step, shot: `s${sceneIndex + 1}-${String(index + 1).padStart(2, "0")}-${Object.keys(step).find((k) => k !== "shot") ?? "step"}` }
+      : step
+  ));
+}
+
+/** 列关键帧（审核材料）。 */
+function keyShotsOf(keyDir) {
+  try { return readdirSync(keyDir).filter((f) => f.endsWith(".png")).map((f) => f.replace(/\.png$/, "")); }
+  catch { return []; }
+}
+
+/**
+ * 把多个镜头拼成一个视频。
+ *
+ * **转场用「每段首尾各自淡入淡出到黑」+ concat，不用 `xfade`。**
+ * 为什么（2026-11-16 实测，试了 6 种组合全部失败）：
+ *   playwright 录出的 webm 转成什么中间格式都不被 xfade 接受——
+ *   它要求输入是恒定帧率，而转出来的文件 `r_frame_rate` 报 `1/0`（`-vsync cfr`、`libx264`、
+ *   `setp tb=AVTB`、先转 mp4/webm 都试过）。`xfade` 直接拒：`current rate of 1/0 is invalid`。
+ *
+ *   淡入淡出到黑 + concat 不依赖帧率探测，实测稳（13.5s 拼接成功）。
+ *   观感上「过黑场」与「交叉淡化」都是转场，对 GIF 这种低帧率产物没有差别。
+ */
+function mergeSegments(segments, outPath, { fadeSec = 0.2 } = {}) {
+  /**
+   * 拼接多个镜头：**每段首尾淡入淡出到黑 + concat**。
+   *
+   * 为什么不用 `xfade`（2026-11-16，把可行/不可行的组合都试了一遍）：
+   *  - 对原始 webm 直接 xfade **两段**可行；
+   *  - 但**三段以上链式 xfade** 会产出整段白帧（实测截图为纯白），
+   *    原因是逐对链式拼接时中间文件的时长/时间基对不上，offset 越接越偏；
+   *  - 预先转成恒定帧率的中间 mp4 再 xfade 也失败（`current rate of 1/0 is invalid`）。
+   *
+   * 「淡到黑再淡入」同样是转场，且不依赖帧率探测——实测 13s 拼接稳定。
+   * 对 GIF（10fps）这种产物，观感与交叉淡化没有差别。
+   */
+  const parts = segments.map((segment, index) => {
+    const end = segment.trimEnd > 0 ? segment.trimEnd : probeDuration(segment.webm);
+    const duration = Math.max(0.1, end - segment.trimStart);
+    const outStart = Math.max(0, duration - fadeSec);
+    const target = join(dirname(outPath), `seg-${String(index + 1).padStart(2, "0")}.mp4`);
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", String(segment.trimStart), "-t", duration.toFixed(3), "-i", segment.webm,
+      "-vf", `scale=1000:-2:flags=lanczos,setsar=1,fps=12,fade=t=in:st=0:d=${fadeSec},fade=t=out:st=${outStart.toFixed(3)}:d=${fadeSec}`,
+      "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-vsync", "cfr", "-an", target]);
+    return target;
+  });
+
+  if (parts.length === 1) {
+    execFileSync("ffmpeg", ["-v", "error", "-y", "-i", parts[0], "-c", "copy", outPath]);
+    return;
+  }
+  const listPath = join(dirname(outPath), "concat-list.txt");
+  writeFileSync(listPath, parts.map((file) => `file '${basename(file)}'`).join("\n") + "\n");
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outPath]);
 }
 
 /* ── 执行 ─────────────────────────────────────────────────────── */
@@ -243,12 +321,90 @@ async function shoot(storyboard, options = {}) {
   }
 
   console.log(`\n▶ ${name}  ${storyboard.mode ?? "video"} ${JSON.stringify(storyboard.size ?? storyboard.viewport ?? "")}`);
+  /**
+   * 多镜头（DIRECTOR.md R1/R2）：每个 scene 独立开 context 录一段，再拼成一个 webm。
+   *
+   * 为什么逐镜头独立录制、而不是一个大 setUp 连续录：
+   *  1. 一个镜头重拍不该让整段重放（返回别的镜头要重走操作，很贵）；
+   *  2. 每个镜头可以有自己的 prelude（换主题就是要换 localStorage 再刷新）；
+   *  3. 拼接时才做转场，镜头的时长/顺序都能单独调。
+   */
+  if (Array.isArray(storyboard.scenes) && storyboard.scenes.length > 0) {
+    const segments = [];
+    for (const [index, scene] of storyboard.scenes.entries()) {
+      const label = scene.name ?? `scene-${index + 1}`;
+      console.log(`\n▶ ${name} · 镜头 ${index + 1}/${storyboard.scenes.length}：${label}`);
+      const sceneSteps = (scene.steps ?? []).map((step) => ({ ...step }));
+      // 角标（R2）：镜头一开始就挂上，整段镜头都在
+      const withBadge = scene.badge === undefined
+        ? sceneSteps
+        : [{ badge: { text: scene.badge, position: scene.badgePosition ?? "bottom-left" } }, ...sceneSteps];
+      const sceneDir = join(outDir, `scene-${String(index + 1).padStart(2, "0")}`);
+      const captured = await capture({
+        mode: "video",
+        url: `${app}${storyboard.path ?? "/"}`,
+        viewport: storyboard.viewport ?? { width: 1000, height: 625 },
+        size: storyboard.size,
+        steps: withShotsFor(withBadge, index),
+        prelude: scene.prelude ?? storyboard.prelude,
+        outDir: sceneDir,
+        keyShotDir: keyDir,
+        log: (line) => console.log(`   ${line}`),
+      });
+      if (captured.webm === undefined) throw new Error(`镜头 ${index + 1} 没有产出 webm`);
+      const start = findContentStart(captured.webm);
+      const full = probeDuration(captured.webm);
+      // trimEnd：只保留末尾 N 秒。多例并列镜头（主题展示）只需要"安静展示"那一小段，
+      // 前面等页面加载/等渲染的时间对观众没有信息量，留着只会让 GIF 变大变慢。
+      const keep = Number(scene.trimEnd ?? storyboard.trimEnd ?? 0);
+      /**
+       * `trimEnd: N` = 取**末尾** N 秒（不是开头 N 秒）。
+       *
+       * 为什么是末尾（2026-11-16 实测踩坑）：展示型镜头（如"某主题下的一屏"）前面是
+       * 页面加载 + prelude 重载 + 切会话，只有最后那段才是"要展示的画面"。
+       * 之前按"开头 N 秒"取，结果取到的是加载中的白屏/骨架屏，拼出来整段纯白。
+       */
+      const from = keep > 0 ? Math.max(start, full - keep) : start;
+      segments.push({ webm: captured.webm, label, trimStart: from, trimEnd: 0 });
+      console.log(`   ↳ 时长 ${full.toFixed(2)}s，取末尾 ${keep > 0 ? keep + "s（" + from.toFixed(2) + "s 起）" : "全部"}`);
+    }
+
+    // 拼接（带转场）
+    const merged = join(outDir, "merged.mp4");
+    mergeSegments(segments, merged, { fadeSec: storyboard.fadeSec ?? 0.2 });
+    console.log(`   拼接完成：${segments.length} 个镜头 → merged.mp4`);
+
+    // 交给原有编码流程（GIF/MP4）
+    const outputs = [];
+    for (const output of storyboard.outputs ?? []) {
+      const target = join(options.outputRoot ?? "./docs/images", output.file);
+      if (output.type === "gif") {
+        const written = encodeGif({ webm: merged, out: target, fps: output.fps, width: output.width, colors: output.colors });
+        outputs.push(written);
+        console.log(`   → ${output.file}  ${written.mb.toFixed(2)}MB`);
+      } else if (output.type === "mp4") {
+        const written = encodeMp4({ webm: merged, out: target, fps: output.fps ?? 60, width: output.width ?? 1920, height: output.height ?? 1080 });
+        outputs.push(written);
+        console.log(`   → ${output.file}  ${(written.bytes / 1024 / 1024).toFixed(1)}MB`);
+      }
+    }
+    const summary = {
+      name, mode: "scenes", scenes: segments.length,
+      durationSec: Number(probeDuration(merged).toFixed(2)),
+      keyShots: keyShotsOf(keyDir),
+      outputs: outputs.map((item) => ({ file: basename(item.out), kb: Math.round(item.bytes / 1024) })),
+    };
+    writeFileSync(join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
+    return summary;
+  }
+
   const result = await capture({
     mode: storyboard.mode === "cdp" ? "cdp" : "video",
     url: `${app}${storyboard.path ?? "/"}`,
     viewport: storyboard.viewport ?? { width: 1000, height: 625 },
     size: storyboard.size,
     steps: withShots,
+    prelude: storyboard.prelude,
     outDir,
     keyShotDir: keyDir,
     jpegQuality: storyboard.jpegQuality,

@@ -136,9 +136,7 @@ flowchart LR
 
 > 代码：`frontend/src/design/theme.ts` · `frontend/src/design/theme-translators.ts` · `frontend/src/display-prefs.ts` · `frontend/src/badge-prefs.ts` · `frontend/src/ui-prefs-client.ts`
 
-<p align="center"><img src="docs/images/theme-light.webp" width="100%" alt="主题设置（浅色）"></p>
-<p align="center"><img src="docs/images/theme-dark.webp" width="100%" alt="主题设置（深色）"></p>
-<p align="center"><img src="docs/images/theme-import.gif" width="100%" alt="主题导入：粘贴一份 VS Code 主题 JSON，预览后保存"></p>
+<p align="center"><img src="docs/images/theme.gif" width="100%" alt="主题巡览：在设置里换一次，随后是六套主题下的一屏，每张标着主题名"></p>
 
 ### 会话与导航
 
