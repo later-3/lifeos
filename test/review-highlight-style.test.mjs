@@ -3,10 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tokenClassName, TOKEN_GROUPS } from "../frontend/src/review-highlight-style.ts";
+import { tokenClassName, TOKEN_GROUPS } from "../frontend/src/api/review-highlight-style.ts";
 
 const TOKENS = readFileSync(join(process.cwd(), "frontend/src/design/tokens.css"), "utf8");
-const STYLE = readFileSync(join(process.cwd(), "frontend/src/review-highlight-style.ts"), "utf8");
+const STYLE = readFileSync(join(process.cwd(), "frontend/src/api/review-highlight-style.ts"), "utf8");
 
 test("G8·C1 每个分组都映射到一个 `text-syn-*` 类，且该类在 tokens.css 里有对应色值", () => {
   assert.ok(TOKEN_GROUPS.length >= 6, `分组过少（${TOKEN_GROUPS.length}）`);

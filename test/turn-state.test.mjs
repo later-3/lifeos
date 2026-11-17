@@ -1,7 +1,7 @@
 // 回合终态的单一判据（Task 0007）。
 //
 // 背景：同一个问题"这一轮算不算失败"曾经有两份实现——后端 `src/turn-verdict.ts` 按 stopReason 终态判，
-// 前端 `frontend/src/resend.ts` 按"尾部文本是否为空/带 error"猜。口径不一致时会同时出现
+// 前端 `frontend/src/api/resend.ts` 按"尾部文本是否为空/带 error"猜。口径不一致时会同时出现
 // "提示条说可以点重新发送、按钮不出现"（实测：stopReason=toolUse 且那轮有文本）与
 // "提示条不提但按钮在"。本文件是唯一的判据，前后端都调它（先例：src/session-title.ts）。
 //

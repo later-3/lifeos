@@ -46,6 +46,12 @@
 
 ## 验证
 
-- `pnpm typecheck`、`pnpm test` 为基础门禁；前端改动按前端行的顺序走四步后再过 `pnpm verify`（typecheck + lint:tokens + test + test:ui）。
+- `pnpm typecheck`、`pnpm test` 为基础门禁；前端改动按前端行的顺序走四步后再过 `pnpm verify`
+  （typecheck + lint:tokens + test + test:ui + **test:layer** + **test:visual**）。
+- **`test:layer`（`frontend/test/layer-paint.mjs`）**：层绘制不变量——行级填充只声明在行根、
+  动作覆盖层不自绘底色、状态标记不越出行矩形、同一列里的行圆角同档。**改行/列表/覆盖层必跑。**
+- **`test:visual`（`scripts/visual-matrix.mjs`）**：组件取景框视觉矩阵（12 框 × 4 主题 = 48 张，
+  含 hover 与外部主题两维）。基线在 `frontend/test/visual-matrix/`，**入 git**；
+  `--update` 前必须人眼确认差异报告。
 - 家目录或模板结构改动后运行 `pnpm home:check`（结构不符合协议即失败）。
 - 数值/颜色只在 `frontend/src/design/tokens.css`，控件只在 `frontend/src/design/`，布局宽度只改 `design/layout.ts`；视觉变化必须回应截图基线 diff（`pnpm test:ui:update` + 人眼确认）。

@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   extensionOf, languageOf, lineCountOf, MAX_HIGHLIGHT_LINES, shouldTokenize, tokenSideOf, tokensAtLine,
-} from "../frontend/src/review-highlight.ts";
+} from "../frontend/src/api/review-highlight.ts";
 
 test("G8·1 扩展名：取小写、无扩展名返回整名、隐藏文件不误判", () => {
   assert.equal(extensionOf("src/a.TS"), "ts");

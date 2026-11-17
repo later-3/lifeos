@@ -5,7 +5,7 @@
 // 所以 Status 的两个终态字段名带 unread 前缀：`unreadDone` / `unreadError`。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveStatus } from "../frontend/src/status-map.ts";
+import { deriveStatus } from "../frontend/src/api/status-map.ts";
 
 /** 造一条会话行：只关心四态。 */
 const s = (state, agentId = "a", projectId) => ({

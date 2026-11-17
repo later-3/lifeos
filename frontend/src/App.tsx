@@ -3,70 +3,76 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   addImage, attachmentSummary, IMAGE_MIME_TYPES, removeImage, scaledSize, shouldCompressImage,
   CLIENT_JPEG_QUALITY, toRequestImages, type PendingImage,
-} from "./attachments";
+} from "./api/attachments";
 import { useFold } from "./design/fold";
-import { useAnnotations } from "./annotation-store";
-import type { Annotation, AnnotationAuthor } from "./annotations";
-import { annotationsMessage, hasSendableAnnotation } from "./annotation-message";
-import { addCommentRef, attachableComment, commentRefLabel, commentRefPreview, removeCommentRef, type CommentRef } from "./composer-comment-refs";
-import { commentsToText } from "./review-comment-copy";
-import { groupAnnotationsByReply } from "./anno-groups";
-import { rebuildHighlightStyles } from "./annotations";
+import { useAnnotations } from "./api/annotation-store";
+import type { Annotation, AnnotationAuthor } from "./api/annotations";
+import { annotationsMessage, hasSendableAnnotation } from "./api/annotation-message";
+import { addCommentRef, attachableComment, commentRefLabel, commentRefPreview, removeCommentRef, type CommentRef } from "./api/composer-comment-refs";
+import { commentsToText } from "./api/review-comment-copy";
+import { groupAnnotationsByReply } from "./api/anno-groups";
+import { rebuildHighlightStyles } from "./api/annotations";
 import { useToast } from "./design/toast";
-import { AgentConfigModal } from "./AgentConfig";
-import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
-import { UserAvatar, type UserProfile } from "./user-avatar";
-import { DisplayPrefsPanel, loadPrefs } from "./display-prefs-panel";
-import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme, persistSelectionPrefs, cachedSelectionPrefs } from "./ui-prefs-client";
-import type { SelectionPrefs } from "./selection-prefs";
-import { quoteDraftOf } from "./selection-quote";
-import { SelectionToolbar } from "./selection-toolbar";
-import { SettingsSurface } from "./settings-surface";
-import { applySurfaceTokens, applyTheme, calculatePalette, hex, loadTheme, saveTheme, type ThemeState } from "./design/theme";
+import { AgentConfigModal } from "./views/AgentConfig";
+import { AgentAvatar, type AgentAvatarSpec } from "./views/agent-avatar";
+import { UserAvatar, type UserProfile } from "./views/user-avatar";
+import { DisplayPrefsPanel } from "./views/display-prefs-panel";
+import { useAppearance } from "./hooks/useAppearance";
+import { useOverlays } from "./hooks/useOverlays";
+import { useReviewSurface } from "./hooks/useReviewSurface";
+import { useComposer } from "./hooks/useComposer";
+import { legacyGroupsOpen } from "./api/layout-storage";
+import { useWorkspace } from "./hooks/useWorkspace";
+import { fetchUiPrefs, persistBadgePrefs, persistDisplayPrefs, persistTheme, persistSelectionPrefs, cachedSelectionPrefs } from "./api/ui-prefs-client";
+import type { SelectionPrefs } from "./api/selection-prefs";
+import { quoteDraftOf } from "./api/selection-quote";
+import { SelectionToolbar } from "./views/selection-toolbar";
+import { SettingsSurface } from "./views/settings-surface";
+import { calculatePalette, hex, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
-} from "./display-prefs";
-import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "./badge-prefs";
-import { cachedBadgePrefs } from "./ui-prefs-client";
-import { hasProcess, statsOf, type ProcessStats } from "./process-stats";
-import { processOpenOf } from "./response-fold";
-import { SessionBar, type SessionBarTurn } from "./session-bar";
-import { sessionTotalsOf } from "./session-totals";
-import { groupIntoSpans } from "./turn-group";
-import { lastUserAtMs, turnWallMsOf } from "./turn-duration";
-import { DirectoryPicker } from "./DirectoryPicker";
+} from "./api/display-prefs";
+import { BADGE_DEFAULTS, badgeSoft, badgeVarsOf, type BadgePrefs } from "./api/badge-prefs";
+import { cachedBadgePrefs } from "./api/ui-prefs-client";
+import { hasProcess, statsOf, type ProcessStats } from "./api/process-stats";
+import { processOpenOf } from "./api/response-fold";
+import { SessionBar, type SessionBarTurn } from "./views/session-bar";
+import { sessionTotalsOf } from "./api/session-totals";
+import { groupIntoSpans } from "./api/turn-group";
+import { lastUserAtMs, turnWallMsOf } from "./api/turn-duration";
+import { DirectoryPicker } from "./views/DirectoryPicker";
 import { ImageTrigger } from "./design/image-viewer";
-import { FileTree } from "./FileTree";
-import { FilePanel } from "./FilePanel";
-import { ReviewPanel, type ReviewData, type TaskCandidateView } from "./ReviewPanel";
+import { FileTree } from "./views/FileTree";
+import { FilePanel } from "./views/FilePanel";
+import { ReviewPanel, type ReviewData, type TaskCandidateView } from "./views/ReviewPanel";
 import { DEFAULT_REVIEW_RATIO, MIN_REVIEW, reviewRatioOfPx } from "./design/layout";
 import { useColumnWidth } from "./useColumnWidth";
 import {
   AddProjectButton, GroupBody, GroupHeader, GroupsColumnHeader, PanelEmpty, PanelFooter, ParticipantToken,
-} from "./groups-panel";
+} from "./views/groups-panel";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
-import { MessageView, type Block } from "./Message";
-import { MobileNav, type Level } from "./mobile-nav";
+import { MessageView, type Block } from "./views/Message";
+import { MobileNav, type Level } from "./views/mobile-nav";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
-import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./resend";
-import { failureLabel, fixHint, type FailureKind } from "./failure-text";
-import type { TurnStep } from "./working";
-import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./stream-blocks";
-import { TurnInspector } from "./SessionHistory";
-import { PeerPanel, type PeerTarget } from "./PeerPanel";
+import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./api/resend";
+import { failureLabel, fixHint, type FailureKind } from "./api/failure-text";
+import type { TurnStep } from "./api/working";
+import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
+import { TurnInspector } from "./views/SessionHistory";
+import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
 import { DragHandle, ResizeColumn } from "./design/resize-column";
 import { ConfirmDialog } from "./design/overlay";
 import { ComposerButton, EmptyState, IconButton, Label, Row, SessionRow, Skeleton, ClickableRow } from "./design/ui";
-import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./header-strip";
-import { mergeTaskTitles, shouldRequest } from "./task-title-cache";
-import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./input-history";
+import { buildHeaderSegments, findSessionRow, headerTaskOf, headerTitleOf, joinHeaderSegments, taskTitleKey } from "./api/header-strip";
+import { mergeTaskTitles, shouldRequest } from "./api/task-title-cache";
+import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR, type HistoryCursor } from "./api/input-history";
 import type { SessionRow as SessionRowData } from "../../src/session-rows.ts";
 import { rowActivityOf, type RowActivity, type RowFailureKind, type RowPhase } from "../../src/row-activity.ts";
 import { useCopyOnSelect } from "./use-copy-on-select";
-import { CopyFeedbackToast } from "./copy-toast";
-import { ProjectOverviewCard } from "./project-overview";
+import { CopyFeedbackToast } from "./views/copy-toast";
+import { ProjectOverviewCard } from "./views/project-overview";
 
 // 三级级联菜单：第1列 Agent → 第2列 其 Projects → 第3列 该项目的所有事情 → 主区聊天。
 // 折叠态统一走 44px 单轨（design/rail.tsx），成本不随层数增长；宽度全部由 design/layout.ts 计算。
@@ -333,47 +339,6 @@ function timeAgo(iso: string): string {
 }
 
 /** 列头：40px，11px 小标签 + 收起钮（唯一收起入口）。列头只写"这一列是什么"，徽标留给行内数据。 */
-/**
- * 折叠键迁移（Task 0015 · T15）：旧的两个键 `projects` / `sessions` → 一个 `groups`。
- *
- * 为什么"任一展开就展开"：合并后一列同时承担两个作用。宁可多开一列（用户点一下就能收），
- * 也不要让老用户的展开状态在升级后变成"点了没反应"。
- * 只在读不到 `groups` 键时参考旧键（`useFold` 的 initial 只在没有存量值时生效）。
- */
-function legacyGroupsOpen(): boolean {
-  try {
-    if (localStorage.getItem("lifeos.fold.groups") !== null) return true;   // 有存量就不看旧键
-    const projects = localStorage.getItem("lifeos.fold.projects");
-    const sessions = localStorage.getItem("lifeos.fold.sessions");
-    return projects !== "0" || sessions !== "0";
-  } catch { return true; }
-}
-
-/** 分组折叠状态的持久化键（只存收起的项目 id）。 */
-const COLLAPSED_GROUPS_KEY = "lifeos.collapsedGroups";
-
-function readCollapsedGroups(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
-    if (raw === null) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, boolean> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === true) out[key] = true;   // 只认 true；其它一律当展开
-    }
-    return out;
-  } catch { return {}; }
-}
-
-function writeCollapsedGroups(value: Record<string, boolean>): void {
-  try {
-    const keys = Object.keys(value).filter((key) => value[key] === true);
-    if (keys.length === 0) localStorage.removeItem(COLLAPSED_GROUPS_KEY);
-    else localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(Object.fromEntries(keys.map((key) => [key, true]))));
-  } catch { /* 忽略：存不下时退化为不持久，不影响功能 */ }
-}
-
 function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: string; count?: number; onHide: () => void }) {
   return (
     // 列内边距 8（design-language §5.1 / D21）：与助手行、分组头同一左缘。
@@ -382,7 +347,7 @@ function ColumnHeader({ label, hint, count, onHide }: { label: string; hint?: st
       <Label tone="nav" className="min-w-0 truncate">{label}</Label>
       {/* 数据统计：列头里的总数（助手/会话各自有多少个），安静地跟在标题后面 */}
       {count !== undefined && (
-        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-nav-accent px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
+        <span aria-label={`${label} ${count} 个`} data-shot-mask="column-count" className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
       )}
       {hint !== undefined && <span className="min-w-0 truncate text-micro text-nav-muted">· {hint}</span>}
       <span className="ml-auto" />
@@ -446,82 +411,34 @@ function userBlocks(text: string, images: readonly PendingImage[]): Block[] {
 }
 
 export default function App() {
-  const [agents, setAgents] = useState<Agent[]>(() => {
-    // 缓存优先：上次的数据立即渲染（对标 Notion/Linear 的刷新体验——零白闪）
-    try { const cached = localStorage.getItem("lifeos.agents"); return cached ? JSON.parse(cached) : []; }
-    catch { return []; }
-  });
-  const [agent, setAgent] = useState<Agent>();
-  // 用户档案（= 你本人，不是 Agent）：名字与头像从 /api/profile 来，缺失时前端不显示头像
-  const [profile, setProfile] = useState<UserProfile | undefined>();
+  /*
+   * 工作区（Task 0017 · P5）：agents / agent / profile / groups / selectedProjectId /
+   * collapsedGroups / loaded 整块搬进 `hooks/useWorkspace.ts`；折叠持久化抽到
+   * `layout-storage.ts`（纯 localStorage，可单测）。纪律原样保留（缓存优先、空数组不覆盖缓存）。
+   */
+  const workspace = useWorkspace();
+  const {
+    agents, setAgents, agent, setAgent, profile, setProfile,
+    groups, setGroups, selectedProjectId, setSelectedProjectId,
+    collapsedGroups, setCollapsedGroups, loaded, setLoaded,
+  } = workspace;
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
-  const [prefs, setPrefs] = useState<DisplayPrefs>(() => loadPrefs(parsePrefs));
-  /** 状态徽标偏好（2026-11-10 用户：速率/幅度/强度单独可调）：缓存先顶上，服务端真值随后覆盖。 */
-  const [badges, setBadges] = useState<BadgePrefs>(() => cachedBadgePrefs());
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  /** 设置表面（Task 0009 · P1-3）：全页设置，入口 = 头部"显示设置"按钮（原弹层升级，功能不减）。 */
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  /**
-   * 头部「显示」快捷弹层（2026-11-09 用户："还是应该在外面搞一个配置，就是原来的老位置，
-   * 因为之前是改动配置，用户能实时看到工作区的改变"）。
+  /*
+   * 外观与偏好（Task 0017 · P5）：整块搬进 `hooks/useAppearance.ts`。
    *
-   * 与设置页的关系：**这里是快捷入口，设置页是总入口**，两者读写同一份 prefs，不存在第二份状态。
-   * 只在桌面渲染（`hidden sm:inline-flex` 交给外层容器）：手机头部已有 6 个图标、标题只剩 38px。
+   * 搬走的东西：theme / prefs / badges / selectionPrefs / viewportWidth /
+   * settingsOpen / settingsSection / displayPrefsOpen，以及它们对应的 6 个 effect
+   * （主题应用顺序、服务端偏好拉取、显示偏好落盘、徽标 soft 派生、视口跟踪）。
+   * **零行为变化**：原实现的注释与顺序逐条保留在那个文件里（含"引擎兜底 → 包覆盖 → L3"）。
    */
-  const [displayPrefsOpen, setDisplayPrefsOpen] = useState(false);
-  // 打开设置落在**导航第一项**（主题）：与 Twenty/LibreChat「进入落第一项」一致。
-  // 旧默认是 display —— 那是入口还叫"显示设置"时的遗留，当时设置页只有显示一个分区。
-  const [settingsSection, setSettingsSection] = useState<Parameters<typeof SettingsSurface>[0]["section"]>("appearance");
-  /** 主题（Task 0009 · P1-1）：状态 → applyTheme 写 :root → saveTheme 持久化。启动时恢复。 */
-  const [theme, setTheme] = useState<ThemeState>(() => loadTheme());
+  const appearance = useAppearance();
+  const {
+    theme, setTheme, prefs, setPrefs, badges, setBadges,
+    selectionPrefs, setSelectionPrefsAndPersist, viewportWidth,
+    settingsOpen, setSettingsOpen, settingsSection, setSettingsSection,
+    displayPrefsOpen, setDisplayPrefsOpen,
+  } = appearance;
 
-  useEffect(() => {
-    applyTheme(theme);
-    /*
-     * S5：激活的外部主题包必须在引擎之后重新盖一次。
-     * 否则：boot 脚本写的是包的颜色（首帧对）→ React 的 applyTheme 用引擎默认覆盖 →
-     * 界面先深后白（实测 uniqueSurface = [#292828, #ffffff]），即用户看到的"刷一下变回去"。
-     * 顺序：引擎兜底 → 包覆盖（与 applyThemePack 的内部顺序一致）。
-     */
-    const activePackName = loadActivePackId();
-    if (activePackName !== undefined) {
-      const pack = loadThemePacks().find((item) => item.meta.name === activePackName);
-      if (pack !== undefined) {
-        /*
-         * 包可能只有单槽（Quiet Light 只有 light、Monokai 只有 dark）。
-         * `applyThemePack` 会自动选包有值的那个 mode 并写 `data-theme-mode`，
-         * 但 `theme.mode`（React 状态）仍是用户选的那个 → 下一次 theme 变化又会拿错 mode 兜底。
-         * 这里把**生效 mode 同步进状态**：用户的深浅选择随主题能力走（选了单槽主题 = 接受它的深浅）。
-         */
-        const effective = applyThemePack(pack, theme.mode, theme);
-        if (effective !== theme.mode) setTheme({ ...theme, mode: effective });
-      }
-    }
-    applySurfaceTokens(theme.mode);   // L3：圆角/阴影/动效/字距（三家择优）
-    persistTheme(theme);              // 缓存 + 防抖同步到 ~/.lifeos/config/ui.json
-  }, [theme]);
-  /**
-   * 启动时拉一次服务端偏好（2026-11-09 用户："是否重启就丢了配置？"）。
-   *
-   * 服务端是事实源（`~/.lifeos/config/ui.json`），localStorage 只是首屏缓存。
-   * **只在服务端有值时覆盖** —— 首次使用（服务端没存过）时保持本地已调过的值，
-   * 不拿默认值把用户刚才的调整盖掉（那是"重置"而不是"恢复"）。
-   * 失败静默：偏好丢了不该让界面打不开，本地缓存仍在。
-   */
-  useEffect(() => {
-    let alive = true;
-    void fetchUiPrefs().then((remote) => {
-      if (!alive || remote === undefined) return;
-      if (remote.theme !== undefined) setTheme(remote.theme);
-      if (remote.display !== undefined) setPrefs(remote.display);
-      if (remote.badges !== undefined) setBadges(remote.badges);
-      if (remote.selection !== undefined) setSelectionPrefs(remote.selection);
-    });
-    return () => { alive = false; };
-  }, []);
-
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string>();
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
@@ -719,20 +636,22 @@ export default function App() {
     [anno.annotations],
   );
 
-  const [input, setInputState] = useState("");
-  const [busy, setBusy] = useState(false);
   /** 草稿作用域（会话 id；无会话时 agent/project）——文字草稿与图片附件共用同一归属。 */
   const draftKey = sessionId ?? (agent !== undefined && selectedProjectId !== undefined ? `${agent.id}/${selectedProjectId}` : undefined);
-  // —— 图片附件（docs/design/image-input.md）：**按会话归属**存内存（draftKey → 图片数组），
-  // 切会话即换（与文字草稿同一语义；此前是整页单份，切到哪个会话都显示同一批图，用户 2026-11-14 报告）。
-  // 发送成功才清当前键；不落 localStorage：单张上限 10MB 的 base64 超出其 ~5MB 配额，落盘不可行，页面刷新即丢。 ——
-  const [attachmentMap, setAttachmentMap] = useState<Record<string, PendingImage[]>>({});
-  const attachments = draftKey !== undefined ? attachmentMap[draftKey] ?? [] : [];
-  /** 写**当前作用域**的附件；没有归属（无会话且无项目）时丢弃写入。 */
-  function setAttachments(next: PendingImage[]) {
-    if (draftKey === undefined) return;
-    setAttachmentMap((map) => ({ ...map, [draftKey]: next }));
-  }
+  /*
+   * 输入区（Task 0017 · P5）：input / attachmentMap(+attachments) / palette / draftRequest / atBottom
+   * 整块搬进 `hooks/useComposer.ts`，纪律原样保留（附件按 draftKey 分桶、命令面板按会话清空、
+   * 批注触发用 nonce）。`setInput` 与 `setInputState` 同名保留，避免大量调用点改名。
+   */
+  const composer = useComposer(draftKey);
+  const {
+    input, setInput: setInputState,
+    attachments, setAttachments, attachmentMap, setAttachmentMap,
+    palette, setPalette,
+    draftRequest, requestDraft, onDraftHandled,
+    atBottom, setAtBottom,
+  } = composer;
+  const [busy, setBusy] = useState(false);
   /**
    * 检视评论引用（A8 + G3）：**结构化条目**，不是拼进正文的文本。
    * 发送时由 `commentsToText()` 合成（同一条实现，不新造格式）；发送成功清空、失败回填。
@@ -841,9 +760,7 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<string>();
   const toast = useToast();
   toastRef.current = toast;
-  const [loaded, setLoaded] = useState(() => {
-    try { return localStorage.getItem("lifeos.agents") !== null; } catch { return false; }
-  });
+  /* loaded 已搬进 useWorkspace（Task 0017 · P5）。 */
   const [showNav, setShowNav] = useFold("agents");
   /*
    * 面板合并（Task 0015 · T15）：项目列 + 会话列 → 一列「项目分组 → 会话」。
@@ -869,46 +786,39 @@ export default function App() {
    * 为什么不能只放 state：刷新/切 tab/切助手后折叠全被重置，用户每次都要重新收一遍。
    * 只存**收起的**那几个（默认全展开）——项目通常 3–5 个，全展开是常态。
    */
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(readCollapsedGroups);
-  useEffect(() => { writeCollapsedGroups(collapsedGroups); }, [collapsedGroups]);
-  const [renaming, setRenaming] = useState<{ sid: string; value: string } | undefined>();
-  const [addingProject, setAddingProject] = useState(false);
-  const [configAgent, setConfigAgent] = useState<Agent>();
+  /* collapsedGroups 与其落盘 effect 已搬进 useWorkspace（Task 0017 · P5）。 */
+  /*
+   * 弹层与模态（Task 0017 · P5）：整块搬进 `hooks/useOverlays.ts`。
+   * 搬走：confirm / overview(+anchor) / history / addingProject / configAgent /
+   * mobileNav(+level) / peerTarget / renaming。它们都不属于会话数据，只"开合"。
+   */
+  const overlays = useOverlays();
+  const {
+    confirm, setConfirm, overview, setOverview, overviewAnchor,
+    history, setHistory, addingProject, setAddingProject,
+    configAgent, setConfigAgent, mobileNav, setMobileNav,
+    mobileNavLevel, setMobileNavLevel, peerTarget, setPeerTarget, renaming, setRenaming,
+  } = overlays;
   const isMobile = useIsMobile();
-  const [mobileNav, setMobileNav] = useState(false);
-  const [mobileNavLevel, setMobileNavLevel] = useState<Level>("agents");
   const mobileHistoryPushed = useRef(false);
   const ignoreMobilePop = useRef(false);
   useAppHeight();
-  const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; danger?: boolean; run: () => void }>();
-  // 项目概览卡（Task 0010）：入口 = 分组头计数药丸；锚 = 药丸按钮（Popover 定位用）。
-  // 对话数不在 state 里——从 groups 现算（行上同一份，卡与行永远一致）。
-  const overviewAnchor = useRef<HTMLElement | null>(null);
-  const [overview, setOverview] = useState<{ agentId: string; projectId: string; name: string } | undefined>();
-  // 会话历史 = 主区视图（v2：不再塞进文件面板查看器槽，避免 200px 挤压与 ≤1280 静默失效）
-  const [history, setHistory] = useState<{ sessionId: string; title: string } | undefined>();
   const { panelOpen, setPanelOpen, fileTabs, activeFileTabId, setActiveFileTabId, openFile, closeFileTab, updateTabPrefs } = useFilePanel();
-  // 检视模式（Task 0010 · P2）：用户指名 Task（D15c）→ 打开面板加载两组 diff。
-  // 比例存 localStorage（D12：存比例不存 px）；与文件面板并存不互斥（D10）。
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewRatio, setReviewRatio] = useState<number>(() => {
-    const raw = Number(localStorage.getItem("lifeos.reviewRatio"));
-    return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : DEFAULT_REVIEW_RATIO;
-  });
-  /** 当前检视的 taskDir —— **唯一状态源**（Task 0018 简化：之前拆成 ref + 异步 data 两处，
-   *  标题同步变、内容等响应，谁晚到谁说了算，实测撕裂成“标题 0018 内容 0015”。
-   *  现在标题与 reload 都从这里推导；网络晚到由 loadReview 的序号守卫丢弃。） */
-  const [reviewTask, setReviewTask] = useState<string | undefined>(undefined);
-  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
-  const [reviewLoading, setReviewLoading] = useState(false);
-  const [reviewFailed, setReviewFailed] = useState<string | null>(null);
-  const [reviewTaskPaths, setReviewTaskPaths] = useState<Record<string, string>>({});
-  /**
-   * D31：检视候选（哪些 Task 有东西可检视）。
-   * 懒加载——只在**打开面板时**拉一次（实测 15 个 Task 0.93s；不打开面板不付这个钱）。
+  /*
+   * 检视面板（Task 0017 · P5）：整块搬进 `hooks/useReviewSurface.ts`。
+   * 搬走：reviewOpen / reviewRatio / reviewTask（唯一状态源）/ reviewData /
+   * reviewLoading / reviewFailed / reviewTaskPaths / reviewCandidates(+Loading)。
+   * 纪律原样保留（比例存 localStorage、候选懒加载、taskDir 单一状态源）。
    */
-  const [reviewCandidates, setReviewCandidates] = useState<readonly TaskCandidateView[]>([]);
-  const [reviewCandidatesLoading, setReviewCandidatesLoading] = useState(false);
+  const review = useReviewSurface();
+  const {
+    reviewOpen, setReviewOpen, reviewRatio, setReviewRatio,
+    reviewTask, setReviewTask, reviewData, setReviewData,
+    reviewLoading, setReviewLoading, reviewFailed, setReviewFailed,
+    reviewTaskPaths, setReviewTaskPaths,
+    reviewCandidates, setReviewCandidates,
+    reviewCandidatesLoading, setReviewCandidatesLoading,
+  } = review;
   const { box, beginDrag, viewport, widths } = useColumnWidth({
     folded: { nav: !showNav, groups: !showGroups },
     panelOpen,
@@ -928,7 +838,7 @@ export default function App() {
 
 
   // 右侧"与其他 Agent 对话"抽屉：点开工具详情时打开（Task 0013 · M1）
-  const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
+  /* peerTarget 的 state 已搬进 useOverlays（Task 0017 · P5）；ref 留在本文件（它服务于事件回调）。 */
   const peerTargetRef = useRef<PeerTarget | undefined>(undefined);
   /** 打开对话抽屉之前右侧面板是否已经开着：关闭抽屉时还原，避免留下空面板。 */
   const panelWasOpenBeforePeer = useRef(false);
@@ -951,15 +861,7 @@ export default function App() {
   const scrollRef = useRef<HTMLElement>(null);
   /** 检视面板的容器（可复制区域之一；与 `<main>` 是兄弟节点，必须单独列）。 */
   const reviewRef = useRef<HTMLElement>(null);
-  /**
-   * 选中行为设置（Task 0018 D7-D10）：copyOnSelect 默认开 = Task 0013 现状。
-   * 首屏用 localStorage 缓存（ui-prefs-client 的同一套首屏纪律），拉到真值就覆盖。
-   */
-  const [selectionPrefs, setSelectionPrefs] = useState<SelectionPrefs>(() => cachedSelectionPrefs());
-  const setSelectionPrefsAndPersist = useCallback((next: SelectionPrefs) => {
-    setSelectionPrefs(next);
-    persistSelectionPrefs(next);
-  }, []);
+  /* 选中行为（selectionPrefs）已搬进 useAppearance（Task 0017 · P5）。 */
   /**
    * 选中行为（Task 0013 复制 + 0018 功能条）：
    * 对话区域（`<main>`，允许功能条）与检视面板（只复制，不弹条——D11）里拖选/双击/三击：
@@ -980,17 +882,13 @@ export default function App() {
   /**
    * 批注的外部触发（Task 0018）：功能条点「批注」→ 按 messageId 路由到对应块。
    * 锚点计算留在块内（index/text 都在那）；块处理完调 onDraftHandled 清除。
+   * `draftRequest` / `onDraftHandled` 与 nonce 逻辑已搬进 useComposer。
    */
-  const draftNonce = useRef(0);
-  const [draftRequest, setDraftRequest] = useState<{ messageId: string; nonce: number } | null>(null);
-  /** 块处理完清请求（防重复触发）。 */
-  const onDraftHandled = useCallback(() => setDraftRequest(null), []);
   const onAnnotateFromToolbar = useCallback(() => {
     if (toolbar === null || toolbar.messageId === undefined) return;
-    draftNonce.current += 1;
-    setDraftRequest({ messageId: toolbar.messageId, nonce: draftNonce.current });
+    requestDraft(toolbar.messageId);
     closeToolbar();
-  }, [toolbar, closeToolbar]);
+  }, [toolbar, closeToolbar, requestDraft]);
 
   /** 引用（D15）：格式化后追加进输入框（不覆盖已有草稿），焦点交给用户接话。 */
   const onQuoteFromToolbar = useCallback(() => {
@@ -1003,7 +901,7 @@ export default function App() {
     closeToolbar();
   }, [toolbar, closeToolbar, input]);
   const followTail = useRef(true);
-  const [atBottom, setAtBottom] = useState(true);
+  /* atBottom 已搬进 useComposer（Task 0017 · P5）。 */
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   /** 程序化聚焦 composer（2026-11-14 用户报"重新进入输入时光标跑到最前"）：
@@ -1049,45 +947,7 @@ export default function App() {
       .catch(() => undefined);
     return () => { alive = false; };
   }, []);
-  // —— 显示偏好：落盘 + 把字号与阅读宽度写到根节点（组件只用 token，不感知缩放） ——
-  // 显示偏好：写缓存（刷新不丢）+ 防抖同步到服务端（换设备/换 origin 也在）
-  useEffect(() => { persistDisplayPrefs(prefs); }, [prefs]);
-  useEffect(() => {
-    const root = document.documentElement;
-    for (const [name, value] of Object.entries(fontVars(prefs.font))) root.style.setProperty(name, value);
-    root.style.setProperty("--container-reading-width", widthVar(prefs.width));
-  }, [prefs]);
-  // —— 状态徽标：动画周期/幅度变量 + 三个 soft 底（从语义色派生，深浅色方向都向上） ——
-  // soft 必须随 theme/gallery 同步：换主题（色相、深浅）后,徽标底的色相应与语义色同源。
-  useEffect(() => { persistBadgePrefs(badges); }, [badges]);
-  useEffect(() => {
-    const root = document.documentElement.style;
-    document.documentElement.dataset.badgeStrength = badges.strength;
-    /*
-     * soft 底的颜色**必须取当前实际生效的 token**（读 :root），而不是 `calculatePalette(theme)`。
-     *
-     * 2026-11-14 实测缺陷（S6 主题审计）：外部主题生效后 running-soft 仍是引擎值 #264653——
-     * 因为这里走引擎 palette，而**引擎不知道外部主题包**（包的颜色是 applyThemePack 直接写 :root 的）。
-     * 这正是 A4 声称已消灭的"三源并存"的残留：徽标层从引擎取色 = 第三源。
-     *
-     * 改法：从 computed style 读 --color-running/success/danger/surface（谁写的都对），
-     * 再按强度派生 soft —— 主题包、引擎、用户自定义都自然生效。
-     */
-    const readVar = (name: string): string => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    const surfaceHex = readVar("--color-surface");
-    for (const [name, value] of Object.entries(badgeVarsOf(badges))) root.setProperty(name, value);
-    for (const semantic of ["running", "success", "danger"] as const) {
-      const base = readVar(`--color-${semantic}`);
-      if (base === "") continue;   // 首帧还没写入：不写 soft，等下一轮 effect
-      root.setProperty(`--color-${semantic}-soft`, badgeSoft(semantic, theme.mode, badges.strength, base, surfaceHex));
-    }
-  }, [badges, theme]);
-  // 宽度滑块把"铺满"存的是 none，换了窗口大小仍铺满；限宽模式下专注宽度随视口变，这里只跟踪视口供滑块取值
-  useEffect(() => {
-    const onResize = () => setViewportWidth(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+  /* 显示偏好 / 徽标 / 视口跟踪的 effect 已搬进 useAppearance（Task 0017 · P5）。 */
   useEffect(() => { if (sessionId !== undefined) setRunFacts((f) => markViewed(f, sessionId)); }, [sessionId]);   // 成为焦点即清未读（协议 P1·1.4）
   // 焦点上报（任务 0007）：切会话/切 Agent/页面可见性变化 → 服务端据此路由细节流，并在可见时记已读
   useEffect(() => { sendFocus(); }, [agent?.id, sessionId]);
@@ -1661,12 +1521,21 @@ export default function App() {
    * 修法：重取回来的每一行**就是服务端此刻的真相**，用它覆盖槽位。
    * 这样任何"补丁与事实不一致"都会被下一次重取自愈，不需要再补一堆对称的减一。
    */
-  async function reloadGroups() {
-    const id = ctx.current.agentId;
-    if (id === undefined) return undefined;
-    const next = await fetchGroups(id);
-    rememberGroups(id, next);
-    setGroups(next);
+  /**
+   * 用**列表行**校正 `sessionSlots`（Task 0017 · todo #2）。
+   *
+   * 为什么单独抽：`sessionSlots` 是徽标数字的唯一事实源，原来只有两条维护路径
+   * —— SSE **快照重建**（`onStreamSnapshot`）与 `row` 补丁。**首次加载**走
+   * `fetchGroups` + `setGroups`，**不播种 slots** → 冷启动时列表里已有 running/unread
+   * 的会话不出数字，要等一次补丁或重连才有（`ui-contract` 的「P1·1.5 聚合数量」21 项红的根因，
+   * P0 已查清）。
+   *
+   * 语义（与 `reloadGroups` 原来的那段完全一致）：
+   * - 行说它有某种状态 → 槽位记上（覆盖旧的）；
+   * - 行说它没有状态了 → 槽位删掉（这正是"绿点消失但数字还在"的修复点）；
+   * - 没变化就不改（避免无意义重渲染）。
+   */
+  function syncSlotsFromRows(agentId: string, next: readonly Group[]): void {
     setSessionSlots((previous) => {
       let changed = false;
       const slots = new Map(previous);
@@ -1687,13 +1556,22 @@ export default function App() {
             continue;
           }
           const effectiveProject = group.project.id;
-          if (current !== undefined && current.slot === want && current.agentId === id && current.projectId === effectiveProject) continue;
-          slots.set(item.sessionId, { agentId: id, projectId: group.project.id, slot: want });
+          if (current !== undefined && current.slot === want && current.agentId === agentId && current.projectId === effectiveProject) continue;
+          slots.set(item.sessionId, { agentId, projectId: group.project.id, slot: want });
           changed = true;
         }
       }
       return changed ? slots : previous;
     });
+  }
+
+  async function reloadGroups() {
+    const id = ctx.current.agentId;
+    if (id === undefined) return undefined;
+    const next = await fetchGroups(id);
+    rememberGroups(id, next);
+    setGroups(next);
+    syncSlotsFromRows(id, next);
     return next;
   }
 
@@ -2279,6 +2157,12 @@ export default function App() {
       const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
       setGroups(groups);
       if (fetched.length > 0) rememberGroups(found.id, groups);
+      /*
+       * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
+       * 冷启动时列表里已有 running/unread 的会话不出数字，要等一次 `row` 补丁或重连快照才有。
+       * 缓存命中也播种：缓存里的 activity 可能与服务端不同步，但随后的 `fetched` 会覆盖它。
+       */
+      syncSlotsFromRows(found.id, groups);
       // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
       // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
       const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
@@ -2605,7 +2489,7 @@ export default function App() {
   sendTextRef.current = sendText;      // 每次渲染刷新（跨渲染的回调走 ref，避免拿到旧闭包）
 
   // —— 斜杠命令（对齐 Pi CLI / Pi Web 的常用项；能力都走 Pi 原生接口） ——
-  const [palette, setPalette] = useState<{ items: PaletteItem[]; index: number } | undefined>();
+  /* palette 已搬进 useComposer（Task 0017 · P5）。 */
 
   const copyLastAssistant = () => {
     const tail = [...messages].reverse().find((message) => message.role === "assistant" && message.text !== "");
@@ -4285,12 +4169,12 @@ function IconArrowUpIcon() {
     </svg>
   );
 }
-import { logger } from "./logger";
-import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./run-facts";
-import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./event-router";
-import { deriveStatus, projectKey, type StatusFacts } from "./status-map";
-import { outcomeOfTurn, turnNoticeOf } from "./turn-notice";
-import { busyBelongsTo, isStaleTerminal } from "./event-guards";
+import { logger } from "./api/logger";
+import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./api/run-facts";
+import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./api/event-router";
+import { deriveStatus, projectKey, type StatusFacts } from "./api/status-map";
+import { outcomeOfTurn, turnNoticeOf } from "./api/turn-notice";
+import { busyBelongsTo, isStaleTerminal } from "./api/event-guards";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";
 import { AppIcon } from "./design/icons";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";

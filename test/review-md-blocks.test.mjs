@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   blockChanged, buildPreviewBlocks, buildRenderBlocks, isPlainBlock, parseFenceStart,
-} from "../frontend/src/review-md-blocks.ts";
+} from "../frontend/src/api/review-md-blocks.ts";
 
 const ctx = (n, text) => ({ type: "context", oldNo: n, newNo: n, text });
 const del = (n, text) => ({ type: "removed", oldNo: n, newNo: null, text });

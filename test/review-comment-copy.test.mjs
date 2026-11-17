@@ -10,7 +10,7 @@
 // `1、你说的：「…」` + `-> note （语气）`，只加**位置头** `【README.md:L3-L5】`（取自 difit）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commentToLine, commentsToText, commentLocation } from "../frontend/src/review-comment-copy.ts";
+import { commentToLine, commentsToText, commentLocation } from "../frontend/src/api/review-comment-copy.ts";
 
 const comment = (over = {}) => ({
   id: "c1",

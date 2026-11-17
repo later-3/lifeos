@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { lastUserAtMs, turnModelMsOf, turnWallMsOf } from "../frontend/src/turn-duration.ts";
+import { lastUserAtMs, turnModelMsOf, turnWallMsOf } from "../frontend/src/api/turn-duration.ts";
 
 const span = (userIndex, ...replies) => ({ userIndex, replyIndexes: replies });
 

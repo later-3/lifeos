@@ -28,9 +28,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   copyLabel, shouldCopy, selectionAction, COPY_FEEDBACK_MS,
   type RectLike, type SelectionPrefsShape, type ToolbarButtons,
-} from "./copy-on-select";
-import type { CopyFeedback } from "./copy-toast";
-import { copyText } from "./clipboard";
+} from "./api/copy-on-select";
+import type { CopyFeedback } from "./views/copy-toast";
+import { copyText } from "./api/clipboard";
 
 /** 一个允许选区的区域：元素 ref + 是否允许功能条。 */
 export type CopyZone = { current: HTMLElement | null; toolbar?: boolean };

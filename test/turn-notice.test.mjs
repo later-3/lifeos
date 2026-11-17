@@ -5,8 +5,8 @@
 // 因此本文件多了一组"提示与按钮必须一致"的用例——那是这次修改真正要守住的东西。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { outcomeOfTurn, turnNoticeOf } from "../frontend/src/turn-notice.ts";
-import { resendPlan, turnOutcomeOfMessages } from "../frontend/src/resend.ts";
+import { outcomeOfTurn, turnNoticeOf } from "../frontend/src/api/turn-notice.ts";
+import { resendPlan, turnOutcomeOfMessages } from "../frontend/src/api/resend.ts";
 
 const user = (text) => ({ role: "user", text, blocks: [{ type: "text", text }] });
 const asst = (text, stopReason) => ({

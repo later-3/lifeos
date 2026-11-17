@@ -23,8 +23,8 @@
 import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../src/index.css";
-import { AgentAvatar } from "../src/agent-avatar";
-import { GroupBody, GroupHeader } from "../src/groups-panel";
+import { AgentAvatar } from "../src/views/agent-avatar";
+import { GroupBody, GroupHeader } from "../src/views/groups-panel";
 import { SessionRow } from "../src/design/ui";
 import { Row, Spinner } from "../src/design/ui";
 

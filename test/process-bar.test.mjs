@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatDuration, formatTokens, hasProcess, processDetail, processSummary, statsOf,
-} from "../frontend/src/process-stats.ts";
+} from "../frontend/src/api/process-stats.ts";
 
 const tool = (name = "bash") => ({ type: "toolCall", name, arguments: {} });
 const think = (text = "想") => ({ type: "thinking", text, live: false });

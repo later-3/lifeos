@@ -20,11 +20,14 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 
 import "../src/index.css";
-import { applySurfaceTokens, calculatePalette, clampState, hex, THEME_PRESETS } from "../src/design/theme";
+import { applySurfaceTokens, applyWashAlphas, calculatePalette, clampState, hex, THEME_PRESETS } from "../src/design/theme";
+import { applyThemePack } from "../src/design/theme-package";
+import preloadedThemes from "../src/design/preloaded-themes.json";
 import { LAYER, LAYER_CLASS, SCRIM_CLASS, SURFACE, surfaceStyle } from "../src/design/surface";
 import { Button, ComposerButton, controlClass, Field, IconButton, Label, Row, Segmented, Skeleton, Spinner, Tabs } from "../src/design/ui";
 import { AppIcon, type IconName } from "../src/design/icons";
 import { SessionRow } from "../src/design/ui";
+import { GroupHeader } from "../src/views/groups-panel";
 
 /* ── 排版小件 ── */
 function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
@@ -88,31 +91,75 @@ function Palette({ mode }: { mode: "light" | "dark" }) {
   );
 }
 
+/*
+ * 主题选择（Task 0017 · P1.5）：截图矩阵要跑「内置主题 × 外部主题包」两维。
+ *
+ * 为什么必须能切外部主题：本轮两个缺陷里有一个**只在外部主题下可见**——
+ * Quiet Light 的 `list.activeSelectionBackground` 被直连成 `--color-nav-selected`，
+ * 饱和度是引擎的 7 倍，压在它上面的状态点/光环全部失真。
+ * 而原来的视觉矩阵只设 `localStorage.theme = { mode }`，**从不加载外部主题包**，
+ * 所以那个缺陷在 24 张基线里一张都看不见。
+ *
+ * 用法：`/dev/design-system.html?mode=dark&theme=quiet-light`
+ *   theme ∈ builtin（默认，走引擎预设）| quiet-light | monokai
+ */
+type ShotTheme = "builtin" | "quiet-light" | "monokai";
+
+function readShotParams(): { mode: "light" | "dark"; theme: ShotTheme } {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get("mode") === "dark" ? "dark" : "light";
+  const raw = params.get("theme");
+  const theme: ShotTheme = raw === "quiet-light" ? "quiet-light" : raw === "monokai" ? "monokai" : "builtin";
+  return { mode, theme };
+}
+
 function App() {
-  const [mode, setMode] = useState<"light" | "dark">("light");
+  const initial = readShotParams();
+  const [mode, setMode] = useState<"light" | "dark">(initial.mode);
+  const [shotTheme, setShotTheme] = useState<ShotTheme>(initial.theme);
   const [tab, setTab] = useState("one");
   const [seg, setSeg] = useState("a");
   const [text, setText] = useState("");
 
+  const applyShotTheme = (theme: ShotTheme, next: "light" | "dark") => {
+    if (theme === "builtin") {
+      const palette = calculatePalette(clampState({ mode: next }));
+      const root = document.documentElement.style;
+      const map: Array<[string, [number, number, number]]> = [
+        ["--color-surface", palette.surface], ["--color-sunken", palette.sunken], ["--color-hover", palette.hover],
+        ["--color-line", palette.line], ["--color-nav-bg", palette.navBg], ["--color-nav-edge", palette.navEdge],
+        ["--color-nav-accent", palette.navAccent], ["--color-nav-selected", palette.navSelected],
+        ["--color-nav-line", palette.navLine], ["--color-nav-muted", palette.navMuted],
+        ["--color-accent", palette.accent], ["--color-accent-solid", palette.accentSolid], ["--color-accent-soft", palette.accentSoft],
+        ["--color-ink-900", palette.ink900], ["--color-ink-700", palette.ink700], ["--color-ink-500", palette.ink500],
+        ["--color-ink-300", palette.ink300], ["--color-success", palette.success], ["--color-danger", palette.danger],
+        ["--color-running", palette.running],
+      ];
+      for (const [name, color] of map) root.setProperty(name, hex(...color));
+      // wash 的 α 与产品同一条路径（Task 0017 · P2）：内置主题恒为 100%（视觉零变化）
+      applyWashAlphas(root, {
+        navAccent: hex(...palette.navAccent), navSelected: hex(...palette.navSelected),
+        sunken: hex(...palette.sunken), navBg: hex(...palette.navBg),
+      }, next);
+      document.documentElement.dataset.themeMode = next;
+      applySurfaceTokens(next);
+      return;
+    }
+    // 外部主题：与产品同一条路径（applyThemePack：引擎兜底 → 包覆盖）
+    const want = theme === "quiet-light" ? "Quiet Light" : "Monokai";
+    const pack = (preloadedThemes as Array<{ meta: { name: string } }>).find((item) => item.meta.name === want);
+    if (pack !== undefined) {
+      applyThemePack(pack as never, next, clampState({ mode: next }));
+    }
+  };
+
+  // 首帧即最终主题（截图不能有一帧内置色再变成外部主题）
+  useState(() => { applyShotTheme(initial.theme, initial.mode); return null; });
+
   const switchMode = (next: "light" | "dark") => {
     setMode(next);
-    // 与产品同一套入口：applyTheme 会写全部 token；这里只切模式
-    document.documentElement.dataset.themeMode = next;
     document.documentElement.style.colorScheme = next;
-    // 简化：直接用引擎算出的值覆盖（产品里由 App 的 effect 做同样的事）
-    const palette = calculatePalette(clampState({ mode: next }));
-    const map: Array<[string, [number, number, number]]> = [
-      ["--color-surface", palette.surface], ["--color-sunken", palette.sunken], ["--color-hover", palette.hover],
-      ["--color-line", palette.line], ["--color-nav-bg", palette.navBg], ["--color-nav-edge", palette.navEdge],
-      ["--color-nav-accent", palette.navAccent], ["--color-nav-selected", palette.navSelected],
-      ["--color-nav-line", palette.navLine], ["--color-nav-muted", palette.navMuted],
-      ["--color-accent", palette.accent], ["--color-accent-solid", palette.accentSolid], ["--color-accent-soft", palette.accentSoft],
-      ["--color-ink-900", palette.ink900], ["--color-ink-700", palette.ink700], ["--color-ink-500", palette.ink500],
-      ["--color-ink-300", palette.ink300], ["--color-success", palette.success], ["--color-danger", palette.danger],
-      ["--color-running", palette.running],
-    ];
-    for (const [name, color] of map) document.documentElement.style.setProperty(name, hex(...color));
-    applySurfaceTokens(next);
+    applyShotTheme(shotTheme, next);
   };
 
   return (
@@ -125,8 +172,12 @@ function App() {
             新写页面前先来这里找，找不到才新增。
           </p>
         </div>
-        <Segmented value={mode} onChange={(value) => switchMode(value as "light" | "dark")}
-          options={[{ value: "light", label: "浅色" }, { value: "dark", label: "深色" }]} />
+        <div className="flex items-center gap-2">
+          <Segmented value={shotTheme} onChange={(value) => { const next = value as ShotTheme; setShotTheme(next); applyShotTheme(next, mode); }}
+            options={[{ value: "builtin", label: "内置" }, { value: "quiet-light", label: "Quiet Light" }, { value: "monokai", label: "Monokai" }]} />
+          <Segmented value={mode} onChange={(value) => switchMode(value as "light" | "dark")}
+            options={[{ value: "light", label: "浅色" }, { value: "dark", label: "深色" }]} />
+        </div>
       </header>
 
       <Section title="色板" note="值与 theme.ts 的 calculatePalette 同源（深色不是第二套手挑值，是同一公式派生）。">
@@ -239,6 +290,13 @@ function App() {
         </div>
       </Section>
 
+      <Section
+        title="截图区（视觉矩阵的取景对象）"
+        note="Task 0017 · P1.5：每个 data-shot-zone 是一个取景框，由 scripts/visual-matrix.mjs 按 id 裁剪。全部是真实组件，零用户数据。带 data-shot-hover 的框先悬停再截图——hover 态必须进矩阵，否则悬停类缺陷在矩阵里不可见。"
+      >
+        <ShotZones />
+      </Section>
+
       <ListRowCompareSection />
 
       <footer className="py-10 text-micro text-ink-500">
@@ -254,6 +312,121 @@ function App() {
  * 两个形态是同一个组件的不同 props（showPreview/density），结构零差异——
  * 拍板选的是"默认形态"，不是两套代码。 */
 type RowView = "A" | "B";
+
+/*
+ * ── 截图区（Task 0017 · P1.5：视觉矩阵的取景对象）────────────────────────
+ *
+ * 为什么把截图对象搬到这一页：参考两家做截图的（Rocket.Chat 截 Storybook story、
+ * Mattermost 只截 6 个内容固定的页面），**没有人截带用户数据的应用页面**。
+ * 我们之前截的是 28 条会话、14 个助手名的真实界面 → 用户正常使用就漂 → 恒红。
+ *
+ * 这里每个 `data-shot-zone` 是一个取景框：`scripts/visual-matrix.mjs` 按 id 裁剪截图。
+ * 全部是**真实组件**（Row / SessionRow / GroupHeader / Button / Field …），不是仿制品，
+ * 所以它不会与实现漂移。
+ *
+ * `data-shot-hover` 标出"要悬停的那一行"——视觉矩阵对带这个标记的取景框先悬停再截图，
+ * 这样 hover 态才在矩阵里有一席之地（原来 24 张里 hover 是 0 张，
+ * 于是"悬停底裂成两块"这类缺陷在矩阵里根本不可见）。
+ */
+function ShotZones() {
+  /* 每个状态各自一个取景框（Task 0017 · P1.5）：
+   * 视觉矩阵按 `data-shot-zone` 的 id 裁剪，所以**状态必须是独立的框**，
+   * 不能靠点按钮切（那样矩阵里只有切换后的那一个状态）。
+   * 带 `data-shot-hover` 的框由矩阵先悬停再截图。 */
+  const rowActions = (
+    <>
+      <button type="button" aria-label="配置" className="flex h-7 w-7 items-center justify-center rounded-control text-ink-500 hover:bg-hover hover:text-ink-900"><AppIcon name="adjustments" size={14} /></button>
+      <button type="button" aria-label="删除" className="flex h-7 w-7 items-center justify-center rounded-control text-ink-500 hover:bg-hover hover:text-ink-900"><AppIcon name="trash" size={14} /></button>
+    </>
+  );
+  const rowStatus = <span className="text-micro text-nav-muted">3 个会话 · 2 未读</span>;
+  const agentAvatar = <span className="flex h-5 w-5 items-center justify-center rounded-full bg-ink-900 text-micro font-semibold text-surface">FD</span>;
+
+  const sessionRow = (selected: boolean, title: string, status: React.ReactNode) => (
+    <SessionRow
+      selected={selected}
+      title={title}
+      titleFallback={false}
+      participants={<span className="flex h-4 w-4 items-center justify-center rounded-full bg-ink-900 text-[9px] font-semibold text-surface">F</span>}
+      meta="Frontend Developer · Task 0015 · 进行中"
+      status={status}
+      onSelect={() => {}}
+      onRename={() => {}} onHistory={() => {}} onDelete={() => {}}
+      renaming={false} renameValue="" onRenameChange={() => {}} onRenameCommit={() => {}} onRenameCancel={() => {}} />
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div data-shot-zone="row-idle" className="rounded-panel bg-nav-bg p-2">
+        <Row onClick={() => {}} actions={rowActions} status={rowStatus}>{agentAvatar}<span className="min-w-0 flex-1 truncate">Frontend Developer</span></Row>
+      </div>
+
+      <div data-shot-zone="row-selected" className="rounded-panel bg-nav-bg p-2">
+        <Row selected onClick={() => {}} actions={rowActions} status={rowStatus}>{agentAvatar}<span className="min-w-0 flex-1 truncate">Frontend Developer</span></Row>
+      </div>
+
+      <div data-shot-zone="row-hover" className="rounded-panel bg-nav-bg p-2">
+        <div data-shot-hover>
+          <Row onClick={() => {}} actions={rowActions} status={rowStatus}>{agentAvatar}<span className="min-w-0 flex-1 truncate">Frontend Developer</span></Row>
+        </div>
+      </div>
+
+      <div data-shot-zone="session-idle" className="rounded-panel bg-nav-bg p-2">
+        {sessionRow(false, "未选中的会话", <span className="text-micro text-nav-muted">16:04</span>)}
+      </div>
+
+      <div data-shot-zone="session-selected" className="rounded-panel bg-nav-bg p-2">
+        {sessionRow(true, "统一主题架构讨论", <span className="text-micro text-nav-muted">16:04</span>)}
+      </div>
+
+      <div data-shot-zone="session-hover" className="rounded-panel bg-nav-bg p-2">
+        <div data-shot-hover>
+          {sessionRow(false, "未选中的会话（悬停看右侧动作）", <span className="text-micro text-nav-muted">16:04</span>)}
+        </div>
+      </div>
+
+      <div data-shot-zone="session-running" className="rounded-panel bg-nav-bg p-2">
+        {/* 运行态：状态点在 L3，压在这个主题的选中底上是否还认得出（本轮用户截图 #1 的现场） */}
+        {sessionRow(true, "正在跑的会话（光环压在选中底上）", <span className="h-1.5 w-1.5 rounded-full bg-running animate-dot-breathe" data-state-dot="running" title="生成中" />)}
+      </div>
+
+      <div data-shot-zone="session-unread" className="rounded-panel bg-nav-bg p-2">
+        {sessionRow(true, "完成未读的会话（绿点压在选中底上）", <span className="h-1.5 w-1.5 rounded-full bg-success" title="完成未读（查看后消失）" />)}
+      </div>
+
+      <div data-shot-zone="group-header-idle" className="rounded-panel bg-nav-bg p-2">
+        <GroupHeader name="workspace" count={24} open onToggle={() => {}} onOverview={() => {}} onNewSession={() => {}} />
+      </div>
+
+      <div data-shot-zone="group-header-hover" className="rounded-panel bg-nav-bg p-2">
+        <div data-shot-hover>
+          <GroupHeader name="workspace" count={24} open onToggle={() => {}} onOverview={() => {}} onNewSession={() => {}} />
+        </div>
+      </div>
+
+      <div data-shot-zone="controls" className="flex flex-wrap items-center gap-3 rounded-panel bg-surface p-3 ring-1 ring-line">
+        <Button variant="primary">主操作</Button>
+        <Button variant="secondary">次级</Button>
+        <Button variant="ghost">幽灵</Button>
+        <Button variant="danger">危险</Button>
+        <Button variant="primary" disabled>禁用</Button>
+        <span className="mx-2 h-5 w-px bg-line" />
+        <IconButton label="设置"><AppIcon name="adjustments" size={14} /></IconButton>
+        <IconButton label="删除" tone="solid"><AppIcon name="trash" size={14} /></IconButton>
+      </div>
+
+      <div data-shot-zone="form" className="flex max-w-sm flex-col gap-3 rounded-panel bg-surface p-3 ring-1 ring-line">
+        <Field label="字段标签" hint="辅助说明（meta 档）"><input className={controlClass} defaultValue="示例内容" /></Field>
+        <div className="flex items-center gap-3">
+          <Label>列头标签</Label>
+          <Label tone="nav">导航层标签</Label>
+          <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-sunken px-1.5 text-micro font-medium tabular-nums text-nav-muted">23</span>
+          <Spinner />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ListRowCompareSection() {
   /* 列表行形态拍板（2026-11-13）：**B 单行收敛为默认**——真实组件就是

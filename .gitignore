@@ -10,15 +10,16 @@ frontend/dist/
 .DS_Store
 Snipaste_*.png
 
-# 视觉契约测试的截图产物与基线：均为本地产物，不入 Git（用户 2026-10-18 定）
+# 视觉契约测试的**产物**不入 Git；**基线入 Git**（Task 0017 · P1.5，用户 2026-11-16 拍板方案 A）。
+# 原来连基线一起忽略，而 ui-contract 有"缺基线就写一份并报绿"的分支 → 干净环境首次跑等于没测。
+# 现在缺基线直接红（`frontend/test/ui-contract.mjs` 的 `截图基线 X 存在`）。
 .ui-shots/
-frontend/test/ui-baseline/
 
 # README 配图：本地产物，不入 Git（用户 2026-11-06 定：不是真实运行截图）
 docs/images/
 
 # 视觉矩阵的**输入产物**不入库，**基线入库**（2026-11-09 起：换机器也能跑，
-# 否则首次跑等于没测；旧的 ui-baseline 仍是本地产物）
+# 否则首次跑等于没测）
 .visual-matrix-shots/
 
 # 开发 worktree 的运行文件：端口登记（dev-port 写）与依赖软链（dev-harness §7.1 说明书允许的演练形态）。

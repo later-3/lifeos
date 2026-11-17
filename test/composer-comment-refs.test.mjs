@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   addCommentRef, attachableComment, commentRefKey, commentRefLabel, commentRefPreview, removeCommentRef,
-} from "../frontend/src/composer-comment-refs.ts";
+} from "../frontend/src/api/composer-comment-refs.ts";
 
 const comment = (over = {}) => ({
   id: "rc_1",

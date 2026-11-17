@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   anchorLineOf, blockEdgesOf, inRange, locationHeader, parseAnchorKey, rangeFromSelection, rangeLabel, rangeLength, rangeOf, shiftRangeOf,
-} from "../frontend/src/review-selection.ts";
+} from "../frontend/src/api/review-selection.ts";
 
 test("A2b·1 首次点击（无锚）→ 单行", () => {
   assert.deepEqual(rangeOf(undefined, { side: "new", line: 7 }), { side: "new", start: 7, end: 7 });

@@ -12,7 +12,7 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { fixCjkEmphasis } from "../frontend/src/md-cjk.ts";
+import { fixCjkEmphasis } from "../frontend/src/api/md-cjk.ts";
 
 test("规则①：CJK 标点收尾 + 闭合后紧跟非空白（`**准。**再`）", () => {
   assert.equal(fixCjkEmphasis("**这个判断非常准。**再补一句"),

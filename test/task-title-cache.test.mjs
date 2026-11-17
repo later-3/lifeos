@@ -4,7 +4,7 @@
 // 当天后端日志 96% 是这一个端点。测的不是"代码看起来对"，是"不会无限请求"。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergeTaskTitles, shouldRequest } from "../frontend/src/task-title-cache.ts";
+import { mergeTaskTitles, shouldRequest } from "../frontend/src/api/task-title-cache.ts";
 
 test("没请求过的 key 要请求", () => {
   assert.equal(shouldRequest(new Set(), "a\u0000p\u00000008"), true);

@@ -3,7 +3,7 @@
 // 所以"按消息折叠"会碎成上百块 —— 必须按用户消息切轮。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupIntoSpans, replyIndexesOf } from "../frontend/src/turn-group.ts";
+import { groupIntoSpans, replyIndexesOf } from "../frontend/src/api/turn-group.ts";
 
 const u = { role: "user" };
 const a = { role: "assistant" };

@@ -239,9 +239,28 @@ export function derivePack(pack: ThemePack): ThemePack & { deriveReport?: Array<
     const vars = pack.modes[mode];
     if (vars === undefined) continue;
     const clean: Record<string, string> = {};
-    // normColor：预置包是历史产物（可能存着 8 位带 alpha 的值），在这里统一剥成 6 位——
-    // 不能只依赖转译器（新导入的走 normColor，旧的也得对齐，否则同族变量两种格式并存）
-    for (const [k, v] of Object.entries(vars)) if (typeof v === "string" && isHexColor(v)) clean[k] = normColor(v);
+    /*
+     * normColor：预置包是历史产物（可能存着 8 位带 alpha 的值），在这里统一剥成 6 位——
+     * 不能只依赖转译器（新导入的走 normColor，旧的也得对齐，否则同族变量两种格式并存）
+     *
+     * **例外（Task 0017 · P2）：行态三件带 alpha 时不进 fill 契约。**
+     *
+     * 它们表达的是 VSCode 的 `#ffffff14`（8% 白）这种**薄涂强度**，而我们的
+     * `--color-nav-accent / nav-selected / hover` 是**实底**契约（必须不透明、必须承载前景 AA）。
+     * 剥掉 alpha 写进去 = 白底/黑底 100%：
+     * 实测 VSCode 2026 Dark 的 `#ffffff14` 变成 `#ffffff`，于是行悬停是一整块纯白，
+     * 行标题白字压白底 **1.00:1**（`test/wash-layer.test.mjs` 抓到 48 处这类失败）。
+     *
+     * 所以：这三件带 alpha 时**丢掉外来值**，交给下面的 ΔL 派生（派生值必在 chroma 界内）。
+     * 丢掉是显式记录在报告里的（零静默）。等 wash 契约有独立的来源槽（v2）再把 alpha 读进来。
+     */
+    const ROW_STATE_KEYS = new Set(["--color-hover", "--color-nav-accent", "--color-nav-selected"]);
+    const hasAlpha = (v: string) => /^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(v.trim());
+    for (const [k, v] of Object.entries(vars)) {
+      if (typeof v !== "string" || !isHexColor(v)) continue;
+      if (ROW_STATE_KEYS.has(k) && hasAlpha(v)) continue;
+      clean[k] = normColor(v);
+    }
     const { filled, rules } = deriveMissingVars(clean);
     modes[mode] = filled as typeof vars;
     for (const r of rules) report.push({ mode, name: r.name, rule: r.rule });

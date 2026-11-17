@@ -12,6 +12,8 @@
  *   utility 编译为 var(--color-*) 引用，运行时改 :root 变量即全站生效）。
  */
 
+import { washAlphasOf } from "./wash.ts";
+
 /* ── OKLCH → sRGB（Björn Ottosson 公式；与 Pi TUI oklab.ts 同源不同层）── */
 function oklchToRgb(lstar: number, c: number, hDeg: number): [number, number, number] {
   // 约定：入参 lstar 是 CIE L*（0–100，与设计文档/滑杆同口径）。
@@ -505,9 +507,29 @@ export function applyTheme(state: ThemeState): void {
     const [l, c, h] = palette[key];
     root.setProperty(name, hex(l, c, h));
   }
+  // wash 的 α（Task 0017 · P2）：与 fill 同一次写。内置主题的 chroma 本来就在界内 →
+  // 三个 α 都是 1 → 合成结果与 fill 完全相同 = **视觉零变化**；外部主题超界时才收敛。
+  applyWashAlphas(root, {
+    navAccent: hex(...palette.navAccent),
+    navSelected: hex(...palette.navSelected),
+    sunken: hex(...palette.sunken),
+    navBg: hex(...palette.navBg),
+  }, state.mode);
   // color-scheme：滚动条/表单原生控件跟随
   document.documentElement.style.colorScheme = state.mode;
   document.documentElement.dataset.themeMode = state.mode;
+}
+
+/** 把三个 wash 的 α 写成 CSS 变量（`--wash-*-alpha`，值形如 `27.3%`）。 */
+export function applyWashAlphas(
+  root: CSSStyleDeclaration,
+  fills: { navAccent: string; navSelected: string; sunken: string; navBg: string },
+  mode: ThemeMode,
+): void {
+  const alphas = washAlphasOf(fills, mode);
+  root.setProperty("--wash-hover-alpha", `${Math.round(Number(alphas.hover) * 1000) / 10}%`);
+  root.setProperty("--wash-selected-alpha", `${Math.round(Number(alphas.selected) * 1000) / 10}%`);
+  root.setProperty("--wash-chip-alpha", `${Math.round(Number(alphas.chip) * 1000) / 10}%`);
 }
 
 /* ── 持久化 ── */
@@ -665,4 +687,46 @@ export function applySurfaceTokens(mode: ThemeMode): void {
   root.setProperty("--tracking-title", TRACKING.title);
   root.setProperty("--tracking-heading", TRACKING.heading);
   root.setProperty("--tracking-micro", TRACKING.micro);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * wash 承载层的 chroma 上界（Task 0017 · P2 / 决策 D1）
+ *
+ * wash（状态薄涂）允许 alpha，但**合成后的饱和度必须有上界** —— 否则外部主题能把
+ * VSCode 的编辑器选区色（Quiet Light 的 `#c4d9b1`）直接带进来，成为整块荧光绿的选中底，
+ * 压在它上的状态点与光环全部失真（2026-11-16 用户第一张截图）。
+ *
+ * ## 这组数字怎么来的（不是拍的，是实测 + 留余量）
+ *
+ * 用 `calculatePalette` 跑**内置 5 预设 × 深浅 10 组**，量 `nav-bg / nav-accent / nav-selected`
+ * 的 OKLCH chroma（脚本见 `test/design-system.test.mjs` 的同名断言）：
+ *
+ * | 变量 | 10 组实测区间 |
+ * |---|---|
+ * | `nav-bg` | 0.0015 – 0.0049 |
+ * | `nav-accent` | 0.0014 – 0.0066 |
+ * | `nav-selected` | 0.0032 – 0.0121 |
+ *
+ * 上界取「实测最大 × 1.25」（留出"设计上还能再浓一点"的空间，但不允许跨数量级）。
+ * 超出上界的外部值按 alpha 收敛（`design/wash.ts` 的 `washAlphaFor`），色相保留。
+ *
+ * 内置主题本来就在区间内 → alpha = 1 → **合成结果与改造前完全相同**，
+ * 所以 P3/P5/P6 的「视觉零变化」门仍然成立。
+ */
+const WASH_ENVELOPE: Record<ThemeMode, { hover: number; selected: number; chip: number }> = {
+  /*
+   * 每个上界 = 该族的**实测最大 × 1.25**（留"设计上还能再浓一点"的余量，不允许跨数量级）：
+   *   hover  ← nav-accent  实测 0.0066 → 0.0083
+   *   selected ← nav-selected 实测 0.0121 → 0.0151
+   *   chip   ← sunken      实测 0.0034 → 0.0043（药丸就是"比宿主深一档"，不需要更多色）
+   */
+  light: { hover: 0.0083, selected: 0.0151, chip: 0.0043 },
+  // 深色的实测区间与浅色同量级（同一套派生公式），沿用同一组上界：
+  // 深色下"recognizable"更依赖 L* 台阶而不是 chroma，所以不额外放宽。
+  dark: { hover: 0.0083, selected: 0.0151, chip: 0.0043 },
+};
+
+/** wash 的 chroma 上界（按模式）。见上表与注释里的推导。 */
+export function themeWashEnvelope(mode: ThemeMode): { hover: number; selected: number; chip: number } {
+  return WASH_ENVELOPE[mode];
 }

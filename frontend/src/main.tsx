@@ -5,9 +5,9 @@ import { ToastProvider } from "./design/toast";
 import { IconSetContext } from "./design/icon-context";
 import preloadedThemes from "./design/preloaded-themes.json";
 import type { IconSetId } from "./design/icon-sets";
-import { VersionBanner } from "./version-banner";
-import { startVersionCheck } from "./version-check";
-import { primeEmojiShortcodes } from "./emoji-catalog";
+import { VersionBanner } from "./views/version-banner";
+import { startVersionCheck } from "./api/version-check";
+import { primeEmojiShortcodes } from "./api/emoji-catalog";
 import "./index.css";
 
 /*

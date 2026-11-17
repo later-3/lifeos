@@ -1,7 +1,7 @@
 // Task 0002 P1：header strip 分段容器纯函数——段顺序/可见性/去重/空态回退/拼装语义。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "../frontend/src/header-strip.ts";
+import { buildHeaderSegments, headerTaskOf, joinHeaderSegments, taskTitleKey } from "../frontend/src/api/header-strip.ts";
 
 const base = {
   agentName: "coder",
@@ -114,7 +114,7 @@ test("对端段（Agent↔Agent）：显示 `agent ↔ peer`，用户↔Agent �
 // 现象：跨项目点开一条会话，聊天区顶部大字变成产品名 "Life OS"。
 // 根因：标题是从「选中项目」的分组里找「当前会话」，两者不一致时找不到 → 空 → 回落产品名。
 // 规则：标题只能来自**会话自己**（与列表同一份派生 displayTitleOf），缺名回落 `会话 <id8>`。
-import { findSessionRow, headerTitleOf } from "../frontend/src/header-strip.ts";
+import { findSessionRow, headerTitleOf } from "../frontend/src/api/header-strip.ts";
 
 test("头部标题：有会话时用会话显示名，不回落产品名", () => {
   const title = headerTitleOf({ sessionId: "01a1aa92-9b5d", displayTitle: "修复会话标题" });

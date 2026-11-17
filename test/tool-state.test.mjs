@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { toolState } from "../frontend/src/tool-state.ts";
+import { toolState } from "../frontend/src/api/tool-state.ts";
 
 test("有结果：成功=完成、isError=出错", () => {
   assert.equal(toolState({ hasResult: true, live: false }), "done");
