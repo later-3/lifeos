@@ -413,6 +413,68 @@ export async function readReviewBlob(input: ReadBlobInput): Promise<ReviewBlob |
   return truncateContent(wanted);
 }
 
+/**
+ * 取某个文件在某一侧的**原始字节**（图片、PDF 这类二进制）。
+ *
+ * 为什么需要：`readReviewBlob` 对二进制直接 400（`binary_not_supported`），
+ * 于是检视面板里的 markdown 预览只要是 `![](docs/images/x.gif)` 就一律破图——
+ * 而 README 改版的核心交付物恰恰是图（2026-11-16 用户实测截图：一串破图）。
+ *
+ * 与 blob 的区别只有两点：① 返回 Buffer 而不是 string；② 不判二进制（它就是为二进制来的）。
+ * 路径安全、两侧取值口径、404 语义**完全复用** blob 那一套，不另写第二份。
+ */
+export type ReviewRaw = { bytes: Buffer; contentType: string };
+
+const CONTENT_TYPES: Record<string, string> = {
+  png: "image/png", gif: "image/gif", webp: "image/webp", jpg: "image/jpeg", jpeg: "image/jpeg",
+  svg: "image/svg+xml", ico: "image/x-icon", avif: "image/avif", bmp: "image/bmp",
+  mp4: "video/mp4", webm: "video/webm", pdf: "application/pdf",
+};
+
+/** 按扩展名给 content-type；不认识的给 octet-stream（浏览器会下载而不是瞎猜成 HTML）。 */
+export function contentTypeOf(path: string): string {
+  const dot = path.lastIndexOf(".");
+  const ext = dot === -1 ? "" : path.slice(dot + 1).toLowerCase();
+  return CONTENT_TYPES[ext] ?? "application/octet-stream";
+}
+
+export async function readReviewRaw(input: ReadBlobInput): Promise<ReviewRaw | { error: ReviewError }> {
+  const { taskDir } = input;
+  if (input.source !== "worktree" && input.source !== "lifeos") {
+    return blobError("invalid_source", "source 只能是 worktree 或 lifeos", 400);
+  }
+  if (input.side !== "old" && input.side !== "new") {
+    return blobError("invalid_side", "side 只能是 old 或 new", 400);
+  }
+  const relative = safeRelativePath(input.path);
+  if (relative === undefined) return blobError("bad_request", "文件路径不合法（不允许绝对路径或 .. 逃逸）", 400);
+  if (!(await dirExists(taskDir))) {
+    return blobError("task_dir_not_found", `Task 目录不存在：${basename(taskDir)}`, 404);
+  }
+
+  const readSide = async (side: ReviewBlobSide): Promise<Buffer | undefined> => {
+    if (input.source === "worktree") {
+      const source = (await locateSources(taskDir)).find((item) => item.kind === "worktree");
+      if (source === undefined || !source.exists) return undefined;
+      if (side === "old") return readGitBlob(source.path, await worktreeBaseRef(source.path), relative);
+      return readDiskFile(source.path, relative);
+    }
+    if (side === "new") return readDiskFile(taskDir, relative);
+    const base = await lifeosBaseline(taskDir);
+    if (base === undefined) return undefined;
+    return readGitBlob(resolveHome(), base.commit, relativeTo(resolveHome(), join(taskDir, relative)));
+  };
+
+  const wanted = await readSide(input.side as ReviewBlobSide);
+  if (wanted === undefined) {
+    // 这一侧没有：另一侧有则是新增/删除的正常形态（空字节）；两侧都没有才是真不存在。
+    const other = await readSide(input.side === "old" ? "new" : "old");
+    if (other !== undefined) return { bytes: Buffer.alloc(0), contentType: contentTypeOf(relative) };
+    return blobError("file_not_found", `两侧都找不到这个文件：${relative}`, 404);
+  }
+  return { bytes: wanted, contentType: contentTypeOf(relative) };
+}
+
 function relativeTo(root: string, dir: string): string {
   const r = resolve(root);
   const d = resolve(dir);

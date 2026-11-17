@@ -24,16 +24,22 @@ import { createServer } from "node:http";
 
 const PORT = Number(process.env.STUB_PORT ?? 43140);
 
-/** 剧本：一次完整的开发对话（思考 → 读文件 → bash → 回答问题）。 */
+/**
+ * 剧本：一条完整的回答（思考段 + 正文）。
+ *
+ * **为什么不含工具调用**（实测 2026-11-16，花了很久才定位）：
+ *   让打桩返回 `tool_calls` 时，Pi 会真的去执行那个工具，然后把 tool 结果回传；
+ *   而脚本直写的演示会话 + 打桩的组合会命中 Pi 的条目校验，回合直接失败
+ *   （`number 6 is not iterable`，后端日志 runTurn 每轮一条），画面上是红色失败条。
+ *   反复试过调整 tool 参数形状、按请求推进剧本，都没绕过。
+ *
+ *   结论：**打桩只负责"看起来像一次正常回复"**——思考 + 流式正文 + usage。
+ *   "工具调用折成一行"这个过程折叠的证据由 `01-workspace.webp` 提供（那张是真实数据）。
+ *   宁可少演一个细节，也不要在素材里留失败条。
+ */
 const SCRIPT = [
   {
     thinking: "先看状态机现在的定义与调用方，别急着改。retrying 到底是状态还是计数，要看它被写在哪几处。",
-    tools: [{ name: "read", arguments: { path: "payment/state-machine.ts" } }],
-  },
-  {
-    tools: [{ name: "bash", arguments: { command: "grep -rn \"retrying\" src/payment | wc -l" } }],
-  },
-  {
     text: `可以收敛成 4 个态，依据是「钱在哪」：
 
 | 4 态 | 合并掉了 | 不变量 |
@@ -41,29 +47,29 @@ const SCRIPT = [
 | \`pending\` | created / paying / retrying | 钱还没到 |
 | \`paid\` | paid / settled | 钱到了，且已对账 |
 | \`refunding\` | refunding / partial_refunded | 有退款在途 |
-| \`closed\` | refunded / closed / expired / failed | 终态，钱已回来或从未出去 |
+| \`closed\` | refunded / closed / expired / failed | 终态 |
 
 两个判断依据：
 
 1. **\`retrying\` 不是状态**，是 \`paying\` 的重试计数——现有代码 37 处读 \`status\`，其中 9 处只是拿它判断是否还在等钱；
-2. **\`settled\` 与 \`paid\` 的差别在对账，不在状态机**——对账是另一个维度（\`reconciledAt\` 字段），塞进状态机会让状态数随对账规则增长。
+2. **\`settled\` 与 \`paid\` 的差别在对账，不在状态机**——对账是另一个维度（\`reconciledAt\` 字段）。
 
-风险：\`partial_refunded\` 消失后，部分退款的金额必须在 \`refunds[]\` 上算，不能读状态。这一处要改调用方。`,
+风险：\`partial_refunded\` 消失后，部分退款的金额必须在 \`refunds[]\` 上算。`,
   },
 ];
-
-const TOOL_RESULTS = {
-  read: "状态枚举共 11 个：created / paying / paid / refunding / refunded / partial_refunded / closed / expired / failed / retrying / settled",
-  bash: "37",
-};
-
-let turnIndex = 0;
 
 function sseChunk(payload) {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
 const server = createServer(async (request, response) => {
+  // 健康检查端点：拍摄前 run.mjs 会 ping 它，确认打桩服务在跑。
+  if (request.url?.endsWith("/models")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ object: "list", data: [{ id: "demo-model", object: "model" }] }));
+    return;
+  }
+
   if (!request.url?.endsWith("/chat/completions")) {
     response.writeHead(404, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: { message: "not found" } }));
@@ -77,8 +83,9 @@ const server = createServer(async (request, response) => {
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { /* 忽略 */ }
 
   const stream = body.stream === true;
-  const step = SCRIPT[Math.min(turnIndex, SCRIPT.length - 1)];
-  turnIndex += 1;
+  // 剧本只有一步：每次请求都完整演一遍（思考 → 正文 → usage）。
+  // 不按请求推进——Pi 一轮里会连发多次请求，累加 index 会让第二轮只剩空回复（实测）。
+  const step = SCRIPT[0];
 
   if (!stream) {
     response.writeHead(200, { "content-type": "application/json" });

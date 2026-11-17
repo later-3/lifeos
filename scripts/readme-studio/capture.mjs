@@ -24,8 +24,11 @@
  * 用法（storyboard 由 run.mjs 读，通常不直接调）：
  *   capture({ mode, url, size, fpsHint, steps, outDir, keepFrames })
  */
-import { mkdirSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+
+/** storyboard 的辅助脚本目录（`evalFile` 从这读）。 */
+const STORYBOARD_SCRIPT_DIR = join(import.meta.dirname, "storyboards");
 
 const PLAYWRIGHT_CANDIDATES = [
   process.env.PLAYWRIGHT_CORE,
@@ -46,7 +49,7 @@ async function loadPlaywright() {
 }
 
 /** 全部动作名（新增动作要同时在 runStep 里实现）。 */
-export const ACTIONS = ["click", "type", "press", "move", "scroll", "zoom", "unzoom", "waitFor", "waitForText", "pause", "shot", "eval"];
+export const ACTIONS = ["click", "type", "press", "move", "scroll", "zoom", "unzoom", "waitFor", "waitForText", "pause", "shot", "eval", "evalFile", "selectText"];
 
 /**
  * 校验并返回这一步的动作名。
@@ -60,7 +63,15 @@ export const ACTIONS = ["click", "type", "press", "move", "scroll", "zoom", "unz
  * steps 在进到这里之前已被 run.mjs 补上 `shot`（审核关键帧名），key 数不为 1。
  */
 function actionOf(step) {
-  const action = ACTIONS.find((name) => step[name] !== undefined);
+  /**
+   * `shot` 是**装饰**而不是动作：run.mjs 默认给每一步注入 `shot: "01-click"` 用于关键帧，
+   * 而 ACTIONS 里同时存在 `shot` 动作（显式抓一张图）。
+   *
+   * 实测踩坑（2026-11-16）：不把它排除的话，`{ selectText: ..., shot: "14-selectText" }`
+   * 会被判成 action=shot —— 于是只截图、什么也没做，后续点「批注」必然超时。
+   */
+  const action = ACTIONS.find((name) => name !== "shot" && step[name] !== undefined)
+    ?? (step.shot !== undefined ? "shot" : undefined);
   if (action === undefined) {
     throw new Error(`这一步没有可识别的动作（可用：${ACTIONS.join(" / ")}）：${JSON.stringify(step)}`);
   }
@@ -150,6 +161,86 @@ async function runStep(page, step, log, shotDir) {
   } else if (action === "eval") {
     await page.evaluate(typeof params === "string" ? params : params.value);
     log("eval");
+  } else if (action === "selectText") {
+    /**
+     * 用**真实鼠标**拖选一段文字（在可见的段落上）。
+     *
+     * 三次失败的教训（2026-11-16，都留有截图）：
+     *  ① 脚本 `range` + 假 `mouseup` → 文字选中了，但功能条**不出现**（功能条由真实 mouseup 驱动）；
+     *  ② 选 `message-text` 容器 → 容器高 546px、顶部在视口外（y=-111），按在负坐标等于按到窗外；
+     *  ③ 选长文本节点 → 节点跨行，起止坐标落在不同段落，拖选变成从段中拖到段中，落点不在同一行。
+     *
+     * 现在按**段落**选：取视口内完整可见的 `<p>` / `<li>`，在它的首尾之间拖。
+     */
+    const { selector = '[data-testid="message-text"]', chars = 18 } = params;
+    const box = await page.evaluate(({ selector, chars }) => {
+      const blocks = [...document.querySelectorAll(`${selector} p, ${selector} li, ${selector} h1, ${selector} h2`)];
+      const candidates = blocks
+        .map((el) => ({ el, rect: el.getBoundingClientRect(), text: (el.textContent ?? "").trim() }))
+        .filter((item) => item.text.length > chars && item.rect.width > 120
+          && item.rect.top > 60 && item.rect.bottom < window.innerHeight - 140);
+      if (candidates.length === 0) return null;
+      // 优先取靠上的一条（画面稳定，不会被下方输入框挡住）
+      const picked = candidates[0];
+      const { el } = picked;
+      el.scrollIntoView({ block: "center" });
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let first = null;
+      while (walker.nextNode()) {
+        if ((walker.currentNode.nodeValue ?? "").trim() !== "") { first = walker.currentNode; break; }
+      }
+      if (first === null) return null;
+      const head = document.createRange();
+      head.setStart(first, 0);
+      head.setEnd(first, Math.min(2, first.length));
+      const a = head.getBoundingClientRect();
+      const tail = document.createRange();
+      const len = first.length;
+      tail.setStart(first, Math.max(0, len - 2));
+      tail.setEnd(first, len);
+      const b2 = tail.getBoundingClientRect();
+      return { x1: a.x + 1, y1: a.y + a.height / 2, x2: b2.x + b2.width - 1, y2: b2.y + b2.height / 2, text: picked.text.slice(0, 20) };
+    }, { selector, chars });
+    if (box === null) throw new Error(`selectText 找不到视口内可选的段落：${selector}`);
+
+    /**
+     * 拖选 + **自检重试**。
+     *
+     * 为什么必须自检（2026-11-16 实测）：拖完不一定真的有选区——
+     * 流式重渲染会在拖选期间替换正文节点，选区随之塌缩；此时截图上是"什么都没选中"，
+     * 后续点「批注」必然超时。所以要读回 `getSelection()` 与功能条状态，
+     * 不成立就重新滚到该段、微调起点再拖一次（最多 3 次）。
+     */
+    let attempt = 0;
+    let ok = false;
+    while (attempt < 3 && !ok) {
+      attempt += 1;
+      await page.mouse.move(box.x1 + attempt - 1, box.y1, { steps: 6 });
+      await page.mouse.down();
+      await page.mouse.move(box.x2, box.y2, { steps: 16 });
+      await page.mouse.up();
+      await page.waitForTimeout(220);
+      const state = await page.evaluate(() => ({
+        selected: window.getSelection()?.toString() ?? "",
+        toolbar: document.querySelector('[data-testid="selection-toolbar"]') !== null,
+      }));
+      ok = state.selected.trim() !== "" && state.toolbar;
+      log(`selectText 第 ${attempt} 次：选中 ${JSON.stringify(state.selected.slice(0, 18))} 功能条=${state.toolbar}`);
+      if (!ok) await page.waitForTimeout(320);
+    }
+    if (!ok) throw new Error(`selectText 拖选 3 次都没拿到有效选区（段落：「${box.text}」）——通常是流式还没结束或该段被重渲染`);
+    log(`selectText "${box.text}"`);
+  } else if (action === "evalFile") {
+    /**
+     * 从 storyboards/ 下读一段 JS 执行。
+     *
+     * 为什么需要：拖选文本、读 DOM 位置这类操作要写十几行 JS，
+     * 塞进 YAML 既不合法（缩进会炸）也不好调试。独立 .js 文件可直接 `node --check` 验语法。
+     */
+    const file = typeof params === "string" ? params : params.value;
+    const code = readFileSync(join(STORYBOARD_SCRIPT_DIR, file), "utf8");
+    const result = await page.evaluate(code);
+    log(`evalFile ${file} → ${JSON.stringify(result ?? null)}`);
   } else {
     throw new Error(`未知动作：${JSON.stringify(Object.keys(step))}`);
   }

@@ -17,8 +17,16 @@ async function walk(dir, out = []) {
   return out;
 }
 
-test("相对链接全部可解析（模板 .lifeos + 根 AGENTS.md/README.md）", async () => {
-  const files = [...await walk(join(repo, ".lifeos")), join(repo, "AGENTS.md"), join(repo, "README.md")];
+test("相对链接全部可解析（模板 .lifeos + 根 AGENTS.md + 全部 README + docs）", async () => {
+  // 两个 README 双语 + docs/ 下的用户文档都要进扫描（Task 0022）：
+  // 只扫 README.md 时，中文版与 docs/getting-started.md 的断链抓不到（实测：加中文版前门禁全绿）。
+  const files = [
+    ...await walk(join(repo, ".lifeos")),
+    ...await walk(join(repo, "docs")),
+    join(repo, "AGENTS.md"),
+    join(repo, "README.md"),
+    join(repo, "README.zh-CN.md"),
+  ];
   let checked = 0;
   const broken = [];
   for (const file of files) {
@@ -46,4 +54,45 @@ test("根 AGENTS.md 的场景入口地图：所指 .md 全部存在，条目数�
     if (await stat(join(repo, path)).then(() => true, () => false) === false) broken.push(path);
   }
   assert.deepEqual(broken, [], "入口地图断链：" + broken.join(", "));
+});
+
+/**
+ * 双语 README 的四条一致性（Task 0022 · 02-design 链路 4）。
+ *
+ * 为什么要有：两份文件是手写的，最容易出的不是错字而是**漂移**——
+ * 一边加了章节、另一边忘了；一边换了图、另一边还是旧图。这些靠人眼查不出来。
+ */
+test("两份 README：章节序列一致、语言互链、图片集合相同、媒体与代码块不塌缩", async () => {
+  const en = await readFile(join(repo, "README.md"), "utf8");
+  const zh = await readFile(join(repo, "README.zh-CN.md"), "utf8");
+
+  const headings = (text) => [...text.matchAll(/^(#{2,3}) /gm)].map((match) => match[1]);
+  assert.deepEqual(headings(zh), headings(en), "两份 README 的 ## / ### 层级序列不一致（章节漂移）");
+
+  // 首屏语言切换是 HTML `<a href>`（居中排版要用 HTML，markdown 链接做不到居中）。
+  // 断言按**真实写法**来：两种写法都接受，避免"门禁要求一种、实现用另一种"的假红。
+  const hasLink = (text, target) =>
+    new RegExp(`(\\]\\(|href=")\\./${target.replace(".", "\\.")}`).test(text);
+  assert.ok(hasLink(en, "README.zh-CN.md"), "英文版缺少指向中文版的链接");
+  assert.ok(hasLink(zh, "README.md"), "中文版缺少指向英文版的链接");
+
+  const imagesOf = (text) => [...new Set([...text.matchAll(/docs\/images\/([\w.-]+)/g)].map((match) => match[1]))].sort();
+  assert.deepEqual(imagesOf(zh), imagesOf(en), "两份 README 引用的图片集合不同（一边换了图另一边没换）");
+
+  // 下限断言：防止有人把内容删空后门禁仍然全绿（testing 规 2.4 的活性要求）
+  const mediaCount = imagesOf(en).length;
+  const gifCount = imagesOf(en).filter((name) => name.endsWith(".gif")).length;
+  const headingCount = headings(en).length;
+  const fenceCount = (en.match(/^```/gm) ?? []).length / 2;
+  assert.ok(mediaCount >= 15, `图片引用过少（${mediaCount}），门禁可能已失效`);
+  assert.ok(gifCount >= 6, `动图过少（${gifCount}），用户要求"能上动图的地方不省"`);
+  assert.ok(headingCount >= 18, `章节过少（${headingCount}），结构可能被压塌`);
+  assert.ok(fenceCount >= 5, `代码围栏过少（${fenceCount}），命令块可能被删`);
+});
+
+test("LICENSE 与赞助配置存在（README 敢写 MIT 的前提）", async () => {
+  const license = await readFile(join(repo, "LICENSE"), "utf8");
+  assert.ok(license.includes("MIT License"), "LICENSE 不是 MIT 正文");
+  const funding = await readFile(join(repo, ".github", "FUNDING.yml"), "utf8");
+  assert.ok(funding.length > 0, "FUNDING.yml 为空");
 });

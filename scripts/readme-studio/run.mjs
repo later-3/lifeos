@@ -33,6 +33,25 @@ const RAW = "/tmp/lifeos-studio";
  * 支持：`key: value`、`key:` 开块、`- ` 列表项、`- key: value` 列表映射、`#` 注释、引号字符串。
  * 不支持（用不到）：锚点、多行文本块、复杂嵌套。遇到不支持的写法会**报错并指行号**，不静默。
  * ──────────────────────────────────────────────────────────────── */
+/**
+ * 多行块（`key: |`）的取值：把比当前缩进更深的后续行原样拼起来。
+ *
+ * 为什么要支持：`eval:` 动作里要写多行 JavaScript（拖选一段文字），
+ * 压成单行既不可读也没法调试。YAML 的 `|` 块是最自然的写法。
+ */
+function takeBlock(lines, startIndex, keyIndent) {
+  const collected = [];
+  let index = startIndex;
+  while (index < lines.length) {
+    const line = lines[index];
+    const indent = line.raw.length - line.raw.trimStart().length;
+    if (line.raw.trim() !== "" && indent <= keyIndent) break;
+    collected.push(line.raw.slice(Math.min(indent, keyIndent + 2)));
+    index += 1;
+  }
+  return [collected.join("\n").replace(/\n+$/, ""), index];
+}
+
 function parseScalar(raw) {
   const value = raw.trim();
   if (value === "") return undefined;
@@ -129,7 +148,14 @@ function parseYaml(text, file = "storyboard") {
 
       if (!body.includes(":")) fail(line, "顶层缺少 key:value");
       const [key, ...valueParts] = body.split(":");
-      const parsed = parseScalar(valueParts.join(":"));
+      const rawValue = valueParts.join(":").trim();
+      if (rawValue === "|" || rawValue === ">") {
+        const [text, next] = takeBlock(lines, index + 1, indent);
+        result[key.trim()] = rawValue === ">" ? text.replace(/\n/g, " ") : text;
+        index = next;
+        continue;
+      }
+      const parsed = parseScalar(rawValue);
       if (parsed === undefined) {
         const [nested, next] = parseBlock(index + 1, line.raw.search(/\S/) + 2);
         result[key.trim()] = nested;
@@ -167,6 +193,25 @@ async function shoot(storyboard, options = {}) {
       : step
   ));
 
+  /**
+   * 拍摄前体检：**打桩模型必须在跑**。
+   *
+   * 为什么必须拦（实测 2026-11-16）：打桩服务挂掉后，拍摄照样能录完、GIF 照样能出——
+   * 但画面里是红色的「模型调用失败 Connection error」和「2s 后重试」。
+   * 这种图比没有图更糟：它把产品拍成了坏的。所以宁可整轮失败。
+   */
+  if (storyboard.requireStub !== false) {
+    const stub = process.env.STUB_URL ?? "http://127.0.0.1:43140/v1/models";
+    try {
+      const response = await fetch(stub, { signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      throw new Error(`打桩模型服务没在跑（${stub}）：${String(error).slice(0, 160)}\n` +
+        "  先起它：node scripts/readme-studio/stub-model.mjs\n" +
+        "  否则画面里会出现红色的「模型调用失败」，拍出来的素材是错的。");
+    }
+  }
+
   // 每次拍摄前重置演示家目录：素材必须可复现，且不能把上一次的测试会话留在画面里
   if (storyboard.resetDemo !== false) {
     const demoHome = process.env.STUDIO_HOME ?? join(process.env.HOME ?? "", ".lifeos-readme");
@@ -175,6 +220,25 @@ async function shoot(storyboard, options = {}) {
       execFileSync("node", [demoScript], { env: { ...process.env, LIFEOS_HOME: demoHome }, stdio: "pipe" });
     } catch (error) {
       throw new Error(`重置演示家目录失败（${demoHome}）：${String(error).slice(0, 300)}`);
+    }
+  }
+
+  /**
+   * 拍摄前把「选中即复制」关掉（storyboard 可用 `copyOnSelect: true` 保留）。
+   *
+   * 为什么：默认开着时，松手立刻复制并弹出「已复制 · N 字」，功能条里**没有「批注」按钮**；
+   * 而 annotate 这条素材要演的正是"松手 → 功能条 → 批注"。真实用户的这条路径本来就需要先关掉它，
+   * 所以画面里展示的也是真实行为，不是为拍摄特制。
+   */
+  if (storyboard.copyOnSelect !== true) {
+    const uiPath = join(process.env.STUDIO_HOME ?? join(process.env.HOME ?? "", ".lifeos-readme"), "config", "ui.json");
+    try {
+      const ui = JSON.parse(readFileSync(uiPath, "utf8"));
+      ui.selection = { ...(ui.selection ?? {}), copyOnSelect: false };
+      writeFileSync(uiPath, JSON.stringify(ui, null, 2));
+      console.log("   · 已把演示家目录的 selection.copyOnSelect 设为 false（让功能条出现「批注」）");
+    } catch (error) {
+      console.log(`   · 跳过 copyOnSelect 设置（${String(error).slice(0, 80)}）`);
     }
   }
 

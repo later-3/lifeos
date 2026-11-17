@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/local--first-%E6%97%A0%E8%B4%A6%E5%8F%B7-777" alt="local-first">
 </p>
 
-<!-- media: hero.gif — 发一条消息：状态条推进 → 流式回复 → 过程折叠 → 切助手（P2 拍摄） -->
+<p align="center"><img src="docs/images/hero.gif" width="100%" alt="一条消息变成一个正在跑的回合：状态条推进、正文流出、工具调用折成一行"></p>
 
 ## 它是什么
 
@@ -67,8 +67,8 @@ flowchart LR
 
 > 代码：`frontend/src/working.ts` · `frontend/src/session-bar.tsx` · `frontend/src/response-bar.tsx` · `frontend/src/process-stats.ts` · `src/failure.ts`
 
-<!-- media: 01-workspace.webp — 一轮完成后的状态条、过程折叠与 usage -->
-<!-- media: turns-steer.gif — 生成中按 Enter 插话，状态条跟着变（P2 拍摄） -->
+<p align="center"><img src="docs/images/01-workspace.webp" width="100%" alt="一轮结束后的样子：四步状态条、折叠的过程、token 用量"></p>
+<p align="center"><img src="docs/images/turns-steer.gif" width="100%" alt="生成中按 Enter 插话：状态条出现「已插话」，回复继续"></p>
 
 ### 输入与编辑
 
@@ -89,7 +89,7 @@ flowchart LR
 
 > 代码：`frontend/src/SessionHistory.tsx` · `frontend/src/prompt-regions.ts` · `frontend/src/prompt-patches.ts` · `frontend/src/PeerPanel.tsx` · `src/agent-tools.ts`
 
-<!-- media: 03-prompt-regions.webp — 一轮请求的 prompt 分区与 token 占比 -->
+<p align="center"><img src="docs/images/03-prompt-regions.webp" width="100%" alt="一次请求的系统提示按分区拆开，带各自 token 占比"></p>
 
 ### Task 与工作区
 
@@ -99,8 +99,8 @@ flowchart LR
 
 > 代码：`src/tasks.ts` · `src/task-worktree.ts` · `.lifeos/interaction-harness/protocol.md`
 
-<!-- media: 05-task-header.webp — 会话上的 Task 编号与头部标题 -->
-<!-- media: task-worktree.gif — Task 的 worktree 状态与合并（P2 拍摄） -->
+<p align="center"><img src="docs/images/05-task-header.webp" width="100%" alt="会话头部的 Task 编号与标题"></p>
+> Task 的改动落在它自己的工作区里，主工作区保持干净。（不配图：演示环境里没有真的 git worktree。）
 
 ### 检视与批注
 
@@ -109,8 +109,8 @@ flowchart LR
 
 > 代码：`frontend/src/review-*.ts` · `src/review*.ts` · `frontend/src/annotations.ts` · `frontend/src/marks.ts`
 
-<!-- media: review.gif — 打开 Task diff → 行内评论 → 线程回复（P2 拍摄） -->
-<!-- media: annotate.gif — 选中 → 选语气 → 发送（P2 拍摄） -->
+<p align="center"><img src="docs/images/review.gif" width="100%" alt="检视模式：一个 Task 的代码与文档 diff 摊在同一屏，可逐行评论"></p>
+<p align="center"><img src="docs/images/annotate.gif" width="100%" alt="批注：选中一段 → 选语气 → 标上，高亮留在原文"></p>
 
 ### 多 Agent
 
@@ -121,8 +121,8 @@ flowchart LR
 
 > 代码：`src/agents.ts` · `src/peer.ts` · `src/peer-completion.ts` · `src/memory/resolve.ts` · `src/projects.ts`
 
-<!-- media: 02-participants.webp — 会话参与者与对端头像 -->
-<!-- media: peer-delegate.gif — ask 另一个 Agent，回执回流到发起会话（P2 拍摄） -->
+<p align="center"><img src="docs/images/02-participants.webp" width="100%" alt="两个 Agent 之间的对话：叠放头像与对端头部"></p>
+<p align="center"><img src="docs/images/peer-delegate.gif" width="100%" alt="Agent 与 Agent 的对话：行上叠放头像、头部显示对端"></p>
 
 ### 外观与偏好
 
@@ -136,8 +136,9 @@ flowchart LR
 
 > 代码：`frontend/src/design/theme.ts` · `frontend/src/design/theme-translators.ts` · `frontend/src/display-prefs.ts` · `frontend/src/badge-prefs.ts` · `frontend/src/ui-prefs-client.ts`
 
-<!-- media: theme.webp — 主题列表 + 一套深色对照（P2 拍摄） -->
-<!-- media: theme-import.gif — 粘贴 VSCode 主题 JSON → 预览 → 保存（P2 拍摄） -->
+<p align="center"><img src="docs/images/theme-light.webp" width="100%" alt="主题设置（浅色）"></p>
+<p align="center"><img src="docs/images/theme-dark.webp" width="100%" alt="主题设置（深色）"></p>
+<p align="center"><img src="docs/images/theme-import.gif" width="100%" alt="主题导入：粘贴一份 VS Code 主题 JSON，预览后保存"></p>
 
 ### 会话与导航
 
@@ -158,7 +159,7 @@ flowchart LR
 
 > 代码：`src/fs.ts` · `frontend/src/FileTree.tsx` · `frontend/src/FilePanel.tsx` · `src/media.ts` · `frontend/src/md-cjk.ts`
 
-<!-- media: files.webp — 文件树 + 查看器渲染档（P2 拍摄） -->
+<p align="center"><img src="docs/images/files.webp" width="100%" alt="文件树与文件查看器"></p>
 
 ### 手机与运行
 
@@ -169,16 +170,16 @@ flowchart LR
 
 > 代码：`frontend/src/mobile-nav.tsx` · `frontend/public/sw.js` · `frontend/src/version-banner.tsx` · `frontend/src/event-router.ts`
 
-<!-- media: mobile.webp — 手机竖屏会话页（P2 拍摄） -->
-<!-- media: mobile-pwa.gif — 手机：导航 → 会话 → 安装提示（P2 拍摄） -->
+<p align="center"><img src="docs/images/mobile.webp" width="100%" alt="同一个会话在手机上"></p>
+<p align="center"><img src="docs/images/mobile-pwa.gif" width="60%" alt="手机：同一个会话在手机上，带自己的导航"></p>
 
 ## 路线图
 
 已设计，**尚未实现**。下面的图都是设计稿，每张带「设计稿 · 未实现」水印。
 
-<!-- media: 06-room.webp — 群聊房间（设计稿） -->
-<!-- media: 07-delegate.webp — 一次派给多个 Agent（设计稿） -->
-<!-- media: 08-project.webp — 项目工作台（设计稿） -->
+<p align="center"><img src="docs/images/06-room.webp" width="100%" alt="设计稿：多个 Agent 的群聊房间（未实现）"></p>
+<p align="center"><img src="docs/images/07-delegate.webp" width="100%" alt="设计稿：一件事派给多个 Agent 并行（未实现）"></p>
+<p align="center"><img src="docs/images/08-project.webp" width="100%" alt="设计稿：项目工作台页（未实现）"></p>
 
 | 设计稿 | 它会做什么 |
 | --- | --- |
@@ -215,7 +216,7 @@ pnpm build && pnpm start                   # http://127.0.0.1:43120
 
 验证：`curl http://127.0.0.1:43120/api/agents` 能返回一个 Agent，浏览器里能发消息。
 
-更细的安装说明（代理配置、`pnpm home:check`、更新 Pi SDK、常见问题）收在 `docs/getting-started.md`。
+更细的安装说明（代理配置、`pnpm home:check`、两种运行模式、更新 Pi SDK、常见问题）收在 **[docs/getting-started.md](./docs/getting-started.md)**。
 
 ## 配置
 

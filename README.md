@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/local--first-no%20account-777" alt="local-first">
 </p>
 
-<!-- media: hero.gif — 发一条消息：状态条推进 → 流式回复 → 过程折叠 → 切助手（P2 拍摄） -->
+<p align="center"><img src="docs/images/hero.gif" width="100%" alt="A message turns into a running turn: status bar advances, answer streams in"></p>
 
 ## What is Life OS
 
@@ -67,8 +67,8 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/working.ts` · `frontend/src/session-bar.tsx` · `frontend/src/response-bar.tsx` · `frontend/src/process-stats.ts` · `src/failure.ts`
 
-<!-- media: 01-workspace.webp — 一轮完成后的状态条、过程折叠与 usage -->
-<!-- media: turns-steer.gif — 生成中按 Enter 插话，状态条跟着变（P2 拍摄） -->
+<p align="center"><img src="docs/images/01-workspace.webp" width="100%" alt="A finished turn: four-step status bar, folded process, token usage"></p>
+<p align="center"><img src="docs/images/turns-steer.gif" width="100%" alt="Press Enter mid-run to steer: the bar shows the steer and the reply keeps going"></p>
 
 ### Input & editing
 
@@ -89,7 +89,7 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/SessionHistory.tsx` · `frontend/src/prompt-regions.ts` · `frontend/src/prompt-patches.ts` · `frontend/src/PeerPanel.tsx` · `src/agent-tools.ts`
 
-<!-- media: 03-prompt-regions.webp — 一轮请求的 prompt 分区与 token 占比 -->
+<p align="center"><img src="docs/images/03-prompt-regions.webp" width="100%" alt="One request's system prompt split into regions with token shares"></p>
 
 ### Tasks & workspaces
 
@@ -99,8 +99,8 @@ What happens inside a turn, and when you can step in.
 
 > Code: `src/tasks.ts` · `src/task-worktree.ts` · `.lifeos/interaction-harness/protocol.md`
 
-<!-- media: 05-task-header.webp — 会话上的 Task 编号与头部标题 -->
-<!-- media: task-worktree.gif — Task 的 worktree 状态与合并（P2 拍摄） -->
+<p align="center"><img src="docs/images/05-task-header.webp" width="100%" alt="Task id and title on the conversation header"></p>
+<p align="center"><img src="docs/images/review.gif" width="100%" alt="Review mode: one task's code and document diff on one screen, commentable line by line"></p>
 
 ### Review & annotation
 
@@ -109,8 +109,8 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/review-*.ts` · `src/review*.ts` · `frontend/src/annotations.ts` · `frontend/src/marks.ts`
 
-<!-- media: review.gif — 打开 Task diff → 行内评论 → 线程回复（P2 拍摄） -->
-<!-- media: annotate.gif — 选中 → 选语气 → 发送（P2 拍摄） -->
+<p align="center"><img src="docs/images/annotate.gif" width="100%" alt="Annotation: select text, pick a tone, mark it; the highlight stays"></p>
+<p align="center"><img src="docs/images/02-participants.webp" width="100%" alt="A conversation between two agents: stacked avatars and peer header"></p>
 
 ### Many agents
 
@@ -121,8 +121,8 @@ What happens inside a turn, and when you can step in.
 
 > Code: `src/agents.ts` · `src/peer.ts` · `src/peer-completion.ts` · `src/memory/resolve.ts` · `src/projects.ts`
 
-<!-- media: 02-participants.webp — 会话参与者与对端头像 -->
-<!-- media: peer-delegate.gif — ask 另一个 Agent，回执回流到发起会话（P2 拍摄） -->
+<p align="center"><img src="docs/images/peer-delegate.gif" width="100%" alt="An agent-to-agent conversation: stacked avatars on the row, the peer in the header"></p>
+<p align="center"><img src="docs/images/theme-light.webp" width="100%" alt="Theme settings, light"></p>
 
 ### Look & feel
 
@@ -136,8 +136,8 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/design/theme.ts` · `frontend/src/design/theme-translators.ts` · `frontend/src/display-prefs.ts` · `frontend/src/badge-prefs.ts` · `frontend/src/ui-prefs-client.ts`
 
-<!-- media: theme.webp — 主题列表 + 一套深色对照（P2 拍摄） -->
-<!-- media: theme-import.gif — 粘贴 VSCode 主题 JSON → 预览 → 保存（P2 拍摄） -->
+<p align="center"><img src="docs/images/theme-dark.webp" width="100%" alt="Theme settings, dark"></p>
+<p align="center"><img src="docs/images/theme-import.gif" width="100%" alt="Theme import: paste a VS Code theme JSON, preview it, save it"></p>
 
 ### Sessions & navigation
 
@@ -158,7 +158,7 @@ What happens inside a turn, and when you can step in.
 
 > Code: `src/fs.ts` · `frontend/src/FileTree.tsx` · `frontend/src/FilePanel.tsx` · `src/media.ts` · `frontend/src/md-cjk.ts`
 
-<!-- media: files.webp — 文件树 + 查看器渲染档（P2 拍摄） -->
+<p align="center"><img src="docs/images/files.webp" width="100%" alt="File tree and the file viewer"></p>
 
 ### Mobile & runtime
 
@@ -169,16 +169,16 @@ What happens inside a turn, and when you can step in.
 
 > Code: `frontend/src/mobile-nav.tsx` · `frontend/public/sw.js` · `frontend/src/version-banner.tsx` · `frontend/src/event-router.ts`
 
-<!-- media: mobile.webp — 手机竖屏会话页（P2 拍摄） -->
-<!-- media: mobile-pwa.gif — 手机：导航 → 会话 → 安装提示（P2 拍摄） -->
+<p align="center"><img src="docs/images/mobile.webp" width="100%" alt="The same conversation on a phone"></p>
+<p align="center"><img src="docs/images/mobile-pwa.gif" width="60%" alt="Mobile: the same conversation on a phone, with its own navigation"></p>
 
 ## Roadmap
 
 Designed, **not implemented**. The screenshots below are mockups, and each carries a "design, not implemented" watermark.
 
-<!-- media: 06-room.webp — 群聊房间（设计稿） -->
-<!-- media: 07-delegate.webp — 一次派给多个 Agent（设计稿） -->
-<!-- media: 08-project.webp — 项目工作台（设计稿） -->
+<p align="center"><img src="docs/images/06-room.webp" width="100%" alt="Design mockup: a group chat room with several agents (not implemented)"></p>
+<p align="center"><img src="docs/images/07-delegate.webp" width="100%" alt="Design mockup: fan out one job to several agents (not implemented)"></p>
+<p align="center"><img src="docs/images/08-project.webp" width="100%" alt="Design mockup: a project workspace page (not implemented)"></p>
 
 | Mockup | What it would do |
 | --- | --- |

@@ -1,0 +1,42 @@
+# annotate：批注。选中一段正文 → 功能条 → 批注 → 选语气「疑问」→ 写一句 → 标上 → 高亮留在原文。
+#
+# 三条必须遵守的做法（每一步都踩过，截图可查）：
+#   1. **等流式彻底结束**再拖选：流式期间每次 delta 都重建正文节点，选区塌缩、功能条立刻关闭；
+#   2. **用真实鼠标拖选一个视口内的段落**：脚本设 range + 假 mouseup 不会让功能条出现；
+#      长容器顶部常在视口外（y=-111），按在负坐标等于按到窗外；
+#   3. 提示：演示家目录的「选中即复制」会被 run.mjs 关掉，否则松手先复制、功能条没有「批注」。
+name: annotate
+mode: video
+viewport: { width: 1000, height: 625 }
+size: { width: 1000, height: 625 }
+path: /
+outputs:
+  - { type: gif, file: annotate.gif, fps: 10, width: 1000, colors: 128 }
+steps:
+  - waitFor: '[data-testid="groups-panel"]'
+  - pause: 0.6
+  - click: 'text=Architect'
+  - pause: 0.5
+  - click: '[aria-label="在 lifelab 新建会话"]'
+  - pause: 0.5
+  - click: '[data-testid="composer"]'
+  - pause: 0.2
+  - type: { into: '[data-testid="composer"]', text: "支付状态机有 11 个态，能收敛成 4 个吗？", delayMs: 24 }
+  - press: Enter
+  - pause: 1.0
+  - waitFor: '[data-testid="message-text"]'
+  - pause: 4.6
+  - selectText: { selector: '[data-testid="message-text"]', chars: 20 }
+  - pause: 0.9
+  - click: 'button:has-text("批注")'
+  - pause: 0.9
+  - click: 'button:has-text("疑问")'
+  - pause: 0.6
+  - click: 'textarea'
+  - pause: 0.2
+  - type: { into: 'textarea', text: "37 处读 status 是全仓还是只 payment？", delayMs: 18 }
+  - pause: 0.5
+  - click: 'button:has-text("标上")'
+  - pause: 1.4
+  - move: { x: 700, y: 300, steps: 10 }
+  - pause: 1.2

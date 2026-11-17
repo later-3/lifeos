@@ -15,6 +15,7 @@ import {
 } from "./review-drafts";
 import { AgentAvatar, avatarTone } from "./agent-avatar";
 import { Markdown } from "./message-markdown";
+import { rewriteImageSrc, type RawUrlContext } from "./review-image-src";
 import { MARKS } from "./marks";
 import { placePopover } from "./design/popover";
 import { createHttpStore, createHttpViewedStore, hasLocalOnlyComments, type CommentStore, type ReviewComment, type ViewedRecordWire } from "./review-comment-store";
@@ -406,6 +407,24 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
     [visibleHunks, expandMode],
   );
 
+  /**
+   * md 渲染档里的图片改写器。
+   *
+   * 为什么放在 FileCard 里：相对图片的基准是**当前文件自己的路径**，
+   * 而 `/api/review/raw` 需要 taskDir + source 才能定位到哪个仓。
+   * 这两样都是本组件已有的 props，不必再往上抛。
+   */
+  const rewriteSrcOf = useCallback((filePath: string) => (markdown: string): string => {
+    const context: RawUrlContext = {
+      filePath,
+      urlOf: (repoRelative) => {
+        const query = new URLSearchParams({ taskDir, source: sourceKind, path: repoRelative, side: "new" });
+        return `/api/review/raw?${query.toString()}`;
+      },
+    };
+    return rewriteImageSrc(markdown, context);
+  }, [taskDir, sourceKind]);
+
   return (
     <div className="overflow-hidden rounded-panel bg-surface ring-1 ring-line" data-review-file={file.path}>
       <ClickableRow onClick={onToggle} aria-expanded={open} className="h-11 gap-2 px-3">
@@ -500,7 +519,10 @@ function FileCard({ file, body, onForceRender, onFileMount, viewedStatus, onTogg
       {/* G15：md 渲染态（第三档）——只对 doc 文件、且只在这个档位生效 */}
       {open && body !== "placeholder" && renderAs === "md-preview" && file.kind === "doc" ? (
         <div className="border-t border-line" data-review-md-diff={file.path}>
-          <MarkdownPreviewDiff blocks={buildRenderBlocks(buildPreviewBlocks(file.hunks.flatMap((hunk) => hunk.lines)))} />
+          <MarkdownPreviewDiff
+            blocks={buildRenderBlocks(buildPreviewBlocks(file.hunks.flatMap((hunk) => hunk.lines)))}
+            rewriteSrc={rewriteSrcOf(file.path)}
+          />
         </div>
       ) : null}
       {open && body !== "placeholder" && (
@@ -1019,7 +1041,7 @@ function previewBlockClass(type: PreviewBlockType): string {
  *
  * 安全：走 `renderMarkdown`（marked → DOMPurify），与消息正文同一条链路，**HTML 不透传**。
  */
-function MarkdownPreviewDiff({ blocks }: { blocks: readonly PreviewBlock[] }) {
+function MarkdownPreviewDiff({ blocks, rewriteSrc }: { blocks: readonly PreviewBlock[]; rewriteSrc?: (markdown: string) => string }) {
   return (
     <div className="py-2" data-review-md-preview>
       {blocks.map((block, index) => {
@@ -1043,7 +1065,7 @@ function MarkdownPreviewDiff({ blocks }: { blocks: readonly PreviewBlock[] }) {
           <div key={`md-block-${index}`} className={`mx-2 my-1 pl-2 ${previewBlockClass(block.type)}`} data-review-md-block={block.type}>
             {plain
               ? <pre className="whitespace-pre-wrap break-words font-mono text-micro text-ink-700">{text}</pre>
-              : <div className="md-body text-micro"><Markdown text={text} /></div>}
+              : <div className="md-body text-micro"><Markdown text={rewriteSrc === undefined ? text : rewriteSrc(text)} /></div>}
           </div>
         );
       })}
