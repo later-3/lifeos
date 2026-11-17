@@ -25,6 +25,7 @@ import {
 } from "./agent-host.ts";
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { loadAttachmentForServe } from "./attachment-serve.ts";
+import { referencedImagePaths } from "./attachment-references.ts";
 import { bindProject, listAgentProjects, projectOverview, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import {
@@ -1458,7 +1459,14 @@ app.use(async (c, next) => {
    */
   app.get("/api/attachment", async (c) => {
     const raw = c.req.query("path");
-    const result = await loadAttachmentForServe(raw);
+    /*
+     * 放行判据 = "在已注册根内" **或** "被某个会话的引用行提到过"（P3 修正）。
+     *
+     * 只按根判会误杀工具 `read` 读过的图（实测：73 张里 0 张在根内 → 全 403 → 界面碎图）。
+     * 被引用过的路径本来就属于用户自己的会话数据；扫描结果按 mtime 签名缓存。
+     */
+    const referenced = await referencedImagePaths(resolveHome());
+    const result = await loadAttachmentForServe(raw, referenced);
     if ("code" in result) {
       log.warn("http", "attachment", "图片取回被拒", { details: { code: result.code } });
       const error = problem(result.code, result.message, result.status);

@@ -115,3 +115,39 @@ test("活性验证：去掉根判定这条闸，越界用例必须变成'通过'
   assert.equal(naive("/etc/passwd.png"), true);          // 无闸会放行
   assert.equal(withinRoots("/etc/passwd.png", ["/root"]), false);   // 有闸拒绝
 });
+
+// ── 被会话引用过的路径也放行（Task 0016 · P3 修正）────────────────────────────
+//
+// 实测（用户真实家目录，1702 条消息的会话）：73 张工具图里 **0 张**在 readRoots() 的根内
+// —— 它们来自 `/tmp/map3d.png`、绑定项目里的 `data/s2_recent.jpg`，都是工具 read 读过的真实文件。
+// 只按根判 → 全 403 → 界面碎图。判据改成"在根内 **或** 被某个会话的引用行提到过"。
+
+test("isReferenced：只在集合里时才放行（路径要 resolve 后比较）", async () => {
+  const { isReferenced } = await import("../src/attachment-serve.ts");
+  const referenced = new Set(["/tmp/a/x.png"]);
+  assert.equal(isReferenced("/tmp/a/x.png", referenced), true);
+  assert.equal(isReferenced("/tmp/a/../a/x.png", referenced), true, "未 resolve 的等价路径也要命中");
+  assert.equal(isReferenced("/tmp/a/y.png", referenced), false);
+});
+
+test("resolveServeTarget：被引用但不在根内 → 允许（这是修碎图的那条）", async () => {
+  const root = await fixture();
+  const outside = await mkdtemp(join(tmpdir(), "lifeos-outside-"));
+  await writeFile(join(outside, "shot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const path = join(outside, "shot.png");
+  // 只按根判：403
+  const denied = await resolveServeTarget(path, [root]);
+  assert.ok("code" in denied);
+  assert.equal(denied.status, 403);
+  // 带引用集合：允许
+  const allowed = await resolveServeTarget(path, [root], new Set([path]));
+  assert.ok(!("code" in allowed));
+  assert.equal(allowed.mimeType, "image/png");
+});
+
+test("resolveServeTarget：既不在根内又没被引用 → 仍然 403（不是放开任意路径）", async () => {
+  const root = await fixture();
+  const result = await resolveServeTarget("/etc/hosts.png", [root], new Set(["/tmp/other.png"]));
+  assert.ok("code" in result);
+  assert.equal(result.status, 403);
+});

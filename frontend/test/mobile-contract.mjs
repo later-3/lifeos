@@ -454,6 +454,66 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 引用化的图片：能取回的显示，取不回的给文案（Task 0016 · P3 补）────────────
+/*
+ * 引用化把图片变成**独立请求**，于是"文件还在不在"从"接口一定有 base64"变成"可能 404"。
+ * 实测（用户真实家目录，1702 条消息）：67 张工具图里 **64 张的原始文件已被 /tmp 清理**，
+ * 不给文案时界面就是一堆碎图 —— 用户分不清"网络慢"和"图没了"。
+ *
+ * 用 route mock 造两张：一张 200、一张 404，断言各走各的分支。
+ */
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  await page.route("**/api/attachment**", async (route) => {
+    const url = new URL(route.request().url());
+    const target = url.searchParams.get("path") ?? "";
+    if (target.includes("gone")) {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { code: "attachment_not_found", message: "图片不在了" } }) });
+      return;
+    }
+    // 1×1 透明 PNG
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==", "base64");
+    await route.fulfill({ status: 200, contentType: "image/png", body: png });
+  });
+  // 会话详情只用一组工具图：一张在、一张不在
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+$/, async (route) => {
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        sessionId: "fx-img", meta: { thinkingLevel: "off", running: false, context: null },
+        messages: [{
+          id: "m1", role: "assistant", text: "", blocks: [
+            { type: "toolCall", id: "c1", name: "read", arguments: {}, result: "ok",
+              images: [
+                { url: "/api/attachment?path=%2Ftmp%2Fok.png", mimeType: "image/png" },
+                { url: "/api/attachment?path=%2Ftmp%2Fgone.png", mimeType: "image/png" },
+              ] },
+          ],
+        }],
+      }),
+    });
+  });
+  await page.goto(`${APP_URL}/?agent=lifeosagent&project=workspace&session=fx-img`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(2000);
+  // 工具块默认在过程条里 → 展开
+  const expand = page.getByText("查看过程").first();
+  if (await expand.count() > 0) { await expand.click({ force: true }); await page.waitForTimeout(1200); }
+  const images = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('[data-testid="tool-image"] img')];
+    return {
+      total: imgs.length,
+      loaded: imgs.filter((img) => img.complete && img.naturalWidth > 0).length,
+      failureNotes: document.querySelectorAll('[data-testid="image-failure"]').length,
+      noteText: document.querySelector('[data-testid="image-failure"]')?.textContent?.trim() ?? null,
+    };
+  });
+  check("[390] 引用图：能取回的显示出来", images.loaded >= 1, JSON.stringify(images));
+  check("[390] 引用图：取不回的给一行说明（不是碎图）", images.failureNotes >= 1, JSON.stringify(images));
+  check("[390] 说明文案说清「图不在了」", (images.noteText ?? "").includes("不在了"), String(images.noteText));
+  await context.close();
+}
+
 // ── 会话加载期不显示空态（Task 0016 · P6-S4）────────────────────────────────
 /*
  * P1-S1 修的那个缺陷：切到长会话时中间 1.4 秒显示「发一条消息开始对话」，

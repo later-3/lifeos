@@ -416,7 +416,8 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
             if (src === undefined) return null;
             return (
               <ImageTrigger key={index} src={src}
-                alt={`工具读到的图片 ${index + 1}`} testId="tool-image-trigger">
+                alt={`工具读到的图片 ${index + 1}`} testId="tool-image-trigger"
+                failureText="这张图已经不在了（原始文件被清理或移动）">
                 {/* loading="lazy"：引用化之后图片是独立请求，进视口才拉——这正是 P3 的收益来源之一 */}
                 <img src={src} alt={`工具读到的图片 ${index + 1}`} loading="lazy" decoding="async"
                   data-shot-mask="tool-image"
@@ -450,7 +451,8 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
   if (src === undefined) return null;
   return (
     <ImageTrigger src={src} alt="用户发送的图片"
-      testId="message-image" className="mt-1 inline-block">
+      testId="message-image" className="mt-1 inline-block"
+      failureText="这张图已经不在了（原始文件被清理或移动）">
       <img src={src} alt="用户发送的图片" loading="lazy" decoding="async"
         data-shot-mask="message-image"
         className="max-h-64 max-w-full rounded border border-line object-contain" />

@@ -43,6 +43,27 @@ export function mimeTypeOfImagePath(path: string): string | undefined {
 
 export type ServeError = { code: string; message: string; status: 400 | 403 | 404 | 413 };
 
+/**
+ * 会话历史里"被引用过的路径"也算合法来源（Task 0016 · P3 修正）。
+ *
+ * 为什么必须有这一条（实测抓到的真问题）：工具的 `read` 可以读**任意路径**——
+ * `/tmp/map3d.png`、绑定项目里的 `data/s2_recent.jpg`。那 73 张图里
+ * **0 张**在 `readRoots()` 的根内（家目录 + fs 注册根），于是全部 403，
+ * 界面上就是一堆碎图。而"能显示"恰恰是引用化的前提：
+ * 省了传输却看不到图，等于把问题从"慢"换成"坏"。
+ *
+ * 判据不是"放宽成任意路径"，而是"**这条路径确实被某个会话引用过**"：
+ * 由调用方（端点）先扫一遍会话引用行，把集合传进来。这样：
+ *  - 攻击面只有"会话里出现过的路径"（本来就属于用户自己的数据）；
+ *  - 与 `codex attachment-store` 的 `is_resolvable` 同思路：引用在、文件在，就能取。
+ */
+export type ReferencedPaths = ReadonlySet<string>;
+
+/** 检查一条路径是否被某个会话引用过（纯函数，便于单测）。 */
+export function isReferenced(path: string, referenced: ReferencedPaths): boolean {
+  return referenced.has(resolve(path));
+}
+
 /** 越权检查：resolve 之后必须等于某个根或在其前缀内（与 `fs.ts` 的 `guardWithinRoots` 同一条规则）。 */
 export function withinRoots(target: string, roots: readonly string[]): boolean {
   const absolute = resolve(target);
@@ -62,6 +83,7 @@ export function withinRoots(target: string, roots: readonly string[]): boolean {
 export async function resolveServeTarget(
   rawPath: string | undefined,
   roots: readonly string[],
+  referenced?: ReferencedPaths,
 ): Promise<{ path: string; mimeType: string } | ServeError> {
   if (rawPath === undefined || rawPath.trim() === "") {
     return { code: "invalid_request", message: "需要 path 参数", status: 400 };
@@ -74,8 +96,9 @@ export async function resolveServeTarget(
   if (mimeType === undefined) {
     return { code: "not_an_image", message: "只支持图片（png/jpg/webp/gif/bmp/avif）", status: 400 };
   }
-  if (!withinRoots(rawPath, roots)) {
-    return { code: "path_not_allowed", message: "路径不在已注册的根内", status: 403 };
+  // 两道闸任一通过即可：在已注册根内（文件浏览器那套）**或**被某个会话引用过（工具 read 的历史图）。
+  if (!withinRoots(rawPath, roots) && (referenced === undefined || !isReferenced(rawPath, referenced))) {
+    return { code: "path_not_allowed", message: "路径不在已注册的根内，也不在任何会话的引用行里", status: 403 };
   }
   const info = await stat(rawPath).catch(() => undefined);
   if (info === undefined || !info.isFile()) {
@@ -95,9 +118,10 @@ export async function readServeBytes(path: string): Promise<Buffer | undefined> 
 /** 供端点用的一步式：判定 + 读取。 */
 export async function loadAttachmentForServe(
   rawPath: string | undefined,
+  referenced?: ReferencedPaths,
 ): Promise<{ bytes: Buffer; mimeType: string; path: string; mtimeMs: number } | ServeError> {
   const roots = await readRoots();
-  const target = await resolveServeTarget(rawPath, roots);
+  const target = await resolveServeTarget(rawPath, roots, referenced);
   if ("code" in target) return target;
   const bytes = await readServeBytes(target.path);
   if (bytes === undefined) return { code: "attachment_not_found", message: "图片读取失败", status: 404 };

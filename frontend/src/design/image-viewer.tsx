@@ -149,25 +149,52 @@ export function ImageViewer({ src, alt, onClose }: { src: string; alt: string; o
  * 图片触发器：谁要"点了能放大"，就把它包起来。
  * 触发器是 button 而不是 <a>（pi-web 同款）：不开新页面、有 aria-haspopup、有焦点环。
  */
-export function ImageTrigger({ src, alt, className, children, testId }: {
+export function ImageTrigger({ src, alt, className, children, testId, failureText }: {
   src: string; alt: string; className?: string; children: React.ReactNode; testId?: string;
+  /**
+   * 加载失败时的替代文案（Task 0016 · P3 修正）。
+   *
+   * 为什么必须有：引用化之后图片是**独立请求**，而引用行里的路径可能在磁盘上已经不在了
+   * （实测：用户那个 1702 条消息的会话里 67 张工具图，**64 张的文件已被 /tmp 清理**）。
+   * 不给文案的话界面就是一堆碎图图标 —— 用户分不清"网络慢"和"图没了"。
+   * 传了就渲染成一行说明（`role="status"`，读屏也能听到）；不传保持原行为。
+   */
+  failureText?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  /*
+   * 失败判定：监听子 `<img>` 的 `error`。用捕获阶段（`onErrorCapture`）而不是给每个
+   * 调用点加 `onError` —— 图片元素由调用方提供（尺寸/圆角各不相同），
+   * 让 Trigger 统一负责"加载失败怎么办"，调用点只写尺寸（规范 2.3：同类第二次出现 → 容器负责）。
+   */
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label={`放大查看：${alt}`}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title="点击放大"
-        data-testid={testId}
-        className={`block cursor-zoom-in border-0 bg-transparent p-0 text-inherit ${className ?? ""}`}
-      >
-        {children}
-      </button>
-      {open && <ImageViewer src={src} alt={alt} onClose={() => setOpen(false)} />}
+      <span className="contents"
+        onErrorCapture={() => setFailed(true)}
+        onLoadCapture={() => setFailed(false)}>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label={`放大查看：${alt}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          title="点击放大"
+          disabled={failed && failureText !== undefined}
+          data-testid={testId}
+          data-image-failed={failed ? "true" : undefined}
+          className={`block cursor-zoom-in border-0 bg-transparent p-0 text-inherit disabled:cursor-default ${className ?? ""}`}
+        >
+          {children}
+        </button>
+        {failed && failureText !== undefined && (
+          <span role="status" data-testid="image-failure"
+            className="block rounded border border-line bg-sunken px-2 py-1 text-micro text-ink-500">
+            {failureText}
+          </span>
+        )}
+      </span>
+      {open && !failed && <ImageViewer src={src} alt={alt} onClose={() => setOpen(false)} />}
     </>
   );
 }
