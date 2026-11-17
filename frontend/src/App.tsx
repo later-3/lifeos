@@ -2159,79 +2159,79 @@ export default function App() {
      */
     void (async () => {
       try {
-      const params = new URLSearchParams(window.location.search);
-      const wantAgent = params.get("agent");
-      const wantProject = params.get("project");
-      const wantSession = params.get("session");
-      /*
-       * 启动取数（S5）：**后端不可用不能白屏**。
-       * 之前用 `data.items.find(...)` 直取——500 时 body 是 `{error}`，`items` 是 undefined，
-       * 整个 App 抛 TypeError 白屏（实测：打桩全 500 → rootHTML=0）。
-       * 现在的分级：
-       * ① 成功 → 正常流程（并写缓存）；
-       * ② 失败但有缓存 → 用缓存渲染 + 顶部提示"后端不可用（显示的是上次数据）"；
-       * ③ 失败且无缓存 → 骨架/空态 + 错误出口（不白屏）。
-       */
-      let items: Agent[] = [];
-      let offline = false;
-      try {
-        const response = await fetch("/api/agents");
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = (await response.json()) as { items?: Agent[] };
-        items = Array.isArray(payload.items) ? payload.items : [];
-      } catch {
-        offline = true;
-        items = JSON.parse(localStorage.getItem("lifeos.agents") ?? "[]") as Agent[];
-      }
-      if (offline) setTailError("后端暂时不可用" + (items.length > 0 ? "，当前显示的是上次的数据" : "") + "。检查服务是否在运行，恢复后刷新即可。");
-      setAgents(items);
-      /*
-       * 助手列"已确认"（Task 0019）：成功或失败都算——失败时列表是缓存，也已经是终态
-       * （上面已经给了"后端不可用"的出口）。这样骨架只出现在"真的还没有任何数据"那一瞬。
-       */
-      setAgentsReady(true);
-      if (!offline) { try { localStorage.setItem("lifeos.agents", JSON.stringify(items)); } catch { /* 隐私模式 */ } }
-      const found = items.find((item) => item.id === wantAgent)
-        ?? items.find((item) => item.id === readLast(LAST_AGENT))
-        ?? items[0];
-      if (found === undefined) { setGroupsReady(true); setResolving(false); return; }   // 一个 Agent 都没有：会话列就是真空态（Task 0019）
-      setAgent(found);
-      ctx.current = { agentId: found.id };
-      void refreshAgentDefaultModel(found.id);
-      // S5：缓存优先——先渲染上次的列表（零白屏），API 回来立刻覆盖
-      // 缓存只影响"画什么"（listSurfaceOf 内容优先），不冒充"服务端已确认"（Task 0019）
-      const cachedGroups = readGroupsCache(found.id);
-      if (cachedGroups !== undefined) setGroups(cachedGroups);
-      const fetched = await fetchGroups(found.id);
-      // 拉回空数组且我们有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：
-      // 保留缓存不覆盖，否则"后端挂了"会变成"项目全没了"这种更吓人的假象
-      const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
-      setGroups(groups);
-      setGroupsReady(true);            // 会话列已确认（失败也在此收尾，否则骨架会一直挂着）
-      if (fetched.length > 0) rememberGroups(found.id, groups);
-      /*
-       * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
-       * 冷启动时列表里已有 running/unread 的会话不出数字，要等一次 `row` 补丁或重连快照才有。
-       * 缓存命中也播种：缓存里的 activity 可能与服务端不同步，但随后的 `fetched` 会覆盖它。
-       */
-      syncSlotsFromRows(found.id, groups);
-      // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
-      // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
-      const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
-      const remembered = readLast(lastSessionKey(found.id));
-      const candidates = (wantGroup === undefined
-        ? [wantSession, remembered]
-        : [wantSession, ...wantGroup.sessions.map((session) => session.sessionId)]
-      ).filter((value): value is string => value !== null && value !== undefined);
-      const group = wantGroup
-        ?? groups.find((g) => g.sessions.some((session) => candidates.includes(session.sessionId)))
-        ?? groups.find((g) => g.project.isDefault) ?? groups[0];
-      setSelectedProjectId(group?.project.id);
-      // URL 给了项目、没给会话 = 草稿（点过“新建会话”的状态）：不打开任何会话（2026-10-29 决策）。
-      // 完全没有参数时仍走下面的“接着上次会话”，不改打开应用的习惯。
-      if (wantGroup !== undefined && wantSession === null) { setResolving(false); return; }
-      const target = candidates.find((sid) => group?.sessions.some((session) => session.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
-      if (target !== undefined) await openSession(found, target);
+        const params = new URLSearchParams(window.location.search);
+        const wantAgent = params.get("agent");
+        const wantProject = params.get("project");
+        const wantSession = params.get("session");
+        /*
+         * 启动取数（S5）：**后端不可用不能白屏**。
+         * 之前用 `data.items.find(...)` 直取——500 时 body 是 `{error}`，`items` 是 undefined，
+         * 整个 App 抛 TypeError 白屏（实测：打桩全 500 → rootHTML=0）。
+         * 现在的分级：
+         * ① 成功 → 正常流程（并写缓存）；
+         * ② 失败但有缓存 → 用缓存渲染 + 顶部提示"后端不可用（显示的是上次数据）"；
+         * ③ 失败且无缓存 → 骨架/空态 + 错误出口（不白屏）。
+         */
+        let items: Agent[] = [];
+        let offline = false;
+        try {
+          const response = await fetch("/api/agents");
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = (await response.json()) as { items?: Agent[] };
+          items = Array.isArray(payload.items) ? payload.items : [];
+        } catch {
+          offline = true;
+          items = JSON.parse(localStorage.getItem("lifeos.agents") ?? "[]") as Agent[];
+        }
+        if (offline) setTailError("后端暂时不可用" + (items.length > 0 ? "，当前显示的是上次的数据" : "") + "。检查服务是否在运行，恢复后刷新即可。");
+        setAgents(items);
+        /*
+         * 助手列"已确认"（Task 0019）：成功或失败都算——失败时列表是缓存，也已经是终态
+         * （上面已经给了"后端不可用"的出口）。这样骨架只出现在"真的还没有任何数据"那一瞬。
+         */
+        setAgentsReady(true);
+        if (!offline) { try { localStorage.setItem("lifeos.agents", JSON.stringify(items)); } catch { /* 隐私模式 */ } }
+        const found = items.find((item) => item.id === wantAgent)
+          ?? items.find((item) => item.id === readLast(LAST_AGENT))
+          ?? items[0];
+        if (found === undefined) { setGroupsReady(true); setResolving(false); return; }   // 一个 Agent 都没有：会话列就是真空态（Task 0019）
+        setAgent(found);
+        ctx.current = { agentId: found.id };
+        void refreshAgentDefaultModel(found.id);
+        // S5：缓存优先——先渲染上次的列表（零白屏），API 回来立刻覆盖
+        // 缓存只影响"画什么"（listSurfaceOf 内容优先），不冒充"服务端已确认"（Task 0019）
+        const cachedGroups = readGroupsCache(found.id);
+        if (cachedGroups !== undefined) setGroups(cachedGroups);
+        const fetched = await fetchGroups(found.id);
+        // 拉回空数组且我们有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：
+        // 保留缓存不覆盖，否则"后端挂了"会变成"项目全没了"这种更吓人的假象
+        const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
+        setGroups(groups);
+        setGroupsReady(true);            // 会话列已确认（失败也在此收尾，否则骨架会一直挂着）
+        if (fetched.length > 0) rememberGroups(found.id, groups);
+        /*
+         * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
+         * 冷启动时列表里已有 running/unread 的会话不出数字，要等一次 `row` 补丁或重连快照才有。
+         * 缓存命中也播种：缓存里的 activity 可能与服务端不同步，但随后的 `fetched` 会覆盖它。
+         */
+        syncSlotsFromRows(found.id, groups);
+        // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
+        // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
+        const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
+        const remembered = readLast(lastSessionKey(found.id));
+        const candidates = (wantGroup === undefined
+          ? [wantSession, remembered]
+          : [wantSession, ...wantGroup.sessions.map((session) => session.sessionId)]
+        ).filter((value): value is string => value !== null && value !== undefined);
+        const group = wantGroup
+          ?? groups.find((g) => g.sessions.some((session) => candidates.includes(session.sessionId)))
+          ?? groups.find((g) => g.project.isDefault) ?? groups[0];
+        setSelectedProjectId(group?.project.id);
+        // URL 给了项目、没给会话 = 草稿（点过“新建会话”的状态）：不打开任何会话（2026-10-29 决策）。
+        // 完全没有参数时仍走下面的“接着上次会话”，不改打开应用的习惯。
+        if (wantGroup !== undefined && wantSession === null) { setResolving(false); return; }
+        const target = candidates.find((sid) => group?.sessions.some((session) => session.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
+        if (target !== undefined) await openSession(found, target);
       } finally {
         setResolving(false);          // 会话解析收尾：此后"没有会话"才能被当成草稿态（Task 0019）
         setGroupsReady(true);         // 同一条纪律：会话列不能因为一次异常永久停在骨架
