@@ -541,6 +541,13 @@ export default function App() {
    * 不用"messages 为空就是空会话"这种值比较猜语义（规范 2.1）。
    */
   const [sessionLoading, setSessionLoading] = useState(false);
+  /**
+   * 会话消息缓存（Task 0016 · B1）。
+   *
+   * 命中就先用、后台校验；**流式期间不用缓存也不写缓存**（判据 `cacheableOf`）。
+   * 三条硬规则与参考取舍见 `message-cache.ts` 头注。
+   */
+  const messageCache = useRef(createMessageCache());
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
   const anno = useAnnotations();
   /**
@@ -1482,14 +1489,37 @@ export default function App() {
    */
   const LOAD_TAIL_COUNT = 200;
 
+  type SessionPayload = {
+    messages: Message[]; meta?: SessionMeta; integrity?: { orphanParents?: number };
+    /** 全会话条数（分页元信息，P3-S3）：用于判断"上面还有更早的" */
+    total?: number;
+    /** 这次返回的第一条在全会话里的下标 */
+    tailStart?: number;
+  };
+
+  /** 只做网络取数（不碰任何 React 状态）—— 缓存命中时它变成后台刷新。 */
+  async function fetchSessionPayload(id: string, sid: string): Promise<SessionPayload> {
+    return await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}`)).json() as SessionPayload;
+  }
+
   async function loadMessages(id: string, sid: string) {
-    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}`)).json() as {
-      messages: Message[]; meta?: SessionMeta; integrity?: { orphanParents?: number };
-      /** 全会话条数（分页元信息，P3-S3）：用于判断"上面还有更早的" */
-      total?: number;
-      /** 这次返回的第一条在全会话里的下标 */
-      tailStart?: number;
-    };
+    /*
+     * 缓存优先（Task 0016 · B1）：命中就**先用**，再后台刷新。
+     *
+     * 参考：LibreChat `data-provider/Messages/queries.ts:270-274`（命中即不重取）+
+     * lobe-chat `transcript.ts:40-46`（流式期间 skipFetch，不用陈旧快照盖住内存行）。
+     * 我们两样都做：命中 → 立刻用（0 往返），然后**仍然**后台取一次并覆盖（LibreChat 没有这一步，
+     * 所以它的缓存永不到期；我们靠 TTL + 这次刷新兜住"别处改了"）。
+     */
+    const cached = messageCache.current.get(id, sid);
+    if (cached !== undefined) {
+      // 先用缓存渲染：不显示骨架（这就是收益来源——退出再进入是瞬间的）
+      setMessages(cached.messages);
+      if (cached.meta !== undefined) setMeta(cached.meta as SessionMeta);
+      followTail.current = true;
+      setAtBottom(true);
+    }
+    const data = await fetchSessionPayload(id, sid);
     // 会话文件引用断裂（C117）：消息可能"消失"，明确告诉用户，不要静默
     if ((data.integrity?.orphanParents ?? 0) > 0) {
       toast(`会话文件存在断裂分支（${data.integrity?.orphanParents} 处），部分消息可能不显示；已记录日志`, "error");
@@ -1529,6 +1559,22 @@ export default function App() {
       })
       .catch(() => { /* 拉不到就当没有批注：不阻塞会话打开 */ });
     if (data.meta !== undefined) setMeta(data.meta);
+    /*
+     * 写缓存：**正在跑的会话不写**（`cacheableOf`）。
+     * 理由：流式内容一旦进缓存，切回来看到的是"半句话"，`meta.running` 也是旧的。
+     * 参考 lobe-chat `transcript.ts:40-46` 的 skipFetch 同一条判据。
+     */
+    if (cacheableOf(data.meta)) {
+      messageCache.current.set(id, sid, {
+        messages: data.messages ?? [],
+        ...(data.meta !== undefined ? { meta: data.meta } : {}),
+        ...(data.total !== undefined ? { total: data.total } : {}),
+        ...(data.tailStart !== undefined ? { tailStart: data.tailStart } : {}),
+      });
+    } else {
+      // 会话在跑：确保旧缓存不会留在这里被下一次误用
+      messageCache.current.invalidate(id, sid);
+    }
     return data;
   }
 
@@ -1673,7 +1719,13 @@ export default function App() {
     resetChatState();
     setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
-    setSessionLoading(true);              // P1-S1：与 setMessages([]) 同一批渲染，中间不落空态
+    /*
+     * 有缓存就不显示骨架（B1 的收益就在这里）：否则"先用缓存渲染"会被骨架盖住，
+     * 用户看到的仍然是"加载中"。`resetChatState` 刚把 messages 清空，
+     * 缓存里那份马上填回去（同一个 tick 内），所以中间不会闪空态。
+     */
+    const hasCache = messageCache.current.get(a.id, sid) !== undefined;
+    setSessionLoading(!hasCache);
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
     let data: Awaited<ReturnType<typeof loadMessages>>;
     try {
@@ -4624,3 +4676,4 @@ import { AppIcon } from "./design/icons";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";
 import { ListSkeleton, MessageSkeleton } from "./design/skeleton";
 import { viewStateOf } from "./session-view-state";
+import { cacheableOf, createMessageCache } from "./message-cache";

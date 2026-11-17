@@ -454,6 +454,75 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 会话消息缓存（Task 0016 · B1）────────────────────────────────────────────
+/*
+ * 实测背景：三层都没缓存，退出会话再进去要重新下 490 KB（手机 4G ≈ 2.5 s）。
+ *
+ * 这一条用**时间判据**而不是"有没有发请求"：缓存命中后**仍然**会后台刷新
+ * （这是我们相对 LibreChat 的加强——它的缓存永不到期）。所以判据是
+ * "消息出现得比后台请求快得多"，而不是"没有请求"。
+ */
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 300,
+    downloadThroughput: (1.6 * 1024 * 1024) / 8, uploadThroughput: (750 * 1024) / 8,
+  });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+  const navTrigger = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+  if (await navTrigger.count() > 0) {
+    await navTrigger.first().click();
+    await page.waitForTimeout(700);
+    for (let i = 0; i < 3; i += 1) {
+      if ((await page.locator('[data-mobile-level="agents"]').count()) > 0) break;
+      await page.evaluate(() => {
+        const back = [...document.querySelectorAll('[data-testid="mobile-nav"] button')].find((el) => (el.textContent ?? "").includes("返回"));
+        back?.click();
+      });
+      await page.waitForTimeout(400);
+    }
+    await page.locator('[data-mobile-level="agents"] [role="button"]').first().click({ force: true });
+    await page.waitForTimeout(1200);
+    await page.locator('[data-mobile-level="projects"] [role="button"]').first().click({ force: true });
+    await page.waitForTimeout(2000);
+
+    /** 点第 n 个会话 → 消息出现耗时；再退回项目级，供下一次复用。 */
+    const openOnce = async (index) => {
+      const started = Date.now();
+      await page.locator('[data-mobile-level="sessions"] [role="button"]').nth(index).click({ force: true });
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid="message"]').length > 0, { timeout: 30000 }).catch(() => {});
+      const visibleMs = Date.now() - started;
+      await page.waitForTimeout(2500);
+      await page.getByRole("button", { name: "返回项目" }).first().click();
+      await page.waitForTimeout(1200);
+      for (let i = 0; i < 3; i += 1) {
+        if ((await page.locator('[data-mobile-level="projects"]').count()) > 0) break;
+        await page.evaluate(() => {
+          const back = [...document.querySelectorAll('[data-testid="mobile-nav"] button')].find((el) => (el.textContent ?? "").includes("返回"));
+          back?.click();
+        });
+        await page.waitForTimeout(500);
+      }
+      await page.locator('[data-mobile-level="projects"] [role="button"]').first().click({ force: true });
+      await page.waitForTimeout(1800);
+      return visibleMs;
+    };
+
+    const cold = await openOnce(1);
+    const warm = await openOnce(1);
+    // 冷启动要等一次完整往返（300ms 延迟 + 4G 下载）；热启动应当**明显更快**（只等内存）
+    check("[390] 会话缓存：二次打开明显更快", warm < cold / 3, `cold=${cold}ms warm=${warm}ms`);
+    check("[390] 会话缓存：二次打开 < 600ms", warm < 600, `${warm}ms`);
+  }
+  await context.close();
+}
+
 // ── 点助手：立即切级，不等网络（2026-11-17 用户实测）──────────────────────────
 /*
  * 用户原话："点击 agent 到会话页面的时候有时候还是卡，不过这个可能是我没连接 vpn，
@@ -579,63 +648,68 @@ for (const width of widths) {
 // ── 会话加载期不显示空态（Task 0016 · P6-S4）────────────────────────────────
 /*
  * P1-S1 修的那个缺陷：切到长会话时中间 1.4 秒显示「发一条消息开始对话」，
- * 用户以为对话丢了。纯函数侧已有 `viewStateOf` 穷举（`test/session-view-state.test.mjs`），
- * 这里补**界面级**一条：把会话详情延迟 1.2 s，断言这段时间里出现骨架、**不出现**空态文案。
+ * 用户以为对话丢了。纯函数侧已有 `viewStateOf` 穷举（`test/session-state.test.mjs`）。
  *
- * 为什么要延迟：本地接口只要十几毫秒，不延迟的话"加载中"这一帧几乎抓不到 ——
- * 断言会变成"偶尔绿"的假绿（规范 2.15：0 个命中/没覆盖到 = 没测）。
+ * 这里补界面级：把会话详情延迟 1.5 s，断言这段时间里有骨架、**没有**空态文案。
+ *
+ * ## 为什么用"全新 context + 冷启动 URL"而不是"点一下会话"
+ *
+ * B1 之后**缓存命中不显示骨架**（那是收益）。而这个用例要求在**同一个 context 里
+ * 连点几次会话**，第二次起就在缓存里了 —— 于是断言会时红时绿。
+ * 冷启动（新 context 直接带 `?session=`）必然走冷路径，判据稳定。
  */
 {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();
-  // 只延迟"会话详情"这一条（排除 /entries 与 /annotations）
-  // 注意 `?tail=` 是新加的查询参数（P3-S3）——正则必须允许它，否则拦不到、延迟不生效
-  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    await route.continue();
-  });
-  await page.goto(APP_URL, { waitUntil: "networkidle" });
-  await page.waitForTimeout(800);
-  // 打开一个有会话的项目 → 点一个会话（触发 openSession 的加载）
-  const navTrigger = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
-  if (await navTrigger.count() > 0) {
-    await navTrigger.first().click();
-    await page.waitForTimeout(600);
-    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
-      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
-      await page.waitForTimeout(900);
+  // 先导航到应用（相对 URL fetch 需要同源），再拿一条真实会话 id（不打开它，只读列表接口）
+  await page.goto(APP_URL, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(300);
+  const sessionId = await page.evaluate(async () => {
+    const agents = await (await fetch("/api/agents")).json();
+    for (const agent of agents.items ?? []) {
+      const projects = await (await fetch(`/api/agents/${agent.id}/projects`)).json();
+      for (const project of projects.items ?? []) {
+        const sessions = await (await fetch(`/api/agents/${agent.id}/projects/${project.id}/sessions`)).json();
+        const hit = (sessions.items ?? [])[0];
+        if (hit !== undefined) return `${agent.id}|${project.id}|${hit.sessionId}`;
+      }
     }
-    const projectRow = page.locator('[data-mobile-level="projects"] [role="button"]').first();
-    if (await projectRow.count() > 0) {
-      await projectRow.click();
-      await page.waitForTimeout(900);
-      await page.evaluate(() => { document.querySelector('[data-mobile-level="sessions"] [role="button"]')?.click(); });
-      // 加载中（1.2 s 的窗口）里采样
-      await page.waitForTimeout(500);
-      const during = await page.evaluate(() => ({
-        skeleton: document.querySelectorAll('[data-skeleton="message"]').length,
-        emptyCopy: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
-      }));
-      await page.waitForTimeout(1500);
-      const after = await page.evaluate(() => ({
-        messages: document.querySelectorAll('[data-testid="message"]').length,
-        skeletonGone: document.querySelectorAll('[data-skeleton="message"]').length === 0,
-        emptyCopy: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
-      }));
-      check("[390] 会话加载期显示骨架", during.skeleton > 0, JSON.stringify(during));
-      check("[390] 会话加载期不显示「开始对话」", during.emptyCopy === false, JSON.stringify(during));
-      /*
-       * 加载完成后：骨架必须消失（这是"加载结束了"的唯一可观察信号）。
-       * **不**断言"一定有消息"——夹具可能点到空会话，那时显示空态是正确的；
-       * 断言它反而会变成"依赖家里恰好有条目多的会话"的脆弱测试。
-       */
-      check("[390] 加载完成后骨架消失", after.skeletonGone === true, JSON.stringify(after));
-    }
+    return null;
+  }).catch(() => null);
+  /*
+   * 取不到会话时必须**显式**说出来（规范 2.15：0 个命中 = 没测）。
+   * 之前写的是 `if (sessionId !== null)` 静默跳过 → 三条断言全不执行，跑起来却是绿的。
+   */
+  check("[390] 冷启动夹具：家目录里至少有一条会话", sessionId !== null, String(sessionId));
+  if (sessionId !== null) {
+    const [agentId, projectId, sid] = sessionId.split("|");
+    // 只延迟"会话详情"这一条（`?tail=` 是 P3-S3 加的，正则必须允许，否则拦不到）
+    await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
+    // 冷启动：直接带 session 打开（App 启动时走 openSession，缓存必然是空的）
+    await page.goto(`${APP_URL}/?agent=${agentId}&project=${projectId}&session=${sid}`, { waitUntil: "domcontentloaded" });
+    // 逐帧采样，取"骨架出现过"与"从头到尾没出现过空态文案"
+    const sampled = await page.evaluate(async () => {
+      const start = performance.now();
+      let sawSkeleton = false;
+      let sawEmptyCopy = false;
+      while (performance.now() - start < 2500) {
+        if (document.querySelectorAll('[data-skeleton="message"]').length > 0) sawSkeleton = true;
+        if ((document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话")) sawEmptyCopy = true;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return { sawSkeleton, sawEmptyCopy, messages: document.querySelectorAll('[data-testid="message"]').length };
+    });
+    check("[390] 冷启动会话加载期出现骨架", sampled.sawSkeleton === true, JSON.stringify(sampled));
+    check("[390] 会话加载期不显示「开始对话」", sampled.sawEmptyCopy === false, JSON.stringify(sampled));
+    check("[390] 加载完成后有消息", sampled.messages > 0, JSON.stringify(sampled));
   }
   await context.close();
 }
 
-// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
+// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
 // 改之前：`App.tsx` 的 `reviewOpen && !isMobile` 让面板**在手机上永不渲染**，
 // 而 `openReview()` 照样执行 → 弹错"右侧放不下检视面板…或把窗口放宽"（手机上永远不成立）。
 // 断言两条：面板真的出现（全屏）／**没有**那句错误提示。
