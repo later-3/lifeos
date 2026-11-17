@@ -42,6 +42,10 @@
       "path": "frontend-development/frontend-spec.md"
     },
     {
+      "id": "readme-maintenance",
+      "path": "readme-maintenance/readme.md"
+    },
+    {
       "id": "review",
       "path": "review/review.md"
     }
