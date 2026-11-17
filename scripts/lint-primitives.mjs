@@ -22,7 +22,6 @@ const ALLOW = new Map([
   ["views/FileTree.tsx", "树节点用原生 button 承载 role=treeitem 的键盘模型，需保留原生行为"],
   ["views/Message.tsx", "折叠开关是内容区的展开/收起锚点，与消息散文同层级"],
   ["views/annotation-card.tsx", "批注卡内的语气选择用原生 button（role=radio 组合）"],
-  ["views/version-banner.tsx", "全局提示条的刷新动作是唯一动作，且必须在任何主题下可见"],
   ["views/FilePanel.tsx", "标签关闭按钮需要 tabIndex=-1 的非顺序焦点语义"],
   ["views/message-actions.tsx", "动作条按钮由 TONE_CLASS 映射动态着色，MicroButton 的 tone 枚举装不下"],
   ["views/mark-bar.tsx", "批注标记条是独立浮层，交互模型与 MicroButton 不同（内含嵌套动作）"],

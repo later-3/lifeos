@@ -73,7 +73,9 @@
 - 在 Cloudflare Access 后面，manifest 链接必须带 `crossorigin="use-credentials"`；否则浏览器不带 Access cookie 抓 manifest，被 302 到登录页，CORS 失败，只能“创建快捷方式”。
 - iOS 用 `apple-touch-icon` + `apple-mobile-web-app-capable`；Android Chrome 用 manifest + SW，满足后应出现“安装应用”，而不是只“创建快捷方式”。
 - 浏览器发出 `beforeinstallprompt` 时，手机导航页footer显示“安装 Life OS”；iOS 没有该事件，走 Safari 分享菜单。
-- service worker 只缓存同源 GET 壳；`/api/*` 与 SSE 永远走网络；更新时清旧 cache。
+- service worker 只缓存同源 GET 壳；`/api/*` 与 SSE 永远走网络。
+- **缓存必须随构建失效**（Task 0013，案例 C216/C217）：缓存 key = `lifeos-shell-<buildId>`（构建期由 vite 插件注入 sw.js；`buildId` 的唯一消费者就是它）；activate 清 `lifeos-shell-*` 中 key 不同的旧缓存。策略三档：navigate = network-first（断线才回缓存）；`/assets/`（文件名带内容 hash，不可变）= cache-first；其余同源 GET = stale-while-revalidate。**禁止** cache-first 作用于内容可变的同 URL 资源，**禁止**把缓存 key 写成常量（曾因此“改了代码界面没变”，用户界面跑旧 bundle 数日）。
+- **不做“有新版本”页内提示**（Task 0024，2026-11-17 用户拍板删除）：长开标签页静默跑旧代码是可接受的代价——本产品的更新方式是「重新构建 + 重启」，提示条的触发条件等同于用户自己刚执行过构建，没有信息量；且它必然遮挡界面、刷新会打断正在跑的回合。用户需要新版本时自己刷新即可。（历史条文要求“必须有新版本感知”，已被本条取代。）
 - 失败时先查：manifest `content-type`、图标尺寸、SW scope、HTTPS/Access 是否拦截。
 
 ## 6. 验收
