@@ -3,7 +3,7 @@ import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
 import { useDialogFocus } from "./design/overlay";
 import { useInstallPrompt } from "./use-mobile";
 import { Button, IconButton, Row } from "./design/ui";
-import { LAYER_CLASS } from "./design/surface";
+import { LAYER_CLASS, SURFACE, surfaceStyle } from "./design/surface";
 import { AppIcon } from "./design/icons";
 
 type AgentLite = { id: string; name: string; avatar?: AgentAvatarSpec };
@@ -200,8 +200,13 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
           const target = sessions.find((item) => item.sessionId === menuFor);
           if (target === undefined) return null;
           return (
+            /* 浮层配方只从 design/surface.ts 取（规范 2.22）：阴影用主题提供的 surface 变量
+               （深浅色各一套），边界用 ring（border 占布局，两个浮层并排会差 1px）。
+               原先这里手写任意值阴影 —— lint:tokens 判违规，而且固定黑投影在深色底下几乎不可见，
+               正是规范 2.22 立条时审计到的那个病。 */
             <div role="menu" aria-label="会话操作" data-testid="session-actions-menu"
-              className="mx-2 my-1 flex flex-col rounded-panel border border-line bg-surface shadow-[var(--shadow-popover,0_8px_24px_rgba(0,0,0,.18))]">
+              className={`mx-2 my-1 flex flex-col ${LAYER_CLASS.popover} ${SURFACE.popover.radius} ring-1 ring-line bg-surface`}
+              style={surfaceStyle("popover")}>
               <button type="button" role="menuitem"
                 className="flex h-11 items-center gap-2 rounded-t-panel px-3 text-left text-body text-ink-900 hover:bg-hover"
                 onClick={() => { setMenuFor(undefined); onRenameSession?.(target.sessionId, target.titleRaw ?? target.title); }}>

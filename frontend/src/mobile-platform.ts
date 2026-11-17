@@ -58,3 +58,80 @@ export const MOBILE_QUERY =
 export function mobileQueryOf(maxWidth = 639): string {
   return `(max-width: ${maxWidth}px), (hover: none) and (pointer: coarse) and (max-height: 500px)`;
 }
+
+/**
+ * 一个触摸手势的判定（P7-S8，用户实测 2026-11-17："左滑右滑直接相当于退出到桌面"）。
+ *
+ * ## 为什么要抽成纯函数
+ *
+ * 缺陷的根因是一行**语义**错误：`touchcancel` 被当成 `touchend` 处理。
+ * 安卓系统返回手势的真实序列是
+ *
+ * ```
+ * touchstart → touchmove → touchcancel（系统接管）→ popstate（浏览器执行返回）
+ * ```
+ *
+ * 我们把 `touchcancel` 注册在 `onEnd`（= 提交），于是**我们 back 一次 + 系统 back 一次 = 退两层**；
+ * 根级时第二层就是退出应用。这个 bug 在真机上才复现（CDP 能造出同样序列，见 `test/mobile-edge-back.test.mjs`），
+ * 所以判据必须能在 Node 里穷举，不能只靠"看着对"。
+ *
+ * ## 两条参考都是「取消 ≠ 提交」
+ *
+ * - open-webui `MobileSwipePanel.svelte:306-310`：`onTouchCancel → cancelSwipe()`，不提交；
+ * - LibreChat `useDrawerSwipe.ts:616-626`：`onTouchCancel` 时若手势已 claimed 则 `settle(gesture, open)`
+ *   ——回到**原状态**，同样不产生"再退一层"。
+ *
+ * 我们两样都不做，所以两边各退一次。**只有 `touchend` 才提交。**
+ */
+
+/** 手势的起点（`touchstart` 时记录）。 */
+export type EdgeGestureOrigin = { x: number; y: number };
+
+/**
+ * 这次触摸是不是"从右边缘开始、且落在可编辑区域之外"。
+ *
+ * 右边缘 24px 的依据：iOS/Android 的系统返回手势都有自己的边缘区（iOS 约 20pt），
+ * 与它重叠的区域我们**不该**再抢——但我们的方向与系统相反（右缘→左），
+ * 所以重叠不会造成"两个都触发"：系统只认左缘。24 是本任务 P2-S2 起就用的值，
+ * 取值理由见 `knowledge/reference-mobile.md`（open-webui `UNSAFE_EDGE = 16` /
+ * LibreChat 抽屉边缘同一量级）；这里不改数值，只改"什么时候算完成"。
+ *
+ * @returns 起点坐标；`undefined` = 这次触摸不归我们管（多指 / 编辑区 / 不在边缘）
+ */
+export function edgeGestureStartsAt(input: {
+  clientX: number;
+  clientY: number;
+  viewportWidth: number;
+  touchCount: number;
+  onEditable: boolean;
+  edge?: number;
+}): EdgeGestureOrigin | undefined {
+  const { clientX, clientY, viewportWidth, touchCount, onEditable } = input;
+  const edge = input.edge ?? 24;
+  if (touchCount !== 1) return undefined;     // 双指 = 缩放，不是返回
+  if (onEditable) return undefined;           // 输入框里拖选不该退层
+  if (clientX < viewportWidth - edge) return undefined;
+  return { x: clientX, y: clientY };
+}
+
+/**
+ * 松手时是否**提交**返回。
+ *
+ * @param end   手势如何结束。`cancel` = 被系统/他人接管 → **不提交**（这是本条的全部要点）。
+ * @param dx    水平位移（负 = 向左）
+ * @param dy    垂直位移
+ * @param commitDistance 触发阈值（默认 48）
+ * @param axisRatio      水平必须压过垂直的倍数（默认 1.2）
+ */
+export function edgeGestureCommits(input: {
+  end: "end" | "cancel";
+  dx: number;
+  dy: number;
+  commitDistance?: number;
+  axisRatio?: number;
+}): boolean {
+  if (input.end === "cancel") return false;
+  const commitDistance = input.commitDistance ?? 48;
+  const axisRatio = input.axisRatio ?? 1.2;
+  return input.dx <= -commitDistance && Math.abs(input.dx) > Math.abs(input.dy) * axisRatio;
+}

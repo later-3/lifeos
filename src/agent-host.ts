@@ -1705,7 +1705,27 @@ type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: u
    *  墙钟耗时要靠它做终点：工具执行时间不在 assistant.durationMs 里（Task 0015 · P4）。 */
   resultAt?: number; };
 type ImageBlock = { type: "image"; data?: string; url?: string; mimeType: string };
-type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock;
+/**
+ * 压缩卡（P7-S9，2026-11-17 用户实测「怎么感觉 session 被截断了呢？Session 历史消息看不到了」）。
+ *
+ * Pi 的压缩语义：最新那条 compaction 的 `firstKeptEntryId` 之前的条目**不再进入模型上下文**，
+ * 用一段摘要代替（pi `session-manager.ts:476-512` 的 `buildContextEntries`）。
+ * 而 `messagesOf()` 读的正是这个**模型上下文投影** → 压缩后那 21 条提问在界面上凭空消失，
+ * 且**没有任何提示**。磁盘上一条都没少：实测该会话文件 2,970 条目、22 条提问全在，
+ * 但投影只剩 186 条消息（其中 user 仅 1 条）。
+ *
+ * 摘要本身就是一条该显示的消息（参考 pi-web `MessageView.tsx:262` → `CompactionMessageView`，
+ * 文案「此处之前的会话历史已压缩为以下摘要」；数据来自 `lib/session-reader.ts:399-410`）。
+ * 放成 block 而不是给 Message 加字段：渲染层按块类型分支已有通路，不必把新字段从 App 透传到 MessageView。
+ */
+type CompactionBlock = {
+  type: "compaction";
+  /** Pi 生成的摘要正文（压缩后代替历史的那段文字）。 */
+  summary: string;
+  /** 压缩前的上下文 token 数（Pi 自己记的 `tokensBefore`）。 */
+  tokensBefore: number;
+};
+type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ImageBlock | CompactionBlock;
 
 /** 会话历史里已有的图片总字节：会话图片预算（不是张数）的计量依据。 */
 export function sessionImageBytesOf(state: SessionState): number {
@@ -1799,7 +1819,25 @@ export function messagesOf(state: SessionState) {
     });
   });
   for (const { message, at, id, speaker } of items) {
-    if (message.role === "user") {
+    /*
+     * 压缩摘要（P7-S9）：投影里它的 role 是 `compactionSummary`（pi `messages.ts:61-67`）。
+     * 此前这里**没有这个分支** → 它落到循环末尾被静默丢弃 → 界面上压缩点之前的历史"无声消失"。
+     * 挂在 `role: "assistant"` 上而不是新造角色：前端 `Message.role` 只有 user/assistant，
+     * 新角色会被 `groupIntoSpans` 当成"某轮的回复"折进过程条，卡片就再也看不见了。
+     * 位置由 pi 决定：`buildContextEntries` 把它放在**第一个**（它前面的一切都已不在上下文里）。
+     */
+    if (message.role === "compactionSummary") {
+      const summaryMessage = message as unknown as { summary?: unknown; tokensBefore?: unknown };
+      out.push({
+        role: "assistant", text: "", id,
+        blocks: [{
+          type: "compaction",
+          summary: typeof summaryMessage.summary === "string" ? summaryMessage.summary : "",
+          tokensBefore: typeof summaryMessage.tokensBefore === "number" ? summaryMessage.tokensBefore : 0,
+        }],
+        ...(at !== undefined ? { at } : {}),
+      });
+    } else if (message.role === "user") {
       const text = textOf(message);
       // 图片必须保留：否则用户发出后刷新就看不到自己发的图（本期需求第 3 条）
       const blocks: MessageBlock[] = [];

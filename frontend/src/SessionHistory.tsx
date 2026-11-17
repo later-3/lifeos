@@ -169,6 +169,8 @@ function buildTurns(entries: SessionEntry[]): Turn[] {
         if (block.type === "thinking") responseBlocks.push({ key, kind: "thinking", label: `思考 #${index + 1}`, body: block.text, tokens: 0 });
         else if (block.type === "text") responseBlocks.push({ key, kind: "text", label: `文本 #${index + 1}`, body: block.text, tokens: 0 });
         else if (block.type === "image") responseBlocks.push({ key, kind: "text", label: `图片 #${index + 1}`, body: `${block.mimeType}（图片不参与文本估算）`, tokens: 0 });
+        // 压缩摘要（Task 0016 · P7-S9）：整块的正文就是摘要文字，按文本估算
+        else if (block.type === "compaction") responseBlocks.push({ key, kind: "text", label: "上下文摘要", body: block.summary, tokens: 0 });
         else responseBlocks.push({
           key, kind: "tool", label: `工具 · ${block.name}`,
           ...(block.result === undefined

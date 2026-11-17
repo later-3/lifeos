@@ -107,7 +107,7 @@ export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
       */}
       <IconButton label={open ? "收起操作" : "更多操作"} size="lg" active={open}
         data-mobile-toolbar-more="true" aria-expanded={open}
-        onClick={onToggle} className="relative z-[1]">
+        onClick={onToggle}>
         <AppIcon name={open ? "x" : "adjustments-horizontal"} size={16} />
       </IconButton>
 
@@ -127,7 +127,7 @@ export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
          */
         <div id="mobile-toolbar-actions" role="toolbar" aria-label="更多操作"
           data-mobile-toolbar-actions="true"
-          className={`absolute inset-y-0 left-11 right-11 z-[1] flex items-stretch overflow-x-auto border-l border-line bg-surface/95 backdrop-blur-sm ${LAYER_CLASS.popover}`}>
+          className={`absolute inset-y-0 left-11 right-11 flex items-stretch overflow-x-auto border-l border-line bg-surface/95 backdrop-blur-sm ${LAYER_CLASS.popover}`}>
           {actions.map((action) => (
             <IconButton key={action.id} label={action.label} size="lg"
               active={action.active === true}

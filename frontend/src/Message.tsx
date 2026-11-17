@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Spinner, ClickableRow } from "./design/ui";
 import { ResponseBar } from "./response-bar";
 import { MarkBar } from "./mark-bar";
-import type { ProcessStats } from "./process-stats";
+import { formatTokens, type ProcessStats } from "./process-stats";
 import { argPreview } from "./stream-blocks";
 import { copyText } from "./clipboard";
 import { copyTextOf } from "./message-text";
@@ -47,6 +47,11 @@ import { AppIcon } from "./design/icons";
  */
 
 export type Block =
+  /**
+   * 压缩卡（Task 0016 · P7-S9）：Pi 把早期历史压成一段摘要，这块就是那张卡。
+   * 后端 `messagesOf()` 把投影里的 `compactionSummary` 消息投影成它。
+   */
+  | { type: "compaction"; summary: string; tokensBefore: number }
   | { type: "text"; text: string }
   /**
    * 图片块（Task 0016 · P3-S1）：`url` = 按需取回，`data` = 老会话内联。
@@ -348,6 +353,45 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
   );
 }
 
+/**
+ * 压缩卡（Task 0016 · P7-S9）。
+ *
+ * 用户 2026-11-17 的原话：「怎么感觉 session 被截断了呢？Session 历史消息看不到了」。
+ * 事实是 Pi 在 17:49 自动压缩了上下文（2,970 条目 / 984,407 token → 186 条 + 一段 16.8k 字摘要），
+ * 而 `messagesOf()` 读的就是**模型上下文投影** —— 压缩掉的那段在界面上不存在，也**没有任何说明**。
+ *
+ * 所以这里要做的不是"把历史还回来"（模型确实已经不看它了，还回去会骗人），
+ * 而是**把压缩这件事说出来**：压缩前多大、摘要写了什么、原文去哪看。
+ * 参考 pi-web 同位置（`components/MessageView.tsx:1352-1368`）：标题 + 说明 + 摘要正文；
+ * 默认**收起**（摘要常常上万字，展开会把后面的对话顶到屏幕外）。
+ *
+ * 历史仍然完整可取：「完整历史」读的是原始条目（`/entries`，从 offset=0 开始），
+ * 那里第一条永远是最早那条提问。所以卡片给出一条可行动的指引，而不是只说"已压缩"。
+ */
+function CompactionBlock({ block }: { block: Extract<Block, { type: "compaction" }> }) {
+  const [open, toggle] = useAutoOpen(false, false, false);
+  const size = formatTokens(block.tokensBefore);
+  return (
+    <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="compaction" data-testid="compaction-card">
+      <ClickableRow onClick={toggle} className="gap-1.5 px-3 py-2 text-meta text-ink-500 hover:text-ink-900">
+        <AppIcon name="history" size={12} />
+        <span className="min-w-0 truncate">
+          此处之前的会话历史已压缩为摘要{size === undefined ? "" : `（压缩前 ≈ ${size} tokens）`}
+        </span>
+        <span className="ml-auto shrink-0 text-micro text-ink-500">{open ? "收起" : "展开"}</span>
+      </ClickableRow>
+      {open && (
+        <div className="border-t border-line px-3 py-2 text-ink-700">
+          <Markdown text={block.summary} className="md-body--compact" />
+          <p className="mt-2 text-micro text-ink-500">
+            更早的原文没有丢：「完整历史」里可以看到压缩之前的每一条消息（含你的提问）。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { type: "toolCall" }>; live: boolean; onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void }) {
   // 工具状态优先看 tool_execution_start/end 维护的 running；旧历史块没有该字段时才回落到段/轮 live。
   const state = toolState({ hasResult: block.result !== undefined, ...(block.isError !== undefined ? { isError: block.isError } : {}), live: block.running === true || (block.running === undefined && live) });
@@ -485,6 +529,7 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
   draftRequest?: { messageId: string; nonce: number } | null;
   onDraftHandled?: () => void;
 }) {
+  if (block.type === "compaction") return <CompactionBlock block={block} />;
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;
