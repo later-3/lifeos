@@ -28,7 +28,7 @@
     "test:ui": "node frontend/test/ui-contract.mjs",
     "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:layer && pnpm test:visual && pnpm test:mobile && pnpm test:quick && pnpm test:stream && pnpm test:pwa",
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm test && pnpm test:ui && pnpm test:layer && pnpm test:boot && pnpm test:visual && pnpm test:mobile && pnpm test:quick && pnpm test:stream && pnpm test:pwa",
     "test:mobile": "node frontend/test/mobile-contract.mjs",
     "test:jump": "node frontend/test/jump-to-latest.mjs",
     "test:draft": "node frontend/test/new-session-draft.mjs",
@@ -53,6 +53,7 @@
     "design:preview": "echo 样板间: cd frontend && npx vite --port 5399 → /dev/design-system.html",
     "lint:primitives": "node scripts/lint-primitives.mjs",
     "test:layer": "node frontend/test/layer-paint.mjs",
+    "test:boot": "node frontend/test/boot-frames.mjs",
     "probe:frontend": "node scripts/frontend-probes.mjs",
     "test:quick": "node frontend/test/new-session-draft.mjs && node frontend/test/jump-to-latest.mjs && node frontend/test/md-render-contract.mjs && node frontend/test/composer-scope.mjs && node frontend/test/layer-paint.mjs"
   },

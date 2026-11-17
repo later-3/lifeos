@@ -11,6 +11,7 @@ import { annotationsMessage, hasSendableAnnotation } from "./api/annotation-mess
 import { addCommentRef, attachableComment, commentRefLabel, commentRefPreview, removeCommentRef, type CommentRef } from "./api/composer-comment-refs";
 import { commentsToText } from "./api/review-comment-copy";
 import { groupAnnotationsByReply } from "./api/anno-groups";
+import { chatSurfaceOf, columnCountOf, listSurfaceOf } from "./api/boot-state";
 import { rebuildHighlightStyles } from "./api/annotations";
 import { useToast } from "./design/toast";
 import { AgentConfigModal } from "./views/AgentConfig";
@@ -420,7 +421,8 @@ export default function App() {
   const {
     agents, setAgents, agent, setAgent, profile, setProfile,
     groups, setGroups, selectedProjectId, setSelectedProjectId,
-    collapsedGroups, setCollapsedGroups, loaded, setLoaded,
+    collapsedGroups, setCollapsedGroups,
+    agentsReady, setAgentsReady, groupsReady, setGroupsReady, resolving, setResolving,
   } = workspace;
   // 显示偏好（两个滑块）：内容宽度 + 字号，落 localStorage
   /*
@@ -441,6 +443,16 @@ export default function App() {
 
   const [sessionId, setSessionId] = useState<string>();
   const [messages, setMessages] = useState<Message[]>([]);
+  /**
+   * 已选中会话、消息还在路上（Task 0019）。
+   *
+   * 为什么需要它：`sessionId` 一被设置，聊天区按旧逻辑就只剩两种判断——
+   * "没会话 = 草稿"，"有会话 = 内容"。而"有会话但消息还没回来"这一瞬间会被画成
+   * 「发一条消息开始对话」—— 一个**结论**（这个会话是空的），用户接着就看到消息填进来。
+   * 只由 `openSession`（切换/打开会话）设置；回合结束后的 `loadMessages` 不设，否则
+   * 每次回复完成都会闪一次骨架。
+   */
+  const [messagesLoading, setMessagesLoading] = useState(false);
   /** 批注（Task 0003 · P2/P3）：独立于消息的一条状态线，不混进 messages。 */
   const anno = useAnnotations();
   /**
@@ -1428,6 +1440,7 @@ export default function App() {
     setBusy(false);
     setMessages([]);
     setMeta(undefined);
+    setMessagesLoading(false);           // 上一份"消息在路上"的结论对新会话不成立（Task 0019）
     setCommentRefs([]);                  // 评论引用来自旧会话的检视上下文，切走即清（Task 0019）
     commentRefsRef.current = [];
     setPalette(undefined);               // 命令面板的可用性按旧会话算，残留会误导（Task 0019）
@@ -1437,8 +1450,15 @@ export default function App() {
     resetChatState();
     setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
+    setMessagesLoading(true);             // 消息没到之前：加载中，不是「空会话」（Task 0019）
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
-    const data = await loadMessages(a.id, sid);
+    let data: Awaited<ReturnType<typeof loadMessages>>;
+    try {
+      data = await loadMessages(a.id, sid);
+    } finally {
+      // 已切走就不动：新会话的 loading 由它自己的 openSession 收尾（C120 同一条纪律）
+      if (current.current === sid) setMessagesLoading(false);
+    }
     // 切回来时这一轮可能还在跑：必须恢复生成态，否则下一条会被当成"新回合"（C120）
     if (current.current === sid && data?.meta?.running === true) {
       busyRef.current = true;
@@ -1466,6 +1486,13 @@ export default function App() {
   }
 
   async function selectAgent(a: Agent) {
+    /*
+     * 切助手 = 一次新的会话解析（Task 0019）：列表要重取，之后还要挑这个助手的默认/最近会话。
+     * 这段期间不写"没有会话"的结论 —— 实测（列表接口慢 500ms）改前会先画
+     * 「发一条消息开始对话」，1.2 秒后消息填进来，同一个位置换了两次说法。
+     * 收尾在函数末尾（成功与异常都要收，否则聊天区会永久停在骨架）。
+     */
+    setResolving(true);
     setAgent(a);
     ctx.current = { agentId: a.id };
     current.current = undefined;
@@ -1483,17 +1510,30 @@ export default function App() {
     // S5 缓存优先：先用上次的列表渲染（零白屏），API 回来立刻覆盖
     const cached = readGroupsCache(a.id);
     if (cached !== undefined) setGroups(cached);
+    // 切 Agent = 会话列的"已确认"作废：新 Agent 的列表还没回来（Task 0019）。
+    // 缓存有内容就先画缓存（listSurfaceOf 内容优先），没有就画骨架——两种都不会撒谎。
+    setGroupsReady(false);
     const fetched = await fetchGroups(a.id);
     // 同启动路径：空结果 + 有缓存 = 接口失败，保留缓存
     const next = fetched.length === 0 && cached !== undefined ? cached : fetched;
     if (fetched.length > 0) rememberGroups(a.id, next);
     setGroups(next);
+    setGroupsReady(true);
     const remembered = readLast(lastSessionKey(a.id));
     const owner = next.find((group) => group.sessions.some((item) => item.sessionId === remembered));
     const home = owner ?? next.find((group) => group.project.isDefault) ?? next[0];
     setSelectedProjectId(home?.project.id);
     const target = (remembered !== undefined && owner !== undefined ? remembered : undefined) ?? pickLatest(home?.sessions ?? [])?.sessionId;
-    if (target !== undefined) await openSession(a, target);
+    /*
+     * 收尾要分两步：`openSession` 返回时消息已经到手，但 `setMessages` 是本轮末尾才生效 ——
+     * 若在 `openSession` 之后才清 `resolving`，渲染顺序保证内容先落地、结论不空转；
+     * 反过来（先清后 open）会闪一帧「发一条消息开始对话」。所以等 openSession 结束再清。
+     */
+    try {
+      if (target !== undefined) await openSession(a, target);
+    } finally {
+      setResolving(false);
+    }
   }
 
   async function selectProject(project: Project) {
@@ -2113,7 +2153,12 @@ export default function App() {
 
   // 首屏：URL 三键 > 上次会话 > 上次 agent > 第一个 agent
   useEffect(() => {
+    /*
+     * `resolving` 必须**无论如何都收尾**（Task 0019）：它是"还没确定"的标志，
+     * 卡在 true 就等于聊天区永久骨架。所以整个恢复流程包在 try/finally 里。
+     */
     void (async () => {
+      try {
       const params = new URLSearchParams(window.location.search);
       const wantAgent = params.get("agent");
       const wantProject = params.get("project");
@@ -2140,22 +2185,29 @@ export default function App() {
       }
       if (offline) setTailError("后端暂时不可用" + (items.length > 0 ? "，当前显示的是上次的数据" : "") + "。检查服务是否在运行，恢复后刷新即可。");
       setAgents(items);
+      /*
+       * 助手列"已确认"（Task 0019）：成功或失败都算——失败时列表是缓存，也已经是终态
+       * （上面已经给了"后端不可用"的出口）。这样骨架只出现在"真的还没有任何数据"那一瞬。
+       */
+      setAgentsReady(true);
       if (!offline) { try { localStorage.setItem("lifeos.agents", JSON.stringify(items)); } catch { /* 隐私模式 */ } }
       const found = items.find((item) => item.id === wantAgent)
         ?? items.find((item) => item.id === readLast(LAST_AGENT))
         ?? items[0];
-      if (found === undefined) { setLoaded(true); return; }
+      if (found === undefined) { setGroupsReady(true); setResolving(false); return; }   // 一个 Agent 都没有：会话列就是真空态（Task 0019）
       setAgent(found);
       ctx.current = { agentId: found.id };
       void refreshAgentDefaultModel(found.id);
       // S5：缓存优先——先渲染上次的列表（零白屏），API 回来立刻覆盖
+      // 缓存只影响"画什么"（listSurfaceOf 内容优先），不冒充"服务端已确认"（Task 0019）
       const cachedGroups = readGroupsCache(found.id);
-      if (cachedGroups !== undefined) { setGroups(cachedGroups); setLoaded(true); }
+      if (cachedGroups !== undefined) setGroups(cachedGroups);
       const fetched = await fetchGroups(found.id);
       // 拉回空数组且我们有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：
       // 保留缓存不覆盖，否则"后端挂了"会变成"项目全没了"这种更吓人的假象
       const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
       setGroups(groups);
+      setGroupsReady(true);            // 会话列已确认（失败也在此收尾，否则骨架会一直挂着）
       if (fetched.length > 0) rememberGroups(found.id, groups);
       /*
        * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
@@ -2177,10 +2229,14 @@ export default function App() {
       setSelectedProjectId(group?.project.id);
       // URL 给了项目、没给会话 = 草稿（点过“新建会话”的状态）：不打开任何会话（2026-10-29 决策）。
       // 完全没有参数时仍走下面的“接着上次会话”，不改打开应用的习惯。
-      if (wantGroup !== undefined && wantSession === null) { setLoaded(true); return; }
+      if (wantGroup !== undefined && wantSession === null) { setResolving(false); return; }
       const target = candidates.find((sid) => group?.sessions.some((session) => session.sessionId === sid)) ?? pickLatest(group?.sessions ?? [])?.sessionId;
       if (target !== undefined) await openSession(found, target);
-      setLoaded(true);
+      } finally {
+        setResolving(false);          // 会话解析收尾：此后"没有会话"才能被当成草稿态（Task 0019）
+        setGroupsReady(true);         // 同一条纪律：会话列不能因为一次异常永久停在骨架
+        setAgentsReady(true);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2788,7 +2844,13 @@ export default function App() {
    * 用户看到的却是一个像标题的假名字。规则已抽进 `headerTitleOf()`（纯函数，单测锁住）。
    */
   const sessionTitle = currentSessionItem?.title.display ?? "";
-  const headerTitle = headerTitleOf({ sessionId, displayTitle: sessionTitle });
+  /*
+   * `resolving` 期间标题留空（Task 0019）：恢复/切换还没落定，写「新会话」是一个会被推翻的结论。
+   * 留空不是缺陷——它精确表示"还没有确定的事实"，200ms 后填上真名字。
+   */
+  const headerTitle = headerTitleOf({ sessionId, displayTitle: sessionTitle, resolving });
+  /** 聊天区表面（Task 0019）：纯函数判定，页面只按结论画。 */
+  const chatSurface = chatSurfaceOf({ resolving, sessionId, selectedProjectId, messagesLoading, messageCount: messages.length });
 
   // 头部 task 段：有会话用会话的 Task，无会话用项目默认 Task（纯函数规则见 header-strip.ts 的 headerTaskOf）
   const headerTaskScope = { agentId: agent?.id ?? "", projectId: currentGroup?.project.id ?? selectedProjectId ?? "workspace" };
@@ -3024,6 +3086,13 @@ export default function App() {
   }, [agent?.id, groups.length]);
 
   const derived = deriveStatus(statusFacts, { agentId: agent?.id, sessionId, visible: document.visibilityState === "visible" });
+  /*
+   * 两列的表面（Task 0019）：骨架 / 真空态 / 内容三选一，由纯函数判定（`api/boot-state.ts`）。
+   * 页面不写条件组合——写在这就只剩"按结论画"，不会再有人加出"骨架 + 真实行同框"那种组合。
+   */
+  const sessionRowCount = groups.reduce((sum, group) => sum + group.sessions.length, 0);
+  const agentSurface = listSurfaceOf({ ready: agentsReady, count: agents.length });
+  const sessionSurface = listSurfaceOf({ ready: groupsReady, count: groups.length });
   const leftColumns = (
     <>
       {!folded.nav && (
@@ -3032,11 +3101,17 @@ export default function App() {
               `relative` 是把手绝对定位的锚点；把手 overflow 到列外 4px，不占布局宽度。 */}
           <ResizeColumn resizeKey="c1" width={box.c1} ariaLabel="助手列" onStart={(event) => beginDrag("c1", event)}
             className="flex-col border-r border-nav-line bg-nav-bg">
-            <ColumnHeader label="助手" count={agents.length} onHide={() => setShowNav(false)} />
+            <ColumnHeader label="助手" count={columnCountOf({ ready: agentsReady, count: agents.length })} onHide={() => setShowNav(false)} />
             {/* 助手行是用户数据（名字、增减助手都会变）：截图基线只比骨架（规范 2.9） */}
             <div ref={agentListRef} onScroll={onAgentListScroll} className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" data-shot-mask="agent-rows">
-              {!loaded && <ListSkeleton rows={6} />}
-              {agents.map((item) => (
+              {/*
+                * 骨架与真实行**结构互斥**（Task 0019）：表面由 `listSurfaceOf` 判定，两条分支不会同时成立。
+                * 改前是两个独立条件（`!loaded && <ListSkeleton/>` + `agents.map(...)`），
+                * 于是"服务端已回但 loaded 仍是 false"那一帧出现 12 条骨架 + 14 个助手行同框（用户截图）。
+                * 计数同理：未就绪的 0 不是事实，不显示（`columnCountOf`）。
+                */}
+              {agentSurface === "loading" && <ListSkeleton rows={6} />}
+              {agentSurface === "ready" && agents.map((item) => (
                 <Row key={item.id} selected={item.id === agent?.id} onClick={() => void selectAgent(item)}
                   status={<StatusMarks status={derived.agents[item.id]} unit="会话" />}
                   actions={
@@ -3085,14 +3160,17 @@ export default function App() {
         <>
           <ResizeColumn resizeKey="c2" width={box.c2} ariaLabel="会话列" onStart={(event) => beginDrag("c2", event)}
             testId="groups-panel" className="flex-col border-r border-nav-line bg-nav-bg">
-            <GroupsColumnHeader count={groups.reduce((sum, group) => sum + group.sessions.length, 0)} onHide={() => setShowGroups(false)} />
+            <GroupsColumnHeader count={columnCountOf({ ready: groupsReady, count: sessionRowCount })} onHide={() => setShowGroups(false)} />
             {/* 行内容=用户数据（名称/计数会变）：截图基线只比骨架，不把数据纳入契约 */}
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-shot-mask="session-rows">
-              {!loaded && <ListSkeleton rows={6} />}
-              {loaded && groups.length === 0 && (
+              {/* 同助手列：骨架 / 真空态 / 内容三选一，互斥（Task 0019）。
+                  「还没有项目」是**结论**：只有服务端确认过（groupsReady）才说，否则那一帧
+                  会在 200ms 后被 15 条会话替换掉（热刷新实测）。 */}
+              {sessionSurface === "loading" && <ListSkeleton rows={6} />}
+              {sessionSurface === "empty" && (
                 <PanelEmpty title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />
               )}
-              {groups.map((group) => {
+              {sessionSurface === "ready" && groups.map((group) => {
                 const open = collapsedGroups[group.project.id] !== true;
                 const status = derived.projects[projectKey(agent?.id ?? "", group.project.id)];
                 return (
@@ -3474,10 +3552,25 @@ export default function App() {
             }}
             className="h-full w-full overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
             <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
-              {sessionId === undefined && (selectedProjectId === undefined
-                ? <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
-                : <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />)}
-              {sessionId !== undefined && messages.length === 0 && <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />}
+              {/*
+                * 聊天区的四种表面（Task 0019）由 `chatSurfaceOf` 判定，互斥：
+                *   loading（首屏恢复中 / 消息在路上）→ 消息骨架，**不写任何结论**；
+                *   empty-project / empty-session / empty-message → 三种真空态；
+                *   content → 下面是消息列表（骨架不出现）。
+                * 改前：`sessionId === undefined` 一成立就画「先选择项目」，`sessionId !== undefined`
+                * 且 messages 为空就画「发一条消息开始对话」—— 前者在刷新首帧必然出现（sessionId 尚未播种），
+                * 后者在每条会话打开时闪一次（消息还在路上）。两处都是把"没到"当成"没有"。
+                */}
+              {chatSurface === "loading" && <MessageSkeleton rows={4} />}
+              {chatSurface === "empty-project" && (
+                <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
+              )}
+              {chatSurface === "empty-session" && (
+                <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="直接输入并发送，会自动为该项目新建会话。" />
+              )}
+              {chatSurface === "empty-message" && (
+                <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="发一条消息开始对话" hint="输入并发送即可，第一条消息会写进这个会话。" />
+              )}
               {(() => {
                 // 折叠粒度 = **一轮**（用户发一句话 → 下一条用户消息之前）
                 // 实测本会话每轮 assistant 消息数中位 6、最多 198：按消息折会碎成上百块，必须按轮分。
@@ -4178,4 +4271,4 @@ import { busyBelongsTo, isStaleTerminal } from "./api/event-guards";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";
 import { AppIcon } from "./design/icons";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";
-import { ListSkeleton } from "./design/skeleton";
+import { ListSkeleton, MessageSkeleton } from "./design/skeleton";
