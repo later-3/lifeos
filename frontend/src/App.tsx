@@ -1706,6 +1706,14 @@ export default function App() {
     setMeta(undefined);
     setAgentDefaultModel(undefined);
     setShowGroups(true);
+    /*
+     * 切助手期间聊天区显示骨架（2026-11-17）。
+     *
+     * 为什么需要：`selectAgent` 会先 `await fetchGroups()`（projects + 每个项目的 sessions），
+     * 那段时间 `sessionId` 是 undefined → 界面落到"发一条消息开始对话"，
+     * 而用户其实正在等"上次那个会话"打开。P1-S1 的骨架状态要覆盖这一整段，不只是 openSession 内部。
+     */
+    setSessionLoading(true);
     void refreshAgentDefaultModel(a.id);
     // S5 缓存优先：先用上次的列表渲染（零白屏），API 回来立刻覆盖
     const cached = readGroupsCache(a.id);
@@ -1717,10 +1725,32 @@ export default function App() {
     setGroups(next);
     const remembered = readLast(lastSessionKey(a.id));
     const owner = next.find((group) => group.sessions.some((item) => item.sessionId === remembered));
-    const home = owner ?? next.find((group) => group.project.isDefault) ?? next[0];
+    /*
+     * 落点项目的优先级（2026-11-17 微调）：**有会话的项目**优先于"默认项目"。
+     *
+     * 为什么：默认项目（workspace）常常是空的，而用户点助手的心智是"接着聊"
+     * （`mobile.md` §2："聊天（默认上次会话）"）。先按默认项目开会落到空态
+     * "发一条消息开始对话"，与他点进来的期待相反。
+     * 实测：Architect 的 workspace 0 条、lifeos 4 条 —— 旧顺序落到 workspace（空态）。
+     */
+    const home = owner
+      ?? next.find((group) => group.sessions.length > 0)
+      ?? next.find((group) => group.project.isDefault)
+      ?? next[0];
     setSelectedProjectId(home?.project.id);
+    /*
+     * 点助手 = **切助手 + 打开上次的会话**（`mobile.md` §2 的 IM 模型："聊天（默认上次会话）"）。
+     *
+     * 但**不阻塞抽屉切级**：`mobile-nav.tsx` 的 `onClick` 改成不等这一整个 promise
+     * （改之前它 `await` 到"projects + 每个项目的 sessions + 那个会话的消息"全部回来才切级，
+     * 实测 2850 ms 抽屉一动不动 = "点了没反应"）。
+     *
+     * 现在两个动作同时发：抽屉**下一帧**就切到项目级；这里在后台继续加载。
+     * 加载期间聊天区由 `sessionLoading` 顶骨架（P1-S1），不会显示"对话是空的"。
+     */
     const target = (remembered !== undefined && owner !== undefined ? remembered : undefined) ?? pickLatest(home?.sessions ?? [])?.sessionId;
     if (target !== undefined) await openSession(a, target);
+    else setSessionLoading(false);          // 没有可打开的目标：收掉骨架，落到"还没选对话"
   }
 
   /**

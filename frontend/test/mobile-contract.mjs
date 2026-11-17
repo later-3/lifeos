@@ -454,6 +454,67 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 点助手：立即切级，不等网络（2026-11-17 用户实测）──────────────────────────
+/*
+ * 用户原话："点击 agent 到会话页面的时候有时候还是卡，不过这个可能是我没连接 vpn，
+ * 或者是网络的问题？"——不是网络问题，是我们的代码：`onSelectAgent(item).then(() => setLevel("projects"))`
+ * 要等 "projects + 每个项目的 sessions + 那个会话的消息" 全回来才切级。
+ * 实测（390×844，模拟 300ms 延迟 + CPU 4x）：**2850 ms** 抽屉一动不动 = "点了没反应"。
+ *
+ * 断言两条，都必须在**慢网**下成立：
+ *  ① 点下去到抽屉切到项目级 ≤ 300 ms（不等网络）；
+ *  ② 后台补齐后仍然打开了一个会话（不是落到空态）。
+ */
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Network.enable");
+  /*
+   * 用 `Network.emulateNetworkConditions`（老协议名）—— 实测 `Emulation.setNetworkConditions`
+   * 在这个 Chromium 版本上**静默不生效**，限速没加上时断言会在"无限速"下跑，
+   * 于是它永远是绿的（我第一版就踩了这个：活性验证反而抓不到红）。
+   * 这里**不许 catch**：限速加不上就直接抛，让这条断言失去意义的可能性暴露出来。
+   */
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 300,
+    downloadThroughput: (1.6 * 1024 * 1024) / 8, uploadThroughput: (750 * 1024) / 8,
+  });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  const navTrigger = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+  if (await navTrigger.count() > 0) {
+    await navTrigger.first().click();
+    await page.waitForTimeout(700);
+    // 回到助手级（可能停在上次的层级）
+    for (let i = 0; i < 3; i += 1) {
+      if ((await page.locator('[data-mobile-level="agents"]').count()) > 0) break;
+      await page.evaluate(() => {
+        const back = [...document.querySelectorAll('[data-testid="mobile-nav"] button')].find((el) => (el.textContent ?? "").includes("返回"));
+        back?.click();
+      });
+      await page.waitForTimeout(400);
+    }
+    const started = Date.now();
+    await page.locator('[data-mobile-level="agents"] [role="button"]').first().click({ force: true });
+    await page.waitForFunction(() => document.querySelector('[data-mobile-level="projects"]') !== null, { timeout: 5000 }).catch(() => {});
+    const switchMs = Date.now() - started;
+    check("[390] 点助手后抽屉立即切到项目级（不等网络）", switchMs <= 300, `${switchMs} ms`);
+    // 后台补齐：最终应当停在一个有消息的会话上（不是"发一条消息开始对话"）
+    await page.waitForTimeout(6000);
+    const settled = await page.evaluate(() => ({
+      hasSession: new URLSearchParams(location.search).has("session"),
+      messages: document.querySelectorAll('[data-testid="message"]').length,
+      emptyChat: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
+    }));
+    check("[390] 点助手后最终打开了会话（不是空态）",
+      settled.hasSession && settled.messages > 0 && settled.emptyChat === false, JSON.stringify(settled));
+  }
+  await context.close();
+}
+
 // ── 引用化的图片：能取回的显示，取不回的给文案（Task 0016 · P3 补）────────────
 /*
  * 引用化把图片变成**独立请求**，于是"文件还在不在"从"接口一定有 base64"变成"可能 404"。

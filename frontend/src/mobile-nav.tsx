@@ -126,7 +126,20 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {level === "agents" && agents.map((item) => (
           <Row key={item.id} selected={item.id === agent?.id}
-            onClick={() => { void Promise.resolve(onSelectAgent(item)).then(() => onLevelChange("projects")); }}>
+            /*
+             * 切级**立即发生**，不等 Agent 数据（2026-11-17 用户实测："点 agent 到会话页面有时候还是卡"）。
+             *
+             * 改之前是 `onSelectAgent(item).then(() => onLevelChange("projects"))` ——
+             * 也就是"等 Agent 的 projects + 每个项目的 sessions 全部回来、**并且**它自动打开的那个
+             * 会话也加载完"才切级。实测（390×844，模拟 300ms 延迟 + CPU 4x）：**2850 ms**
+             * 抽屉一动不动，用户看到的是"点了没反应"。
+             *
+             * 现在：两个调用在**同一个 tick** 里发出。`selectAgent()` 的前半段（setAgent、
+             * 缓存优先 setGroups）是同步的，所以这一帧就能渲染出该 Agent 的项目列表；
+             * 网络回来的部分（远端列表、自动打开的最新会话）在后台补齐——
+             * 聊天区那边已有骨架顶住（P1-S1），不会显示"对话是空的"。
+             */
+            onClick={() => { void onSelectAgent(item); onLevelChange("projects"); }}>
             <AgentAvatar id={item.id} name={item.name} avatar={item.avatar} size={24} />
             <span className="min-w-0 flex-1 truncate">{item.name}</span>
           </Row>
