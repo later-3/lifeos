@@ -1,0 +1,29 @@
+# peer-delegate：Agent ↔ Agent 的会话（DIRECTOR.md 类型：静态形态 / 跨区流转）。
+#
+# 边界（诚实标注）：打桩模型不会触发真的 `lifeos_ask` 工具链，所以拍不出「派活 → 回流」全过程。
+# 这条素材演的是**真实存在的东西**：两个 Agent 之间的会话（叠放头像、头部对端、双头像消息）。
+# 文案也只写「Agent 之间也有对话」，不写「派活」。
+name: peer-delegate
+mode: video
+viewport: { width: 1000, height: 625 }
+size: { width: 1000, height: 625 }
+path: /
+outputs:
+  - { type: gif, file: peer-delegate.gif, fps: 10, width: 1000, colors: 128 }
+steps:
+  - waitFor: '[data-testid="groups-panel"]'
+  - pause: 1.0
+  - click: 'text=云起'
+  - pause: 1.0
+  - click: 'text=与 云起 的对话'
+  - pause: 1.8
+  - move: { x: 700, y: 300, steps: 10 }
+  - pause: 0.6
+  - move: { x: 640, y: 100, steps: 8 }
+  - pause: 1.2
+  - click: 'text=Home Devices'
+  - pause: 1.0
+  - click: 'text=与 Home Devices 的对话'
+  - pause: 1.6
+  - move: { x: 700, y: 300, steps: 10 }
+  - pause: 1.2
