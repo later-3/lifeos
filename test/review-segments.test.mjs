@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSegments, expandActions, expansionOf, expandStep, canCollapse, sliceHiddenLines, DEFAULT_EXPAND_COUNT,
-} from "../frontend/src/review-segments.ts";
+} from "../frontend/src/api/review-segments.ts";
 
 const line = (type, oldNo, newNo, text) => ({ type, oldNo, newNo, text });
 

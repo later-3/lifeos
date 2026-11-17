@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import {
   MAX_WORD_DIFF_CHANGED_RATIO, MAX_WORD_DIFF_LINE_LENGTH, changedLengthOf, shouldComputeWordDiff,
   splitChanges, totalLengthOf, worthHighlighting,
-} from "../frontend/src/review-word-diff.ts";
-import { ensureWordDiffLib, wordDiffOf, wordDiffReady } from "../frontend/src/review-word-diff-lib.ts";
+} from "../frontend/src/api/review-word-diff.ts";
+import { ensureWordDiffLib, wordDiffOf, wordDiffReady } from "../frontend/src/api/review-word-diff-lib.ts";
 
 const OLD = "const total = valid.reduce((sum, r) => sum + r.count, 0);";
 const NEW = "const total = valid.reduce((acc, r) => acc + r.count, 0);";

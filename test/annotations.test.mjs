@@ -39,7 +39,7 @@ if (found === undefined) {
   const esbuildPath = join(ROOT, "node_modules/esbuild/lib/main.js");
   const esbuild = (await import(esbuildPath)).default ?? (await import(esbuildPath));
   const built = await esbuild.build({
-    entryPoints: [join(ROOT, "frontend/src/annotations.ts")],
+    entryPoints: [join(ROOT, "frontend/src/api/annotations.ts")],
     bundle: true, format: "iife", globalName: "__M", write: false, target: "es2020",
   });
   const src = built.outputFiles[0].text;

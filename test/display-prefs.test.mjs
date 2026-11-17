@@ -6,7 +6,7 @@ import {
   DEFAULT_PREFS, FONT_SCALE_MAX, FONT_SCALE_MIN, READING_MAX_PX, WIDTH_FLOOR_PX,
   avatarSizeOf, focusWidthOf, fontFromSlider, fontLabel, fontVars, parsePrefs,
   readingMaxForViewport, sliderFromFont, sliderFromWidth, widthFromSlider, widthLabel, widthVar,
-} from "../frontend/src/display-prefs.ts";
+} from "../frontend/src/api/display-prefs.ts";
 
 test("默认值 = 现状（限宽 860、字号 100%），不改既有观感", () => {
   assert.equal(DEFAULT_PREFS.width.mode, "limited");

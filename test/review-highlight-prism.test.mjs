@@ -6,14 +6,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   clearTokenCache, ensureGrammar, ensurePrism, grammarReady, prismReady, TOKEN_CACHE_LIMIT, tokenizeFile, tokenizeFileCached,
-} from "../frontend/src/review-highlight-prism.ts";
+} from "../frontend/src/api/review-highlight-prism.ts";
 
 /**
  * Prism 现在是**动态加载**的（首屏产物 +27.8kB gzip 的代价不该人人付），
  * 所以测试必须先等它加载完——这正好也验证了"动态加载路径可用"。
  */
 await ensurePrism();
-import { MAX_HIGHLIGHT_LINES, tokenSideOf, tokensAtLine } from "../frontend/src/review-highlight.ts";
+import { MAX_HIGHLIGHT_LINES, tokenSideOf, tokensAtLine } from "../frontend/src/api/review-highlight.ts";
 
 const CODE = [
   "export function demo(a: number): string {",

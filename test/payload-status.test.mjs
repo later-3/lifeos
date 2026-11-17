@@ -1,7 +1,7 @@
 // 请求体状态条文案（Task 0012 · P5）：字节要能显示出来，且上限未知时不编分母。
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatPayloadBytes, payloadStatusText } from "../frontend/src/payload-status.ts";
+import { formatPayloadBytes, payloadStatusText } from "../frontend/src/api/payload-status.ts";
 
 test("formatPayloadBytes：十进制单位（与网关 413 的 3.5 MB 同口径）", () => {
   assert.equal(formatPayloadBytes(950), "950B");

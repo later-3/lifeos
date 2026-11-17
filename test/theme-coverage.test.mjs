@@ -42,15 +42,33 @@ test("派生补齐后：8 个预载主题覆盖度 ≥85%（S1 阶段门）", ()
   }
 });
 
-test("派生不改变已有值的**语义**（只补不改；带 alpha 的 8 位 hex 会归一成 6 位）", () => {
+/*
+ * 「只补不改」的**两处例外**（都是 Task 0017 · P2，有实测依据，不是放宽）：
+ *
+ * ① 带 alpha 的 8 位/4 位 hex 归一成 6 位（`#3994bcb3` → `#3994bc`）——fill 契约必须不透明。
+ *
+ * ② **行态三件**（`--color-hover` / `--color-nav-accent` / `--color-nav-selected`）
+ *    带 alpha 时**整个丢掉**，交给 ΔL 派生。理由：VSCode 的 `list.hoverBackground`
+ *    是 `#ffffff14`（8% 白），剥掉 alpha 写进实底 = 一整块纯白，行标题白字压白底 **1.00:1**
+ *    （`test/wash-layer.test.mjs` 抓到 48 处）。这类"薄涂强度"不该塞进 fill 契约，
+ *    等 wash 有独立来源槽（v2）再读它的 alpha。
+ */
+const ROW_STATE_KEYS = new Set(["--color-hover", "--color-nav-accent", "--color-nav-selected"]);
+
+test("派生不改变已有值的**语义**（只补不改；两处已登记的例外见注释）", () => {
   const pack = themes[0];
   const derived = derivePack(pack);
   for (const mode of Object.keys(pack.modes)) {
     for (const [k, v] of Object.entries(pack.modes[mode] ?? {})) {
       const got = derived.modes[mode][k];
-      // 允许的唯一改写：8 位/4 位 hex 归一成 6 位（`#3994bcb3` → `#3994bc`）。
-      // 除此之外的任何变化都说明派生层越权改了主题作者给的值。
-      const normalized = String(v).toLowerCase().replace(/^#([0-9a-f]{6})[0-9a-f]{2}$/, "#$1");
+      const raw = String(v).toLowerCase();
+      const hasAlpha = /^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/.test(raw);
+      if (hasAlpha && ROW_STATE_KEYS.has(k)) {
+        // 例外 ②：丢掉外来值，改由派生给出（列在报告里，零静默）
+        assert.ok(typeof got === "string" && /^#[0-9a-f]{6}$/.test(got), `${mode}.${k} 丢弃后应有派生值：${got}`);
+        continue;
+      }
+      const normalized = raw.replace(/^#([0-9a-f]{6})[0-9a-f]{2}$/, "#$1");
       assert.equal(got, normalized, `${mode}.${k} 被派生覆盖了（应只补不改）：${v} → ${got}`);
     }
   }

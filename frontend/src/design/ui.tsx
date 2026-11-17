@@ -57,7 +57,7 @@ export function ToggleChip({ pressed, shape = "pill", className = "", children, 
       : "flex h-7 shrink-0 items-center rounded-control px-2.5 text-meta transition-colors";
   const look = shape === "dot"
     ? pressed ? "border-ink-900" : "border-transparent"
-    : pressed ? "bg-nav-selected text-ink-900 ring-1 ring-accent" : "bg-surface text-ink-700 ring-1 ring-line hover:bg-hover";
+    : pressed ? "bg-wash-selected text-ink-900 ring-1 ring-accent" : "bg-surface text-ink-700 ring-1 ring-line hover:bg-wash-hover";
   return (
     <button type="button" aria-pressed={pressed} {...rest} className={`${base} ${look} ${className}`}>
       {children}
@@ -72,10 +72,25 @@ export function ToggleChip({ pressed, shape = "pill", className = "", children, 
  * `<button className="flex w-full items-center gap-2 ...">` ——第二次出现就该立容器（规范 2.3）。
  * 它的语义是"一行是一个动作"，不是"一个按钮"，但 DOM 上仍是 button（键盘可达）。
  */
-export function ClickableRow({ className = "", children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement>) {
+export function ClickableRow({ className = "", children, shape = "control", ...rest }: {
+  /**
+   * 圆角档（Task 0017 · P3）。
+   *
+   * 同一个 `ClickableRow` 被两类地方用，圆角**不该一样**：
+   * - `control`（默认，6px）＝ 控件级小行：消息折叠头、diff 分组头、目录选择项；
+   * - `row`（8px）＝ **导航列里的行**：分组头、设置分区导航、主题列表 ——
+   *   它们与 `Row` / `SessionRow` 并列在同一列里，圆角必须与行一致，否则同一列两种行形状。
+   *
+   * 为什么用显式参数而不是"看父容器自动判断"：后者要靠 CSS 选择器推断层级，
+   * 一旦结构变化就静默失效；显式参数让每个调用点自己声明它属于哪一类（可 grep、可断言）。
+   *
+   * 依据：`design-language.md` §4「圆角 5 档」——行与控件不同档，同档会看起来像按钮。
+   */
+  shape?: "control" | "row";
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button type="button" {...rest}
-      className={`flex w-full min-w-0 items-center gap-2 rounded-control text-left transition-colors hover:bg-hover max-sm:min-h-11 ${className}`}>
+      className={`flex w-full min-w-0 items-center gap-2 ${shape === "row" ? "rounded-row" : "rounded-control"} text-left transition-colors hover:bg-wash-hover max-sm:min-h-11 ${className}`}>
       {children}
     </button>
   );
@@ -189,8 +204,8 @@ export const controlClass =
  * 底色来自 `colorFillSecondary` / `colorFillTertiary`）。
  * 不用阴影（D18），也不加第二通道（左色条）—— 选中的底色差已经比旧实现强 2.9 倍。
  */
-export function Row({ selected = false, className = "", children, onClick, testId, actions, status }: {
-  selected?: boolean; className?: string; children: ReactNode; onClick?: () => void; testId?: string;
+export function Row({ selected = false, className = "", children, onClick, testId, actions, status, variant = "single", title, titleFallback = false, participants, meta, renaming = false, renameValue = "", onRenameChange, onRenameCommit, onRenameCancel }: {
+  selected?: boolean; className?: string; children?: ReactNode; onClick?: () => void; testId?: string;
   /**
    * 行内动作（hover 出现的图标按钮）。
    *
@@ -210,12 +225,56 @@ export function Row({ selected = false, className = "", children, onClick, testI
    * 与 actions 叠在同一格：hover 时淡出给动作区让位，不与动作争位。
    */
   status?: ReactNode;
+  /**
+   * 行的形态（Task 0017 · P3：**一份实现，两种形态**）。
+   *
+   * - `single`（默认）：单行 32（`h-11` → `sm:h-8`），内容来自 `children`；
+   * - `two-line`：双行 56（`h-14`），第一行标题、第二行「参与者 · 元信息」，
+   *   内容来自 `title` / `participants` / `meta`，并支持内联重命名。
+   *
+   * **为什么合并**：合并前 `Row` 与 `SessionRow` 是两份独立实现，方向相反 ——
+   * `Row` 把悬停底画在主点击区（无圆角 → 方角块）、`SessionRow` 画在行根（有圆角）。
+   * 同一机制两份实现必然漂（2026-11-16 用户截图就是它漂出来的）。现在只有一份。
+   */
+  variant?: "single" | "two-line";
+  /** two-line 的第一行标题。 */
+  title?: string;
+  /** 标题是回落的 id（用等宽 + nav-muted 显示，并给 title 提示）。 */
+  titleFallback?: boolean;
+  /** two-line 的第二行开头（参与者头像）。 */
+  participants?: ReactNode;
+  /** two-line 的第二行正文（对端 · Task · 状态）。 */
+  meta?: ReactNode;
+  renaming?: boolean;
+  renameValue?: string;
+  onRenameChange?: (value: string) => void;
+  onRenameCommit?: (value: string) => void;
+  onRenameCancel?: () => void;
 }) {
   const interactive = onClick !== undefined;
+  const twoLine = variant === "two-line";
   return (
-    <div className={`group/row relative flex h-11 w-full items-center rounded-row text-body transition-colors sm:h-8 ${
-      selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700"
-    } ${className}`}>
+    /*
+     * 底色**只画在这一层**（Task 0017 · P1，层模型 L2）。
+     *
+     * 2026-11-16 用户截图（`3eac831e…`）：悬停一行看到「左边方角块 + 右边圆角小胶囊 +
+     * 中间一条缝 + 上下两块缺口」。原因是视觉属性没随结构搬迁 —— `37e8aede` 把行拆成
+     * 「容器 + 主点击区 + 动作槽」时，`rounded-row` 留在容器、`hover:bg-nav-accent` 留在内层，
+     * 于是底色画在没有圆角的子区域上；`5f76f56` 又把覆盖层连它自带的 `bg-nav-accent` 搬进来，
+     * 成了第二个绘制者（6px 圆角、矮 4px），两色一深一浅就露出缝与缺口。
+     *
+     * 现在：悬停/选中底一律由**行根**画一次。行内任何子元素都不画行级底色
+     * （`frontend/test/layer-paint.mjs` 断言「行级填充只声明在行根」）。
+     *
+     * `data-testid` 挂在**行根**（不是主点击区）：`ui-contract` 与会话行的探针都按
+     * 「`[data-testid]` = 行根，其子元素里有 `[role=button]`」取值（Task 0017 · P3 合并不改变这个契约）。
+     */
+    <div data-testid={testId} aria-current={selected ? "true" : undefined}
+      className={`group/row relative flex w-full items-center rounded-row text-body transition-colors ${
+        twoLine ? "h-14" : "h-11 sm:h-8"
+      } ${
+        selected ? "bg-wash-selected font-medium text-ink-900" : "text-ink-700 hover:bg-wash-hover"
+      } ${className}`}>
       <div
         {...(interactive
           ? {
@@ -227,32 +286,72 @@ export function Row({ selected = false, className = "", children, onClick, testI
             },
           }
           : {})}
-        data-testid={testId}
-        aria-current={selected ? "true" : undefined}
-        className={`flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 ${
-          selected ? "" : "hover:bg-nav-accent"
-        }`}>
-        {children}
+        className={`flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 ${twoLine ? "pl-2 pr-0" : "px-2"}`}>
+        {twoLine ? (
+          <span className="flex min-w-0 flex-1 flex-col">
+            {renaming ? (
+              <input autoFocus value={renameValue}
+                onFocus={(event) => event.currentTarget.select()}
+                onChange={(event) => onRenameChange?.(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") { event.preventDefault(); onRenameCommit?.(event.currentTarget.value); }
+                  if (event.key === "Escape") { event.preventDefault(); onRenameCancel?.(); }
+                }}
+                onBlur={() => onRenameCancel?.()}
+                onClick={(event) => event.stopPropagation()}
+                className="min-w-0 rounded-control bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
+            ) : (
+              <span className={`truncate text-body ${titleFallback ? "font-mono text-nav-muted" : "text-ink-900"}`}
+                data-fallback={titleFallback ? "id" : undefined}
+                title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
+            )}
+            {/* 副行用 nav-muted 而不是 ink-500：ink-500 在 wash-hover / wash-selected 的合成底上
+                只有 4.10 / 4.03（浅色），低于 AA 4.5；nav-muted 达标（见 tokens.css 的头注）。 */}
+            <span className="flex min-w-0 items-center gap-1.5 text-micro text-nav-muted">
+              {participants}
+              <span className="min-w-0 truncate">{meta}</span>
+            </span>
+          </span>
+        ) : children}
       </div>
-      {/* 动作是主点击区的**兄弟**：不嵌套、不抢行的点击（各自 stopPropagation 也不再必需） */}
-      {actions !== undefined && (
-        // 槽 + 覆盖层（与 SessionRow 同款）：状态与动作叠在同一格，格宽 = 两者较宽者 ——
-        // 状态和按钮都不会“额外占一个固定空间”；hover 时状态淡出、动作淡入。
-        <span className="relative grid justify-items-end">
-          {status !== undefined && (
-            <span className="col-start-1 row-start-1 flex min-w-0 items-center pr-1 transition-opacity
-              group-hover/row:opacity-0 group-has-[:focus-visible]/row:opacity-0
-              [@media(hover:none)]:group-focus-within/row:opacity-0">{status}</span>
-          )}
-          <span className={`relative col-start-1 row-start-1 flex items-center gap-0.5 pr-1 rounded-control opacity-0 pointer-events-none transition-opacity
+      {/*
+        * 槽 + 覆盖层：状态与动作叠在同一格，格宽 = 两者较宽者 ——
+        * 状态和按钮都不会"额外占一个固定空间"；hover 时状态淡出、动作淡入。
+        *
+        * 动作是主点击区的**兄弟**（不嵌套、不抢行的点击）。
+        */}
+      {/*
+        * two-line 的槽宽 = **92**（= 3×28 图标 + 2×2 gap + 4 pr），不是 84。
+        *
+        * 2026-11-16（Task 0017 · P3 合并时实测）：`ui-contract` 有一条「动作区不压标题
+        * （静止时就有空位）」，判的是覆盖层左缘 ≤ 主点击区右缘。合并前 `SessionRow` 的槽是
+        * `w-21`(84)，而动作区实际是 84 + 2×2(gap) + 4(pr) = 92 → 覆盖层**向左溢出 8px**压在标题上
+        * （`gap: -8`）。原来没被发现，是因为会话行那三条几何断言恰好长期没跑通。
+        * 现在槽按动作区真实宽度给：92 = `w-23`。
+        */}
+      <span className={`relative flex shrink-0 items-center justify-end group/slot ${twoLine ? "w-23" : ""}`}>
+        {status !== undefined && (
+          <span className={`flex min-w-0 items-center transition-opacity
+            group-hover/row:opacity-0 group-has-[:focus-visible]/slot:opacity-0
+            [@media(hover:none)]:group-focus-within/row:opacity-0 ${twoLine ? "pr-1.5" : "pr-1"}`}>{status}</span>
+        )}
+        {actions !== undefined && (
+          /*
+           * 覆盖层**不画底色**（层模型 L4）：它只负责让位与内容。
+           * 参照 LobeHub `NavItem.tsx:44-60` @`867a15a`——它用
+           * `mask-image` 淡出被遮的文字，注释原文：
+           * 「Fade the covered text itself instead of painting a row-colored plate over it,
+           *   so the overlay matches any row background (hover / active / none)」。
+           * 我们照这件事做：底色由行根提供，覆盖层透明，因此任何主题/任何行底都正确。
+           */
+          <span className="absolute right-0 flex items-center gap-0.5 pr-1 opacity-0 pointer-events-none transition-opacity
             group-hover/row:opacity-100 group-hover/row:pointer-events-auto
-            group-has-[:focus-visible]/row:opacity-100 group-has-[:focus-visible]/row:pointer-events-auto
-            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto
-            ${selected ? "bg-nav-selected" : "bg-nav-accent"}`}>
+            group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto
+            [@media(hover:none)]:group-focus-within/row:opacity-100 [@media(hover:none)]:group-focus-within/row:pointer-events-auto">
             {actions}
           </span>
-        </span>
-      )}
+        )}
+      </span>
     </div>
   );
 }
@@ -392,76 +491,39 @@ export function SessionRow({ selected, title, titleFallback, participants, meta,
   onRenameCancel: () => void;
 }) {
   /*
-   * 结构：外层是**容器**（只负责底色与 hover 分组），主点击区与动作区是它的两个**兄弟**。
+   * **薄包装，不是第二份实现**（Task 0017 · P3）。
    *
-   * 2026-11-09 axe `nested-interactive`：行原本是 `role="button"`，里面放着三个 IconButton
-   * （真 `<button>`）→ 交互元素嵌套，读屏与键盘会出现"两个目标叠在一起"。
-   * 拆成兄弟之后：点行 = 选中会话；点图标 = 该动作；两者互不嵌套。
+   * 合并前这里是独立实现（自己画底色、自己拼槽位），与 `Row` 方向相反：
+   * `Row` 把悬停底画在主点击区（无圆角 → 方角块），这里画在行根（有圆角）。
+   * 同一机制两份实现必然漂 —— 2026-11-16 用户截图就是它漂出来的（C201）。
+   *
+   * 现在只有 `Row` 一份实现（`variant="two-line"`）；本组件只保留"会话行专用的形状参数"。
+   * 契约不变：`data-testid` 在行根、主点击区带 `role=button`、动作区是主点击区的兄弟。
    */
   return (
-    <div data-testid={testId} aria-current={selected ? "true" : undefined}
-      className={`group/session flex h-14 w-full items-center rounded-row transition-colors ${
-        selected ? "bg-nav-selected font-medium text-ink-900" : "text-ink-700 hover:bg-nav-accent"
-      }`}>
-      <div role="button" tabIndex={0} onClick={onSelect}
-        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}
-        // 主点击区不侵入状态槽（槽宽 = 动作区宽 = 3×28）：`pr-0`，两行文字自己会在槽前截断。
-        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-row pl-2 pr-0">
-      <span className="flex min-w-0 flex-1 flex-col">
-        {renaming ? (
-          <input autoFocus value={renameValue}
-            onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => onRenameChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") { event.preventDefault(); onRenameCommit(event.currentTarget.value); }
-              if (event.key === "Escape") { event.preventDefault(); onRenameCancel(); }
-            }}
-            onBlur={onRenameCancel}
-            onClick={(event) => event.stopPropagation()}
-            className="min-w-0 rounded-control bg-surface px-1 text-body text-ink-900 ring-1 ring-accent" />
-        ) : (
-          <span className={`truncate text-body ${titleFallback ? "font-mono text-nav-muted" : "text-ink-900"}`}
-            data-fallback={titleFallback ? "id" : undefined}
-            title={titleFallback ? "这条会话还没有标题（显示的是会话 id）" : undefined}>{title}</span>
-        )}
-        {/* 副行用 nav-muted 而不是 ink-500：ink-500 在 nav-accent / nav-selected 上只有 4.10 / 4.03，
-            低于 AA 4.5（导航层专用色 nav-muted 为 4.90 / 4.65）。 */}
-        <span className="flex min-w-0 items-center gap-1.5 text-micro text-nav-muted">
-          {participants}
-          <span className="min-w-0 truncate">{meta}</span>
-        </span>
-      </span>
-      {/*
-        * 状态槽宽度 = 时间串的真实宽度（11px 下的"13小时前"约 40px）+ 呼吸余量。
-        *
-        * 2026-11-09 审核实测的缺陷：槽只有 64px，而 hover 出现的动作区（历史/重命名/删除）
-        * 三个 28px 图标 = 84px，绝对定位后会**向左溢出 20px、压住标题 12px**。
-        * 现在把两种宽度分开：槽按内容自适应（min-w），动作区宽度由自己决定并覆盖在槽上，
-        * 且 hover 时标题侧的两行**收窄**到同一右边界，不再被盖。
-        */}
-      {/*
-        * 槽宽 = **动作区宽度**（3 个 28px 图标 = 84 = w-21），不是时间串宽度。
-        *
-        * 2026-11-09 审核实测的缺陷：槽宽 64（时间"13小时前"够用），hover 出现的
-        * 动作区 84px 绝对定位后向左溢出 20px、压住标题 12px，两串字叠在一起。
-        * 试过的另一种修法（hover 时给标题加 pr-92）会把标题挤到 67px，且行内宽度随 hover 变=抖动。
-        * 现在让槽位本身就按动作区定宽：时间右对齐落在同一格里，hover 只换内容不换几何。
-        */}
-      {/*
-        * 动作区与状态槽**都是主点击区的兄弟**（2026-11-09 axe `nested-interactive`）：
-        * 行是 role=button，里面再放 IconButton 就是嵌套交互元素（读屏/键盘会串）。
-        * 布局不变：槽 84px（动作区宽度），hover 时动作区覆盖在槽上、给实底。
-        */}
-      </div>
-      <span className="relative flex w-21 shrink-0 items-center justify-end group/slot">
-        <span className="flex items-center transition-opacity group-hover/session:opacity-0 group-has-[:focus-visible]/slot:opacity-0 [@media(hover:none)]:group-focus-within/session:opacity-0">{status}</span>
-        <span className="absolute right-0 flex items-center rounded-control bg-nav-accent opacity-0 pointer-events-none transition-opacity group-hover/session:bg-nav-selected group-hover/session:opacity-100 group-hover/session:pointer-events-auto group-has-[:focus-visible]/slot:opacity-100 group-has-[:focus-visible]/slot:pointer-events-auto [@media(hover:none)]:group-focus-within/session:opacity-100 [@media(hover:none)]:group-focus-within/session:pointer-events-auto">
+    <Row
+      variant="two-line"
+      selected={selected}
+      testId={testId}
+      title={title}
+      titleFallback={titleFallback}
+      participants={participants}
+      meta={meta}
+      status={status}
+      renaming={renaming}
+      renameValue={renameValue}
+      onRenameChange={onRenameChange}
+      onRenameCommit={onRenameCommit}
+      onRenameCancel={onRenameCancel}
+      actions={
+        <>
           <IconButton label="会话历史" size="sm" onClick={(event) => { event.stopPropagation(); onHistory(); }}><AppIcon name="history" size={14} /></IconButton>
           <IconButton label="重命名会话" size="sm" onClick={(event) => { event.stopPropagation(); onRename(); }}><AppIcon name="pencil" size={14} /></IconButton>
           <IconButton label="删除会话" size="sm" onClick={(event) => { event.stopPropagation(); onDelete(); }}><AppIcon name="trash" size={14} /></IconButton>
-        </span>
-      </span>
-    </div>
+        </>
+      }
+      onClick={onSelect}
+    />
   );
 }
 

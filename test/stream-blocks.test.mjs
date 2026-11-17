@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks } from "../frontend/src/stream-blocks.ts";
+import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks } from "../frontend/src/api/stream-blocks.ts";
 
 /**
  * 归并判据：一条助手消息里的块顺序 == 模型输出的顺序（思考/文本/工具交替），

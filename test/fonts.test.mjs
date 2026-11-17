@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 const CSS = readFileSync(new URL("../frontend/src/index.css", import.meta.url), "utf8");
 const TOKENS = readFileSync(new URL("../frontend/src/design/tokens.css", import.meta.url), "utf8");
 const PKG = readFileSync(new URL("../frontend/src/design/theme-package.ts", import.meta.url), "utf8");
-const SETTINGS = readFileSync(new URL("../frontend/src/settings-surface.tsx", import.meta.url), "utf8");
+const SETTINGS = readFileSync(new URL("../frontend/src/views/settings-surface.tsx", import.meta.url), "utf8");
 
 test("字体族走变量（不是写死在选择器里）", () => {
   assert.ok(/--font-sans:/.test(CSS), "index.css 没有 --font-sans 变量");

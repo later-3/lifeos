@@ -5,7 +5,7 @@
 // 这组测试把"不可能撞车"锁死。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextAnnotationId, uniqueAnnotationId } from "../frontend/src/annotation-id.ts";
+import { nextAnnotationId, uniqueAnnotationId } from "../frontend/src/api/annotation-id.ts";
 
 test("同一毫秒内连续创建：序号递增，互不相同", () => {
   const now = 1_700_000_000_000;

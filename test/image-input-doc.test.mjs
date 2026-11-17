@@ -7,7 +7,7 @@ import {
 import {
   CLIENT_COMPRESS_THRESHOLD_BYTES, CLIENT_JPEG_QUALITY, CLIENT_MAX_IMAGE_SIDE,
   MAX_IMAGE_BYTES as CLIENT_MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE as CLIENT_MAX_IMAGES,
-} from "../frontend/src/attachments.ts";
+} from "../frontend/src/api/attachments.ts";
 
 const doc = readFileSync(new URL("../.lifeos/projects/lifeos/knowledge/design/image-input.md", import.meta.url), "utf8");
 

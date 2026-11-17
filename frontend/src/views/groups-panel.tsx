@@ -1,0 +1,231 @@
+/**
+ * 左区层次面板：**项目分组 → 会话行**（Task 0015 · T15，按 P-02 草案落码）。
+ *
+ * 为什么合并（不是审美，是宽度预算 + 已写规范）：
+ * - 旧：项目列 216 + 会话列 272 + 3 个把手 → `leftDocked = 782`，退化阈值 1202 > 1024
+ *   → 13 寸笔记本上左三列整体变抽屉（`design/layout.ts` 手算）；
+ * - 新：一列 300（240–440）+ 2 个把手 → `leftDocked = 588`，阈值 1008，1024 直接可用；
+ * - P-02 草案早已写定形态与数值（`knowledge/design/im/groups-panel.md` §5.1/§5.2、
+ *   `design-language.md` §5.1），本文件是**照图施工**，不新造数值。
+ *
+ * 数值纪律（全部来自 design-language §5.1，不在这里写 px 字面量）：
+ * - 分组头高 32、section 字级（content / 600 / ink-900）、左侧 28 折叠列、右侧计数 micro tabular；
+ * - **不画括线**（Task 0006：D10 作废）：层级只靠一条左缘 + 折叠状态。
+ *   分组头与组内行共用同一套左缘（列内边距 8 + 折叠列 28 + gap 8 = 44），
+ *   与 A 级参考 LobeHub 同构（`NavItem` 的 Center 28 + gap 8 + paddingInline 4，
+ *   `src/features/NavPanel/components/NavItem.tsx:196-215`；分组头同样 C enter 28 + padding 4，
+ *   `src/features/AgentSidebar/Topic/TopicListContent/ByProjectMode/GroupItem.tsx:347-360`）；
+ * - 组内行双行 56；组间距 8；列内边距 8。
+ */
+import type { ReactNode } from "react";
+import { AgentAvatar, type AgentAvatarSpec } from "./agent-avatar";
+import { UserAvatar } from "./user-avatar";
+import { Button, IconButton, Label, SessionRow, ClickableRow } from "../design/ui";
+import { avatarBoxStyle, avatarOverlapOffset } from "../api/avatar-style";
+import { AppIcon } from "../design/icons";
+
+/** 分组头（项目）：section 字级 + 28 折叠列 + 右侧计数药丸（可点开概览卡）。 */
+export function GroupHeader({ name, count, open, onToggle, onSelect, selected = false, onNewSession, onNewSessionDisabled = false, onOverview, actions }: {
+  name: string;
+  count: number;
+  open: boolean;
+  /** 折叠 / 展开（点箭头或整行名称）。 */
+  onToggle: () => void;
+  /**
+   * 切到该项目（Task 0015 · T15）。
+   *
+   * 合并前"点项目行 = 选中项目"；合并后分组头的**主作用必须是折叠**（P-02 §6），
+   * 所以选中改由**会话行**承担（点会话 → 同时选中它的项目）。
+   * 这个入口只给"该项目下还没有会话"时用（`＋ 新建会话` 会需要知道当前项目）。
+   */
+  onSelect?: () => void;
+  selected?: boolean;
+  /**
+   * 在这个项目下开新会话（Task 0006）。
+   *
+   * 为什么要长在分组头里：合并成一个面板后，「新建会话」原来只剩列底一个全局按钮，
+   * 它**不知道用户想建到哪个项目**——落点由 `selectedProjectId` 这个变量决定，
+   * 而点会话行/点分组头都不改它（`App.tsx:1805` / `:1781`），于是新会话会落进
+   * 上一个项目。把按钮放进项目名那一行，归属就变成**界面位置**，不再依赖隐式状态。
+   */
+  onNewSession?: () => void;
+  /** 已经在这个项目的草稿里：本组按钮禁用（其他组照常可点，点了切过去）。 */
+  onNewSessionDisabled?: boolean;
+  /**
+   * 打开项目概览卡（Task 0010）。参数 = 概览钮元素（浮层定位的锚）。
+   * 入口 = **同格互换的 ⓘ 钮**（用户 2026-11-13 拍板）：与助手行/会话行同一套
+   * "状态 ↔ hover 动作同格互换"机制（`design/ui.tsx` Row / SessionRow）——
+   * 旧版把入口藏在计数里（点数字），不可发现，已废弃。
+   */
+  onOverview: (anchor: HTMLElement) => void;
+  /**
+   * 状态徽标（running/unread/error）：**挂在项目名旁**（Task 0010）。
+   *
+   * 为什么搬家：徽标以前排在计数之后，出现/消失会把 ＋ 和计数整体左推（实测两行差 48px，
+   * 不成列）。它是"这个项目的状态"，锚在名字上语义更顺，且不再参与右列布局。
+   * 徽标是 span（非交互元素），点击随行折叠（行主作用不变）。
+   */
+  actions?: ReactNode;
+}) {
+  return (
+    // 行高 32（design-language §5.1）；内部按钮用 **h-8**（32 = 命中区档位 ≥28），
+    // 不用 h-7（28 视觉高但实测只报 26，撞门禁）。
+    // 容器**不加水平内边距**：滚动容器已有 px-2（8），折叠列 28 + gap 8 = 44 刚好与组内行标题同缘（D21）。
+    <div className="flex h-8 items-center gap-2 pr-1"
+      data-testid="group-header" data-group-name={name}>
+      {/* 折叠列 = 28 = 命中盒档位；点击整行折叠（不只点箭头）。
+          名字不再 flex-1（徽标要贴着名字）：min-w-0 让长名在徽标前截断；
+          按钮本身仍 flex-1——空白中段仍是折叠点击区，悬停底色仍覆盖整行。 */}
+      <ClickableRow
+        shape="row"
+        onClick={() => { if (onSelect !== undefined && !selected) { onSelect(); return; } onToggle(); }}
+        aria-expanded={open}
+        aria-current={selected ? "true" : undefined}
+        aria-label={`${name}，${open ? "折叠" : "展开"}分组`}
+        className="h-8 min-w-0 flex-1 hover:bg-wash-hover">
+        <span className="flex h-8 w-7 shrink-0 items-center justify-center text-ink-500">
+          {open ? <AppIcon name="chevron-right" size={16} className="rotate-90" /> : <AppIcon name="chevron-right" size={16} />}
+        </span>
+        {/* 分组头 = **容器**，字级要比行标题**小一号**、颜色更弱（2026-11-09 实测修正）：
+            text-meta(12px)/500 + nav-muted（字级与颜色两条都弱下去，名字仍可扫）。 */}
+        <span className="min-w-0 shrink truncate text-meta font-medium text-nav-muted">{name}</span>
+        {actions}
+      </ClickableRow>
+      {/* 右区固定锚（Task 0010 · 三轮拍板）：[计数（纯数据）][ⓘ 概览钮（常显）][＋ 新建]。
+         用户原话"直接固定吧，不要鼠标移动上去再显示"——可发现性优先于密度；
+         三样全部右锚定成列。移除 ✕ 已搬进概览卡（低频危险动作离开行尾）。 */}
+      {/*
+        * 计数药丸**不借行悬停色**（Task 0017 · P1 / 层模型 L2）：
+        * 它原来是 `bg-nav-accent`，而分组头悬停也是 `bg-nav-accent`（`:84`）——
+        * 同一层、同一个 token 画两次 ⇒ 悬停时药丸的**形**消失（数字还在，胶囊底没了），
+        * 看起来像"设计如此"。改用 `bg-sunken`（与列底不同的中性档）：
+        * 既保住药丸的形状，又不与任何悬停态撞色。
+        * `frontend/test/layer-paint.mjs` 断言「药丸与宿主悬停不同 token」。
+        */}
+      <span aria-label={`${count} 条会话`} data-shot-mask="group-count"
+        className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium leading-none tabular-nums text-nav-muted">{count}</span>
+      <IconButton size="sm" label={`${name} 项目概览`} onClick={(event) => onOverview(event.currentTarget)}>
+        <AppIcon name="info" size={14} />
+      </IconButton>
+      {/* 新建会话：在计数之后（Task 0010：计数左·动作右，行尾成熟排法）。
+          旧顺序（＋在计数前）读起来像 "workspace ＋ 12" 算式。 */}
+      {onNewSession !== undefined && (
+        <span className="shrink-0">
+          <IconButton size="sm" label={`在 ${name} 新建会话`} onClick={onNewSession}
+            {...(onNewSessionDisabled === true ? { disabled: true } : {})}>
+            <AppIcon name="plus" size={14} />
+          </IconButton>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 组内行的容器（Task 0006：**不再画括线**）。
+ *
+ * 旧的括线是 D10 的落码，而 D10 直接抄了 Zulip 的装饰件 —— 用户 2026-11-06 判定“太丑”。
+ * 现在从属关系只靠**缩进**表达：分组头与组内行共用一套左缘（列内边距 8 + 折叠列 28 + gap 8 = 44），
+ * 括线删掉，列里只剩两条左缘（列头 8 / 行内容 44）。
+ * 依据：LobeHub 没有括线，层级靠 accordion 的展开状态 + 对齐缩进
+ * （`src/features/NavPanel/components/NavItem.tsx:196-215`、`ByProjectMode/GroupItem.tsx:347`）。
+ */
+export function GroupBody({ children }: { children: ReactNode }) {
+  // 缩进 = 折叠列 28（w-7）。行内部再 px-2（8）→ 标题落在 8(列) + 28 + 8 = **44**，
+  // 与分组头名字同一左缘（分组头：8 + 28 + gap8 = 44）。一列只剩两条左缘：列头 8 / 内容 44（D21）。
+  return <div className="pb-1">{children}</div>; // 水平 padding 下沉到行内（选中背景满宽）
+}
+
+/** 参与者叠放双头像（会话行第一行的锚点）：表达"这条是两个参与者在谈"。 */
+/**
+ * 会话行**第二行**开头的参与者头像（Task 0015 · T17 修订，用户 2026-11-02）。
+ *
+ * 为什么从"第一行大叠放头像"改成"第二行小头像"：
+ * - 左侧 Agent 列已经表达了"我在跟哪个 Agent 干活"，第一行再放 24px 头像等于**每行重画一次同一个 Agent**；
+ * - 会话行的第一行应该只回答"是哪件事"，"和谁"属于元信息（与 Task、状态、时间同一行）；
+ * - 放到第二行后，第一行标题不再被头像挤占（可用宽度回到满格）。
+ *
+ * 尺寸 16 = 与第二行的 `micro` 字号同高的行内档（`design-language.md` §5.3 图标 16 档），
+ * 不新增尺寸；只有 **Agent ↔ Agent** 的会话才叠第二个（用户 ↔ Agent 的对端就是当前 Agent，
+ * 左边那列已经写着了，不重复）。
+ */
+export function ParticipantToken({ me, them, showMe, size = 16, ringClass }: {
+  me: { id: string; name: string; kind: "user" | "agent" };
+  them: { id: string; name: string; avatar?: AgentAvatarSpec } | undefined;
+  showMe: boolean;
+  size?: number;
+  ringClass: string;
+}) {
+  if (them === undefined) {
+    return <span className="shrink-0" aria-hidden><MeAvatar spec={me} size={size} /></span>;
+  }
+  if (!showMe) {
+    return (
+      <span className="shrink-0" aria-hidden>
+        <ThemAvatar id={them.id} name={them.name} {...(them.avatar !== undefined ? { avatar: them.avatar } : {})} size={size} />
+      </span>
+    );
+  }
+  // 叠放：第二个左移 60%，描边随行底色（避免两层圆叠死）
+  const gap = avatarOverlapOffset(size);
+  return (
+    <span className="relative shrink-0" style={{ width: size + gap, height: size }} aria-hidden>
+      <span className="absolute left-0 top-0"><MeAvatar spec={me} size={size} /></span>
+      <span className={`absolute top-0 ${ringClass}`} style={{ left: gap, borderRadius: "var(--radius-full)" }}>
+        <ThemAvatar id={them.id} name={them.name} {...(them.avatar !== undefined ? { avatar: them.avatar } : {})} size={size} />
+      </span>
+    </span>
+  );
+}
+
+function MeAvatar({ spec, size }: { spec: { id: string; name: string; kind: "user" | "agent" }; size: number }) {
+  if (spec.kind === "user") return <UserAvatar profile={{ id: spec.id, name: spec.name, avatar: null }} size={size} />;
+  return <span className="flex shrink-0 items-center justify-center rounded-full bg-accent font-medium text-white"
+    style={avatarBoxStyle(size)}>{spec.name.slice(0, 1)}</span>;
+}
+
+function ThemAvatar({ id, name, avatar, size }: { id: string; name: string; avatar?: AgentAvatarSpec; size: number }) {
+  return <AgentAvatar id={id} name={name} avatar={avatar} size={size} />;
+}
+
+
+/** 空态行（组内没有会话，或整列没有项目）。 */
+export function PanelEmpty({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
+  return (
+    <div className="px-4 py-6 text-center">
+      <p className="text-body text-ink-700">{title}</p>
+      {hint !== undefined && <p className="mt-1 text-micro text-nav-muted">{hint}</p>}
+      {action !== undefined && <div className="mt-3">{action}</div>}
+    </div>
+  );
+}
+
+/** 底部主操作（添加项目 / 新建会话）。 */
+export function PanelFooter({ children }: { children: ReactNode }) {
+  return <div className="shrink-0 px-2 py-2">{children}</div>;
+}
+
+export function AddProjectButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button size="sm" className="w-full" onClick={onClick}>
+      <AppIcon name="folder-plus" size={14} /> 添加项目
+    </Button>
+  );
+}
+
+/** 列头：Label「会话」+ 总数 + 收起。与 App 里其它列头保持同一形状。 */
+export function GroupsColumnHeader({ count, onHide }: { count?: number; onHide: () => void }) {
+  return (
+    // 列内边距 8（design-language §5.1 / D21）：与助手列的列头同一左缘，
+    // 也与分组头、组内行共用这套网格（旧值 pl-3=12 多出第三条左缘）。
+    <div className="flex h-10 shrink-0 items-center gap-1.5 px-2">
+      <Label tone="nav" className="min-w-0 truncate">会话</Label>
+      {count !== undefined && (
+        <span aria-label={`会话 ${count} 个`} data-shot-mask="column-count"
+          className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-wash-chip px-1.5 text-micro font-medium tabular-nums text-nav-muted">{count}</span>
+      )}
+      <span className="ml-auto" />
+      <IconButton size="sm" label="收起此列" onClick={onHide}><AppIcon name="chevron-left" size={16} /></IconButton>
+    </div>
+  );
+}

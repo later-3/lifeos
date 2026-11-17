@@ -6,7 +6,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MARKS, MARK_ID_PATTERN, markById, toneColorVar, toneSoftVar, labelsOf, toneIdsOf, sayOf } from "../frontend/src/marks.ts";
+import { MARKS, MARK_ID_PATTERN, markById, toneColorVar, toneSoftVar, labelsOf, toneIdsOf, sayOf } from "../frontend/src/api/marks.ts";
 
 test("标记表顺序固定：4 个语气 + 2 个功能", () => {
   assert.deepEqual(MARKS.map((m) => m.label), ["疑问", "批评", "鼓励", "同意", "存档", "待办"]);

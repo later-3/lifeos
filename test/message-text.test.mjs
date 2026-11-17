@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyTextOf } from "../frontend/src/message-text.ts";
+import { copyTextOf } from "../frontend/src/api/message-text.ts";
 
 test("只复制文本块：按出现顺序换行拼接，跳过思考与工具", () => {
   assert.equal(copyTextOf([

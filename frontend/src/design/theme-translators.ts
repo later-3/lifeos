@@ -17,8 +17,30 @@ const VSC_MAP: Record<string, ContractVar> = {
   "panel.background": "--color-sunken",
   "sideBar.background": "--color-nav-bg",
   "activityBar.background": "--color-nav-edge",
-  "list.hoverBackground": "--color-hover",
-  "list.activeSelectionBackground": "--color-nav-selected",
+  /*
+   * **`list.hoverBackground` / `list.activeSelectionBackground` 被有意从映射里删掉**
+   * （Task 0017 · P2，2026-11-16）。
+   *
+   * 旧映射把 VSCode 的「编辑器选区色」直接当成我们的行选中底：
+   *   `list.activeSelectionBackground` → `--color-nav-selected`
+   * 而后者是**派生量**（`theme.ts` `navSelected: [selL, nC*2.6, nH]`，饱和度锚在主题中性色）。
+   *
+   * 后果（用户第一张截图）：Quiet Light 的 `#c4d9b1` 直接变成整块荧光绿的选中底 ——
+   * OKLCH chroma **0.0585**，而内置引擎 5 预设 × 深浅 10 组实测上界只有 **0.0121**（4.8 倍）。
+   * 压在它上的运行光环实测变成 `#a7b6b4`（对底 1.39:1，蓝绿相消成一坨灰泥）；
+   * 未读绿点 3.77:1 且同色相叠同色相。
+   *
+   * 为什么是"删掉"而不是"改映射到别的变量"：这两个键在 VSCode 里表达的是
+   * **"状态有多重"（一个 L* 台阶 + 一点色相）**，而我们的 `navAccent / navSelected`
+   * 是**从主题中性色按比例派生**的同一个量。把它们并进 fill 只能二选一：
+   * 要么让外来值覆盖关系（旧行为，出荧光绿），要么让关系覆盖外来值（等于不读）。
+   * 正确做法是**不读这两项的色值**，只让 `extractVscodeSeed` 用 `focusBorder/button.background`
+   * 定主色相，行态的台阶仍由引擎算 —— 这样主题个性体现在色相上，强度留在我们验证过的区间里。
+   *
+   * 遗留（登记在 Task 0017 todo）：VSCode 的这两个键带 alpha（`#ffffff14` = 8% 白），
+   * 那正是 wash 的语义。等 wash 契约稳定后可以把它们的 **alpha** 读进来当 wash 强度种子，
+   * 但需要先扩展契约（新增 wash 变量），不在 P2 的范围里。
+   */
   "panel.border": "--color-line",
   "input.border": "--color-line",
   "menu.border": "--color-line",

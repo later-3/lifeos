@@ -127,7 +127,7 @@ test("场景1-2 下一轮再发时，待发送池为空 → 不组装批注文�
     await consume(["a1"], "send-1");
 
     // 前端组装逻辑（与 App.tsx send() 完全一致）
-    const { annotationsMessage } = await import("../frontend/src/annotation-message.ts");
+    const { annotationsMessage } = await import("../frontend/src/api/annotation-message.ts");
     const pending = pendingOf(await listAnnos());
     const annoText = pending.length === 0 ? "" : annotationsMessage(pending);
 
@@ -228,7 +228,7 @@ test("场景2-3 重新编辑已发送的：新记录进待发送、旧记录留�
     assert.deepEqual(pending.map((a) => a.id), ["v2"], "只有新版本待发送");
 
     // 组装时只该出现"新说法"，不该出现"旧说法"
-    const { annotationsMessage } = await import("../frontend/src/annotation-message.ts");
+    const { annotationsMessage } = await import("../frontend/src/api/annotation-message.ts");
     const text = annotationsMessage(pending);
     assert.ok(text.includes("新说法"), "新版本要发");
     assert.ok(!text.includes("旧说法"), "旧版本不能发");
@@ -253,7 +253,7 @@ test("场景2-4 ⭐ 编辑后内容一模一样，也必须能再发（状态跟
     assert.deepEqual(pending.map((a) => a.id), ["v2"], "新记录必须待发送");
     assert.equal(pending[0].note, "一字不改", "内容与旧的一模一样——这不影响判断");
 
-    const { annotationsMessage } = await import("../frontend/src/annotation-message.ts");
+    const { annotationsMessage } = await import("../frontend/src/api/annotation-message.ts");
     assert.ok(annotationsMessage(pending).includes("一字不改"), "一模一样的文字也要能再发");
   } finally { server.close(); }
 });
@@ -331,7 +331,7 @@ test("边界-1 会话里同时有 pending 和 consumed：只发 pending", async 
     const pending = pendingOf(await listAnnos());
     assert.deepEqual(pending.map((a) => a.id).sort(), ["new1", "new2"]);
 
-    const { annotationsMessage } = await import("../frontend/src/annotation-message.ts");
+    const { annotationsMessage } = await import("../frontend/src/api/annotation-message.ts");
     const text = annotationsMessage(pending);
     assert.ok(!text.includes("已发过的"), "旧的不发");
     assert.ok(text.includes("新标的 1") && text.includes("新标的 2"), "新的都发");
@@ -344,7 +344,7 @@ test("边界-2 只有功能标记（存档/待办）的批注：不组装出文�
     await addAnno("f1", "", { marks: ["todo"] });
     const pending = pendingOf(await listAnnos());
     assert.equal(pending.length, 1, "它确实是待发送");
-    const { annotationsMessage } = await import("../frontend/src/annotation-message.ts");
+    const { annotationsMessage } = await import("../frontend/src/api/annotation-message.ts");
     assert.equal(annotationsMessage(pending), "", "但组装出来是空串（不发给 Agent）");
   } finally { server.close(); }
 });

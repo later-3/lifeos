@@ -11,9 +11,9 @@ import assert from "node:assert/strict";
 import {
   COPY_EDGE_MARGIN, COPY_FEEDBACK_MS, COPY_GAP,
   copyFeedbackPosition, copyLabel, shouldCopy,
-} from "../frontend/src/copy-on-select.ts";
+} from "../frontend/src/api/copy-on-select.ts";
 
-/** @typedef {import("../frontend/src/copy-on-select.ts").CopyDecisionFacts} CopyDecisionFacts */
+/** @typedef {import("../frontend/src/api/copy-on-select.ts").CopyDecisionFacts} CopyDecisionFacts */
 
 /** @param {Partial<CopyDecisionFacts>} over */
 const facts = (over = {}) => ({

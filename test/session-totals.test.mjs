@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionTotalsOf } from "../frontend/src/session-totals.ts";
+import { sessionTotalsOf } from "../frontend/src/api/session-totals.ts";
 
 const tool = { type: "toolCall", id: "t", name: "read", arguments: {} };
 const text = (s) => ({ type: "text", text: s });
