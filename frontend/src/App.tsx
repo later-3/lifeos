@@ -1521,12 +1521,21 @@ export default function App() {
    * 修法：重取回来的每一行**就是服务端此刻的真相**，用它覆盖槽位。
    * 这样任何"补丁与事实不一致"都会被下一次重取自愈，不需要再补一堆对称的减一。
    */
-  async function reloadGroups() {
-    const id = ctx.current.agentId;
-    if (id === undefined) return undefined;
-    const next = await fetchGroups(id);
-    rememberGroups(id, next);
-    setGroups(next);
+  /**
+   * 用**列表行**校正 `sessionSlots`（Task 0017 · todo #2）。
+   *
+   * 为什么单独抽：`sessionSlots` 是徽标数字的唯一事实源，原来只有两条维护路径
+   * —— SSE **快照重建**（`onStreamSnapshot`）与 `row` 补丁。**首次加载**走
+   * `fetchGroups` + `setGroups`，**不播种 slots** → 冷启动时列表里已有 running/unread
+   * 的会话不出数字，要等一次补丁或重连才有（`ui-contract` 的「P1·1.5 聚合数量」21 项红的根因，
+   * P0 已查清）。
+   *
+   * 语义（与 `reloadGroups` 原来的那段完全一致）：
+   * - 行说它有某种状态 → 槽位记上（覆盖旧的）；
+   * - 行说它没有状态了 → 槽位删掉（这正是"绿点消失但数字还在"的修复点）；
+   * - 没变化就不改（避免无意义重渲染）。
+   */
+  function syncSlotsFromRows(agentId: string, next: readonly Group[]): void {
     setSessionSlots((previous) => {
       let changed = false;
       const slots = new Map(previous);
@@ -1547,13 +1556,22 @@ export default function App() {
             continue;
           }
           const effectiveProject = group.project.id;
-          if (current !== undefined && current.slot === want && current.agentId === id && current.projectId === effectiveProject) continue;
-          slots.set(item.sessionId, { agentId: id, projectId: group.project.id, slot: want });
+          if (current !== undefined && current.slot === want && current.agentId === agentId && current.projectId === effectiveProject) continue;
+          slots.set(item.sessionId, { agentId, projectId: group.project.id, slot: want });
           changed = true;
         }
       }
       return changed ? slots : previous;
     });
+  }
+
+  async function reloadGroups() {
+    const id = ctx.current.agentId;
+    if (id === undefined) return undefined;
+    const next = await fetchGroups(id);
+    rememberGroups(id, next);
+    setGroups(next);
+    syncSlotsFromRows(id, next);
     return next;
   }
 
@@ -2139,6 +2157,12 @@ export default function App() {
       const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
       setGroups(groups);
       if (fetched.length > 0) rememberGroups(found.id, groups);
+      /*
+       * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
+       * 冷启动时列表里已有 running/unread 的会话不出数字，要等一次 `row` 补丁或重连快照才有。
+       * 缓存命中也播种：缓存里的 activity 可能与服务端不同步，但随后的 `fetched` 会覆盖它。
+       */
+      syncSlotsFromRows(found.id, groups);
       // URL 指定了项目 = 用户明确要看这个项目：只在这个项目里找会话，不拿别的项目"记住的会话"顶上
       // （2026-10-19 实测：?project=<空项目> 会被上次的 workspace 会话顶掉）
       const wantGroup = wantProject === null ? undefined : groups.find((g) => g.project.id === wantProject);
