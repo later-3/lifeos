@@ -64,7 +64,7 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 /* ── ② 首屏：从 goto 到"第一行可见" ── */
 /*
  * 先判断入口类型（在 Node 侧 fetch，不能在页面里：页面还没导航，相对地址解析不了）。
- * 生产构建的 index.html 引用带内容 hash 的 `/assets/*.js` 并注入 `__LIFEOS_BUILD__`；
+ * 生产构建的 index.html 引用带内容 hash 的 `/assets/*.js`；
  * dev server 引用 `/src/main.tsx`。
  */
 const buildKind = await (async () => {

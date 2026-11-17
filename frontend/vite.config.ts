@@ -5,12 +5,17 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 
 /*
- * 构建版本（Task 0013，案例 C216）：buildId 是版本事实的唯一来源，构建期生成一次，
- * 三处消费（index.html 注入 / dist/version.json / dist/sw.js 缓存 key）全部由它派生。
+ * 构建版本（Task 0013，案例 C216；Task 0024 收窄到唯一消费者）：buildId 构建期生成一次，
+ * **只给 `sw.js` 的缓存 key 用**（`lifeos-shell-<buildId>`）。
  * - buildId = git sha 短码 + 时间戳 36 进制：同一 commit 两次构建也不同（时间戳），必变；
- * - dev 模式不注入（version-check 靠"无注入即跳过"，零成本）；
+ * - 为什么必须每次构建都变：cache key 恒定 = activate 里 `key !== CACHE` 永假 = 旧缓存永不清除
+ *   （C216 的原始根因：界面跑旧 bundle 数日）；
  * - sw.js 的占位符 `__LIFEOS_SW_BUILD__` 在 closeBundle 里替换——public/ 是静态拷贝，
  *   vite 不处理它，只能在产物侧重写。
+ *
+ * 2026-11-17（Task 0024）删除：此前还向 index.html 注入 `window.__LIFEOS_BUILD__` 并写
+ * `dist/version.json`，供前端轮询比对后弹「有新版本」提示条。该提示条的触发条件等同于
+ * 用户自己执行构建，没有信息量，整条链路（页面轮询 + 提示条 + version.json）已删除。
  */
 function gitShortSha(): string {
   try {
@@ -25,21 +30,8 @@ const buildId = `${gitShortSha()}-${Date.now().toString(36)}`;
 function lifeosBuildVersion(): Plugin {
   return {
     name: "lifeos-build-version",
-    transformIndexHtml(_html, ctx) {
-      // dev 不注入：version-check 靠"无注入即跳过"，dev 环境零成本且可测试性不受干扰
-      //（测试用 addInitScript 自己注入；若 dev 也注入，会盖掉测试夹具——C217 修复中实测踩到）
-      if (ctx?.server) return [];
-      return [
-        {
-          tag: "script",
-          children: `window.__LIFEOS_BUILD__=${JSON.stringify(buildId)};`,
-          injectTo: "head-prepend",
-        },
-      ];
-    },
     closeBundle() {
       const outDir = "dist";
-      writeFileSync(`${outDir}/version.json`, JSON.stringify({ buildId }) + "\n");
       const swPath = `${outDir}/sw.js`;
       const sw = readFileSync(swPath, "utf8");
       if (!sw.includes("__LIFEOS_SW_BUILD__")) {
