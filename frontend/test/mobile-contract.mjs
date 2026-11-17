@@ -645,6 +645,50 @@ for (const width of [320, 360, 390]) {
     check(`[${width}] 动作层每项命中 ≥44`,
       layer !== null && layer.sizes.every((s) => { const [w, h] = s.split("x").map(Number); return w >= 44 && h >= 44; }),
       layer === null ? "" : layer.sizes.join(" / "));
+    /*
+     * ★ 2026-11-17 用户实测抓到的缺陷：点 ⋯ 只看到图标变 ✕，其余什么都不变。
+     * 根因是动作层的定位父级是**那个 44px 宽的 ⋯ 容器**，`left-11 right-11` 算出 44−44−44 < 0
+     * → 层被压成 **1px 宽**，4 个按钮渲染在 x=375/419/463/507（全在屏外）。
+     *
+     * 上面 4 条断言当时**全绿**：它们只查"元素存在 / 自身 44×44 / 标题没被挤"，
+     * 没有一条查"这个按钮在不在屏幕里、能不能点到"。这就是规范 2.15 那类假绿的又一种形态：
+     * **尺寸对、位置错**。
+     *
+     * 现在补三条硬判据（每条都直接对应"用户能不能用"）：
+     *   a) 动作层自身宽度 ≥ 动作数量 × 44（层不能比它的内容还窄）；
+     *   b) 每个动作**整块落在视口内**（x ≥ 0 且 right ≤ 视口宽）；
+     *   c) 中心点命中测试：`elementFromPoint` 取到的必须是这个按钮（不是被盖住）。
+     */
+    const inViewport = await page.evaluate(() => {
+      const layer = document.querySelector('[data-mobile-toolbar-actions]');
+      if (layer === null) return null;
+      const layerBox = layer.getBoundingClientRect();
+      const items = [...layer.querySelectorAll("[data-mobile-toolbar-action]")];
+      const vw = window.innerWidth;
+      return {
+        layerWidth: Math.round(layerBox.width),
+        actions: items.map((el) => {
+          const r = el.getBoundingClientRect();
+          const top = document.elementFromPoint(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
+          return {
+            id: el.getAttribute("data-mobile-toolbar-action"),
+            x: Math.round(r.x),
+            right: Math.round(r.right),
+            inside: r.x >= 0 && r.right <= vw + 0.5,
+            hittable: top === el || el.contains(top),
+          };
+        }),
+      };
+    });
+    check(`[${width}] 动作层宽度能容纳全部动作`,
+      inViewport !== null && inViewport.layerWidth >= inViewport.actions.length * 44,
+      inViewport === null ? "层没出现" : `${inViewport.layerWidth}px / 需 ${inViewport.actions.length * 44}px`);
+    check(`[${width}] 每个动作都整块落在视口内`,
+      inViewport !== null && inViewport.actions.every((a) => a.inside),
+      inViewport === null ? "" : inViewport.actions.map((a) => `${a.id}:${a.x}–${a.right}`).join(" / "));
+    check(`[${width}] 每个动作中心点能点到（没被盖住）`,
+      inViewport !== null && inViewport.actions.every((a) => a.hittable),
+      inViewport === null ? "" : inViewport.actions.map((a) => `${a.id}:${a.hittable}`).join(" / "));
     check(`[${width}] 动作层展开时标题宽度不被挤掉`, layer !== null && layer.titleW >= 120, layer === null ? "" : `${layer.titleW}px`);
 
     // 关闭方式 1：Esc

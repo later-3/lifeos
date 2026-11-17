@@ -3637,7 +3637,12 @@ export default function App() {
 
       {/* 主区 · 聊天（历史作为右侧并列列，不覆盖） */}
       <div className="flex h-full min-w-0 flex-1 flex-col bg-surface">
-        <header className="flex h-11 shrink-0 items-center gap-2 px-4 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
+        {/*
+          `relative` 是手机动作层的**定位父级**（P7-S5 修正）：动作层展开时以头部为基准
+          `left-11 right-11`，避开左侧返回/菜单按钮与右侧 ⋯ 本身。
+          放在 header 上而不是那个 44px 宽的 ⋯ 容器上 —— 后者算出来是 1px（实测）。
+        */}
+        <header className="relative flex h-11 shrink-0 items-center gap-2 px-4 max-sm:h-auto max-sm:min-h-11 max-sm:pt-safe">
           {isMobile && (sessionId !== undefined ? (
             <IconButton label="返回项目" onClick={() => openMobileNav("projects")}><AppIcon name="arrow-left" size={18} /></IconButton>
           ) : (
@@ -3683,7 +3688,6 @@ export default function App() {
               onToggle={() => setMobileActionsOpen((open) => !open)}
               onClose={() => setMobileActionsOpen(false)}
               actions={MOBILE_HEADER_ACTIONS({
-                isMobile,
                 historyOpen: history !== undefined,
                 reviewOpen,
                 panelOpen,

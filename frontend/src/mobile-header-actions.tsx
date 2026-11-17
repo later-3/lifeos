@@ -31,7 +31,6 @@
  * 加动作只改注册表，不改布局。
  */
 import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
 import { AppIcon, type IconName } from "./design/icons";
 import { IconButton } from "./design/ui";
 import { LAYER_CLASS } from "./design/surface";
@@ -87,8 +86,21 @@ export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [open, onClose]);
 
+  /*
+   * ## 这个容器的宽度是 44，不是"剩余空间"（2026-11-17 用户实测抓到的真 bug）
+   *
+   * 之前它写 `flex-1`，我以为会撑满头部剩余宽度。**不会**：头部里标题是 `min-w-0` 但没有
+   * `flex-1`，它的 flex-basis 是内容宽度 → 把剩余空间吃光了；本容器 `flex: 1 1 0%` 拿到的是 44。
+   * 于是 `absolute left-11 right-0` 的动作层宽度 = 44 − 44 = **1px**，4 个按钮渲染在
+   * x=375/419/463/507（全在屏幕外）。
+   *
+   * 现在的做法：容器**不占布局**（`absolute` 定位到头部右侧的 ⋯ 位置），
+   * 动作层相对**头部**（`header` 是 `relative`）展开，从「返回按钮之后」到「右侧 ⋯ 之前」。
+   * 标题在展开期间被遮住是刻意的：选动作时不需要读标题，而铺满才是唯一能让 4 个动作
+   * 都落在可点区域内的排法（pi-web `AppShell.tsx:1803-1900` 同形）。
+   */
   return (
-    <div ref={root} className={`relative flex flex-1 items-stretch ${HEADER_ROW}`} data-mobile-toolbar={open ? "open" : "closed"}>
+    <div ref={root} className={`flex items-stretch ${HEADER_ROW}`} data-mobile-toolbar={open ? "open" : "closed"}>
       {/*
         ⋯ 按钮**常驻**（是这一层的开关）：它必须一直在，否则"打开之后怎么关"取决于
         层里有没有关闭钮——那会让收起路径随动作清单一变就坏。
@@ -105,9 +117,17 @@ export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
         动作变多的情况（宁可横滑，也不把标题挤回去）。
       */}
       {open && (
+        /*
+         * 动作层的**定位父级必须是 `header`**，不是这个容器：本容器宽度只有 44（见上方注释），
+         * 以它为父级时 `left-11 right-11` 算出 44 − 44 − 44 < 0 → 压成 1px。
+         * 所以本容器**不用 `relative`**，由 `App.tsx` 的 `<header className="relative …">` 承担定位父级。
+         *
+         * `left-11 right-11` = 让开左边的返回按钮与右边的 ⋯ 本身；
+         * 为什么留出 ⋯：它是"收起"的唯一入口，被动作盖住就关不掉了。
+         */
         <div id="mobile-toolbar-actions" role="toolbar" aria-label="更多操作"
           data-mobile-toolbar-actions="true"
-          className={`absolute inset-y-0 right-0 left-11 z-[1] flex items-stretch overflow-x-auto border-l border-line bg-surface/95 backdrop-blur-sm ${LAYER_CLASS.popover}`}>
+          className={`absolute inset-y-0 left-11 right-11 z-[1] flex items-stretch overflow-x-auto border-l border-line bg-surface/95 backdrop-blur-sm ${LAYER_CLASS.popover}`}>
           {actions.map((action) => (
             <IconButton key={action.id} label={action.label} size="lg"
               active={action.active === true}
@@ -125,33 +145,16 @@ export function MobileHeaderActions({ open, onToggle, onClose, actions }: {
 }
 
 /**
- * 被覆盖期间要"退出交互"的容器包装（`aria-hidden` + `tabIndex=-1` 的宿主）。
- *
- * 为什么不用 CSS `visibility: hidden`：主区是消息区，藏掉会让滚动位置丢失且视觉抖动。
- * 这里做的是**语义层**退出（读屏与 Tab 不进去），视觉上仍然可见——与 pi-web
- * `AppShell.tsx:1454,1580` 的做法一致（它对"被盖住的控件"用 `aria-hidden` + `tabIndex=-1`）。
- */
-export function CoveredWhen({ covered, children }: { covered: boolean; children: ReactNode }) {
-  return (
-    <div aria-hidden={covered ? true : undefined} className="contents" data-covered={covered ? "true" : undefined}>
-      {children}
-    </div>
-  );
-}
-
-/**
  * 手机头部动作清单（**唯一注册处**，规范 2.3：同类第二次出现 → 容器 + 注册项）。
  *
- * 五个动作与桌面一一对应：
- *   完整历史 / 检视（打开当前 Task）/ 文件面板 / 设置 —— 加上 ⋯ 本身。
- * 桌面的"选择要检视的 Task"**不在这里**：手机动作层只有 5 个位置，
+ * 四个动作与桌面一一对应：完整历史 / 检视（打开当前 Task）/ 文件面板 / 设置。
+ * 桌面的"选择要检视的 Task"**不在这里**：手机动作层只有 4 个位置，
  * 而 Task 切换本来就在检视面板内部（`review-switcher-select`），单列只是重复入口。
  *
- * 为什么做成工厂函数而不是常量数组：`disabled`/`active` 依赖当前状态
- * （草稿态没有历史、面板开着要显示 active）。数组本身是声明式的，只是把状态算进来。
+ * 为什么是工厂函数而不是常量数组：`disabled`/`active` 依赖当前状态
+ * （草稿态没有历史、面板开着要显示 active）。数组本身仍是声明式的，只是把状态算进来。
  */
 export function MOBILE_HEADER_ACTIONS(input: {
-  isMobile: boolean;
   historyOpen: boolean;
   reviewOpen: boolean;
   panelOpen: boolean;
