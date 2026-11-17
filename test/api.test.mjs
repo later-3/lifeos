@@ -1226,3 +1226,52 @@ test("会话详情响应里不再内联图片（引用化回归锁）", async ()
     assert.equal(Buffer.from(await fetched.arrayBuffer()).equals(imageBytes), true);
   } finally { server.close(); }
 });
+
+/**
+ * 会话详情分页（Task 0016 · P3-S3）。
+ *
+ * 为什么需要：实测一个 3212 条 entry 的会话响应 3.12 MB，而首屏只渲染最后 50 条 = 0.15 MB。
+ * Slow-4G（1.6 Mbps）下 3.12 MB ≈ 15.6 s、0.48 MB（tail=200）≈ 2.4 s。
+ * 也就是说 99% 的字节用户当场看不到，却要等它传完。
+ *
+ * 兼容是硬要求：**不传 `tail` 时行为必须与改前完全一致**（桌面、peer 路径、既有测试都依赖它）。
+ */
+test("GET /sessions/:sid?tail=N：只返回最后 N 条 + total/tailStart", async () => {
+  const home = await mkdtemp(join(tmpdir(), "lifeos-tail-"));
+  await installHome(process.cwd(), home);
+  const sessionsDir = join(home, "agents", "lifeosagent", "projects", "workspace", "sessions");
+  await mkdir(sessionsDir, { recursive: true });
+  const sessionId = "01a1ffff-0000-7000-8000-0000000000aa";
+  const entries = [{ type: "session", version: 3, id: sessionId, timestamp: "2026-11-17T00:00:00.000Z", cwd: "" }];
+  for (let i = 0; i < 30; i += 1) {
+    entries.push({
+      type: "message", id: `m${i}`, parentId: i === 0 ? sessionId : `m${i - 1}`,
+      timestamp: `2026-11-17T00:00:${String(i).padStart(2, "0")}.000Z`,
+      message: { role: "user", content: [{ type: "text", text: `第 ${i + 1} 条` }] },
+    });
+  }
+  await writeFile(join(sessionsDir, `2026-11-17T00-00-00-000Z_${sessionId}.jsonl`),
+    entries.map((line) => JSON.stringify(line)).join("\n") + "\n");
+
+  const { server, base } = await startOn(home);
+  try {
+    const full = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}`)).json();
+    assert.equal(full.messages.length, 30, "不传 tail：必须仍然返回全部（兼容）");
+    assert.equal(full.total, 30);
+    assert.equal(full.tailStart, 0);
+
+    const tail10 = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}?tail=10`)).json();
+    assert.equal(tail10.messages.length, 10);
+    assert.equal(tail10.total, 30);
+    assert.equal(tail10.tailStart, 20, "tailStart 必须等于『全会话下标里的起点』");
+    // 内容必须是**最后 10 条**，不是前 10 条
+    assert.equal(tail10.messages[9].text, "第 30 条");
+    assert.equal(tail10.messages[0].text, "第 21 条");
+
+    // 边界：tail 大于总数 → 等同于全量；tail=0 / 非数字 → 至少 1 条（不返回空）
+    const big = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}?tail=999`)).json();
+    assert.equal(big.messages.length, 30);
+    const one = await (await fetch(`${base}/api/agents/lifeosagent/sessions/${sessionId}?tail=0`)).json();
+    assert.equal(one.messages.length, 1, "tail=0 不该把消息清空（下限 1）");
+  } finally { server.close(); }
+});

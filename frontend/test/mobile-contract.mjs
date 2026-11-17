@@ -538,7 +538,8 @@ for (const width of widths) {
     await route.fulfill({ status: 200, contentType: "image/png", body: png });
   });
   // 会话详情只用一组工具图：一张在、一张不在
-  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+$/, async (route) => {
+  // 只拦**详情**这一条（带尾 $），不要吞掉 /annotations、/turns/last
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
     await route.fulfill({
       status: 200, contentType: "application/json",
       body: JSON.stringify({
@@ -557,9 +558,9 @@ for (const width of widths) {
   });
   await page.goto(`${APP_URL}/?agent=lifeosagent&project=workspace&session=fx-img`, { waitUntil: "networkidle" });
   await page.waitForTimeout(2000);
-  // 工具块默认在过程条里 → 展开
-  const expand = page.getByText("查看过程").first();
-  if (await expand.count() > 0) { await expand.click({ force: true }); await page.waitForTimeout(1200); }
+  // 工具块默认在过程条里 → 展开（按钮文案是「N 次工具查看过程」，按包含匹配）
+  const expand = page.getByRole("button", { name: /查看过程/ }).first();
+  if (await expand.count() > 0) { await expand.click({ force: true }); await page.waitForTimeout(1500); }
   const images = await page.evaluate(() => {
     const imgs = [...document.querySelectorAll('[data-testid="tool-image"] img')];
     return {
@@ -588,7 +589,8 @@ for (const width of widths) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const page = await context.newPage();
   // 只延迟"会话详情"这一条（排除 /entries 与 /annotations）
-  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+$/, async (route) => {
+  // 注意 `?tail=` 是新加的查询参数（P3-S3）——正则必须允许它，否则拦不到、延迟不生效
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1200));
     await route.continue();
   });

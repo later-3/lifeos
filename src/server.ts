@@ -496,8 +496,25 @@ app.use(async (c, next) => {
         agentId: agent.id, sessionId: c.req.param("sessionId"), details: { orphanParents: integrity.orphanParents },
       });
     }
+    /*
+     * 分页（Task 0016 · P3-S3）：`?tail=N` 只返回**最后 N 条** + `total` + `tailStart`。
+     *
+     * 为什么必须分页：实测一个 3212 条 entry 的会话，响应 3.12 MB（未压缩）/
+     * 0.86 MB（brotli），而首屏只渲染最后 50 条 = **0.15 MB**。
+     * 手机 Slow-4G（1.6 Mbps）下 3.12 MB ≈ **15.6 s**、0.86 MB ≈ **4.3 s**、0.15 MB ≈ **0.7 s**。
+     * 也就是说：99% 的字节用户当场看不到，却要等它传完。
+     *
+     * 兼容：不传 `tail` 时返回全部（桌面与既有调用方行为不变；测试与 peer 路径也照旧）。
+     */
+    const tailRaw = c.req.query("tail");
+    const tail = tailRaw === undefined ? undefined : Math.max(1, Math.min(2000, Number(tailRaw) || 0));
+    const all = messagesOf(state);
+    const messages = tail === undefined ? all : all.slice(Math.max(0, all.length - tail));
     return c.json({
-      sessionId: c.req.param("sessionId"), messages: messagesOf(state),
+      sessionId: c.req.param("sessionId"), messages,
+      // 分页元信息：`total` = 全会话条数，`tailStart` = 这次返回的第一条在全会话里的下标
+      total: all.length,
+      tailStart: all.length - messages.length,
       // payload 是观测（Task 0012 P1）：图片/文本字节 + 上限从哪来；limit=null 表示该 provider 未声明上限
       meta: { ...sessionMeta(agent.id, state), payload: await payloadMetaOf(state) },
       ...(integrity !== undefined ? { integrity } : {}),

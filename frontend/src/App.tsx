@@ -1470,9 +1470,25 @@ export default function App() {
     } catch { return []; }
   }
 
+  /**
+   * 首屏只拉最后 N 条（P3-S3）。
+   *
+   * 与 `chat-lazy-load.ts` 的 `VISIBLE_PAGE_SIZE` 同量级：那里是"渲染多少条"，
+   * 这里是"下载多少条"。两者必须对得上，否则"渲染窗口 50 条却下了 1702 条"——
+   * 实测就是这个组合：首屏渲染 50 条（0.15 MB），却下了 **3.12 MB**（Slow-4G ≈ 15.6 s）。
+   *
+   * 200 的理由：给"渲染窗口 50 + 用户往上滚几页"留余量，同时把响应压到 ≈0.48 MB。
+   * 更早的历史走滚动哨兵（后续可接 `/entries` 分页），不再为"可能看一眼"付全量代价。
+   */
+  const LOAD_TAIL_COUNT = 200;
+
   async function loadMessages(id: string, sid: string) {
-    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
+    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}`)).json() as {
       messages: Message[]; meta?: SessionMeta; integrity?: { orphanParents?: number };
+      /** 全会话条数（分页元信息，P3-S3）：用于判断"上面还有更早的" */
+      total?: number;
+      /** 这次返回的第一条在全会话里的下标 */
+      tailStart?: number;
     };
     // 会话文件引用断裂（C117）：消息可能"消失"，明确告诉用户，不要静默
     if ((data.integrity?.orphanParents ?? 0) > 0) {
