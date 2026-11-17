@@ -161,7 +161,7 @@ What happens inside a turn, and when you can step in.
 ### Mobile & runtime
 
 - **Mobile layout** — a separate single-column layout below 640px with 44px touch targets and its own navigation, not a squeezed desktop.
-- **Installable PWA** — service worker with three cache strategies, build-id invalidation, and a "new version" banner on long-lived tabs.
+- **Installable PWA** — service worker with three cache strategies and build-id invalidation, so a rebuild never leaves a long-lived tab on a stale bundle.
 - **Reconnect instead of pretending** — a named heartbeat every 10s plus a watchdog, so a dead event stream is detected rather than looking alive.
 - **Local first** — no account, no cloud; everything is under `~/.lifeos` and yours to inspect.
 
