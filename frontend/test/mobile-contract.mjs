@@ -454,6 +454,64 @@ for (const width of widths) {
   await context.close();
 }
 
+// ── 会话加载期不显示空态（Task 0016 · P6-S4）────────────────────────────────
+/*
+ * P1-S1 修的那个缺陷：切到长会话时中间 1.4 秒显示「发一条消息开始对话」，
+ * 用户以为对话丢了。纯函数侧已有 `viewStateOf` 穷举（`test/session-view-state.test.mjs`），
+ * 这里补**界面级**一条：把会话详情延迟 1.2 s，断言这段时间里出现骨架、**不出现**空态文案。
+ *
+ * 为什么要延迟：本地接口只要十几毫秒，不延迟的话"加载中"这一帧几乎抓不到 ——
+ * 断言会变成"偶尔绿"的假绿（规范 2.15：0 个命中/没覆盖到 = 没测）。
+ */
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  // 只延迟"会话详情"这一条（排除 /entries 与 /annotations）
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+$/, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.continue();
+  });
+  await page.goto(APP_URL, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  // 打开一个有会话的项目 → 点一个会话（触发 openSession 的加载）
+  const navTrigger = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
+  if (await navTrigger.count() > 0) {
+    await navTrigger.first().click();
+    await page.waitForTimeout(600);
+    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
+      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
+      await page.waitForTimeout(900);
+    }
+    const projectRow = page.locator('[data-mobile-level="projects"] [role="button"]').first();
+    if (await projectRow.count() > 0) {
+      await projectRow.click();
+      await page.waitForTimeout(900);
+      await page.evaluate(() => { document.querySelector('[data-mobile-level="sessions"] [role="button"]')?.click(); });
+      // 加载中（1.2 s 的窗口）里采样
+      await page.waitForTimeout(500);
+      const during = await page.evaluate(() => ({
+        skeleton: document.querySelectorAll('[data-skeleton="message"]').length,
+        emptyCopy: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
+      }));
+      await page.waitForTimeout(1500);
+      const after = await page.evaluate(() => ({
+        messages: document.querySelectorAll('[data-testid="message"]').length,
+        skeletonGone: document.querySelectorAll('[data-skeleton="message"]').length === 0,
+        emptyCopy: (document.querySelector("main")?.innerText ?? "").includes("发一条消息开始对话"),
+      }));
+      check("[390] 会话加载期显示骨架", during.skeleton > 0, JSON.stringify(during));
+      check("[390] 会话加载期不显示「开始对话」", during.emptyCopy === false, JSON.stringify(during));
+      /*
+       * 加载完成后：骨架必须消失（这是"加载结束了"的唯一可观察信号）。
+       * **不**断言"一定有消息"——夹具可能点到空会话，那时显示空态是正确的；
+       * 断言它反而会变成"依赖家里恰好有条目多的会话"的脆弱测试。
+       */
+      check("[390] 加载完成后骨架消失", after.skeletonGone === true, JSON.stringify(after));
+    }
+  }
+  await context.close();
+}
+
 // ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
 // 改之前：`App.tsx` 的 `reviewOpen && !isMobile` 让面板**在手机上永不渲染**，
 // 而 `openReview()` 照样执行 → 弹错"右侧放不下检视面板…或把窗口放宽"（手机上永远不成立）。
