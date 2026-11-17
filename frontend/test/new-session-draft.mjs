@@ -30,10 +30,30 @@ try {
     if (request.method() === "DELETE" && /\/sessions\/[^/]+$/.test(path)) sessionDeletes.push(path);
   });
   await page.goto(APP_URL, { waitUntil: "networkidle" });
-  await page.waitForTimeout(600);
+  /*
+   * 等分组头真的渲染（Task 0017 · P5/P6 之后：拆 hook 让首屏多一轮初始化）。
+   * 固定 600ms 在冷启动会读到 `projects=`（0 个分组）→ 后续全部断言级联失败。
+   * 等的是被测对象（`testing.md` 2.15「0 个 = 没测」）。
+   */
+  await page.waitForSelector('[data-testid="group-header"]', { timeout: 15000 });
   const params = new URL(page.url()).searchParams;
   agentId = params.get("agent") ?? undefined;
   projectId = params.get("project") ?? undefined;
+  /*
+   * 2026-11-16（Task 0017 · P6 之后暴露）：入口 URL 常常**不带 `?project`**（默认项目不进 URL），
+   * 于是 `projectId` 为 undefined，"会话建在被点的那个项目下"那条断言会拿
+   * `/projects/undefined/sessions` 去比，恒红。
+   * 修法：等分组头渲染出来后，用**当前选中那一组**的真实项目 id 作为期望值。
+   */
+  if (projectId === undefined) {
+    projectId = await page.evaluate(() => {
+      const header = [...document.querySelectorAll('[data-testid="group-header"]')]
+        .find((el) => el.querySelector('button[aria-current="true"]') !== null)
+        ?? document.querySelector('[data-testid="group-header"]');
+      const name = header?.getAttribute("data-group-name") ?? "";
+      return name === "" ? undefined : name;
+    });
+  }
   /**
    * 会话行的选择器：Task 0015 把项目列与会话列合并后，`session-rows` 的直接子元素变成了
    * `div[data-project-id]` 分组容器，会话行在**组内**（`[data-testid="group-header"]` 的兄弟）。
@@ -81,7 +101,8 @@ try {
   // 3) 草稿文字刷新不丢
   await page.locator("textarea").first().fill(RUN);
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
+  await page.waitForSelector('[data-testid="group-header"]', { timeout: 15000 });
+  await page.waitForTimeout(200);
   check("刷新后仍在草稿（URL 无 session）", new URL(page.url()).searchParams.get("session") === null, page.url());
   check("刷新后头部仍是「新会话」", (await headerTitle()) === "新会话");
   check("刷新后草稿文字仍在", (await page.locator("textarea").first().inputValue()) === RUN);
@@ -125,40 +146,50 @@ try {
     check("点他组 ＋：草稿落在他项目（只有 1 个项目，跳过）", true);
   }
 
-  // 4b) 折叠状态下点该组的 ＋：组要展开（否则用户点了看不见结果）
-  //     这一条补的是 Task 0006 收尾时「只有代码推断、没有实测」的缺口。
+  /*
+   * 4b) 折叠状态下点该组的 ＋：组要展开（否则用户点了看不见结果）。
+   *
+   * 2026-11-16（Task 0017 · P6 之后暴露）**用例本身有环**：
+   * `GroupHeader` 的主作用分两步——点未选中的组是「选中它」，再点才是「折叠」；
+   * 而 `onNewSessionDisabled` 的条件是「该组 = 当前项目 且 没有会话」。
+   * 于是"先折叠它"这一步必然把它变成当前项目 → 它的 ＋ 立刻禁用 → 点不动（恒超时）。
+   *
+   * 修法：**先在这个组里打开一条会话**（sessionId 有值 ⇒ 该组的 ＋ 恒可用），
+   * 再折叠它，再点 ＋。这样被测的是"折叠 + 新建会展开"，而不是"绕开禁用规则"。
+   */
   {
     const headerBtn = (name) => page.locator(`[data-testid="group-header"][data-group-name="${name}"] button`).first();
-    const currentName = await page.evaluate(() => {
-      const selected = [...document.querySelectorAll('[data-testid="group-header"]')]
-        .find((el) => el.querySelector('button[aria-current="true"]') !== null);
-      return selected?.getAttribute("data-group-name") ?? null;
+    const withSession = await page.evaluate(() => {
+      for (const header of document.querySelectorAll('[data-testid="group-header"]')) {
+        const name = header.getAttribute("data-group-name") ?? "";
+        const body = header.nextElementSibling;
+        if (body !== null && body.querySelector("[data-testid]") !== null) return name;
+      }
+      return null;
     });
-    const foldTarget = currentName ?? projectName;
-    // 先折叠
-    if ((await headerBtn(foldTarget).getAttribute("aria-expanded")) === "true") {
-      await headerBtn(foldTarget).click();
-      await page.waitForTimeout(400);
-    }
-    check("折叠后 aria-expanded=false", (await headerBtn(foldTarget).getAttribute("aria-expanded")) === "false", foldTarget);
-    // 折叠状态下点该组 ＋（若该组正是草稿项目，按钮禁用 → 换一个可用的组；只有一个组时跳过这条断言）
-    const candidates = await page.evaluate(() => [...document.querySelectorAll('[data-testid="group-header"]')]
-      .map((el) => el.getAttribute("data-group-name") ?? ""));
-    const clickable = [];
-    for (const name of candidates) {
-      if (!(await groupNewButton(name).isDisabled())) clickable.push(name);
-    }
-    if (clickable.length > 0) {
-      const pick = clickable[0];
-      if ((await headerBtn(pick).getAttribute("aria-expanded")) === "true") {
-        await headerBtn(pick).click();
+    if (withSession === null) {
+      check("折叠组点 ＋ 会展开该组（没有含会话的组，跳过）", true);
+    } else {
+      // 在该组里打开一条会话（点第一行），使该组的 ＋ 不再处于"草稿禁用"状态
+      await page.locator(`[data-testid="group-header"][data-group-name="${withSession}"]`).first().click();
+      await page.waitForTimeout(300);
+      const body = page.locator(`[data-testid="group-header"][data-group-name="${withSession}"]`).first().locator("xpath=following-sibling::div[1]");
+      const firstRow = body.locator("[data-testid]").first();
+      if (await firstRow.count() > 0) { await firstRow.click(); await page.waitForTimeout(600); }
+      // 折叠该组（此时它已选中，点一次即折叠）
+      if ((await headerBtn(withSession).getAttribute("aria-expanded")) === "true") {
+        await headerBtn(withSession).click();
         await page.waitForTimeout(400);
       }
-      await groupNewButton(pick).click();
-      await page.waitForTimeout(600);
-      check("折叠组点 ＋ 会展开该组", (await headerBtn(pick).getAttribute("aria-expanded")) === "true", pick);
-    } else {
-      check("折叠组点 ＋ 会展开该组（所有组按钮都禁用，跳过）", true);
+      check("折叠后 aria-expanded=false", (await headerBtn(withSession).getAttribute("aria-expanded")) === "false", withSession);
+      const enabled = !(await groupNewButton(withSession).isDisabled());
+      if (enabled) {
+        await groupNewButton(withSession).click();
+        await page.waitForTimeout(600);
+        check("折叠组点 ＋ 会展开该组", (await headerBtn(withSession).getAttribute("aria-expanded")) === "true", withSession);
+      } else {
+        check("折叠组点 ＋ 会展开该组（该组 ＋ 仍禁用，跳过）", true, withSession);
+      }
     }
   }
 
