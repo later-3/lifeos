@@ -16,6 +16,7 @@
  * 用法：APP_URL=http://localhost:5180 node frontend/test/stream-stability.mjs
  */
 import { existsSync } from "node:fs";
+import { EVENT_CHANNEL_STUB } from "./event-channel-stub.mjs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,26 +84,18 @@ async function openApp({ history = [] } = {}) {
   await page.route("**/api/ui-prefs", (r) => json(r, {}));
   await page.route("**/api/media/catalog**", (r) => json(r, { items: [] }));
 
+  /*
+   * 事件通道已是 WebSocket（Task 0028 · P3）：假 EventSource 不再被任何代码读到，
+   * 换成假 WebSocket；推帧接口仍是 `window.__ssePush(name, data)`。
+   * 注意 `addInitScript` 会把函数序列化后送进页面，**页面里没有 Node 作用域**，
+   * 所以 stub 必须以"函数本身"传入，不能在某段 init script 里调用它。
+   */
+  await page.addInitScript(EVENT_CHANNEL_STUB);
   await page.addInitScript(() => {
-    window.__ssePush = null;
     /** T4：每个 delta 触发了多少次 TreeWalker（= 索引重建次数） */
     window.__walkers = 0;
     const orig = document.createTreeWalker.bind(document);
     document.createTreeWalker = (...args) => { window.__walkers += 1; return orig(...args); };
-    class FakeES {
-      constructor() {
-        this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => {
-          const ev = { data: typeof data === "string" ? data : JSON.stringify(data) };
-          for (const fn of this.listeners[name] ?? []) fn(ev);
-        };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0);
-      }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {}
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
   });
 
   let seq = 1;

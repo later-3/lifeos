@@ -180,8 +180,13 @@ export function createEventChannel(handlers: ChannelHandlers, options: ChannelOp
       return;
     }
 
-    const url = `${path.startsWith("/") ? "" : "/"}${path}`.replace(/^/, `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`);
-    socket = new WebSocket(url);
+    /*
+     * 用 `new URL(path, location.href)` 而不是字符串拼接：后者要自己判协议、补斜杠、
+     * 处理 `location.host` 为空（file://）等边界，而这里只需要"同源"这一件事。
+     */
+    const url = new URL(path, window.location.href);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    socket = new WebSocket(url.toString());
     socket.addEventListener("open", () => { failCount = 0; handlers.status?.("open"); });
     socket.addEventListener("message", (event) => {
       if (typeof event.data === "string") handleFrame(event.data);

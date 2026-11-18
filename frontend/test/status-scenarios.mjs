@@ -8,6 +8,7 @@
 // 用法：APP_URL=http://localhost:5174 node frontend/test/status-scenarios.mjs
 // 前置：只需要前端 dev server（后端可以完全不存在，SSE 与接口全部拦截）。
 import pkg from "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js";
+import { EVENT_CHANNEL_STUB } from "./event-channel-stub.mjs";
 const { chromium } = pkg;
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:5174";
@@ -88,30 +89,16 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
   await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: [], draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
 
-  // ② SSE：注入假的 EventSource，测试脚本手动推帧。
+  // ② 事件通道：注入假的 WebSocket，测试脚本手动推帧。
   // 为什么不用 route.fulfill + TransformStream：实测 Playwright 的 route.fulfill
   // 拿到的流不可写（writer 为 undefined），且页面拿不到增量帧。
-  // 注入假 EventSource 简单可靠，且能**精确控制帧的到达时刻与顺序**。
-  await page.addInitScript(() => {
-    window.__ssePush = null;
-    class FakeES {
-      constructor(url) {
-        this.url = url; this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => {
-          const ev = { data: typeof data === "string" ? data : JSON.stringify(data) };
-          for (const fn of this.listeners[name] ?? []) fn(ev);
-        };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0);
-      }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {}
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
-  });
+  // 注入假 WebSocket 简单可靠，且能**精确控制帧的到达时刻与顺序**。
+  /* 事件通道已是 WebSocket（Task 0028 · P3）：注入假 WebSocket。
+     `addInitScript` 会把函数序列化进页面，页面里没有 Node 作用域 —— 必须传"函数本身"。 */
+  await page.addInitScript(EVENT_CHANNEL_STUB);
 
   const push = async (eventName, data) => {
-    // 等 FakeES 真正被页面实例化（React 挂载 SSE 在 goto 返回之后）
+    // 等假通道真正被页面实例化（React 挂载事件通道在 goto 返回之后）
     await page.waitForFunction(() => typeof window.__ssePush === "function", null, { timeout: 15000 });
     await page.evaluate(([n, d]) => window.__ssePush?.(n, d), [eventName, data]);
     await page.waitForTimeout(150);

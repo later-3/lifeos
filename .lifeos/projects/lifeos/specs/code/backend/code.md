@@ -77,10 +77,11 @@
 - 规则：程序写入的运行目录（`logs/`、`state/`、`memory/data/` 等）由**创建者**写入 `AGENTS.md`（已存在不覆盖，`wx` 写入）；`home:check` 对存在的运行目录强制检查（不存在不报错）。
 - 依据：2026-10-25 C122/C121 的排查中发现 `logs/` 与 `state/` 长期没有说明文件，而检查器对它们沉默。机器检查：`test/home-runtime-notes.test.mjs`（T58）。
 
-### 2.14 长连接必须有客户端可见的心跳（具名事件），不能只靠注释帧
+### 2.14 长连接必须有客户端可见的心跳（具名帧），不能只靠协议层/注释帧
 
-- 规则：服务端的心跳必须是具名事件（客户端可以监听并据此判断陈旧），不能只发注释帧（浏览器 EventSource 看不见）；心跳间隔与客户端陈旧阈值成对设定（阈值 ≥ 2 倍间隔）。
-- 依据：2026-10-25 C124（注释心跳无法检测断开，页面假活着）。机器检查：`test/sse-endpoint.test.mjs`（心跳与连接契约）。
+- 规则：服务端的心跳必须是**客户端可见的具名帧**（SSE 时代是具名事件，ws 时代是 `{t:"ping"}`），
+  不能只发注释帧（`EventSource` 看不见）或只依赖协议层 ping（浏览器 JS 同样看不见）；心跳间隔与客户端陈旧阈值成对设定（阈值 ≥ 2 倍间隔）。
+- 依据：2026-10-25 C124（注释心跳无法检测断开，页面假活着）。机器检查：`test/sse-endpoint.test.mjs`（SSE 兼容路径）+ `test/event-socket.test.mjs`（T28-15 ws 心跳）。
 
 ### 2.15 运行与未读事实必须携带会话归属（agentId / projectId），并能回填与清理
 
@@ -142,3 +143,26 @@
 - 依据：Task 0014 · D8′。Pi 只有 role 级身份（`pi/packages/ai/src/types.ts:564-568` 的 `UserMessage` 无 author），
   Agent↔Agent 会话里那条 user 消息会被界面当成"我说的话"。横向参考见该任务 `07-references.md` §2 / §9.2。
 - 机器检查：`test/session-origin.test.mjs`（T34/T38/T39/T40/T42）、`test/assembly.test.mjs`（身份段）。
+
+### 2.20 常驻通道必须用不占同源连接额度的传输（WebSocket）；SSE 只作显式兼容路径（必须）
+
+- 场景：给每个页面长开一条"服务端推事件"的通道（本项目：全局事件通道 `/api/events`）。
+- 规则：
+  - **必须** 用 WebSocket（或同样不占 HTTP/1.1 连接额度的传输）。浏览器对同一 origin 只给 **6** 条
+    HTTP/1.1 连接，而常驻通道是**每标签页一条**——用 SSE 时第 7 个请求（含静态资源、切会话的详情请求）
+    永远排队，表现为"页面永久骨架"，且**重启后端不会解除**（排队在浏览器侧，不在服务端）。
+  - **必须** 非 upgrade 的普通 GET 返回 **426** + `Upgrade: websocket`（照 gitea `websocket.go:32-38`），
+    而不是静默降级成 SSE —— 降级会让缺陷重新出现且没人发现。
+  - **必须** 保留**显式**兼容路径（本项目 `?transport=sse`），供只读脚本与排障；它不出现在正常使用路径上。
+  - **必须** 帧是自描述信封 `{t, seq, d}`：`seq` 逐帧带回来（下游按基线丢弃重放，C119 的纪律不能因为换传输而失效）。
+  - **必须** 心跳是**具名帧**（2.14 的同一条要求），并给过载一个"重连即可"的关闭码（1013），
+    与"别再连"的语义分开。
+  - **必须** 换传输**不动**投递语义：两级投递、快照优先、过载即摘除仍由 `events.ts` / `bounded-sink.ts` 决定
+    （2.12）。换传输只在"怎么送到浏览器"这一层。
+- 为什么：本项目实测（Task 0027 · E1/E3，`evidence/probe_sse_vs_ws.mjs`）——
+  `6 标签 × 1 SSE` → 六个标签的 fetch 全部 4001–4004ms 超时；`6 标签 × 1 WS` → 全部 1–6ms。
+  WebSocket 在同 host 上可开约 194 条，与 HTTP 连接池互不影响。
+- 行业面（A 级）：gitea（`routers/web/websocket/websocket.go`）、mattermost（`websocket.ts`）、
+  open-webui（socket.io）、Rocket.Chat（DDP）**都用 WebSocket 承载全局事件**；没有一家用 SSE 承载。
+- 机器检查：`test/event-socket.test.mjs`（T28-11 426 / T28-12 快照优先 / T28-15 具名心跳 / T28-16 过载 1013）、
+  `test/event-channel.test.mjs`（信封解析与退避）、`frontend/vite.config.ts` 的 `ws: true`（开发代理必须转发 upgrade）。
