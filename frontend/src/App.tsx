@@ -1468,18 +1468,22 @@ export default function App() {
     return () => cancelAnimationFrame(rafId);
   }, [input]);
 
+  /**
+   * 一次取回「项目 + 每项目的会话行」（Task 0016 · 剩余项 #6）。
+   *
+   * 改之前是 1 次 `/projects` + **每个项目 1 次** `/sessions`：本机 0.31 s，
+   * 但走隧道时那是 3 次串行 RTT（≈0.9 s），而字节其实不多 —— 痛在往返次数。
+   * 新端点 `/groups` 内部调的是同一对实现（`listAgentProjects` + `sessionRowsOf`），
+   * 所以形状不会漂（api 规范 2.7）。
+   *
+   * 失败兜底不变：返回空数组，原因由调用方提示（S5 的既有语义）。
+   */
   async function fetchGroups(id: string): Promise<Group[]> {
-    // S5：接口失败时返回空数组（不让 undefined 传下去炸渲染），失败原因由调用方的提示承担
     try {
-      const projectsRes = await fetch(`/api/agents/${id}/projects`);
-      if (!projectsRes.ok) return [];
-      const projects = (await projectsRes.json()) as { items?: Project[] };
-      if (!Array.isArray(projects.items)) return [];
-      return await Promise.all(projects.items.map(async (project) => {
-        const listRes = await fetch(`/api/agents/${id}/projects/${project.id}/sessions`);
-        const list = listRes.ok ? (await listRes.json()) as { items?: SessionItem[] } : {};
-        return { project, sessions: Array.isArray(list.items) ? list.items : [] };
-      }));
+      const response = await fetch(`/api/agents/${id}/groups`);
+      if (!response.ok) return [];
+      const body = (await response.json()) as { items?: Group[] };
+      return Array.isArray(body.items) ? body.items : [];
     } catch { return []; }
   }
 

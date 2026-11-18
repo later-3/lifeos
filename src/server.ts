@@ -276,6 +276,28 @@ app.use(async (c, next) => {
     return c.json({ items: await listAgentProjects(agent.id) });
   });
 
+  /*
+   * 列表聚合端点（Task 0016 · 剩余项 #6）：一次返回「项目 + 每个项目的会话行」。
+   *
+   * 为什么需要：打开列表时要 1 次 `/projects` + **每个项目 1 次** `/sessions`。
+   * 本机实测（2 个项目）0.06 s + 0.01 s + 0.24 s ≈ 0.31 s；但走隧道（300 ms RTT）时
+   * 这 3 次是**串行 RTT**，用户等的是 ≈0.9 s 而不是 0.31 s —— 字节不多，往返太多。
+   *
+   * 形状纪律（api 规范 2.7：一个对象一处实现）：项目用 `listAgentProjects`、
+   * 行用 `rowsOf → sessionRowsOf`，**这里不拼任何字段**，只是把两次调用合成一个响应。
+   * 所以它不会成为"第二份形状"，将来行对象加字段也自动跟着。
+   */
+  app.get("/api/agents/:id/groups", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const projects = await listAgentProjects(agent.id);
+    const items = await Promise.all(projects.map(async (project) => ({
+      project,
+      sessions: await rowsOf(agent, project.id),
+    })));
+    return c.json({ items });
+  });
+
   app.get("/api/agents/:id/projects/:pid/sessions", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }

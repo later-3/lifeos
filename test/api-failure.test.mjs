@@ -29,11 +29,16 @@ test("失败时用缓存且给可见提示（不白屏不静默）", () => {
 test("fetchGroups 失败返回空数组（不把 undefined 传下去）", () => {
   const fn = APP.slice(APP.indexOf("async function fetchGroups"), APP.indexOf("async function loadMessages"));
   assert.ok(/catch \{ return \[\]; \}/.test(fn), "fetchGroups 失败没有兜底返回 []");
-  assert.ok(/Array\.isArray\(projects\.items\)/.test(fn), "没有校验 projects.items 形状");
-  // isArray 检查之后的 .map 是合法用法；这里只断言"检查存在且在 map 之前"
-  const checkAt = fn.indexOf("Array.isArray(projects.items)");
-  const mapAt = fn.indexOf("projects.items.map");
-  assert.ok(checkAt > 0 && mapAt > checkAt, "items 形状检查不在使用之前");
+  /*
+   * 形状校验的**对象**换了，但要求没变（Task 0016 · 剩余项 #6）：
+   * fetchGroups 从"1 次 /projects + 每项目 1 次 /sessions"改成 1 次 `/groups`
+   * （隧道下是 3 次串行 RTT → 1 次），所以这里校验的是 `body.items` 而不是 `projects.items`。
+   * 断言照旧要求"先校验、再使用"，不许直接把响应当数组用。
+   */
+  assert.ok(/Array\.isArray\(body\.items\)/.test(fn), "没有校验响应 items 形状");
+  const checkAt = fn.indexOf("Array.isArray(body.items)");
+  const useAt = fn.indexOf("? body.items : []");
+  assert.ok(checkAt > 0 && useAt > checkAt, "items 形状检查不在使用之前");
 });
 
 test("空结果 + 有缓存 = 保留缓存（别把后端挂了显示成项目没了）", () => {

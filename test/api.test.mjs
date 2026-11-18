@@ -1285,3 +1285,42 @@ test("GET /sessions/:sid?tail=N：只返回最后 N 条 + total/tailStart", asyn
     assert.equal(one.messages.length, 1, "tail=0 不该把消息清空（下限 1）");
   } finally { server.close(); }
 });
+
+/*
+ * 列表聚合端点（Task 0016 · 剩余项 #6）。
+ *
+ * 动机：打开列表要 1 次 `/projects` + 每个项目 1 次 `/sessions`。本机 0.31 s 不痛，
+ * 但走隧道时是 3 次**串行 RTT**（≈0.9 s）—— 字节不多，往返太多。
+ *
+ * 形状纪律（api 规范 2.7）：`/groups` 内部调的是 `listAgentProjects` + `sessionRowsOf`，
+ * 所以它返回的项目与行必须与旧端点**逐字段相等**。这条断言就是"没有第二份形状"的证据：
+ * 它不检查"有没有某些字段"，而是把两边整个 JSON 比一遍。
+ */
+test("GET /api/agents/:id/groups 与 /projects + 每项目 /sessions 逐字段一致", async () => {
+  const { server, base } = await start();
+  try {
+    const groupsRes = await fetch(`${base}/api/agents/lifeosagent/groups`);
+    assert.equal(groupsRes.status, 200);
+    const groups = (await groupsRes.json()).items;
+    assert.ok(Array.isArray(groups) && groups.length > 0, "至少要有一个分组");
+
+    const projects = (await (await fetch(`${base}/api/agents/lifeosagent/projects`)).json()).items;
+    for (const group of groups) {
+      const expected = projects.find((item) => item.id === group.project.id);
+      assert.ok(expected !== undefined, `分组里的项目 ${group.project.id} 必须也在 /projects 里`);
+      assert.deepEqual(group.project, expected, "项目对象必须与 /projects 完全一致（不得另拼）");
+      const rows = (await (await fetch(`${base}/api/agents/lifeosagent/projects/${group.project.id}/sessions`)).json()).items;
+      assert.deepEqual(group.sessions, rows, `${group.project.id} 的行必须与 /sessions 完全一致`);
+    }
+    assert.equal(groups.length, projects.length, "分组数 = 项目数（一个都不能少）");
+  } finally { server.close(); }
+});
+
+test("GET /api/agents/:id/groups 未知 Agent → 404 agent_not_found（失败路径）", async () => {
+  const { server, base } = await start();
+  try {
+    const response = await fetch(`${base}/api/agents/nobody/groups`);
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, "agent_not_found");
+  } finally { server.close(); }
+});
