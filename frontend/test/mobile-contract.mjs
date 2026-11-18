@@ -709,7 +709,7 @@ for (const width of widths) {
   await context.close();
 }
 
-// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
+// ── 检视面板在手机上可用（Task 0016 · P7-S6）──────────────────────────────────
 // 改之前：`App.tsx` 的 `reviewOpen && !isMobile` 让面板**在手机上永不渲染**，
 // 而 `openReview()` 照样执行 → 弹错"右侧放不下检视面板…或把窗口放宽"（手机上永远不成立）。
 // 断言两条：面板真的出现（全屏）／**没有**那句错误提示。
@@ -973,6 +973,75 @@ for (const width of [360, 390]) {
   check(`[${width}] 根 overscroll = none（不链出浏览器手势）`, platform.htmlOverscroll === "none", platform.htmlOverscroll);
   check(`[${width}] 消息区 overscroll = contain`, platform.mainOverscroll === "contain", platform.mainOverscroll);
   check(`[${width}] 可点元素 touch-action = manipulation`, platform.buttonTouchAction === "manipulation", platform.buttonTouchAction);
+  await context.close();
+}
+
+// ── 压缩卡在手机上可见（Task 0016 · P7-S9）────────────────────────────────────
+/*
+ * 用户 2026-11-17 实测：「怎么感觉 session 被截断了呢？Session 历史消息看不到了」。
+ * 事实是 Pi 自动压缩了上下文，而界面**只渲染模型上下文投影**、对压缩不可见 —— 用户只能
+ * 理解成"历史丢了"。这里锁的是"用户能看见压缩发生过"，不是"历史被还回来"。
+ *
+ * 夹具要点（为什么必须自己造消息而不用家目录里的真会话）：
+ *  - 压缩卡的位置是**第一条**，而 P4-S2 的渲染窗口只留最后 50 条 —— 真会话里卡片一会被窗口裁掉；
+ *  - 所以要断言"它在窗口外也必须常显"，就必须让夹具的条目数远大于窗口。
+ */
+{
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const summary = "## Goal\n把手机端性能做完。";
+  // 1 张压缩卡 + 120 条消息（远超 50 条的渲染窗口）
+  const messages = [
+    { id: "card-1", role: "assistant", text: "", blocks: [{ type: "compaction", summary, tokensBefore: 984407 }] },
+    ...Array.from({ length: 120 }, (_, i) => ({
+      id: `m${i}`, role: i % 2 === 0 ? "user" : "assistant", text: `消息 ${i}`,
+      blocks: [{ type: "text", text: `消息 ${i}` }],
+    })),
+  ];
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
+    // 复刻后端的裁剪语义：只给最后 50 条 + 把窗口外的压缩标记补回队首
+    const tail = 50;
+    const start = Math.max(0, messages.length - tail);
+    const windowed = messages.slice(start);
+    const markers = messages.slice(0, start).filter((m) => m.blocks.some((b) => b.type === "compaction"));
+    await route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        sessionId: "fx-compaction", meta: { thinkingLevel: "off", running: false, context: null },
+        messages: [...markers, ...windowed], total: messages.length, tailStart: start,
+      }),
+    });
+  });
+  await page.goto(`${APP_URL}/?agent=lifeosagent&project=workspace&session=fx-compaction`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1800);
+  const card = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="compaction-card"]');
+    const box = el?.getBoundingClientRect();
+    const rows = [...document.querySelectorAll("main [data-testid='message'], main [data-testid='compaction-card']")];
+    return {
+      exists: el !== null,
+      h: box === undefined ? 0 : Math.round(box.height),
+      w: box === undefined ? 0 : Math.round(box.width),
+      first: rows[0]?.getAttribute("data-testid") ?? null,
+      text: (el?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 60),
+      // 触控目标：卡头那一行要能点开（≥44）
+      toggleH: Math.round(el?.querySelector("button")?.getBoundingClientRect().height ?? 0),
+    };
+  });
+  check("[390] 压缩卡存在（在渲染窗口之外也常显）", card.exists, JSON.stringify(card));
+  check("[390] 压缩卡排在消息流第一条", card.first === "compaction-card", String(card.first));
+  check("[390] 压缩卡说清「已压缩」与压缩前大小",
+    card.text.includes("已压缩") && card.text.includes("984.4k"), card.text);
+  check("[390] 压缩卡可点开（触控目标 ≥44）", card.toggleH >= 44, `${card.toggleH}px`);
+  // 展开后必须看得到摘要正文
+  await page.locator('[data-testid="compaction-card"] button').first().click({ force: true });
+  await page.waitForTimeout(400);
+  const expanded = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="compaction-card"]');
+    return { text: (el?.innerText ?? "").replace(/\s+/g, " "), h: Math.round(el?.getBoundingClientRect().height ?? 0) };
+  });
+  check("[390] 展开后显示摘要正文", expanded.text.includes("把手机端性能做完"), `h=${expanded.h}`);
+  check("[390] 展开后给出「原文去哪看」的指引", expanded.text.includes("完整历史"), expanded.text.slice(0, 120));
   await context.close();
 }
 
