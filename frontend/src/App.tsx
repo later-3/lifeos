@@ -65,6 +65,7 @@ import { failureLabel, fixHint, type FailureKind } from "./api/failure-text";
 import type { TurnStep } from "./api/working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
 import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
+import { fetchJsonWithTimeout, failureLogOf, failureTextOf, withTimeout, type LoadFailure, type LoadResult } from "./api/fetch-timeout";
 import { TurnInspector } from "./views/SessionHistory";
 import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
@@ -760,6 +761,15 @@ export default function App() {
    * 我们的 toast 直接用服务端的 `message`（它已写明三种出口）。
    */
   const [tailError, setTailError] = useState<string | undefined>();
+  /**
+   * 会话加载**已明确失败**（Task 0028 · P2）：超时 / 网络错 / http 错。
+   *
+   * 与 `messagesLoading` 分开：那个表示"还没到"，这个表示"不会来了"。
+   * 混成一个布尔就是缺陷 D2 的成因 —— 界面只能喊"加载中"，而它永远不会结束。
+   */
+  const [loadFailure, setLoadFailure] = useState<LoadFailure | undefined>();
+  /** 会话列表（`/groups`）失败：有缓存时只是提示，无缓存时列表出错误态。 */
+  const [groupsFailure, setGroupsFailure] = useState<LoadFailure | undefined>();
   const [turnStep, setTurnStep] = useState<TurnStep>(1);
 
   const turnStartedAtRef = useRef(0);
@@ -1350,13 +1360,36 @@ export default function App() {
    *
    * 失败兜底不变：返回空数组，原因由调用方提示（S5 的既有语义）。
    */
-  async function fetchGroups(id: string): Promise<Group[]> {
-    try {
-      const response = await fetch(`/api/agents/${id}/groups`);
-      if (!response.ok) return [];
-      const body = (await response.json()) as { items?: Group[] };
-      return Array.isArray(body.items) ? body.items : [];
-    } catch { return []; }
+  /**
+   * 记一条加载失败（Task 0028 · P2）。
+   *
+   * 为什么单独一句：缺陷 D2 的一半是"失败完全不可见" —— 前端日志里连一条都没有
+   * （`~/.lifeos/logs/frontend-*.jsonl` 全天只有 sse-open）。这里保证**每次失败都留痕**。
+   * 不写正文与凭据（`specs/code/backend/code.md` 2.10）。
+   */
+  function logFailure(failure: LoadFailure): void {
+    logger.error("load", `加载失败：${failure.label}`, failureLogOf(failure));
+  }
+
+  /**
+   * 列表聚合（`/groups`）。**带闸 + 带失败原因**（Task 0028 · P2）。
+   *
+   * 以前它把一切失败都 `return []`：接口 500 与"确实没有项目"在界面上完全一样，
+   * 而调用方还会因为"空结果"把缓存也丢掉（`specs/code/backend/code.md` 2.9 的反面）。
+   * 现在返回 `{ groups, failure }`：`groups` 为空且 `failure` 存在时，调用方保留缓存并提示。
+   */
+  async function fetchGroups(id: string): Promise<{ groups: Group[]; failure?: LoadFailure }> {
+    const result = await fetchJsonWithTimeout<{ items?: Group[] }>(
+      `/api/agents/${id}/groups`,
+      GROUPS_LOAD_TIMEOUT_MS,
+      "groups",
+    );
+    if (!result.ok) {
+      logFailure(result.failure);
+      return { groups: [], failure: result.failure };
+    }
+    const items = result.value.items;
+    return { groups: Array.isArray(items) ? items : [] };
   }
 
   /**
@@ -1371,6 +1404,21 @@ export default function App() {
    */
   const LOAD_TAIL_COUNT = 200;
 
+/**
+ * 加载超时（Task 0028 · P2）。
+ *
+ * 取值依据（实测 127 个真实会话，`?tail=200&deferThinking=1`）：
+ * p50 = 11ms、p90 = 53ms、p99 = **206ms**、最大 256ms（最大响应 439KB）。
+ * 15s 对 p99 有 ~70× 余量 —— 它拦的是"请求排不到队 / 后端假死"，不是正常慢。
+ * 同值参考：pi-web `app/api/models-config/catalog/route.ts:13` `FETCH_TIMEOUT_MS = 15_000`。
+ */
+const SESSION_LOAD_TIMEOUT_MS = 15_000;
+/** 列表聚合（`/groups`）：单个响应更大（全部项目的会话摘要），但仍远小于会话详情，取同一档。 */
+const GROUPS_LOAD_TIMEOUT_MS = 15_000;
+/** 对账端点与思考正文：小响应、非关键路径，10s 足够且更快给出出口。 */
+const RECONCILE_TIMEOUT_MS = 10_000;
+const THINKING_LOAD_TIMEOUT_MS = 10_000;
+
   type SessionPayload = {
     messages: Message[]; meta?: SessionMeta; integrity?: { orphanParents?: number };
     /** 全会话条数（分页元信息，P3-S3）：用于判断"上面还有更早的" */
@@ -1383,14 +1431,24 @@ export default function App() {
     olderCursor?: string;
   };
 
-  /** 只做网络取数（不碰任何 React 状态）—— 缓存命中时它变成后台刷新。 */
-  async function fetchSessionPayload(id: string, sid: string): Promise<SessionPayload> {
+  /**
+   * 只做网络取数（不碰任何 React 状态）—— 缓存命中时它变成后台刷新。
+   *
+   * **必须有闸**（Task 0028 · P2）：这个 `await` 是整个"永久骨架"的现场 ——
+   * 请求排不到队时它永不返回，`messagesLoading` 永远为 true（Task 0027 · E6 / R3-2③）。
+   * 现在四种结局都收敛成 `LoadResult`，调用方据此给出内容 / 骨架 / 错误出口。
+   */
+  async function fetchSessionPayload(id: string, sid: string): Promise<LoadResult<SessionPayload>> {
     /*
      * `deferThinking=1`（P8 / B2）：思考正文不随行下发，只留 `deferred: true`。
      * 实测 200 条窗口的响应 1475 KB → **493 KB**（思考占 999 KB / 68%），而首屏思考块默认折叠。
      * 展开时走 `loadThinking()`（见下方）取回那一段。
      */
-    return await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}&deferThinking=1`)).json() as SessionPayload;
+    return await fetchJsonWithTimeout<SessionPayload>(
+      `/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}&deferThinking=1`,
+      SESSION_LOAD_TIMEOUT_MS,
+      "session",
+    );
   }
 
   /**
@@ -1407,13 +1465,19 @@ export default function App() {
      * 之前这里接的是 `(entryId, blockIndex)` 两个独立入参，而调用方给的 `blockIndex` 是"整轮合并块"
      * 的下标、`entryId` 却是这一轮第一条回复的 id —— 两者不同源，错配率实测 96–99%（0027 · R4）。
      */
-    const response = await fetch(`/api/agents/${id}/sessions/${sid}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`);
-    if (!response.ok) throw new Error(`thinking_${response.status}`);
-    const body = await response.json() as { text?: unknown };
-    return typeof body.text === "string" ? body.text : "";
+    const result = await fetchJsonWithTimeout<{ text?: unknown }>(
+      `/api/agents/${id}/sessions/${sid}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`,
+      THINKING_LOAD_TIMEOUT_MS,
+      "thinking",
+    );
+    if (!result.ok) {
+      logger.warn("load", "思考正文取回失败", failureLogOf(result.failure));
+      throw new Error(result.failure.kind === "timeout" ? "thinking_timeout" : `thinking_${result.failure.status ?? result.failure.kind}`);
+    }
+    return typeof result.value.text === "string" ? result.value.text : "";
   }, []);
 
-  async function loadMessages(id: string, sid: string) {
+  async function loadMessages(id: string, sid: string): Promise<SessionPayload | undefined> {
     /*
      * 缓存优先（Task 0016 · B1）：命中就**先用**，再后台刷新。
      *
@@ -1430,7 +1494,18 @@ export default function App() {
       followTail.current = true;
       setAtBottom(true);
     }
-    const data = await fetchSessionPayload(id, sid);
+    const loaded = await fetchSessionPayload(id, sid);
+    if (!loaded.ok) {
+      /*
+       * 失败出口（Task 0028 · P2）：**必须**在这里落地，否则界面只能继续喊"加载中"。
+       * 三种失败都走同一条路：记日志 → 交给 `chatSurfaceOf` 出 error 态 → 用户看到原因与重试。
+       */
+      logFailure(loaded.failure);
+      if (current.current === sid) setLoadFailure(loaded.failure);
+      return undefined;
+    }
+    const data = loaded.value;
+    if (current.current === sid) setLoadFailure(undefined);
     // 会话文件引用断裂（C117）：消息可能"消失"，明确告诉用户，不要静默
     if ((data.integrity?.orphanParents ?? 0) > 0) {
       toast(`会话文件存在断裂分支（${data.integrity?.orphanParents} 处），部分消息可能不显示；已记录日志`, "error");
@@ -1512,9 +1587,22 @@ export default function App() {
     if (cursor === undefined || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
     try {
-      const response = await fetch(`/api/agents/${id}/sessions/${sid}?before=${encodeURIComponent(cursor)}&deferThinking=1`);
+      /*
+       * 同一条闸（Task 0028 · P2）：翻历史是"更明显的等待"（用户正盯着顶部），
+       * 抓不住时限时它会与首屏一样永久转圈。409（游标失效）的语义保持不变。
+       */
+      const result = await withTimeout<Response>(
+        (signal) => fetch(`/api/agents/${id}/sessions/${sid}?before=${encodeURIComponent(cursor)}&deferThinking=1`, { signal }),
+        SESSION_LOAD_TIMEOUT_MS,
+        "session-older",
+      );
+      if (!result.ok) { logger.warn("load", "加载更早失败（保留哨兵，可再试）", failureLogOf(result.failure)); return; }
+      const response = result.value;
       if (response.status === 409) { await loadMessages(id, sid); return; }
-      if (!response.ok) return;
+      if (!response.ok) {
+        logger.warn("load", "加载更早被拒绝", { status: response.status, label: "session-older" });
+        return;
+      }
       const data = await response.json() as SessionPayload;
       if (current.current !== sid) return;              // 期间切走了：不要把别人的历史拼进来
       const older = data.messages ?? [];
@@ -1530,10 +1618,13 @@ export default function App() {
 
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
   async function refreshMeta(id: string, sid: string) {
-    const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
-      meta?: SessionMeta;
-    };
-    if (data.meta !== undefined) setMeta(data.meta);
+    const result = await fetchJsonWithTimeout<{ meta?: SessionMeta }>(
+      `/api/agents/${id}/sessions/${sid}`,
+      RECONCILE_TIMEOUT_MS,
+      "session-meta",
+    );
+    if (!result.ok) { logger.warn("load", "刷新头部 meta 失败（不阻塞界面）", failureLogOf(result.failure)); return; }
+    if (result.value.meta !== undefined) setMeta(result.value.meta);
   }
 
   /** 无会话时刷新头部默认模型；配置保存会广播 agents_changed，最终走到这里。 */
@@ -1689,6 +1780,7 @@ export default function App() {
      * 加载态标志用 main 的 `messagesLoading`（Task 0019 把它统一进 `chatSurfaceOf`，
      * 取代了 0016 另起的 `sessionLoading`）—— 合并时只留一套，避免同一事实两处各判一次。
      */
+    setLoadFailure(undefined);            // 切会话：上一个会话的失败结论不带到新会话（Task 0028 · P2）
     const hasCache = messageCache.current.get(a.id, sid) !== undefined;
     setMessagesLoading(!hasCache);
     current.current = sid;                 // 同步生效：下面的异步结果据此判断"是否已切走"（C120）
@@ -1712,14 +1804,25 @@ export default function App() {
       // 最近一轮若是被中断（lost）：状态条给出原因，而不是只剩一个"重新发送"按钮（任务 0006）
       // Task 0007：提示与按钮同源——`turnNoticeOf()` 与 `resendPlan()` 向 `turnOutcomeOf()` 问同一个问题；
       // 此处服务端已说不在跑（上面 running 分支进不来），所以 busy=false，提示提按钮时按钮一定在。
-      void fetch(`/api/agents/${a.id}/sessions/${sid}/turns/last`)
-        .then((response) => (response.ok ? response.json() as Promise<{ turn?: { state: string } | null }> : undefined))
-        .then((body) => {
-          if (current.current !== sid) return;
-          const notice = turnNoticeOf({ outcome: outcomeOfTurn(body?.turn), busy: false });
-          if (notice !== undefined) setTurnStatus(notice);
-        })
-        .catch(() => undefined);
+      /*
+       * 对账端点也加闸（Task 0028 · P2）：它决定"上一轮是完成还是被中断"的文案。
+       * 失败不阻塞会话打开（用户已经在看内容了），但**必须留一条 warn**——
+       * 以前这里的 `.catch(() => undefined)` 是典型静默失败（`specs/code/backend/code.md` 2.9）。
+       */
+      void (async () => {
+        const result = await fetchJsonWithTimeout<{ turn?: { state: string } | null }>(
+          `/api/agents/${a.id}/sessions/${sid}/turns/last`,
+          RECONCILE_TIMEOUT_MS,
+          "turns-last",
+        );
+        if (current.current !== sid) return;
+        if (!result.ok) {
+          logger.warn("run", "对账失败（不影响会话内容显示）", failureLogOf(result.failure));
+          return;
+        }
+        const notice = turnNoticeOf({ outcome: outcomeOfTurn(result.value.turn), busy: false });
+        if (notice !== undefined) setTurnStatus(notice);
+      })();
     }
     // 打开会话也要保证“有效默认”已加载：顶部在非覆盖分支显示它。
     void refreshAgentDefaultModel(a.id);
@@ -1762,9 +1865,10 @@ export default function App() {
     // 缓存有内容就先画缓存（listSurfaceOf 内容优先），没有就画骨架——两种都不会撒谎。
     setGroupsReady(false);
     const fetched = await fetchGroups(a.id);
-    // 同启动路径：空结果 + 有缓存 = 接口失败，保留缓存
-    const next = fetched.length === 0 && cached !== undefined ? cached : fetched;
-    if (fetched.length > 0) rememberGroups(a.id, next);
+    // 空结果 + 有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：保留缓存不覆盖
+    const next = fetched.groups.length === 0 && cached !== undefined ? cached : fetched.groups;
+    if (fetched.groups.length > 0) rememberGroups(a.id, next);
+    if (fetched.failure !== undefined) setGroupsFailure(fetched.failure);
     setGroups(next);
     setGroupsReady(true);
     const remembered = readLast(lastSessionKey(a.id));
@@ -1893,10 +1997,12 @@ export default function App() {
   async function reloadGroups() {
     const id = ctx.current.agentId;
     if (id === undefined) return undefined;
-    const next = await fetchGroups(id);
+    const fetched = await fetchGroups(id);
+    const next = fetched.groups;
     rememberGroups(id, next);
     setGroups(next);
     syncSlotsFromRows(id, next);
+    setGroupsFailure(fetched.failure);
     return next;
   }
 
@@ -2364,9 +2470,11 @@ export default function App() {
     const target = agents.find((item) => item.id === agentId);
     if (target === undefined) return;
     await selectAgent(target);
-    const next = await fetchGroups(agentId);
+    const fetched = await fetchGroups(agentId);
+    const next = fetched.groups;
     rememberGroups(agentId, next);
     setGroups(next);
+    if (fetched.failure !== undefined) setGroupsFailure(fetched.failure);
     const owner = next.find((group) => group.sessions.some((item) => item.sessionId === sessionId));
     if (owner !== undefined) setSelectedProjectId(owner.project.id);
     await openSession(target, sessionId);
@@ -2490,10 +2598,11 @@ export default function App() {
         const fetched = await fetchGroups(found.id);
         // 拉回空数组且我们有缓存 = 接口失败（或真没项目，但那时缓存也该是空）：
         // 保留缓存不覆盖，否则"后端挂了"会变成"项目全没了"这种更吓人的假象
-        const groups = fetched.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched;
+        const groups = fetched.groups.length === 0 && cachedGroups !== undefined ? cachedGroups : fetched.groups;
         setGroups(groups);
         setGroupsReady(true);            // 会话列已确认（失败也在此收尾，否则骨架会一直挂着）
-        if (fetched.length > 0) rememberGroups(found.id, groups);
+        if (fetched.failure !== undefined) setGroupsFailure(fetched.failure);
+        if (fetched.groups.length > 0) rememberGroups(found.id, groups);
         /*
          * **首次加载也播种 slots**（Task 0017 · todo #2）：原来是唯一的缺口 ——
          * 冷启动时列表里已有 running/unread 的会话不出数字，要等一次 `row` 补丁或重连快照才有。
@@ -3138,6 +3247,7 @@ export default function App() {
   /** 聊天区表面（Task 0019）：纯函数判定，页面只按结论画。 */
   const chatSurface = chatSurfaceOf({
     resolving, sessionId, selectedProjectId, messagesLoading, messageCount: messages.length,
+    ...(loadFailure !== undefined ? { loadFailure } : {}),
     // 项目级空态的文案要区分"有 11 条对话"与"一条都没有"（P1-S2）：计数就来自列表数据本身
     projectSessionCount: groups.find((group) => group.project.id === selectedProjectId)?.sessions.length ?? 0,
   });
@@ -3459,6 +3569,22 @@ export default function App() {
               {sessionSurface === "loading" && <ListSkeleton rows={6} />}
               {sessionSurface === "empty" && (
                 <PanelEmpty title="还没有项目" hint="把外部目录注册为一个项目后，这里会出现。" />
+              )}
+              {/*
+                列表加载失败（Task 0028 · P2）：
+                - 有缓存时它只是**提示**（内容仍在下面，用户能继续工作）；
+                - 没缓存时列表就是空的，这条提示是唯一线索。
+                以前 `fetchGroups` 把失败 `return []`，界面与"确实没有项目"完全一样。
+              */}
+              {groupsFailure !== undefined && (
+                <div data-testid="groups-load-error" role="alert"
+                  className="mx-2 mb-1 flex items-start gap-2 rounded-panel bg-danger-soft px-2 py-1.5 text-micro text-danger">
+                  <AppIcon name="info" size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">{failureTextOf(groupsFailure)}</span>
+                  <IconButton label="重新加载列表" size="sm" onClick={() => { setGroupsFailure(undefined); void reloadGroups(); }} className="text-danger">
+                    <AppIcon name="refresh" size={12} />
+                  </IconButton>
+                </div>
               )}
               {sessionSurface === "ready" && groups.map((group) => {
                 const open = collapsedGroups[group.project.id] !== true;
@@ -3966,6 +4092,28 @@ export default function App() {
                 * 后者在每条会话打开时闪一次（消息还在路上）。两处都是把"没到"当成"没有"。
                 */}
               {chatSurface === "loading" && <MessageSkeleton rows={4} />}
+              {chatSurface === "error" && loadFailure !== undefined && (
+                /*
+                 * 加载失败出口（Task 0028 · P2）。
+                 *
+                 * 以前这里什么都没有：请求挂住 → 永久骨架；请求 500 → 一片空白。
+                 * 现在给"原因 + 重试"，并把技术细节留在日志里（界面上不出现 status/堆栈）。
+                 * 为什么用 EmptyState 而不是新造一种形态：`specs/frontend-development/frontend-spec.md` §5
+                 * 要求失败态与空态同一套容器，别再长第三种提示样式。
+                 */
+                <EmptyState
+                  icon={<AppIcon name="info" size={22} />}
+                  title={failureTextOf(loadFailure)}
+                  hint="可以点下面的重试；如果一直失败，看一下后端是否在运行。"
+                  action={
+                    <button type="button" data-testid="chat-load-retry"
+                      onClick={() => { if (agent !== undefined && sessionId !== undefined) void openSession(agent, sessionId); }}
+                      className="rounded-control bg-accent-solid px-3 py-1.5 text-meta font-medium text-white">
+                      重试
+                    </button>
+                  }
+                />
+              )}
               {chatSurface === "empty-project" && (
                 <EmptyState icon={<AppIcon name="message-circle" size={22} />} title="先选择项目" hint="左侧第 2 列选一个项目。" />
               )}

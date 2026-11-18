@@ -55,7 +55,7 @@ export function columnCountOf(input: { ready: boolean; count: number }): number 
 }
 
 /** 聊天区此刻该画什么。 */
-export type ChatSurface = "loading" | "empty-project" | "empty-session" | "empty-message" | "content";
+export type ChatSurface = "loading" | "error" | "empty-project" | "empty-session" | "empty-message" | "content";
 
 /**
  * 聊天区域表面。
@@ -87,8 +87,19 @@ export function chatSurfaceOf(input: {
    * 后端行数据里就有这个数（`groups`），不需要额外请求。
    */
   projectSessionCount?: number;
+  /**
+   * 这一轮加载**已经明确失败**（Task 0028 · P2）：超时 / 网络错 / http 错。
+   *
+   * 为什么必须有这一档：以前"失败"与"还在加载"共用 `messagesLoading` 一个布尔，于是
+   * "请求挂住"与"请求失败"在界面上完全一样 —— 用户看到的是**永久骨架**，
+   * 既不知道发生了什么，也没有重试入口（Task 0027 · E6）。
+   *
+   * **有内容时仍然优先显示内容**：一次失败的刷新不该把已经渲染出来的对话换成错误页。
+   */
+  loadFailure?: { kind: string } | undefined;
 }): ChatSurface {
   if (input.messageCount > 0) return "content";
+  if (input.loadFailure !== undefined) return "error";
   if (input.resolving) return "loading";
   if (input.sessionId !== undefined) return input.messagesLoading ? "loading" : "empty-message";
   if (input.selectedProjectId === undefined) return "empty-project";
