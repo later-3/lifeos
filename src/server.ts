@@ -1033,7 +1033,19 @@ app.use(async (c, next) => {
     const buffer = await readFile(join(agentsRoot(), agent.id, "avatar", avatar.file)).catch(() => undefined);
     if (buffer === undefined) { const error = problem("no_avatar", "头像文件不存在", 404); return c.json(error.body, error.status); }
     const mime = avatar.file.endsWith(".png") ? "image/png" : avatar.file.endsWith(".webp") ? "image/webp" : "image/jpeg";
-    return c.body(buffer, 200, { "Content-Type": mime });
+    /*
+     * 头像可长缓存（Task 0016 · 剩余项 #13）：前端请求的是 `/avatar?v=<revision>`，
+     * revision 每次改头像都会变 → 同一个 URL 的字节**永不改变**，可以 immutable。
+     * 实测动因：首屏 14 个 Agent 头像各自一次 GET，切回列表还要重复取；
+     * 它们与首屏 key path 抢同一条连接。
+     *
+     * 与 `specs/code/frontend/code.md` 2.17 的分档一致：带内容版本号的静态资源用长缓存，
+     * 而**没有**版本号的东西（index.html / sw.js / 缺文件的 404）必须 no-cache。
+     */
+    return c.body(buffer, 200, {
+      "Content-Type": mime,
+      "Cache-Control": "public, max-age=31536000, immutable",
+    });
   });
 
   // ===== 媒体库（Task 0016 · P1）：头像与表情素材的唯一来源，模型不接触图片字节 =====

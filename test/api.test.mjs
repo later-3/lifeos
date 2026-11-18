@@ -558,6 +558,16 @@ test("头像：上传 PNG→GET 返回图片→reset 回自动；非法格式拒
     assert.equal(get.status, 200);
     assert.equal(get.headers.get("content-type"), "image/png");
     assert.deepEqual(Buffer.from(await get.arrayBuffer()), png1x1);
+    /*
+     * 头像可长缓存（Task 0016 · 剩余项 #13）：前端请求带 `?v=<revision>`，同一个 URL 的
+     * 字节永不改变，所以 `immutable` 是安全的。实测动因：首屏 14 个头像各一次 GET，
+     * 切回列表还要重取。
+     *
+     * 这条断言同时锁住"别修过头"：头像必须**带版本号**才配长缓存 —— 前端
+     * `agent-avatar.tsx:30` / `user-avatar.tsx:26` 两处都拼了 `?v=`。
+     */
+    assert.match(get.headers.get("cache-control") ?? "", /immutable/, "头像该给 immutable（URL 带 revision）");
+    assert.match(get.headers.get("cache-control") ?? "", /max-age=31536000/);
     // 列表带 avatar 字段
     const agent = await (await fetch(`${base}/api/agents/lifeosagent`)).json();
     assert.equal(agent.avatar.kind, "image");
