@@ -1,7 +1,7 @@
 // T7：run-facts 纯函数（协议 P1·1.4）——事件折叠 / 三态语义 / 排队区。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyRunFacts, applyRunEvent, isRunning, hasUnread, markViewed, queueAdd, queueClear, settleStopped } from "../frontend/src/run-facts.ts";
+import { emptyRunFacts, applyRunEvent, isRunning, hasUnread, markViewed, queueAdd, queueClear, settleStopped } from "../frontend/src/api/run-facts.ts";
 
 test("T7a snapshot 折叠：snapRunning 是当前在跑集合；不跑的会话不在内", async () => {
   const f = emptyRunFacts();
@@ -68,7 +68,7 @@ test("T7g settleStopped：服务端明确不在跑 → 清残留运行点，不�
 });
 
 // T56：快照是服务端真相（任务 0007）——跨 Agent 的运行集合整体替换；快照里没有的残留"运行中"必须清掉（断线期间已结束的回合）。
-import { applyRunningFacts, applySnapshotFacts } from "../frontend/src/run-facts.ts";
+import { applyRunningFacts, applySnapshotFacts } from "../frontend/src/api/run-facts.ts";
 test("T56 快照整体替换：运行集合与未读来自服务端；断线期间已结束的残留运行点被清掉", async () => {
   let f = applyRunEvent(emptyRunFacts(), { sessionId: "old", type: "turn", turnId: "t0", state: "running" }, 1);
   f = applyRunEvent(f, { sessionId: "other", type: "turn", turnId: "t9", state: "done" }, 2);   // 本地留下的未读

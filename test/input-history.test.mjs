@@ -4,11 +4,11 @@
 // 全是**逻辑层**的，浏览器里测一次的成本高、组合多。纯函数一次穷举，
 // 界面层只负责把 keydown 与 messages 喂进来（frontend/test/ui-contract.mjs 另有真键路契约）。
 //
-// 依据：frontend/src/input-history.ts 头注；pi-web upstream/main@f130910 ChatWindow.tsx:822-833
+// 依据：frontend/src/api/input-history.ts 头注；pi-web upstream/main@f130910 ChatWindow.tsx:822-833
 // （从当前会话 messages 派生）与 Pi TUI editor.ts:456-486（↑ = 下标 +1）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR } from "../frontend/src/input-history.ts";
+import { historyNavigate, inputHistoryOf, NO_HISTORY_CURSOR } from "../frontend/src/api/input-history.ts";
 
 const user = (text) => ({ role: "user", text });
 const assistant = (text) => ({ role: "assistant", text });

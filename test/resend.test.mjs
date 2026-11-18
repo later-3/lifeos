@@ -6,7 +6,7 @@
 // 判据本身的用例在 `test/turn-state.test.mjs`；提示与按钮一致性在 `test/turn-notice.test.mjs`。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resendPlan } from "../frontend/src/resend.ts";
+import { resendPlan } from "../frontend/src/api/resend.ts";
 
 const user = (text) => ({ role: "user", text, blocks: [{ type: "text", text }] });
 /** 显式给 stopReason：这是"这一轮算不算失败"的唯一输入（Task 0007）。 */

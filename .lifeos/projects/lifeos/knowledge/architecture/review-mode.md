@@ -84,6 +84,7 @@
   │  GET /api/agents/:id/projects/:pid/tasks/:taskId/review-sources   （检视对象的两个源）
   │  GET /api/agents/:id/projects/:pid/review-candidates               （哪些 Task 有东西可检视）
   │  GET /api/review/blob?source&path&side   （折叠段展开 / 语法高亮取全文）
+  │  GET /api/review/raw?source&path&side    （图片/视频等二进制，供 md 渲染档内联展示；2026-11-16 新增）
   │  GET /api/review/comments?taskDir        （评论：任何会话都能读）
   │  POST /api/review/comments {op,…}        （add/update/remove/clear/state/reply/reply-update/reply-remove/awaiting）
   │  GET/POST /api/review/viewed              （已看进度：list / set 批量 / clear）

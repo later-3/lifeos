@@ -1,7 +1,7 @@
 // T47–T52：前端事件路由（任务 0007 P4）——纯函数：事件 + 焦点 → 动作。App 只执行动作，不做判断。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { routeEvent } from "../frontend/src/event-router.ts";
+import { routeEvent } from "../frontend/src/api/event-router.ts";
 
 const focusA = { agentId: "A", sessionId: "s1", visible: true };
 const turn = (agentId, sessionId, state, seq = 10) => ({ seq, agentId, sessionId, type: "turn", turnId: `t-${sessionId}`, state });
@@ -41,7 +41,7 @@ test("T51 细节事件只属于焦点会话；其他会话的 delta 必须丢弃
 // T52 的 Agent 二选一语义已由状态映射取代（见 test/status-map.test.mjs T61–T63）
 
 // T59：流是否"死了"（任务 0007 补充：经代理的 SSE 断开可能不触发 error，必须有客户端看门狗）
-import { isStreamStale } from "../frontend/src/event-router.ts";
+import { isStreamStale } from "../frontend/src/api/event-router.ts";
 test("T59 流陈旧判定：超过阈值没有任何帧（含心跳）才算死；刚收到过不算", async () => {
   assert.equal(isStreamStale(1_000, 1_000 + 24_999, 25_000), false);
   assert.equal(isStreamStale(1_000, 1_000 + 25_000, 25_000), true);

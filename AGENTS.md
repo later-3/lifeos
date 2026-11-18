@@ -23,6 +23,7 @@
 | 起并行开发实例（worktree / 端口 / 独立家目录） | `.lifeos/projects/lifeos/specs/development-harness/development-harness.md` §7（规则）→ `.lifeos/projects/lifeos/tools/dev-port/AGENTS.md`（命令与排障） |
 | 记忆 | `.lifeos/projects/lifeos/knowledge/architecture/agent-memory.md` + `.lifeos/projects/lifeos/knowledge/requirements/agent-memory.md` |
 | 新参考场景 | `.lifeos/projects/lifeos/knowledge/reference-baseline.md`：找不到场景行先补行，**不许用"行业惯例"当依据** |
+| **README / 配图 / 宣传片素材** | `scripts/readme-studio/MAINTAINING.md`（维护流程 + 门禁 + 5 个反面案例 + 症状→原因）→ `DIRECTOR.md`（素材怎么演）→ `AGENTS.md`（工具箱怎么跑、坑） |
 | 远程访问 | 公开机制 `.lifeos/projects/lifeos/knowledge/architecture/remote-access.md`；本机运维记录 `~/.lifeos/projects/lifeos/runbook/`（仅本机，不进仓库） |
 | 还没实现的东西 | `.lifeos/projects/lifeos/todo/todo.md` 一句话登记；实现后删除登记，把事实写进对应文档 |
 | Task / 协作机制 | 协议 §3.7（Task 与类型）、§7（会话与指针）、§11（提升与维护）；类型规则在 `~/.lifeos/interaction-harness/task-types/<类型>/AGENTS.md` |
@@ -46,6 +47,12 @@
 
 ## 验证
 
-- `pnpm typecheck`、`pnpm test` 为基础门禁；前端改动按前端行的顺序走四步后再过 `pnpm verify`（typecheck + lint:tokens + test + test:ui）。
+- `pnpm typecheck`、`pnpm test` 为基础门禁；前端改动按前端行的顺序走四步后再过 `pnpm verify`
+  （typecheck + lint:tokens + test + test:ui + **test:layer** + **test:visual**）。
+- **`test:layer`（`frontend/test/layer-paint.mjs`）**：层绘制不变量——行级填充只声明在行根、
+  动作覆盖层不自绘底色、状态标记不越出行矩形、同一列里的行圆角同档。**改行/列表/覆盖层必跑。**
+- **`test:visual`（`scripts/visual-matrix.mjs`）**：组件取景框视觉矩阵（12 框 × 4 主题 = 48 张，
+  含 hover 与外部主题两维）。基线在 `frontend/test/visual-matrix/`，**入 git**；
+  `--update` 前必须人眼确认差异报告。
 - 家目录或模板结构改动后运行 `pnpm home:check`（结构不符合协议即失败）。
 - 数值/颜色只在 `frontend/src/design/tokens.css`，控件只在 `frontend/src/design/`，布局宽度只改 `design/layout.ts`；视觉变化必须回应截图基线 diff（`pnpm test:ui:update` + 人眼确认）。

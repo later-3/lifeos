@@ -437,7 +437,12 @@ for (const width of widths) {
   const landscape = await page.evaluate(() => {
     const vis = (el) => el.offsetParent !== null && el.getBoundingClientRect().width > 0;
     const small = [...document.querySelectorAll("button,a[href],[role='button']")].filter(vis)
-      .map((el) => ({ label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 12), w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height) }))
+      .map((el) => ({
+        label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 12),
+        w: Math.round(el.getBoundingClientRect().width), h: Math.round(el.getBoundingClientRect().height),
+        /** 在用户内容区里（Markdown 正文）：这些链接的尺寸由内容决定，不算产品控件 */
+        inContent: el.closest(".md-body") !== null,
+      }))
       .filter((el) => el.w < 44 || el.h < 44);
     return {
       rail: document.querySelector('nav[aria-label="左侧图标轨"]') !== null,
@@ -449,7 +454,18 @@ for (const width of widths) {
   });
   check("[844×390 横屏] 仍走移动布局（无桌面 rail）", landscape.rail === false, String(landscape.rail));
   check("[844×390 横屏] 有移动导航入口", landscape.mobileNav === true, String(landscape.mobileNav));
-  check("[844×390 横屏] 命中区 ≥44", landscape.small.length === 0, landscape.small.map((el) => `${el.label}:${el.w}x${el.h}`).join(" / "));
+  /*
+   * 横屏命中区（Task 0016 · P7-S3）—— 判据收窄到**我们自己**的控件。
+   *
+   * 2026-11-18 合并 Task 0022 后实测到的 `https://mp.w:387x18` 是 **README 里的 Markdown 外链**
+   * （`README.md` 的公众号链接被渲染进来）。它是用户内容里的文字链接，不是本产品的交互控件，
+   * 也不该为它把 18px 的行高撑到 44 —— 那会把正文排版搞坏。
+   *
+   * 所以只查"产品控件"：按钮、[role=button]、以及带 aria-label 的链接（= 图标链接）。
+   * 用户内容区（`.md-body` 内）不参与这条断言 —— 内容里的链接尺寸不由我们决定。
+   */
+  const controlSmall = landscape.small.filter((el) => el.inContent !== true);
+  check("[844×390 横屏] 命中区 ≥44", controlSmall.length === 0, controlSmall.map((el) => `${el.label}:${el.w}x${el.h}`).join(" / "));
   check("[844×390 横屏] 无横向溢出", landscape.scroll === landscape.client, `${landscape.scroll}/${landscape.client}`);
   await context.close();
 }

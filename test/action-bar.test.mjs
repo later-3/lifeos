@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionLabel, actionTone, revealActions, visibleActions } from "../frontend/src/action-bar.ts";
+import { actionLabel, actionTone, revealActions, visibleActions } from "../frontend/src/api/action-bar.ts";
 
 const action = { key: "copy", label: "复制", doneLabel: "已复制", failedLabel: "复制失败", run: () => undefined };
 

@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   actionOfKey, firstFileRow, KEY_BINDINGS, lastFileRow, normalizeNavKey, shouldIgnoreNav, stepChunk, stepFile, stepLine,
-} from "../frontend/src/review-keynav.ts";
+} from "../frontend/src/api/review-keynav.ts";
 
 /** 两个文件 × 两个 chunk：A(0-2) B(3-4)，C(5-6) D(7) */
 const ROWS = [

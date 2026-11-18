@@ -1,0 +1,52 @@
+# stills：README 里的静态图（DIRECTOR.md 类型：静态形态）。
+#
+# 一张图只说明一件事。每个镜头 = 一张 webp，靠 `shot` 命名与 `outputs.fromShot` 对位。
+# 之前这些图是"从某个 GIF 抽一帧"或手工截的，改版就得重来一遍、还找不到来源；
+# 现在它们和 GIF 走同一套 storyboard / 同一套数据 / 同一套自检。
+#
+# 用法：STUDIO_APP=<前台地址> node scripts/readme-studio/run.mjs stills
+name: stills
+mode: video
+viewport: { width: 1440, height: 900 }
+size: { width: 1440, height: 900 }
+path: /
+outputs:
+  - { type: webp, file: 01-workspace.webp, fromShot: workspace, width: 1440 }
+  - { type: webp, file: 03-prompt-regions.webp, fromShot: prompt-regions, width: 1440 }
+  - { type: webp, file: 05-task-header.webp, fromShot: task-header, width: 1440 }
+  - { type: webp, file: 02-participants.webp, fromShot: participants, width: 1440 }
+  - { type: webp, file: files.webp, fromShot: files, width: 1440 }
+steps:
+  # ① 工作区：一条完整回合（过程折叠 + 状态条 + 用量）
+  - waitFor: '[data-testid="groups-panel"]'
+  - pause: 1.2
+  - click: 'text=Architect'
+  - pause: 0.8
+  - click: 'text=我在想一个问题，Obsidian Codex Z-Code'
+  - pause: 2.0
+  - shot: workspace
+
+  # ② 完整历史：按 prompt 分区看一轮请求
+  - click: '[aria-label="完整历史"]'
+  - pause: 2.0
+  - shot: prompt-regions
+  - click: '[aria-label="关闭完整历史"]'
+  - pause: 1.0
+
+  # ③ Task 头部特写（长条）
+  - shot: task-header
+
+  # ④ 会话参与者：Agent ↔ Agent 会话
+  - click: 'text=云起'
+  - pause: 1.0
+  - click: 'text=与 云起 的对话'
+  - pause: 1.8
+  - shot: participants
+
+  # ⑤ 文件面板
+  - click: '[aria-label="展开文件面板"]'
+  - pause: 2.2
+  - shot: files
+  # 桌面宽下文件面板没有「关闭」按钮（那是手机端形态），Esc 收起最稳
+  - press: Escape
+  - pause: 0.8

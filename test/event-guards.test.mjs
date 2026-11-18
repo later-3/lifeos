@@ -1,7 +1,7 @@
 // T16/T17：终态守卫必须"只认当前回合"，且不能把真完成挡掉（C119）
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { busyBelongsTo, isStaleTerminal } from "../frontend/src/event-guards.ts";
+import { busyBelongsTo, isStaleTerminal } from "../frontend/src/api/event-guards.ts";
 
 test("T16 旧回合的 done 不得关闭当前回合（turnId 不匹配 → 丢弃）", async () => {
   assert.equal(isStaleTerminal("turn-old", "turn-current"), true);

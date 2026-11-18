@@ -11,7 +11,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { annotationLine, annotationsMessage, hasSendableAnnotation } from "../frontend/src/annotation-message.ts";
+import { annotationLine, annotationsMessage, hasSendableAnnotation } from "../frontend/src/api/annotation-message.ts";
 
 const anno = (over) => ({
   id: "a1", messageId: "m1", blockIndex: 0, start: 0, end: 3,

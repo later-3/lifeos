@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { FileTab } from "./FilePanel";
+import type { FileTab } from "./views/FilePanel";
 import { useFold } from "./design/fold";
 
 // 文件面板状态（从 App 拆出，2026-10-17 坏味道清理）：

@@ -85,6 +85,58 @@ node scripts/dev-port.mjs release --task 0016
 - 号段耗尽时**显式报错**，不返回保留号也不越界；
 - `list --prune` 清掉"已没有进程在听"的幽灵条目；`release` 只删登记，不杀进程（杀进程用 `pnpm stop --port=`）。
 
+## 常见失败：`pi` submodule 拉不下来（新 worktree 起不来）
+
+**症状**：新 worktree 里 `src/agent-host.ts` 报
+`Cannot find module '@earendil-works/pi-coding-agent'`，或后端启动即崩。
+
+**为什么**：`git worktree add` **只检出主仓的树，不初始化 submodule**。新 worktree 的 `pi/` 是一个空目录，
+而 `src/**` 里所有 `@earendil-works/pi-*` 都指向 `pi/packages/*/dist/index.js`。实测（2026-11-16，Task 0017）：
+
+```
+git worktree add /tmp/test HEAD
+ls /tmp/test/pi            →  空目录
+git submodule status       →  -90d863f7… pi        ← 前面的 `-` = 未初始化
+```
+
+缺的不止源码，一共三样（都是 pi 的 `.gitignore` 内产物，不在任何 commit 里）：
+
+| 缺什么 | 大小 | 为什么不在 |
+|---|---|---|
+| `pi/` 源码（submodule 内容） | 449 M | submodule 是独立仓，worktree 不拉 |
+| `pi/node_modules` | 352 M | `pi/.gitignore:1` |
+| `pi/packages/*/dist` | 26 M | `pi/.gitignore:8`（构建产物） |
+
+**正常解法**：`git submodule update --init`（约 449 M，慢）。
+
+**拉不下来时**（代理/网络中断，实测报 `fatal: early EOF` / `fetch-pack: invalid index-pack output`）：
+**复用主区已有的对象库**，几秒完成，且 commit 与主区完全一致：
+
+```bash
+W="<本 Task 的 worktree>"
+REF=/Users/xulater/Code/lifeos          # 主区
+cd "$W"
+# 1) 只复制对象索引，不复制 blob（248M 对象库 → 几十 KB）
+git clone --shared "$REF/.git/modules/pi" pi
+git -C pi checkout "$(git -C "$REF/pi" rev-parse HEAD)"    # 与主区同一 commit
+# 2) 依赖与构建产物软链到主区（都是 gitignore 内产物，不是源码）
+ln -sfn "$REF/pi/node_modules" pi/node_modules
+for p in ai agent coding-agent tui chord telemetry codemode mcp durable env; do
+  [ -d "$REF/pi/packages/$p/dist" ] && ln -sfn "$REF/pi/packages/$p/dist" "pi/packages/$p/dist"
+  [ -d "$REF/pi/packages/$p/node_modules" ] && ln -sfn "$REF/pi/packages/$p/node_modules" "pi/packages/$p/node_modules"
+done
+# 3) 主仓依赖照装（这一步正常走 pnpm install）
+pnpm install --prefer-offline
+```
+
+**注意**：`--shared` 创建的 pi 是**独立克隆**（`.git` 指向主区对象库），所以 `pi` 在 worktree 里是
+未跟踪目录。合并前确认 **没有把 `pi/` 加进索引**（`git status` 里它应该是 `?? pi/` 之外的正常状态；
+如果误 `git add` 了，`git reset HEAD pi` 并删掉 `pi/.git`）。Task 0017 实测踩过一次
+（`git add -A` 把 pi 加进了暂存区）。
+
+**别做**：`git checkout -- pi`、`rm -rf pi` 之后再 `git submodule update`（可能又撞网络）。
+主区的 `pi/` 是**用户的资产**，不是你的工作区（`development-harness.md` §7.1b 的命令白名单）。
+
 ## 兜底：supervisor 启动自检
 
 `dev-supervisor.mjs` 启动时会先自检，任何一条不满足就**打印原因并退出（exit 2）**，不进入重启循环：

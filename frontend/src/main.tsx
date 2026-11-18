@@ -5,9 +5,7 @@ import { ToastProvider } from "./design/toast";
 import { IconSetContext } from "./design/icon-context";
 import preloadedThemes from "./design/preloaded-themes.json";
 import type { IconSetId } from "./design/icon-sets";
-import { VersionBanner } from "./version-banner";
-import { startVersionCheck } from "./version-check";
-import { primeEmojiShortcodes } from "./emoji-catalog";
+import { primeEmojiShortcodes } from "./api/emoji-catalog";
 import "./index.css";
 
 /*
@@ -20,10 +18,6 @@ try {
     localStorage.setItem("lifeos.themePacks", JSON.stringify(preloadedThemes));
   }
 } catch { /* 隐私模式：boot 脚本会退回内置色，不影响可用性 */ }
-
-// 版本轮询（Task 0013）：__LIFEOS_BUILD__ 未注入（dev）时内部直接返回，零成本。
-// 停止函数不保留：页面生命周期与轮询一致，无热卸载场景。
-startVersionCheck();
 
 // 表情短码表（Task 0016）：启动预热一次，之后正文里的 `:id:` 才能渲染成图；失败静默降级成纯文本。
 void primeEmojiShortcodes();
@@ -52,7 +46,6 @@ function Root() {
   return (
     <IconSetContext value={iconSet}>
       <ToastProvider>
-        {import.meta.env.PROD && <VersionBanner />}
         <App />
       </ToastProvider>
     </IconSetContext>

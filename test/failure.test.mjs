@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { FAILURE_KINDS, classifyFailure } from "../src/failure.ts";
-import { failureLabel } from "../frontend/src/failure-text.ts";
+import { failureLabel } from "../frontend/src/api/failure-text.ts";
 
 const classify = (errorMessage, extra = {}) => classifyFailure({ errorMessage, hasContent: true, ...extra });
 

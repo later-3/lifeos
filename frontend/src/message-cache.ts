@@ -29,7 +29,7 @@
  * 消息对象不小（一个 200 条的会话 ≈ 490 KB 的 JSON，堆里更大）。
  * 上限按条数而不是字节：条数是"用户切换过多少个会话"的直接度量，而字节数要逐条算（慢且无必要）。
  */
-import type { Message } from "./Message";
+import type { Message } from "./views/Message";
 
 /**
  * 缓存里带的 meta 只用到"能不能缓存"（`running`）与界面展示（原样透传）。

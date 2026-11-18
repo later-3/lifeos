@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import {
   DRAFT_SCHEMA_VERSION, MAX_DRAFTS_PER_TASK, DRAFT_STORAGE_KEY,
   draftKeyOf, draftsOfFile, draftsOfTask, findDraft, readDrafts, removeDraft, toReviewDraft, upsertDraft,
-} from "../frontend/src/review-drafts.ts";
+} from "../frontend/src/api/review-drafts.ts";
 
 /** 内存 storage（真实 localStorage 的 getItem/setItem 子集）。 */
 function memStorage(initial = {}) {

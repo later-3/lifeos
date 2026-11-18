@@ -60,8 +60,8 @@ function assistant({ text, thinking, tools = [], offset, durationMs = 8_400, inp
     role: "assistant",
     content,
     api: "openai-completions",
-    provider: "demo",
-    model: "demo-model",
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
     usage: {
       input, output, cacheRead: input * 0.8, cacheWrite: 0, reasoning: 0,
       totalTokens: input + output,
@@ -125,7 +125,7 @@ function writeSession(agentId, projectId, { id, title, entries, peer, taskId = "
   const stamp = iso(firstAt).replace(/[:.]/g, "-");
   const file = join(dir, `${stamp}_${id}.jsonl`);
   const lines = [JSON.stringify({ type: "session", version: 3, id, timestamp: iso(firstAt), cwd: HOME })];
-  lines.push(JSON.stringify({ type: "model_change", id: "m1", parentId: null, timestamp: iso(firstAt), provider: "demo", modelId: "demo-model" }));
+  lines.push(JSON.stringify({ type: "model_change", id: "m1", parentId: null, timestamp: iso(firstAt), provider: "anthropic", modelId: "claude-sonnet-4-6" }));
   lines.push(JSON.stringify({ type: "thinking_level_change", id: "t1", parentId: "m1", timestamp: iso(firstAt), thinkingLevel: "medium" }));
   lines.push(JSON.stringify({ type: "custom", customType: "lifeos_active_task", data: { taskId, at: iso(firstAt) }, id: "c1", parentId: "t1", timestamp: iso(firstAt) }));
   if (peer !== undefined) {
@@ -203,8 +203,8 @@ for (const agent of AGENTS) {
 /* ---- 会话 1：一轮完整的开发对话（有思考、工具调用、过程折叠、usage） ---- */
 {
   const sid = sessionId(52);
-  const t1 = { role: "assistant", content: [{ type: "toolCall", id: "call_a1", name: "read", arguments: { path: ".lifeos/projects/lifelab/knowledge/architecture/payment.md" } }], timestamp: ms(51), usage: { input: 24_600, output: 72, cacheRead: 20_000, cacheWrite: 0, reasoning: 0, totalTokens: 24_672, cost: { input: 0.0049, output: 0, cacheRead: 0.0001, cacheWrite: 0, total: 0.005 } }, stopReason: "toolUse", durationMs: 3_200, thinkingLevel: "medium", api: "openai-completions", provider: "demo", model: "demo-model", responseId: "r1" };
-  const t2 = { role: "assistant", content: [{ type: "toolCall", id: "call_a2", name: "bash", arguments: { command: "grep -rn 'status' src/payment/*.ts | wc -l" } }], timestamp: ms(50), usage: { input: 25_100, output: 64, cacheRead: 24_000, cacheWrite: 0, reasoning: 0, totalTokens: 25_164, cost: { input: 0.005, output: 0, cacheRead: 0.0001, cacheWrite: 0, total: 0.0051 } }, stopReason: "toolUse", durationMs: 2_100, thinkingLevel: "medium", api: "openai-completions", provider: "demo", model: "demo-model", responseId: "r2" };
+  const t1 = { role: "assistant", content: [{ type: "toolCall", id: "call_a1", name: "read", arguments: { path: ".lifeos/projects/lifelab/knowledge/architecture/payment.md" } }], timestamp: ms(51), usage: { input: 24_600, output: 72, cacheRead: 20_000, cacheWrite: 0, reasoning: 0, totalTokens: 24_672, cost: { input: 0.0049, output: 0, cacheRead: 0.0001, cacheWrite: 0, total: 0.005 } }, stopReason: "toolUse", durationMs: 3_200, thinkingLevel: "medium", api: "openai-completions", provider: "anthropic", model: "claude-sonnet-4-6", responseId: "r1" };
+  const t2 = { role: "assistant", content: [{ type: "toolCall", id: "call_a2", name: "bash", arguments: { command: "grep -rn 'status' src/payment/*.ts | wc -l" } }], timestamp: ms(50), usage: { input: 25_100, output: 64, cacheRead: 24_000, cacheWrite: 0, reasoning: 0, totalTokens: 25_164, cost: { input: 0.005, output: 0, cacheRead: 0.0001, cacheWrite: 0, total: 0.0051 } }, stopReason: "toolUse", durationMs: 2_100, thinkingLevel: "medium", api: "openai-completions", provider: "anthropic", model: "claude-sonnet-4-6", responseId: "r2" };
   writeSession("lifeosagent", "lifelab", {
     id: sid,
     title: "支付状态机收敛为 4 个态",

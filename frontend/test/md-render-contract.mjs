@@ -51,8 +51,8 @@ if (process.argv.includes("--dark")) {
 }
 
 const probe = await page.evaluate(async () => {
-  const { renderMarkdown } = await import("/src/message-markdown.tsx");
-  const { decorateCodeBlocks, languageOfFence } = await import("/src/md-highlight.ts");
+  const { renderMarkdown } = await import("/src/views/message-markdown.tsx");
+  const { decorateCodeBlocks, languageOfFence } = await import("/src/api/md-highlight.ts");
   const langAliases = [languageOfFence("sh"), languageOfFence("yml"), languageOfFence("ts")];
   const host = document.createElement("div");
   host.className = "md-body";
@@ -114,7 +114,7 @@ check("md fenced 底 = --color-hover（深浅自适应；批量防「凹陷」�
 // CJK emphasis 三类失效修正（用户 2026-11-10 截图；spec.commonmark.org §6.2 right-flanking 引用见 md-cjk.ts）
 {
   const cjk = await page.evaluate(async () => {
-    const { renderMarkdown } = await import("/src/message-markdown.tsx");
+    const { renderMarkdown } = await import("/src/views/message-markdown.tsx");
     const cases = {
       紧贴词: renderMarkdown("让**技术判断**时谈技术"),
       CJK句读: renderMarkdown("**这个判断非常准。**再补一句：**不要主动猜态度。**不知道时："),

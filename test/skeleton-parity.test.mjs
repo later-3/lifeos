@@ -36,12 +36,23 @@ test("App 用的是尺寸对齐的骨架（不是通用 Skeleton）", () => {
  * 这一条同时锁两件事：
  *  1. 骨架高度与真实用户气泡对齐（`rounded-bubble` + 字号 content 的 2 行 ≈ h-8 起）；
  *  2. App **确实在用它**——否则加载态会退回空态（P1 的那 1.4 秒问题会复活）。
+ *
+ * ## 2026-11-18 合并 Task 0019 后的判定更新
+ *
+ * 0019 把"这一帧画骨架/空态/内容"的判定统一到了 `chatSurfaceOf`（`api/boot-state.ts`），
+ * 它**取代**了 0016 的 `viewStateOf`（同一个问题只留一套判定，两处各判一次必然漂）。
+ * 所以第 2 条的判据从"App 里有 `viewStateOf`"改成"App 里有 `chatSurfaceOf` +
+ * 它的 `loading` 分支渲染 `MessageSkeleton`"——**要求没变**：加载中绝不能落到空态。
  */
 test("MessageSkeleton 与真实气泡同族（rounded-bubble），且 App 真的在用它", () => {
   assert.ok(/rounded-bubble/.test(SK), "MessageSkeleton 的圆角没跟真实气泡对齐（rounded-bubble）");
   assert.ok(/data-skeleton="message"/.test(SK), "缺 data-skeleton=message");
   assert.ok(/MessageSkeleton/.test(APP), "App 没有用 MessageSkeleton——会话加载态会退回空态（P1-S1 回归）");
-  assert.ok(/viewStateOf/.test(APP), "App 没有走 viewStateOf 四态判定（加载中可能被判成空会话）");
+  // 判定函数（0019 起是 chatSurfaceOf；留 viewStateOf 作为旧实现的兼容名）
+  assert.ok(/chatSurfaceOf|viewStateOf/.test(APP), "App 没有走表面判定纯函数（加载中可能被判成空会话）");
+  // 决定性的一条：loading 分支必须渲染 MessageSkeleton（只 import 不渲染等于没接上）
+  assert.ok(/chatSurface === "loading" && <MessageSkeleton/.test(APP),
+    "加载分支没有渲染 MessageSkeleton（P1-S1 的 1.4 秒空态会复活）");
 });
 
 test("活性验证：骨架高度若改成自造值（h-13），对齐检查必须红", () => {

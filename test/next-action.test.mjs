@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nextActionOf } from "../src/next-action.ts";
-import { resendPlan as resendPlanForTest } from "../frontend/src/resend.ts";
+import { resendPlan as resendPlanForTest } from "../frontend/src/api/resend.ts";
 
 const at = (outcome, failure) => nextActionOf({ outcome, ...(failure === undefined ? {} : { failure }) });
 

@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { popupPosition } from "../frontend/src/annotation-position.ts";
+import { popupPosition } from "../frontend/src/api/annotation-position.ts";
 
 /** 造一个 DOMRect 形状的对象（只需用到 left/right/top/bottom）。 */
 const rect = (left, top, width, height) => ({
@@ -102,7 +102,7 @@ test("多条批注：第三条依次往下排", () => {
 });
 
 // ---- 槽位固定（用户 2026-11-03 报的 bug：拖 A，B 跟着跑）----
-import { fixedSlots } from "../frontend/src/annotation-position.ts";
+import { fixedSlots } from "../frontend/src/api/annotation-position.ts";
 
 test("槽位：同一段文字上的两条批注纵向错开，不重叠", () => {
   const size = { width: 300, height: 120 };

@@ -19,7 +19,21 @@ import { createRequire } from "node:module";
 import { pixelDiff } from "./png.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BASELINE_DIR = join(HERE, "ui-baseline");
+/*
+ * 截图基线目录（Task 0017 · P1.5）。
+ *
+ * 判定由「应用页面截图」改为「**固定内容的两个整体构图**」：
+ *   · 空态（empty.png）—— 覆盖"整体留白/居中/字号层级"，不依赖任何用户数据；
+ *   · 单选/模态（picker.png, modal.png）—— 固定路径、固定 Agent 名、固定模型清单。
+ * 会话列表、消息正文、相对时间这类**会随用户正常使用变化**的东西不再进基线
+ * （Mattermost 的做法：`hideDynamicChannelsContent()` 用 visibility:hidden 藏掉时间与头像，
+ *   `lib/src/test_action.ts:8-20`；我们更进一步——根本不截这些区域）。
+ *
+ * 基线**入 git**：原来 `.gitignore:15` 忽略 `frontend/test/ui-baseline/`，而下面那段
+ * `if (UPDATE_BASELINE || !existsSync(basePath))` 会在缺基线时**无条件写一份并报绿** ——
+ * 干净环境首次跑等于没测（与 `visual-matrix` 的注释同一条教训）。
+ */
+const BASELINE_DIR = join(HERE, "baselines");
 const SHOT_DIR = join(HERE, "../../.ui-shots");
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
 const UPDATE_BASELINE = process.argv.includes("--update-baseline");
@@ -52,8 +66,27 @@ const results = [];
  * 否则按钮是 pointer-events:none，Playwright 的 actionability 会一直等（30s 超时）。
  */
 async function clickRowAction(page, locator) {
-  await locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]").hover();
-  await locator.click();
+  /*
+   * 用途：把"动作区里的按钮"点开（配置对话框 / 会话历史 / 图片查看器），**不是**用来证明它可点。
+   * 「hover 才出现、可点、键盘可达」由专门的 5 条断言负责（搜「动作区：默认隐藏且不可点」）。
+   *
+   * 为什么不用 `locator.click()`（2026-11-16 实测三次不同的崩溃）：
+   * `ui-contract` 里有 `page.clock.install()` 冻结时钟的页面，而动作区是
+   * `opacity-0 → 100` 的 **CSS transition**；在某些时序里 hover 已生效但过渡尚未推进，
+   * 命中测试读到的是上一帧的 `pointer-events: none` → 报
+   * 「<span class="relative grid justify-items-end"> intercepts pointer events」并 30s 超时，
+   * **整个跑批被终止**（连红都打不出来，看起来像 0 红 0 绿）。
+   * 换成真实鼠标坐标也会在滚动/重渲染换行时失败。
+   *
+   * 所以：hover 一次（让视觉与真实路径一致，截图更好看），然后直接派发 click
+   * —— 事件照常走 React 的 onClick，对话框照常打开，不受过渡时序影响。
+   */
+  const row = locator.locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' group/row ')][1]");
+  await row.scrollIntoViewIfNeeded().catch(() => {});
+  await row.hover().catch(() => {});
+  await page.waitForTimeout(120);
+  await locator.dispatchEvent("click");
+  await page.waitForTimeout(120);
 }
 
 async function measureHistory(target) {
@@ -174,9 +207,22 @@ async function measure(page) {
     }
 
     // 命中区
+    /*
+     * 命中区口径（2026-11-16 · Task 0017 · P0 修，非放宽）：
+     * 只量**按钮类**控件，不量**行内文字链接**。
+     *
+     * 依据（官方文档，WCAG 2.5.8 Target Size (Minimum) 的 Inline 例外）：
+     * "Inline: The target is in a sentence or its size is otherwise constrained by the
+     *  line-height of non-target text."
+     * 我们这条断言要抓的是"做了个 20×20 的图标钮在那儿"（真缺陷），
+     * 而 `laterzxhp@outlook.com` 这种邮件链接的高度天然等于行高 18px，
+     * 把它算进去等于要求"正文里的链接必须 28px 高"——那会把行高撑破。
+     * 判据：`a[href]` 且**有可见文本**（不是图标链接）→ 不计入命中区。
+     */
     const smallTargets = [];
     for (const el of document.querySelectorAll("button, [role=button], a[href]")) {
       if (!visible(el)) continue;
+      if (el.tagName === "A" && (el.textContent ?? "").trim() !== "") continue;   // WCAG 2.5.8 Inline 例外
       const box = rect(el);
       if (box.width < MIN_HIT || box.height < MIN_HIT) {
         smallTargets.push(`${(el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 14)} ${Math.round(box.width)}×${Math.round(box.height)}`);
@@ -206,6 +252,74 @@ const browser = await playwright.chromium.launch({
 
 mkdirSync(SHOT_DIR, { recursive: true });
 
+/* ── 统一主题夹具（Task 0017 · P0） ──────────────────────────────────────
+ *
+ * 2026-11-16 实测：本文件原来用 `browser.newPage()`，其 localStorage **继承用户真实主题**
+ * （`~/.lifeos/config/ui.json` 的 `preset:cool / mode:dark / accentH:34`），
+ * 而断言文字写的是"内置 cool 浅色"（rail ΔL* 方向、对比度、徽标 soft、截图基线）。
+ * 后果：同一个文件在用户换主题后 44 项红，其中 42 项只是"测的不是同一套颜色"。
+ *
+ * 修法：**一处夹具**——所有页面都从同一个 context 工厂来，预置：
+ *   ① `lifeos.theme` = 内置 cool / 指定 mode（断言的前提）；
+ *   ② `lifeos.themePacks` = 空（外部主题包不参与，避免用户激活过 Quiet Light 就漂）；
+ * 并把 `/api/ui-prefs` 的 theme 键摘掉（服务端 ui.json 会盖掉 localStorage，这是体系的纪律）。
+ *
+ * 需要特定主题的用例（如下面的 solid 钮不变量）自己再 newContext，不走这个工厂。
+ */
+const pageFor = async (viewport, mode = "light") => {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await context.route("**/api/ui-prefs", async (route) => {
+    /*
+     * 只处理 GET；PUT（把偏好写回服务端）必须原样放过。
+     * 2026-11-16 实测：一律 route.fetch 会在页面关闭时抛 `Request context disposed`
+     * （PUT 还在飞，context 已关），整个测试直接崩，看起来像"从 44 红变 0 红"。
+     */
+    /*
+     * 非 GET（把偏好写回服务端）**不转发**：门禁只读不写（testing 2.1）。
+     * 2026-11-16 实测过两个后果：
+     *  ① 转发 → 测试自己把「字号 2 倍」写进开发家目录的 ui.json，**下一次跑**就带着它启动，
+     *     于是 `[N] 无竖向文本裁切` 全线红（徽标 h-4=16px 装 22px 字）；
+     *  ② `route.fetch()` 在页面关闭时抛 `Request context disposed`，整个跑批崩掉。
+     * 本地应答 200 既满足前端"保存成功"的路径，又不留任何持久副作用。
+     */
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {});
+      return;
+    }
+    try {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({}));
+      /*
+       * 摘掉 theme 与 display：两者都会**改变布局**（display 直接决定正文列宽与字号），
+       * 于是基线会随"用户上一次调过滑块"漂。2026-11-16 实测：开发家目录里
+       * display.width=full 时截的 empty.png，与 limited/860 时差 0.48%。
+       * 门禁要测的是**界面骨架**，不是用户的宽度偏好。
+       */
+      delete body.theme;
+      delete body.display;
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    } catch { /* 页面已关：这次请求没人要结果了 */ }
+  });
+  await context.addInitScript((m) => {
+    localStorage.setItem("lifeos.theme", JSON.stringify({
+      preset: "cool", mode: m, accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
+      lSurface: 100, lNav: 96.9, lRail: 93, lLine: 89.4, hoverD: 4.2, selRatio: 2,
+    }));
+    localStorage.removeItem("lifeos.themePackActive");
+    // display 偏好同样固定：宽度/字号会改变布局，属于用户数据，不该让断言与基线漂
+    localStorage.setItem("lifeos.displayPrefs", JSON.stringify({ width: { mode: "limited", value: 860 }, font: { scale: 1 } }));
+  }, mode);
+  const page = await context.newPage();
+  /*
+   * `page.close()` 时把 context 一并关掉：文件里有 24 处 `await xxxPage.close()`，
+   * 逐个改成 `closePage(...)` 是 24 处无意义改动，且以后新增用例一定会漏。
+   * 包一层之后，**新增用例照旧写 `page.close()` 就不会漏 context**（test 里没有别处依赖它）。
+   */
+  const rawClose = page.close.bind(page);
+  page.close = async (...args) => { await rawClose(...args); await context.close().catch(() => {}); };
+  return page;
+};
+
 // 稳定入口：显式指定 agent/project/session。否则"上次选中的助手"可能是刚建的、还没有会话
 // → 完整历史按钮 disabled、面板/截图相关断言会超时（数据无关的写法）。
 const ENTRY_URL = await (async () => {
@@ -214,8 +328,18 @@ const ENTRY_URL = await (async () => {
     const body = await res.json();
     // 优先选有真实消息的非默认会话；默认欢迎会话可能没有 usage，状态条/截图契约会无数据。
     // 选消息数最多的非默认会话（有回复且带用量的概率最高；不依赖"最近更新"这种会变的顺序，2026-10-25 修复）
-    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && item.messages > 0)
-      .sort((a, b) => b.messages - a.messages)[0]?.sessionId
+    /*
+     * 2026-11-16 修（Task 0017 · P0）：这里原来读 `item.messages`，而行的实际字段是
+     * `counts.total`（`SessionRow` 的唯一形状，见 `src/session-rows.ts`）。
+     * `undefined > 0` 恒 false → 过滤结果永远是空数组 → 回落 `body.items[0]`，
+     * 而那往往是**默认欢迎会话（无消息、无 usage）**。
+     * 后果是一串假红："所有回合都没有 usage 块头"、"选择或新建一个会话"、
+     * 以及依赖 ENTRY_URL 的截图基线（内容不同 → 差异 8%–10%）。
+     * 判据只看 `counts.total`，不用 `messages`。
+     */
+    const totalOf = (item) => item.counts?.total ?? 0;
+    const sid = [...(body.items ?? [])].filter((item) => item.isDefault !== true && totalOf(item) > 0)
+      .sort((a, b) => totalOf(b) - totalOf(a))[0]?.sessionId
       ?? body.items?.[0]?.sessionId;
     return sid === undefined ? APP_URL : `${APP_URL}/?agent=lifeosagent&project=workspace&session=${sid}`;
   } catch { return APP_URL; }
@@ -225,7 +349,7 @@ mkdirSync(BASELINE_DIR, { recursive: true });
 const FROZEN_TIME = new Date("2026-10-18T12:00:00+08:00");   // 冻结时钟：相对时间文案（"4小时前"）否则会让截图基线抖动
 
 for (const viewport of [1024, 1280, 1440, 1600]) {
-  const page = await browser.newPage({ viewport: { width: viewport, height: 900 }, deviceScaleFactor: 1 });
+  const page = await pageFor({ width: viewport, height: 900 });
   await page.clock.install({ time: FROZEN_TIME });
   await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await page.waitForTimeout(700);
@@ -241,7 +365,7 @@ for (const viewport of [1024, 1280, 1440, 1600]) {
 }
 
 // 交互态：折叠 / 面板 / 模态 / hover
-const page = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+const page = await pageFor({ width: 1600, height: 900 });
 await page.clock.install({ time: FROZEN_TIME });
 await page.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await page.waitForTimeout(700);
@@ -323,7 +447,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 
 // 「交互」节（Task 0018 D7-D10）：选中后自动复制开关——存在、默认开、点击翻转（不发网络也能本地翻转）。
 {
-  const interPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const interPage = await pageFor({ width: 1600, height: 900 });
   await interPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await interPage.waitForTimeout(400);
   await interPage.evaluate(() => {
@@ -355,7 +479,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 与"配置要落根节点变量并持久化"三条断言：滑速率 → --badge-motion-period 变；
 // 拉幅度 → --dot-breathe-max 变；切强度 → --color-running-soft 与 data-badge-strength 变。
 {
-  const badgePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const badgePage = await pageFor({ width: 1600, height: 900 });
   await badgePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await badgePage.waitForTimeout(400);
   await badgePage.evaluate(() => {
@@ -445,7 +569,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 //  · 深浅色分段按钮 46×25、range 16px、复选框 13×13 → 命中区低于 28；
 //  · 会话行 hover 动作区 84px 塞在 64px 槽里 → 压住标题 12px。
 {
-  const settingsPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const settingsPage = await pageFor({ width: 1600, height: 900 });
   await settingsPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await settingsPage.waitForTimeout(400);
   await settingsPage.evaluate(() => {
@@ -504,7 +628,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     surf === null ? "" : `closeVisible=${surf.closeVisible}`);
 
   // 手机：必须有可见出口 + 内容列不被导航挤掉
-  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const mobilePage = await pageFor({ width: 390, height: 844 });
   await mobilePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await mobilePage.waitForTimeout(400);
   /*
@@ -546,7 +670,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 反例：`hover:` 类只写在"未选中"分支 → 已展开的列开关（默认就是展开）hover 毫无反应，
 // 只有未激活的设置 hover 变白底。同一个轨里两种行为，用户当然判定是 bug。
 {
-  const railPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const railPage = await pageFor({ width: 1600, height: 900 });
   await railPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await railPage.waitForTimeout(400);
   const buttons = await railPage.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
@@ -582,7 +706,7 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
 // 断言两件事：① 拖动全程宽度**跟手**（每帧都在变，不是松手才跳）；
 // ② 拖动期间**不产生长任务**（>50ms 的 JS 阻塞）。
 {
-  const dragPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const dragPage = await pageFor({ width: 1600, height: 900 });
   await dragPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await dragPage.waitForTimeout(600);
   // 统计口径（2026-11-09 两次踩坑后定稿）：
@@ -705,7 +829,7 @@ async function auditResizeColumns(page, sceneSetup) {
     },
   ];
   for (const scene of scenes) {
-    const resizePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+    const resizePage = await pageFor({ width: 1600, height: 900 });
     await resizePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
     await resizePage.waitForTimeout(600);
     await scene.setup(resizePage);
@@ -719,7 +843,7 @@ async function auditResizeColumns(page, sceneSetup) {
 
 // 两列拖到墙后聊天列宽度一致（同一套上限规则）
 {
-  const capPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const capPage = await pageFor({ width: 1600, height: 900 });
   await capPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await capPage.waitForTimeout(500);
   const dragToWall = async (key) => {
@@ -752,7 +876,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // 因为之前是改动配置，用户能实时看到工作区的改变的。"
 // 五条：入口在（桌面）→ 打开贴锚点 6px → 拖滑块正文实时变 → Esc 关闭且焦点归还 → 手机不渲染。
 {
-  const quickPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const quickPage = await pageFor({ width: 1600, height: 900 });
   await quickPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await quickPage.waitForTimeout(500);
   const anchor = quickPage.locator('header button[aria-label="显示设置"]');
@@ -801,7 +925,7 @@ async function auditResizeColumns(page, sceneSetup) {
   await quickPage.close();
 
   // 手机：不渲染（手机头部已有 6 个图标、标题只剩 38px）
-  const phonePage = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const phonePage = await pageFor({ width: 390, height: 844 });
   await phonePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await phonePage.waitForTimeout(500);
   const phoneCount = await phonePage.locator('header button[aria-label="显示设置"]').count();
@@ -821,7 +945,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // ② 树变宽时面板总宽/左列一概不动（旧版整块面板反向扩张 + 从左列借宽不还）；
 // ③ 各列下限与聊天/查看器保底不破。不枚举实现细节。
 {
-  const treePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const treePage = await pageFor({ width: 1600, height: 900 });
   await treePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await treePage.waitForTimeout(500);
   await treePage.evaluate(() => { localStorage.removeItem("lifeos.columnWidths"); localStorage.setItem("lifeos.fold.panel", "1"); localStorage.setItem("lifeos.fold.tree", "1"); });
@@ -888,7 +1012,7 @@ async function auditResizeColumns(page, sceneSetup) {
 // 正文里的表格在**任何列宽下都按内容排版**，不被压成逐字竖排
 // （2026-11-09 实拍两次：手机 390、桌面开完整历史后正文 584。后者说明这不是"手机问题"）
 {
-  const tablePage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const tablePage = await pageFor({ width: 1600, height: 900 });
   await tablePage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await tablePage.waitForTimeout(700);
   const tableProbe = async () => await tablePage.evaluate(() => {
@@ -922,14 +1046,20 @@ async function auditResizeColumns(page, sceneSetup) {
 
 // 会话行的状态槽与动作区不重叠（2026-11-09 审核实测：84px 动作区塞在 64px 槽里，压住标题 12px）
 {
-  const rowPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const rowPage = await pageFor({ width: 1600, height: 900 });
   await rowPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
-  await rowPage.waitForTimeout(500);
+  /*
+   * 固定等待 500ms 不够了（Task 0017 · P5）：拆 hook 之后首屏多一轮初始化，
+   * 实测 300ms 时 `rows=0`、500ms 才有行。改为**等行真的出现**再量（更稳，也更快）。
+   * 这不是放宽：量之前必须确认被测对象存在（`testing.md` 2.15「0 个 = 没测」）。
+   */
+  await rowPage.waitForSelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])', { timeout: 15000 });
+  await rowPage.waitForTimeout(200);
   // 结构（2026-11-09）：行容器 > [主点击区(role=button), 状态槽]。动作区在槽内绝对定位。
   // 所以"行"取容器（带 data-testid 的那个 div），主点击区是它的**第一个**子元素。
   const probe = async () => await rowPage.evaluate(() => {
     const row = document.querySelector('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])');
-    if (row === null) return null;
+    if (row === null) return { debug: { url: location.href, rows: document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length, body: document.body.innerText.slice(0, 80) } };
     const inner = row.querySelector(':scope > [role="button"]') ?? row.firstElementChild;
     const slot = row.lastElementChild;
     const actions = slot === null ? undefined : [...slot.children].find((child) => child.className.includes("absolute"));
@@ -1329,7 +1459,7 @@ check("头部显示会话实际模型（与接口 meta 一致）",
 //   - 覆盖过：显示覆盖模型（它就等于实际）。
 // 关键用例是**两者不一致时必须以实际为准**，下面第三条专测这个。
 {
-  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const displayPage = await pageFor({ width: 1600, height: 900 });
   const mockSession = (meta) => displayPage.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ messages: [], meta: { thinkingLevel: "off", running: false, context: null, ...meta } }),
@@ -1342,7 +1472,9 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   // 1) 未覆盖：实际 = 默认，头部显示实际（这就是用户平时看到的样子）
   await mockSession({ model: { provider: "test", id: "display-default" }, modelOverridden: false });
   await displayPage.goto(page.url(), { waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  // 等头部条真的渲染（Task 0017 · P5：拆 hook 后首屏多一轮初始化，固定 400ms 不够）
+  await displayPage.waitForSelector('[data-testid="header-meta"]', { timeout: 15000 });
+  await displayPage.waitForTimeout(200);
   const sameLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("未覆盖会话：头部显示实际模型（与有效默认一致时看不出差别）",
     sameLine.includes("test/display-default"), sameLine);
@@ -1351,7 +1483,23 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   await displayPage.unroute(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/);
   await mockSession({ model: { provider: "actual", id: "substituted-model" }, modelOverridden: false });
   await displayPage.reload({ waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  /*
+   * **等"实际被换掉"这件事反映到头部**，而不是等 header-meta 出现。
+   *
+   * 2026-11-16（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，header-meta 会先渲染一帧
+   * 带**默认**模型（`test/display-default`），随后才被会话 meta 的实际模型覆盖。
+   * 固定等 200ms 会在那一帧上读到旧值 → 假红。
+   * 判据改成"等到它含 expected 值"（这就是断言要判的东西），超时则用最后读到的值去报红。
+   */
+  const mismatchExpected = "actual/substituted-model";
+  const mismatchShown = await displayPage.waitForFunction(
+    (want) => (document.querySelector('[data-testid="header-meta"]')?.textContent ?? "").includes(want),
+    mismatchExpected, { timeout: 8000 },
+  ).then(() => true, () => false);
+  if (!mismatchShown) {
+    // 等到超时仍未出现期望值：等它彻底稳定（避免读到中间帧）再报红，让输出能定位
+    await displayPage.waitForTimeout(600);
+  }
   const mismatchedLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("未覆盖但实际被换掉：头部必须显示实际模型，不能显示默认（Task 0017 事故形状）",
     mismatchedLine.includes("actual/substituted-model") && !mismatchedLine.includes("test/display-default"),
@@ -1360,7 +1508,8 @@ check("头部显示会话实际模型（与接口 meta 一致）",
   // 3) 覆盖过：显示覆盖模型
   await mockSession({ model: { provider: "actual", id: "session-model" }, modelOverridden: true });
   await displayPage.reload({ waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  await displayPage.waitForSelector('[data-testid="header-meta"]', { timeout: 15000 });
+  await displayPage.waitForTimeout(200);
   const overriddenLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("/model 覆盖会话头部显示覆盖模型（不被默认顶掉）",
     overriddenLine.includes("actual/session-model") && !overriddenLine.includes("test/display-default"),
@@ -1371,7 +1520,7 @@ check("头部显示会话实际模型（与接口 meta 一致）",
 // Task 0002：task 段 =「0001 标题」（无 Task 前缀、无清中标题时只 ID）；thinking 段 = 档位本身（无"思考"二字）。
 // 用 mock 响应证明显示规则，不依赖真实会话恰好有 activeTaskId。
 {
-  const displayPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const displayPage = await pageFor({ width: 1600, height: 900 });
   await displayPage.route(/\/api\/agents\/[^/]+\/config$/, (route) => route.fulfill({
     status: 200, contentType: "application/json",
     body: JSON.stringify({ config: null, effective: { defaultProvider: "test", defaultModel: "display-default" }, source: "catalog" }),
@@ -1395,7 +1544,18 @@ check("头部显示会话实际模型（与接口 meta 一致）",
     body: JSON.stringify({ items: [{ id: "0007", title: "输入框优化", status: "进行中", type: "development", category: "A" }] }),
   }));
   await displayPage.goto(page.url(), { waitUntil: "networkidle" });
-  await displayPage.waitForTimeout(400);
+  /*
+   * **等标题真的解析出来**，不等"头部出现了"。
+   *
+   * 2026-11-16（Task 0017 · P5）：头部先显示 `0007`（只有 id），Task 标题要等
+   * `/tasks` 回来才补上（`taskTitles` 缓存）。只等 header-meta 出现会读到那一帧 → 假红
+   * （实测：`... · high · 0007`，缺"输入框优化"）。
+   * 判据等的是断言要判的东西本身（`0007 输入框优化`）。
+   */
+  await displayPage.waitForFunction(
+    () => (document.querySelector('[data-testid="header-meta"]')?.textContent ?? "").includes("0007 输入框优化"),
+    undefined, { timeout: 8000 },
+  ).catch(() => undefined);
   const taskLine = await displayPage.locator('[data-testid="header-meta"]').textContent() ?? "";
   check("task 段显示「0007 输入框优化」（无 Task 前缀）",
     taskLine.includes("0007 输入框优化") && !taskLine.includes("Task "), taskLine);
@@ -1545,7 +1705,7 @@ await page.waitForTimeout(250);
 // 配置保存语义：footer primary 是“保存全部”，不是只保存基础信息。
 // 复现用户反例：改模型 → 点 footer 保存 → 关闭，不能再弹“放弃未保存的改动”。
 {
-  const configPage = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
+  const configPage = await pageFor({ width: 1400, height: 900 });
   // 配置保存语义测试不依赖当前家目录有几个模型：显式给一个可切换的最小目录。
   await configPage.route(/\/api\/models-config$/, async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
@@ -1690,7 +1850,17 @@ check("列头不重复行内徽标（无“默认”）", headerTexts.every((tex
 
 // 列内文本噪音：项目/会话行不再出现"默认"这类文字徽标（默认项目改用 6px 点 + title）
 // 只查"界面自称"的地方：三列 + 右侧面板。会话正文里的"默认"是用户/模型说的话，不是徽标。
-const chromeText = await page.evaluate(() => [...document.querySelectorAll("aside")].map((el) => el.innerText).join("\n"));
+/*
+ * 2026-11-16（Task 0017 · P0）：原来直接读 aside 的整段 innerText。
+ * 但会话行的副行里会显示 **Task 编号 + 标题**（`0001 默认`）——那是**内容**，不是"默认"徽标。
+ * 断言要抓的是"默认项目/默认助手"这类界面自称的徽标，所以把行内容排除掉：
+ * 克隆一份 aside，移除会话行与消息正文，再读文本。
+ */
+const chromeText = await page.evaluate(() => [...document.querySelectorAll("aside")].map((el) => {
+  const clone = el.cloneNode(true);
+  for (const node of clone.querySelectorAll('[data-shot-mask="session-rows"] [data-testid], [data-testid="message"], [data-testid="group-count"]')) node.remove();
+  return clone.textContent ?? "";
+}).join("\n"));
 check("界面的列与面板不再出现“默认”文字徽标", !chromeText.includes("默认"), chromeText.includes("默认") ? "仍有“默认”字样" : "");
 
 // 键盘焦点可见（全局 :focus-visible 兜底）
@@ -1741,9 +1911,13 @@ if (await historyButton.count() > 0) {
     const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
     if (aside === undefined) return { ok: false, detail: "找不到历史列" };
     const turns = [...aside.querySelectorAll("button")].filter((el) => /^回合 #\d/.test((el.textContent ?? "").trim()));
+    /*
+     * 2026-11-16（Task 0017 · P0）：原来无条件 `turn.click()`。
+     * 但回合是**可切换**的（默认最近一个回合展开），对已展开的回合点一下 = 收起它。
+     * 现在先看 `aria-expanded`：已展开就不点，只点收起的那一个。
+     */
     for (const turn of turns.slice().reverse()) {
-      turn.click();
-      await sleep(220);
+      if (turn.getAttribute("aria-expanded") === "false") { turn.click(); await sleep(220); }
       const text = aside.textContent ?? "";
       if (text.includes("回复") && /tok/.test(text) && text.includes("窗口")) {
         return { ok: true, detail: (turn.textContent ?? "").trim().slice(0, 12) };
@@ -1754,26 +1928,85 @@ if (await historyButton.count() > 0) {
   check("块头带 token 与占窗口比例", usage.ok, String(usage.detail));
   check("历史列无横向溢出/裁切", tree.horizontalOverflow === false && tree.clipped === 0, `clipped=${tree.clipped}`);
 
-  // 请求展开后必须能看到 system 分区（区域名 + 归属）。
-  // 不假设"最后一个回合就是 Life OS 跑的"：会话里可能有别的运行（或历史遗留）写入的回合，从后往前找到 Life OS 那个回合。
+  /*
+   * 请求展开后必须能看到 system 分区（区域名 + 归属）。
+   * 不假设"最后一个回合就是 Life OS 跑的"：会话里可能有别的运行（或历史遗留）写入的回合，从后往前找。
+   *
+   * **2026-11-16（Task 0017 · P0）：这条前提在 ENTRY_URL 修好之后不成立了。**
+   * ENTRY_URL 现在真的会选"消息最多的会话"（原来读 `item.messages` 恒 undefined，永远回落默认会话）。
+   * 那个会话有 1216 条 entry、1154 条消息，而右侧历史列**分页加载**（`limit` 有上限）——
+   * 最早的 8 个带 `sections` 的 system 条目在最后一页，屏幕上是最近若干回合，翻不到。
+   * 于是"找不到 Life OS 分区"是**数据位置**问题，不是缺陷。
+   *
+   * 修法：这段不依赖 ENTRY_URL 的会话内容 —— 换一个**确定含 system 分区**的会话。
+   * 选法（可复核）：遍历列表，取第一个 `/entries` 里存在 `message.sections` 的会话。
+   */
+  const sectionSessionId = await (async () => {
+    try {
+      const listed = await (await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`)).json();
+      for (const item of (listed.items ?? []).slice(0, 12)) {
+        const res = await fetch(`${APP_URL}/api/agents/lifeosagent/sessions/${item.sessionId}/entries?limit=400`);
+        const body = await res.json();
+        const has = (body.entries ?? []).some((entry) => entry?.message?.sections !== undefined);
+        if (has) return item.sessionId;
+      }
+    } catch { /* 拿不到就退回当前页 */ }
+    return undefined;
+  })();
+  if (sectionSessionId !== undefined && !page.url().includes(sectionSessionId)) {
+    await page.goto(`${APP_URL}/?agent=lifeosagent&project=workspace&session=${sectionSessionId}`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(900);
+    const row = page.locator(`[data-shot-mask="session-rows"] [data-testid="${sectionSessionId}"]`).first();
+    const box = await row.boundingBox().catch(() => null);
+    if (box !== null) await page.mouse.move(box.x + 40, box.y + box.height / 2, { steps: 3 });
+    await page.waitForTimeout(250);
+    /*
+     * **必须点这一行里的那个历史按钮**（`row.locator(...)`），不是全页第一个。
+     * 2026-11-16 实测踩过：`.first()` 取到 DOM 里第一行的「会话历史」，
+     * 于是打开的是**另一条会话**的历史 —— 断言随后在别人的内容里找"身份区"，当然找不到。
+     * 这也解释了为什么换会话前后历史里显示的都是同一条会话（1 回合 · 15 条）。
+     */
+    await row.locator('[aria-label="会话历史"]').first().dispatchEvent("click");
+    await page.waitForTimeout(1400);
+  }
+
   const sections = await page.evaluate(async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const aside = [...document.querySelectorAll("aside")].find((el) => (el.textContent ?? "").includes("完整历史"));
     if (aside === undefined) return { identity: false, harness: false, source: false, detail: "找不到历史列" };
     const turns = [...aside.querySelectorAll("button")].filter((el) => /^回合 #\d/.test((el.textContent ?? "").trim()));
+    /*
+     * 2026-11-16（Task 0017 · P0）：原来无条件 `turn.click()` 再 `request.click()`。
+     * 两者都是**可切换**的（回合默认最近一个展开、请求默认展开），
+     * 对已展开的点一下 = 收起 → 后面 `text.includes("身份区")` 永远 false。
+     * 现在按 `aria-expanded` 只在需要时点。
+     */
+    /*
+     * 展开态**从内容判断，不从属性判断**（2026-11-16 实测）。
+     * 原来我按 `aria-expanded` 判断 —— 但 `BlockHeader` 是 `ClickableRow`（一个 `<button>`），
+     * 它**没有渲染** `aria-expanded`，于是 `getAttribute` 恒为 null，一次都不点 → 永远读不到分区。
+     * 现在的判据是"看到内容就算展开"：先读一次，没有就点一次再读。
+     * 这样不管默认是展是收都成立，也不依赖任何 class/属性（testing 2.15）。
+     */
+    const hasRegions = (host) => {
+      const text = host.textContent ?? "";
+      return text.includes("身份区") && text.includes("交互 harness 区");
+    };
     for (const turn of turns.slice().reverse()) {
-      turn.click();
-      await sleep(250);
-      const request = [...aside.querySelectorAll("button")].find((el) => (el.textContent ?? "").trim().startsWith("请求"));
+      // 回合默认只有最近一个展开；收起时里面没有「请求」按钮 → 点开它
+      let request = [...turn.parentElement.querySelectorAll("button")].find((el) => (el.textContent ?? "").trim().startsWith("请求"));
+      if (request === undefined) { turn.click(); await sleep(260); }
+      const scope = turn.parentElement;
+      request = [...scope.querySelectorAll("button")].find((el) => (el.textContent ?? "").trim().startsWith("请求"));
       if (request === undefined) continue;
-      request.click();
-      await sleep(350);
-      const text = aside.textContent ?? "";
-      if (text.includes("身份区") && text.includes("交互 harness 区")) {
-        return { identity: true, harness: true, source: text.includes("我方") && text.includes("Pi 内置"), detail: (turn.textContent ?? "").trim().slice(0, 12) };
+      if (hasRegions(scope)) {
+        return { identity: true, harness: true, source: (scope.textContent ?? "").includes("我方") && (scope.textContent ?? "").includes("Pi 内置"), detail: (turn.textContent ?? "").trim().slice(0, 12) };
       }
-      request.click();   // 收起，继续往前找
-      await sleep(150);
+      request.click();
+      await sleep(360);
+      if (hasRegions(scope)) {
+        return { identity: true, harness: true, source: (scope.textContent ?? "").includes("我方") && (scope.textContent ?? "").includes("Pi 内置"), detail: (turn.textContent ?? "").trim().slice(0, 12) };
+      }
     }
     return { identity: false, harness: false, source: false, detail: `${turns.length} 个回合都没有 Life OS 分区` };
   });
@@ -1818,7 +2051,7 @@ if (await historyButton.count() > 0) {
 }
 
 // 1280 并排：窗口变窄时自动收左三列，对话区与历史列都要保住
-const narrow = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+const narrow = await pageFor({ width: 1280, height: 900 });
 await narrow.clock.install({ time: FROZEN_TIME });
 await narrow.goto(ENTRY_URL, { waitUntil: "networkidle" });
 await narrow.waitForTimeout(700);
@@ -1928,18 +2161,34 @@ if (overviewOpen === false) {
   check("[0010] 概览卡打开", false, "找不到概览钮（0 个 = 没测）");
 } else {
   await page.waitForSelector('[data-testid="project-overview"]', { timeout: 3000 });
+  /*
+   * 等身份区那一格渲染出来（Task 0017 · P5）：概览卡是**异步取数**的（`/overview`），
+   * 面板先出现、路径/默认工作区随后到。固定时序会读到空字符串 → 假红。
+   */
+  await page.waitForSelector('[data-testid="overview-location"]', { timeout: 8000 }).catch(() => undefined);
+  /*
+   * 2026-11-16（Task 0017 · P3）：判据从「整卡 textContent 里有没有 `默认工作区` 或 `/`」
+   * 改为「身份区下方**那一格**存在且非空」。
+   *
+   * 旧写法两个毛病：① 正则匹配任何 `/`，与"这一格渲染了没有"无关；
+   * ② 实测在整跑批中**时红时绿**（同一份代码两次运行结果不同）—— 它读的是整卡文本，
+   * 而卡片在不同时刻可能处于不同项目（有路径 / 默认工作区），只要有一个字没渲染完就红。
+   * 定位到具体元素后判据稳定（`testing.md` 2.15：断言到元素，不断言整块文本）。
+   */
   const card = await page.evaluate(() => {
     const panel = document.querySelector('[data-testid="project-overview"]');
-    if (panel === null) return { statCount: 0, hasBody: false };
+    if (panel === null) return { statCount: 0, hasBody: false, location: "" };
     const stats = panel.querySelectorAll('[data-testid="overview-stats"] > div');
+    const location = (panel.querySelector('[data-testid="overview-location"]')?.textContent ?? "").trim();
     return {
       statCount: stats.length,
-      hasBody: /默认工作区|[\\/]/u.test(panel.textContent ?? ""),
+      hasBody: location !== "",
+      location,
       hasError: panel.querySelector('[data-testid="overview-error"]') !== null,
     };
   });
   check("[0010] 概览卡打开：6 格统计 + 路径/默认工作区", card.statCount === 6 && card.hasBody && !card.hasError,
-    `stats=${card.statCount} body=${card.hasBody}`);
+    `stats=${card.statCount} location="${card.location}"`);
   await page.keyboard.press("Escape");
   await page.waitForTimeout(150);
   const closed = await page.evaluate(() => document.querySelector('[data-testid="project-overview"]') === null);
@@ -1992,7 +2241,7 @@ await page.keyboard.press("Escape");
 await page.waitForTimeout(150);
 
 // 空项目 / 新 Agent：输入框可用，首条消息 = 建会话 + 发送（参照 Pi Web 的 new session draft）
-const freshPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+const freshPage = await pageFor({ width: 1600, height: 900 });
 await freshPage.clock.install({ time: FROZEN_TIME });
 await freshPage.goto(APP_URL, { waitUntil: "networkidle" });
 const emptyTarget = await freshPage.evaluate(async () => {
@@ -2010,7 +2259,14 @@ if (emptyTarget === null) {
   check("没有会话时输入框仍可用（首条消息＝建会话）", true, "没有空项目可测，跳过");
 } else {
   await freshPage.goto(`${APP_URL}/?agent=${emptyTarget.agentId}&project=${emptyTarget.projectId}`, { waitUntil: "networkidle" });
-  await freshPage.waitForTimeout(700);
+  /*
+   * 等"空会话态"的文案出现（Task 0017 · P5）：固定 700ms 在冷启动时读到的是上一屏
+   * （正文里还留着别的项目/会话的名字）→ 假红。等的是断言要判的那句话。
+   */
+  await freshPage.waitForFunction(
+    () => /会自动|写进这个会话/.test(document.body.innerText ?? ""),
+    undefined, { timeout: 15000 },
+  ).catch(() => undefined);
   const emptyState = await freshPage.evaluate(() => ({
     disabled: document.querySelector("textarea")?.disabled ?? true,
     hint: /会自动|写进这个会话/.test(document.body.innerText ?? ""),
@@ -2081,15 +2337,24 @@ await freshPage.close();
     await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: groups }) });
   });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    const items = body.items ?? [];
-    // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
-    if (!items.some((item) => item.sessionId === HIST_A)) {
-      items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
-      items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
-    }
-    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    /*
+     * 2026-11-16（Task 0017 · P0）：route 只能被处理一次。页面在同一端点上有并发请求时
+     * （首屏 + 重连 + 项目切换），先处理的那个 fulfill 之后，另一个会抛
+     * `route.fulfill: Route is already handled!` —— 而这会**终止整个跑批**，
+     * 表现成"一条红都没有、进程却 exit 1"（比红更糟：看不出测了什么）。
+     * 一个已经被答过的请求对夹具没有任何价值，忽略即可。
+     */
+    try {
+      const res = await route.fetch();
+      const body = await res.json();
+      const items = body.items ?? [];
+      // 幂等：这个端点会被多次请求（多项目/重连），重复追加会让列表出现重复行
+      if (!items.some((item) => item.sessionId === HIST_A)) {
+        items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
+        items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
+      }
+      await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    } catch { /* 已被处理的请求：夹具无所谓谁答的 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
     const sid = new URL(route.request().url()).pathname.split("/").pop();
@@ -2107,7 +2372,12 @@ await freshPage.close();
   const pressDown = async () => { await chatComposer.press("ArrowDown"); await page.waitForTimeout(120); return await chatComposer.inputValue(); };
 
   await page.goto(`${APP_URL}/?agent=${historyAgent}&project=workspace`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(600);
+  /*
+   * 等夹具行真的渲染（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，
+   * 固定 600ms 在冷启动那一次会读到 0 行 → 后续 9 条输入历史断言全部被跳过（**数量都变少**）。
+   * 判据等到"那一行出现"，超时才算失败（`testing.md` 2.15：0 个 = 没测）。
+   */
+  await page.waitForSelector(`[data-testid="${HIST_A}"]`, { timeout: 15000 }).catch(() => undefined);
   const fixtureVisible = await page.locator(`[data-testid="${HIST_A}"]`).count() > 0;
   check("输入历史夹具：两个会话行已渲染", fixtureVisible, `A=${fixtureVisible}`);
 
@@ -2157,12 +2427,50 @@ await freshPage.close();
 // ---- 截图基线（闸 4）----
 // 关键点：独立浏览器 + 每张图一个新页面 + 冻结时钟。
 // 否则同一 context 里页面的先后顺序、以及"4小时前"这类相对时间文案，会让基线随机抖动（实测 66457 vs 66460 字节）。
+/** 截图浏览器也走同一套主题夹具（Task 0017 · P0）：否则 6 张基线随用户主题漂。 */
+const shotPageFor = async (viewport) => {
+  const context = await shotBrowser.newContext({ viewport, deviceScaleFactor: 1 });
+  await context.route("**/api/ui-prefs", async (route) => {
+    /*
+     * 非 GET（把偏好写回服务端）**不转发**：门禁只读不写（testing 2.1）。
+     * 2026-11-16 实测过两个后果：
+     *  ① 转发 → 测试自己把「字号 2 倍」写进开发家目录的 ui.json，**下一次跑**就带着它启动，
+     *     于是 `[N] 无竖向文本裁切` 全线红（徽标 h-4=16px 装 22px 字）；
+     *  ② `route.fetch()` 在页面关闭时抛 `Request context disposed`，整个跑批崩掉。
+     * 本地应答 200 既满足前端"保存成功"的路径，又不留任何持久副作用。
+     */
+    if (route.request().method() !== "GET") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" }).catch(() => {});
+      return;
+    }
+    try {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({}));
+      delete body.theme;
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    } catch { /* 页面已关 */ }
+  });
+  await context.addInitScript(() => {
+    localStorage.setItem("lifeos.theme", JSON.stringify({
+      preset: "cool", mode: "light", accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
+      lSurface: 100, lNav: 96.9, lRail: 93, lLine: 89.4, hoverD: 4.2, selRatio: 2,
+    }));
+    localStorage.removeItem("lifeos.themePackActive");
+    // display 偏好同样固定（默认 860 / 100%）：滑块是用户数据，不该进基线
+    localStorage.setItem("lifeos.displayPrefs", JSON.stringify({ width: { mode: "limited", value: 860 }, font: { scale: 1 } }));
+  });
+  const shot = await context.newPage();
+  const rawClose = shot.close.bind(shot);
+  shot.close = async (...args) => { await rawClose(...args); await context.close().catch(() => {}); };
+  return shot;
+};
+
 const shotBrowser = await playwright.chromium.launch({
   headless: true, executablePath: playwright.chromium.executablePath(),
   args: ["--no-proxy-server", "--font-render-hinting=none", "--disable-lcd-text"],
 });
 async function capture(width, setup, clipTo, install) {
-  const shotPage = await shotBrowser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 1 });
+  const shotPage = await shotPageFor({ width, height: 900 });
   await shotPage.clock.install({ time: FROZEN_TIME });
   if (install !== undefined) await install(shotPage);   // 路由 mock 必须在首屏请求之前装上
   await shotPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
@@ -2195,27 +2503,41 @@ async function capture(width, setup, clipTo, install) {
   await shotPage.close();
   return buffer;
 }
+/*
+ * 截图基线清单（Task 0017 · P1.5 重定）。
+ *
+ * ## 为什么只留 3 张（原来是 6 张）
+ *
+ * 参考两家的做法（都是唯一做截图的）：
+ *  - **Rocket.Chat** 只截**孤立组件**（Storybook story 驱动，`packages/visual-regression/test/visualRegression.spec.ts:24-36`），
+ *    568 张基线全部入 git；从不截带真实数据的应用页面。
+ *  - **Mattermost** 只截 **6 个内容固定的页面**（登录/注册/设置弹窗/landing），并且额外用
+ *    `hideDynamicChannelsContent()` 把时间、头像这类会变的东西 `visibility:hidden` 藏掉
+ *    （`lib/src/test_action.ts:8-20`）。
+ *
+ * 我们原来截的 6 张里，有 4 张是**带用户数据的应用页面**（会话列表、消息正文、相对时间）——
+ * 用户正常使用就会漂，所以恒红。逐张复核：
+ *
+ * | 原基线 | 处理 | 理由 |
+ * |---|---|---|
+ * | viewport-1280 / 1600 | **删** | 整页应用截图，含 28 条会话与 14 个助手名 |
+ * | folded | **删** | 同上（收起列后仍是同一份数据） |
+ * | history | **删** | 完整历史 = 用户真实对话正文 |
+ * | picker | 留 | 目录列表已 mock 成固定值，内容是确定的 |
+ * | modal | 留 | 名字/描述/身份/模型清单全部 mock 成固定值 |
+ * | — | **加 empty** | 整体构图（留白/居中/层级）只有像素能看，且空态零用户数据 |
+ *
+ * 组件级的状态矩阵（hover / selected / 内外主题）在 `scripts/visual-matrix.mjs` 里，
+ * 截的是 `frontend/dev/design-system.html` 的固定区块，不经过真实家目录。
+ */
 const SHOTS = [
-  ["viewport-1280.png", 1280, undefined],
-  ["viewport-1600.png", 1600, undefined],
-  ["folded.png", 1600, async (shotPage) => {
-    // 2026-11-09：这条基线在合并 main 后报 0.02% 差异。人眼对比发现**旧基线本身是坏的**
-    // ——它截到的是一张空白页（当时消息还没到），所以"没变化"其实是"没内容"。
-    // 教训：基线红先看"是不是基线本身错了"，不要直接刷；这次是确认旧基线是空白页之后才更新的。
-    const buttons = shotPage.locator('[aria-label="收起此列"]');
-    while (await buttons.count() > 0) { await buttons.first().click(); await shotPage.waitForTimeout(100); }
-  }],
-  ["history.png", 1600, async (shotPage) => {
-    // 动作区现在隐藏时不可点（Task 0005 pointer-events）：先悬停所在行让它显现，再点
-    const historyRow = shotPage.locator('[data-shot-mask="session-rows"] [data-testid]:not([data-testid="group-header"])').first();
-    await historyRow.hover();
-    await shotPage.waitForTimeout(200);
-    await shotPage.locator('[aria-label="会话历史"]').first().click();
-    await shotPage.waitForTimeout(600);
-  }],
-  ["history.png", 1600, async (shotPage) => {
-    await shotPage.locator('[aria-label="完整历史"]').first().click();
-    await shotPage.waitForTimeout(700);
+  ["empty.png", 1600, async (shotPage) => {
+    // 两列都收起 = 空态。零用户数据（只剩图标轨与空态文案），是唯一还能看的"整体构图"。
+    await shotPage.evaluate(() => {
+      document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="收起助手"]')?.click();
+      document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="收起对话"]')?.click();
+    });
+    await shotPage.waitForTimeout(400);
   }],
   ["picker.png", 1600, async (shotPage) => {
     // 选择器的目录列表是用户的文件系统（新增 state/、logs/ 等就会变高）：基线用固定的目录列表，只比对话框骨架。
@@ -2280,9 +2602,18 @@ for (const [name, width, setup, clipTo, install] of SHOTS) {
   const buffer = await capture(width, setup, clipTo, install);
   writeFileSync(join(SHOT_DIR, name), buffer);
   const basePath = join(BASELINE_DIR, name);
-  if (UPDATE_BASELINE || !existsSync(basePath)) {
+  if (UPDATE_BASELINE) {
     writeFileSync(basePath, buffer);
-    check(`截图基线 ${name}`, true, UPDATE_BASELINE ? "已更新" : "首次写入");
+    check(`截图基线 ${name}`, true, "已更新");
+    continue;
+  }
+  /*
+   * 缺基线 = **红**（Task 0017 · P1.5）。
+   * 旧行为是"首次写入并报绿"，等于干净环境不测；而这一批基线现在入 git，
+   * 缺了只可能是"有人删了"或"新加了场景没提交基线"，两种都该红。
+   */
+  if (!existsSync(basePath)) {
+    check(`截图基线 ${name} 存在`, false, `缺基线（${name}）：先跑 pnpm test:ui:update 并人眼确认后提交`);
     continue;
   }
   // 像素容差比较（不是字节相等）：抗锯齿抖动容忍 8/255，差异像素 > 0.05% 才算视觉变化
@@ -2306,7 +2637,7 @@ await shotBrowser.close();
 // 而"0 个"又恰好满足"没有 0×0 的点"）——正好是 C161 那个假断言的新形态。
 // 教训写进 `specs/code/testing` 2.15：夹具跟实现走，实现换了数据源，夹具必须跟着换。
 {
-  const runPage = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const runPage = await pageFor({ width: 1600, height: 900 });
   // 焦点上报会改服务端"已读"时间：拦掉不转发，门禁只读不写。
   await runPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
@@ -2381,11 +2712,11 @@ await shotBrowser.close();
 
 // —— 图片查看器（用户 2026-10-27：不新开页面，浮层里放大缩小）——
 // 入口用"附件托盘缩略图"，它与消息图片共用同一个组件，且不依赖会话里恰好有图片
-const viewerPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const viewerPage = await pageFor({ width: 1440, height: 900 });
 try {
   await viewerPage.goto(ENTRY_URL, { waitUntil: "networkidle" });
   await viewerPage.waitForTimeout(700);
-  await viewerPage.setInputFiles('input[type=file]', join(HERE, "ui-baseline", "picker.png"));
+  await viewerPage.setInputFiles('input[type=file]', join(HERE, "fixtures", "sample-image.png"));
   await viewerPage.waitForSelector("[data-testid=attachment-thumb-trigger]", { timeout: 8000 });
   await viewerPage.locator("[data-testid=attachment-thumb-trigger]").click();
   await viewerPage.waitForSelector("[data-testid=image-viewer]", { timeout: 8000 });
@@ -2436,7 +2767,7 @@ try {
 // 视觉变更必须有可断言项（process.md 四步：每条视觉改动配检查）。
 // 这里用"计算样式 + 几何"断言，不靠截图基线（基线会把行内排版遮掉，案例 C152）。
 {
-  const page2 = await browser.newPage({ viewport: { width: 1600, height: 900 }, deviceScaleFactor: 1 });
+  const page2 = await pageFor({ width: 1600, height: 900 });
   try {
     await page2.goto(ENTRY_URL, { waitUntil: "domcontentloaded" });
     await page2.waitForTimeout(2000);
@@ -2483,10 +2814,17 @@ try {
     check("对话区：用户整块靠右、助手靠左",
       sides.userAlign === "flex-end" && sides.userHeaderDir === "row" && sides.assistantHeaderDir === "row",
       JSON.stringify(sides));
-    // 顺序判据用**形状**而不是内容：两边都是"3 段、第 1 段 1 个字（头像首字母）、最后一段是 HH:MM"
+    /*
+     * 顺序判据用**形状**而不是内容：两边都是"3 段、第 1 段是头像、最后一段是 HH:MM"。
+     *
+     * 2026-11-16（Task 0017 · P0）：原来要求 `kids[0].length === 1`（"头像首字母"）。
+     * 但助手侧头像是 `img`（真实头像图片）→ `textContent` 是空串，长度 0。
+     * 用"第 1 段文字长度 ≤1"表达"这一段是头像槽"才对：有首字母时是 1，有图片时是 0。
+     * 断言的本意是"顺序一致（头像在前、时间在后）"，不是"两边都必须是首字母"。
+     */
     const shape = (kids) => (kids === null || kids.length !== 3
       ? null
-      : { first: kids[0].length, clock: /^\d{2}:\d{2}$/.test(kids[2]) });
+      : { avatarSlot: kids[0].length <= 1, clock: /^\d{2}:\d{2}$/.test(kids[2]) });
     check("对话区：头部顺序两边一致 = 头像 → 名字 → 时间（不随分侧反转）",
       JSON.stringify(shape(sides.userKids)) === JSON.stringify(shape(sides.assistantKids)) && shape(sides.userKids)?.clock === true,
       JSON.stringify({ user: sides.userKids, assistant: sides.assistantKids }));
@@ -2582,8 +2920,13 @@ try {
       const ranges = [...panel.querySelectorAll("input[type=range]")].map((input) => ({ id: input.id, value: input.value }));
       return { ranges };
     });
-    check("显示设置：两个滑块存在（宽度 + 字号）",
-      sliders !== null && sliders.ranges.length === 2 && sliders.ranges.some((r) => r.id === "width") && sliders.ranges.some((r) => r.id === "font"),
+    /*
+     * 2026-11-16（Task 0017 · P0）：原来断言**恰好 2 个** range，而"显示"分区后来多了一张
+     * 「状态徽标」卡（速率/幅度两个 range）—— 数量变了，但两个关键滑块都在，设计是对的。
+     * 断言的对象应该是"宽度与字号这两个滑块存在且可操作"，不是"这个分区只能有两个滑块"。
+     */
+    check("显示设置：宽度 + 字号两个滑块存在",
+      sliders !== null && sliders.ranges.some((r) => r.id === "width") && sliders.ranges.some((r) => r.id === "font"),
       JSON.stringify(sliders));
 
     const applied = await page2.evaluate(() => {
@@ -2616,7 +2959,13 @@ try {
     // 5) 恢复默认（不把测试改过的偏好留在本地）
     await page2.evaluate(() => {
       const panel = document.querySelector('[data-testid="display-prefs"]');
-      const reset = panel === null ? null : [...panel.querySelectorAll("button")].find((b) => (b.textContent ?? "").includes("恢复默认"));
+      /*
+       * 2026-11-16（Task 0017 · P0）：分区里现在有两个按钮——「徽标恢复默认」与「恢复默认」。
+       * `includes` 会先命中前者（只重置徽标），于是宽/字号保持测试改过的值，断言红。
+       * 用**精确匹配**（去掉图标后的文本等于「恢复默认」）。
+       */
+      const reset = panel === null ? null : [...panel.querySelectorAll("button")]
+        .find((b) => (b.textContent ?? "").replace(/\s/g, "") === "恢复默认");
       if (reset !== null && reset !== undefined) reset.click();
     });
     await page2.waitForTimeout(200);
@@ -2637,6 +2986,8 @@ const REQUIRED = [
   // 防"静默删除"：这些名字必须在结果里出现，删掉检查项会立刻红（testing 2.4）
   "聊天列 ≥", "无横向溢出", "无竖向文本裁切", "文本对比度", "命中区",
   "轨道宽度不变", "hover 不改变行几何", "焦点陷阱", "Esc 关闭模态", "截图基线",
+  // Task 0017 · P1.5：截图基线只剩 3 张固定内容的，名字固定在这里防静默删除
+  "empty.png", "picker.png", "modal.png",
   "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块",
   "显示设置：滑块真生效",
   "rail 三个按钮 hover 都有反馈",
@@ -2677,7 +3028,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
 // 断言到**可核对的事实**（数量文本 + aria-label + 有布局盒），不数 class。
 // 参照 Rocket.Chat `RoomListItem.stories.tsx:55`：用 role=status + aria-label 做断言最稳。
 {
-  const countPage = await browser.newPage({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 });
+  const countPage = await pageFor({ width: 1600, height: 1000 });
   await countPage.route("**/api/events/focus", (route) => route.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
   const listed = await fetch(`${APP_URL}/api/agents/lifeosagent/projects/workspace/sessions`).then((r) => r.json()).catch(() => ({ items: [] }));
   const ids = (listed.items ?? []).map((item) => item.sessionId);
@@ -2701,11 +3052,42 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       await route.fulfill({ response: res, body: JSON.stringify(body) });
     });
     await countPage.route("**/sessions", async (route) => {
-      const res = await route.fetch();
-      const body = await res.json();
-      for (const item of body.items ?? []) { const p = plan.get(item.sessionId); if (p) item.activity = p; }
-      await route.fulfill({ response: res, body: JSON.stringify(body) });
+      try {
+        const res = await route.fetch();
+        const body = await res.json();
+        for (const item of body.items ?? []) { const p = plan.get(item.sessionId); if (p) item.activity = p; }
+        await route.fulfill({ response: res, body: JSON.stringify(body) });
+      } catch { /* 已被处理：夹具无所谓谁答的 */ }
     });
+    /*
+     * **徽标数字的口径是 `sessionSlots`，不是列表的 `activity`**（Task 0017 · P0 查清）。
+     *
+     * 链路（`App.tsx`）：`CountBadge` ← `deriveStatus(statusFacts)` ← `statusFacts.aggregate`
+     *   ← `agentAggregate` ← **`sessionSlots`**；
+     * 而 `sessionSlots` 只有两条维护路径：SSE **快照重建**（`onStreamSnapshot`）与 `row` 补丁。
+     * 列表的 `activity` 只在 `reloadGroups` 里同步 —— 首次加载走的是 `fetchGroups` + `setGroups`，
+     * **不播种 `sessionSlots`**。
+     *
+     * 所以只 mock 列表 = 夹具注入到一个没人读的地方（testing 2.15「夹具跟实现走」的反面：
+     * 实现换了数据源，夹具没换 → 这条断言从 Task 0005 起就没真正生效过，一直红）。
+     * 现在把 **SSE 快照**也打桩，走实现真正消费的那条通道。
+     */
+    const snapshot = {
+      connectionId: "fixture-count",
+      seq: 1,
+      running: ids.slice(0, 2).map((sid, i) => ({ sessionId: sid, agentId: "lifeosagent", projectId: "workspace", startedAt: since, since, turnId: `fx-turn-${i}` })),
+      unread: [
+        ...ids.slice(2, 5).map((sid) => ({ sessionId: sid, agentId: "lifeosagent", projectId: "workspace", state: "done", since: new Date().toISOString() })),
+        { sessionId: ids[5], agentId: "lifeosagent", projectId: "workspace", state: "error", since: new Date().toISOString() },
+      ],
+    };
+    await countPage.route("**/api/events", (route) => route.request().method() === "GET"
+      ? route.fulfill({
+          status: 200,
+          headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+          body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`,
+        })
+      : route.continue().catch(() => {}));
     await countPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
     const ready = await countPage.waitForFunction(
       () => document.querySelectorAll('[data-state-count]').length > 0, null, { timeout: 15000 },
@@ -2795,6 +3177,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
    */
   await page.route(/\/api\/agents$/, async (route) => {
     if (route.request().method() !== "GET") return route.fallback();
+    try {
     const res = await route.fetch();
     const body = await res.json().catch(() => ({ items: [] }));
     const items = Array.isArray(body.items) ? body.items : [];
@@ -2802,6 +3185,7 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       ? items.map((item) => (item.id === "coder" ? { ...item, name: "Coder" } : item))
       : [...items, { id: "coder", name: "Coder", description: "", defaultProjectId: "workspace" }];
     await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: withCoder }) });
+    } catch { /* 同上：已被处理 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/groups$/, async (route) => {
     const res = await route.fetch();
@@ -2815,11 +3199,13 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
     await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: groups }) });
   });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
-    const res = await route.fetch();
-    const body = await res.json();
-    const items = body.items ?? [];
-    if (!items.some((item) => item.sessionId === SID)) items.push(row);
-    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    try {
+      const res = await route.fetch();
+      const body = await res.json();
+      const items = body.items ?? [];
+      if (!items.some((item) => item.sessionId === SID)) items.push(row);
+      await route.fulfill({ response: res, body: JSON.stringify({ ...body, items }) });
+    } catch { /* 同上：已被处理 */ }
   });
   await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/]+$/, (route) => {
     const sid = new URL(route.request().url()).pathname.split("/").pop();
@@ -2835,7 +3221,12 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
   });
 
   await page.goto(`${APP_URL}/?agent=${agentId}&project=workspace&session=${SID}`, { waitUntil: "networkidle" });
-  await page.waitForTimeout(700);
+  /*
+   * 等消息头真的渲染（Task 0017 · P5）：拆 hook 后首屏多一轮初始化，固定 700ms 在冷启动
+   * 会读到 0 个消息头 → 身份两条 + 失败可见三条一起假红。等的是被测对象本身。
+   */
+  await page.waitForSelector('[data-testid="message-header"]', { timeout: 15000 }).catch(() => undefined);
+  await page.waitForTimeout(200);
 
   const heads = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-header"]')]
     .map((node) => (node.textContent ?? "").trim()));

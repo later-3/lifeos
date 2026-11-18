@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import {
   fileBodyOf, initialMountedFiles, LAZY_PLACEHOLDER_HEIGHT_PX, LAZY_ROOT_MARGIN, LARGE_FILE_PREVIEW_LINES,
   MAX_CHANGED_LINES_BEFORE_COLLAPSE, mountFile, needsLargeFileNotice, INITIAL_RENDERED_FILES,
-} from "../frontend/src/review-lazy.ts";
+} from "../frontend/src/api/review-lazy.ts";
 
 const base = { expanded: true, forced: false, changedLines: 10, totalLines: 40, mounted: true };
 

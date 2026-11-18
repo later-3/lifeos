@@ -1,7 +1,7 @@
 /**
  * 图标注册表（Task 0015 · A1，参照 Twenty `twenty-ui/icon` 的管理形态：typed manifest
  * + 禁直引门禁 + 语义分三类）。tabler 图标**零发明**——这里是"语义名 → 组件"的
- * 单一映射；页面层一律 `import { AppIcon } from "../design/icons"`，
+ * 单一映射；页面层一律 `import { AppIcon } from "./icons"`，
  * 禁止直接 import `@tabler/icons-react`（scripts/lint-icons.mjs 门禁）。
  *
  * IconName = keyof typeof ICONS：写错语义名 typecheck 直接红——覆盖度门禁由类型免费提供。

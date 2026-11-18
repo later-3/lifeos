@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { applyShortcodes, splitCodeSegments } from "../frontend/src/emoji-shortcode.ts";
+import { applyShortcodes, splitCodeSegments } from "../frontend/src/api/emoji-shortcode.ts";
 
 const KNOWN = new Set(["blush", "tada", "white_check_mark"]);
 

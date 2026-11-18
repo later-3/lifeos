@@ -171,6 +171,26 @@
   --color-nav-line: #dce1eb;
   --color-nav-muted: #5f6777;
 
+  /*
+   * ── wash 族：状态薄涂（Task 0017 · P2 / 决策 D1）─────────────────────
+   *
+   * 层模型（同一层只能有一个绘制者）：L0 页面底 / L1 列底 / **L2 行底** /
+   * L3 标记 / L4 覆盖层。wash 是 L2 与 L4 的**唯一合法形态**：叠在宿主上、可半透明。
+   *
+   * 为什么要与 fill 分开：只有 fill 时，`--color-nav-accent` 一个 token 要背六个
+   * 绘制职责（行悬停 / 覆盖层板 / 计数药丸 / 分组头悬停 / 设置导航悬停 / 列头计数）。
+   * **一个 token 画两层，就必然要求两层逐字节相等** —— 这是 2026-11-16 那张
+   * 「左边方角块 + 右边圆角胶囊 + 竖缝 + 上下缺口」的物理成因。
+   *
+   * 值 = `color-mix(in srgb, <fill> <alpha>, transparent)`：色相跟 fill 走，
+   * alpha 由 `design/theme.ts` 的 `washAlphasOf` 求出（外部主题超界时收敛到
+   * 内置引擎的 chroma 区间，见那里的实测表）。
+   * 默认 100% = 与 fill 逐字节相同 —— 内置主题下**视觉零变化**。
+   */
+  --color-wash-hover: color-mix(in srgb, var(--color-nav-accent) var(--wash-hover-alpha, 100%), transparent);
+  --color-wash-selected: color-mix(in srgb, var(--color-nav-selected) var(--wash-selected-alpha, 100%), transparent);
+  --color-wash-chip: color-mix(in srgb, var(--color-sunken) var(--wash-chip-alpha, 100%), transparent);
+
   /* 消息类型背景：不同类型可区分，但都低饱和；只在这里取值。 */
   --color-message-user: #111113;
   --color-message-thinking: #fafafa;

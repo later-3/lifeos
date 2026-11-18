@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupAnnotationsByReply } from "../frontend/src/anno-groups.ts";
+import { groupAnnotationsByReply } from "../frontend/src/api/anno-groups.ts";
 
 /** 造消息序列：spec = ["u"|"a", id]。 */
 const msgs = (...spec) =>

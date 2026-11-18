@@ -11,7 +11,7 @@ import { drainingForMs, expireDrainIfStale, isDraining, runningOf, setDraining }
 import { sessionRowsOf, sessionsByTask } from "./session-rows.ts";
 import { sessionViewsOf } from "./session-views.ts";
 import { basename, join } from "node:path";
-import { computeReviewDiff, locateSources, readReviewBlob, type ReviewError } from "./review.ts";
+import { computeReviewDiff, locateSources, readReviewBlob, readReviewRaw, type ReviewError } from "./review.ts";
 import { clearComments, readComments, removeComment, removeReply, addReply, upsertReply, setCommentAwaiting, setCommentState, toCommentInput, upsertComment } from "./review-comments.ts";
 import { clearViewed, readViewed, setFileViewed, setFilesViewed } from "./review-viewed.ts";
 import { listCandidates } from "./review-candidates.ts";
@@ -1312,6 +1312,37 @@ app.use(async (c, next) => {
       return c.json({ error: { code: e.code, message: e.message } }, e.status);
     }
     return c.json(result);
+  });
+
+  /**
+   * 取某个文件在某一侧的**原始字节**（图片/视频/PDF，供检视面板内联展示）。
+   *
+   * 为什么要有这条：`/api/review/blob` 对二进制返回 400，于是 markdown 预览里的
+   * `![](docs/images/x.gif)` 一律破图——README 改版的核心交付物就是图（2026-11-16 用户实测）。
+   *
+   * 查询参数与 blob 一致（taskDir / source / path / side）；安全口径复用 `safeRelativePath`：
+   * 绝对路径与 `..` 一律 400，不在已注册源内的路径拿不到内容。
+   */
+  app.get("/api/review/raw", async (c) => {
+    const taskDir = c.req.query("taskDir");
+    const source = c.req.query("source");
+    const path = c.req.query("path");
+    const side = c.req.query("side") ?? "new";
+    if (taskDir === undefined || taskDir.trim() === "" || source === undefined || path === undefined) {
+      const error = problem("invalid_request", "需要 taskDir、source、path 三个参数（side 默认 new）", 400); return c.json(error.body, error.status);
+    }
+    const result = await readReviewRaw({ taskDir, source, path, side });
+    if ("error" in result) {
+      const e = result.error as ReviewError;
+      return c.json({ error: { code: e.code, message: e.message } }, e.status);
+    }
+    return c.body(new Uint8Array(result.bytes), 200, {
+      "content-type": result.contentType,
+      // 私有缓存：同一 URL 在面板里会反复出现（同一文件多处引用）。
+      // 但**不能长缓存**——文件内容会随编辑变化，路径不变，长缓存会显示旧图。
+      "cache-control": "private, max-age=0, must-revalidate",
+      "x-content-type-options": "nosniff",
+    });
   });
 
   /**
