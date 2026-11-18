@@ -65,6 +65,16 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
       const aid = p.split("/")[3];
       return json({ items: aid === OTHER.id ? [OTHER_PROJECT] : [PROJECT] });
     }
+    /*
+     * 列表聚合端点（Task 0016 · 剩余项 #6）：前端现在一次取 `/groups`
+     * （`{items:[{project, sessions}]}`），不再逐项目打 `/sessions`。
+     * 夹具必须跟着实现的数据源走（testing 2.15）：否则注入的行没人读，
+     * 断言会退化成"新形态的假绿"。
+     */
+    if (/^\/api\/agents\/[^/]+\/groups$/.test(p)) {
+      const aid = p.split("/")[3];
+      return json({ items: [{ project: PROJECT, sessions: aid === OTHER.id ? [row("other-1")] : currentRows }] });
+    }
     if (/^\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/.test(p)) {
       const aid = p.split("/")[3];
       return json({ items: aid === OTHER.id ? [row("other-1")] : currentRows });
@@ -123,7 +133,9 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
     let seen = 0;
     const start = Date.now();
     while (Date.now() - start < 4000) {
-      const n = await page.evaluate(() => performance.getEntriesByType("resource").filter((e) => /\/projects\/[^/]+\/sessions$/.test(e.name)).length);
+      const n = await page.evaluate(() => performance.getEntriesByType("resource")
+        // 列表重取现在打的是 `/groups`（旧的 `/projects/:pid/sessions` 保留兼容，两种都算）
+        .filter((e) => /\/groups$|\/projects\/[^/]+\/sessions$/.test(e.name)).length);
       if (n > seen) { seen = n; await page.waitForTimeout(400); return true; }
       await page.waitForTimeout(120);
     }

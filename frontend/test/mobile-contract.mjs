@@ -1033,8 +1033,18 @@ for (const width of [360, 390]) {
   check("[390] 压缩卡说清「已压缩」与压缩前大小",
     card.text.includes("已压缩") && card.text.includes("984.4k"), card.text);
   check("[390] 压缩卡可点开（触控目标 ≥44）", card.toggleH >= 44, `${card.toggleH}px`);
-  // 展开后必须看得到摘要正文
-  await page.locator('[data-testid="compaction-card"] button').first().click({ force: true });
+  /*
+   * 展开后必须看得到摘要正文。
+   *
+   * 先滚到顶再点：卡片是**第一条**，而消息区默认贴底 —— 不滚的话它不在视口里，
+   * Playwright 的 `click({force:true})` 不会帮我们滚动（force 跳过全部可操作性检查），
+   * 点下去的坐标落在别的元素上，于是"点了没反应"（本轮实测就是这个：
+   * 用 DOM `btn.click()` 300 ms 内必然展开，用 `locator.click({force:true})` 则一直不展开）。
+   * 真实用户也只能点看得见的东西，所以先滚到顶是**符合真实路径**的写法，不是绕过。
+   */
+  await page.evaluate(() => { const main = document.querySelector("main"); if (main !== null) main.scrollTop = 0; });
+  await page.waitForTimeout(300);
+  await page.locator('[data-testid="compaction-card"] button').first().click();
   await page.waitForTimeout(400);
   const expanded = await page.evaluate(() => {
     const el = document.querySelector('[data-testid="compaction-card"]');

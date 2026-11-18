@@ -2060,6 +2060,26 @@ await freshPage.close();
     return { sessionId: sid, messages, meta: { thinkingLevel: "off", running: false, context: null } };
   };
 
+  /*
+   * 列表聚合端点（Task 0016 · 剩余项 #6）：前端现在一次取 `/groups`
+   * （`{items:[{project, sessions}]}`），不再逐项目打 `/sessions`。
+   * 夹具注入必须跟到新数据源上（testing 2.15：夹具跟实现走），
+   * 否则注入的行没人读 → 断言变成"新形态的假绿"。
+   */
+  await page.route(/\/api\/agents\/[^/]+\/groups$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json().catch(() => ({ items: [] }));
+    const groups = Array.isArray(body.items) ? body.items : [];
+    for (const group of groups) {
+      const items = group.sessions ?? [];
+      if (!items.some((item) => item.sessionId === HIST_A)) {
+        items.push(rowOf(HIST_A, "夹具会话 A", "2026-11-05T08:00:00.000Z"));
+        items.push(rowOf(HIST_B, "夹具会话 B", "2026-11-05T09:00:00.000Z"));
+      }
+      group.sessions = items;
+    }
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: groups }) });
+  });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
     const res = await route.fetch();
     const body = await res.json();
@@ -2299,7 +2319,12 @@ await shotBrowser.close();
       [ids[1], { state: "unread", unread: { since: at } }],
       [ids[2], { state: "failure", failure: { kind: "auth", detail: "ui-contract fixture", at } }],
     ]);
-    await runPage.route("**/sessions", async (route) => {
+    /*
+     * 注入点必须跟着实现的数据源走（testing 2.15）。Task 0016 之后列表一次取 `/groups`
+     * （`{items:[{project, sessions}]}`），只 route 旧的 sessions 列表端点的话，注入没人读 ——
+     * 断言会退化成"新形态的假绿/假红"（本轮实测：三态点三条同时红，原因就是注入落空）。
+     */
+    const injectActivityIntoRows = async (route) => {
       const res = await route.fetch();
       const body = await res.json();
       for (const item of body.items ?? []) {
@@ -2307,7 +2332,19 @@ await shotBrowser.close();
         if (p !== undefined) item.activity = p;
       }
       await route.fulfill({ response: res, body: JSON.stringify(body) });
+    };
+    await runPage.route("**/groups", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({ items: [] }));
+      for (const group of body.items ?? []) {
+        for (const item of group.sessions ?? []) {
+          const p = plan.get(item.sessionId);
+          if (p !== undefined) item.activity = p;
+        }
+      }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
     });
+    await runPage.route("**/sessions", injectActivityIntoRows);
     await runPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
     const rowsReady = await runPage.waitForFunction(
       () => document.querySelectorAll('[data-shot-mask="session-rows"] [data-testid]').length > 0, null, { timeout: 15000 },
@@ -2654,6 +2691,15 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       else if (i < 5) plan.set(sid, { state: "unread", unread: { since: new Date().toISOString() } });
       else if (i === 5) plan.set(sid, { state: "failure", failure: { kind: "auth", detail: "fixture", at: new Date().toISOString() } });
     });
+    // 同上（P1·1.4 的注释）：列表现在一次取 /groups，注入必须跟到新数据源（testing 2.15）
+    await countPage.route("**/groups", async (route) => {
+      const res = await route.fetch();
+      const body = await res.json().catch(() => ({ items: [] }));
+      for (const group of body.items ?? []) {
+        for (const item of group.sessions ?? []) { const p = plan.get(item.sessionId); if (p) item.activity = p; }
+      }
+      await route.fulfill({ response: res, body: JSON.stringify(body) });
+    });
     await countPage.route("**/sessions", async (route) => {
       const res = await route.fetch();
       const body = await res.json();
@@ -2756,6 +2802,17 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       ? items.map((item) => (item.id === "coder" ? { ...item, name: "Coder" } : item))
       : [...items, { id: "coder", name: "Coder", description: "", defaultProjectId: "workspace" }];
     await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: withCoder }) });
+  });
+  await page.route(/\/api\/agents\/[^/]+\/groups$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json().catch(() => ({ items: [] }));
+    const groups = Array.isArray(body.items) ? body.items : [];
+    for (const group of groups) {
+      const items = group.sessions ?? [];
+      if (!items.some((item) => item.sessionId === SID)) items.push(row);
+      group.sessions = items;
+    }
+    await route.fulfill({ response: res, body: JSON.stringify({ ...body, items: groups }) });
   });
   await page.route(/\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/, async (route) => {
     const res = await route.fetch();
