@@ -39,7 +39,18 @@ export function findSessionRow<T extends { sessionId: string }>(
  * 参考（2026-11-05 核对）：Open WebUI `src/lib/components/chat/Navbar.svelte:128` 的
  * `title || chat?.chat?.title || $i18n.t('New Chat')` —— 空标题回落的是**中性占位**，不是产品名。
  */
-export function headerTitleOf(input: { sessionId: string | undefined; displayTitle: string }): string {
+export function headerTitleOf(input: { sessionId: string | undefined; displayTitle: string; resolving?: boolean }): string {
+  /*
+   * 会话解析中（Task 0019：首屏恢复 / 切助手）：**标题留空，不写「新会话」**。
+   *
+   * 刷新时 `sessionId` 的首值恒为 undefined（URL 播种在启动 effect 里才发生），
+   * 于是这一行会先断言「新会话」，等接口回来再跳成真标题 —— 实测两次都是这个跳法。
+   * 「新会话」是一个**结论**（当前处于草稿态），没确定之前不能下。
+   *
+   * 同款：pi-web `components/SessionSidebar.tsx:1102`
+   * `initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")`。
+   */
+  if (input.resolving === true && input.sessionId === undefined) return "";
   if (input.sessionId === undefined) return "新会话";
   const display = input.displayTitle.trim();
   return display !== "" ? display : `会话 ${input.sessionId.slice(0, 8)}`;
