@@ -427,13 +427,23 @@ async function shoot(storyboard, options = {}) {
       outputs.push(written);
       console.log(`   → ${output.file}  ${written.mb.toFixed(2)}MB`);
     } else if (output.type === "webp" || output.type === "png") {
-      const pngs = storyboard.steps?.filter((step) => step.shot !== undefined).map((step) => join(keyDir, `${step.shot}.png`)) ?? [];
-      for (const [index, png] of pngs.entries()) {
-        const file = pngs.length === 1 ? target : target.replace(/\.webp$/, `-${index + 1}.webp`);
-        const written = encodeWebp(png, file, output.width ?? 1440);
-        outputs.push(written);
-      }
-      console.log(`   → ${output.file}（来自 ${pngs.length} 张关键帧）`);
+      /**
+       * 静态图：**默认产出 1 张**（README 的静态图是一件事一张）。
+       *
+       * 先前的实现把"所有关键帧"都导成图片（01-x.webp、02-x.webp…），
+       * 那是调试用的副产品，不是 README 需要的东西 —— 每个 storyboard 会产出十几个文件，
+       * 谁也记不清该引用哪一张。
+       *
+       * 现在：`fromShot` 指定用哪一步的关键帧；不指定就取**最后一步**（通常是"画面已就位"那一帧）。
+       */
+      const allShots = storyboard.steps?.filter((step) => step.shot !== undefined).map((step) => step.shot) ?? [];
+      const pick = output.fromShot ?? allShots[allShots.length - 1];
+      if (pick === undefined) throw new Error(`静态图 ${output.file} 找不到关键帧（storyboard 里要有 shot）`);
+      const png = join(keyDir, `${pick}.png`);
+      if (!existsSync(png)) throw new Error(`静态图 ${output.file} 的关键帧不存在：${pick}`);
+      const written = encodeWebp(png, target, output.width ?? 1440);
+      outputs.push(written);
+      console.log(`   → ${output.file}（来自关键帧 ${pick}）`);
     } else if (output.type === "mp4") {
       const written = encodeMp4({
         webm: result.webm, framesDir: result.framesDir, metaPath: join(outDir, "meta.json"),

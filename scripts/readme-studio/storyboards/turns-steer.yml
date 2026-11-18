@@ -6,7 +6,7 @@ viewport: { width: 1000, height: 625 }
 size: { width: 1000, height: 625 }
 path: /
 outputs:
-  - { type: gif, file: turns-steer.gif, fps: 10, width: 1000, colors: 128 }
+  - { type: gif, file: turns-steer.gif, fps: 8, width: 1000, colors: 96 }
 steps:
   - waitFor: '[data-testid="groups-panel"]'
   - pause: 0.8
