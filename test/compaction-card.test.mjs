@@ -86,3 +86,37 @@ test("T9-3 没有压缩的会话 → 不出现 compaction 块（不误报）", a
   assert.equal(cards.length, 0, "没有 compaction 条目就不该有压缩卡");
   assert.equal(out.length, 2, "两条消息原样返回");
 });
+
+// ── 分页 + 压缩标记（P7-S9b）─────────────────────────────────────────────────
+/*
+ * 真机验收时才暴露的第二半问题：压缩卡的投影位置是**第一条**，而 `?tail=200` 只取最后 200 条
+ * → 280 条消息的会话里卡片必然在窗口外 → 用户看到的仍是"历史从中间开始"。
+ * 实测修复前：`?tail=200` → 压缩卡 **0 条**；修复后 1 条（且仍是队首）。
+ *
+ * 这条断言直接测 `messagesOf()` + 裁剪逻辑的组合结果，不启服务：
+ * 判据是"窗口外有压缩标记时，它必须补回队首"。
+ */
+test("T9-4 压缩标记在窗口之外时也要回到队首（?tail 不能把它裁掉）", async () => {
+  const { dir, file } = await makeSession([
+    msg("u1", "user", [{ type: "text", text: "很早的提问" }]),
+    msg("a1", "assistant", [{ type: "text", text: "保留段第一条" }], "u1", { stopReason: "end" }),
+    {
+      type: "compaction", id: "c1", parentId: "a1", timestamp: "2026-01-01T00:00:02.000Z",
+      summary: "摘要正文", firstKeptEntryId: "a1", tokensBefore: 1000,
+    },
+    msg("u2", "user", [{ type: "text", text: "之后的提问" }], "c1"),
+    msg("a2", "assistant", [{ type: "text", text: "之后的回复" }], "u2", { stopReason: "end" }),
+  ]);
+  const all = messagesOf(stateOf(file, dir));
+  // 复刻 server.ts 的裁剪：只留最后 1 条 + 把窗口外的 compaction 标记补回队首
+  const tail = 1;
+  const sliceStart = Math.max(0, all.length - tail);
+  const windowed = all.slice(sliceStart);
+  const markers = all.slice(0, sliceStart).filter((m) => (m.blocks ?? []).some((b) => b.type === "compaction"));
+  const result = [...markers, ...windowed];
+  assert.equal(windowed.some((m) => (m.blocks ?? []).some((b) => b.type === "compaction")), false,
+    "前提：窗口自己不含压缩卡（否则这条用例测不到补回逻辑）");
+  assert.equal(result.filter((m) => (m.blocks ?? []).some((b) => b.type === "compaction")).length, 1,
+    "补回后必须有 1 条压缩卡");
+  assert.ok((result[0].blocks ?? []).some((b) => b.type === "compaction"), "补回的卡片必须在队首");
+});

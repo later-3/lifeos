@@ -368,7 +368,7 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
  * 历史仍然完整可取：「完整历史」读的是原始条目（`/entries`，从 offset=0 开始），
  * 那里第一条永远是最早那条提问。所以卡片给出一条可行动的指引，而不是只说"已压缩"。
  */
-function CompactionBlock({ block }: { block: Extract<Block, { type: "compaction" }> }) {
+export function CompactionCard({ block }: { block: Extract<Block, { type: "compaction" }> }) {
   const [open, toggle] = useAutoOpen(false, false, false);
   const size = formatTokens(block.tokensBefore);
   return (
@@ -529,7 +529,7 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
   draftRequest?: { messageId: string; nonce: number } | null;
   onDraftHandled?: () => void;
 }) {
-  if (block.type === "compaction") return <CompactionBlock block={block} />;
+  if (block.type === "compaction") return <CompactionCard block={block} />;
   if (block.type === "image") return <ImageBlockView block={block} />;
   if (block.type === "text") {
     if (block.text === "" && live) return null;

@@ -509,12 +509,27 @@ app.use(async (c, next) => {
     const tailRaw = c.req.query("tail");
     const tail = tailRaw === undefined ? undefined : Math.max(1, Math.min(2000, Number(tailRaw) || 0));
     const all = messagesOf(state);
-    const messages = tail === undefined ? all : all.slice(Math.max(0, all.length - tail));
+    /*
+     * 压缩标记永远跟着首屏（P7-S9b，真机验收才暴露）：压缩卡的投影位置是**第一条**
+     * （pi 把 compaction 放在保留段之前），而 `?tail=200` 只取最后 200 条 ——
+     * 一个 280 条消息的会话里，卡片必然落在窗口外，用户看到的仍是"历史从中间开始"，
+     * 等于这条修复没生效（实测：修前 tail=200 → 压缩卡 **0 条**）。
+     *
+     * 所以把**窗口之外的**压缩标记补回队首。它只有一条、且是"说明"不是内容，
+     * 语义上也对：用户看到这段窗口，前面确实被压缩过。
+     */
+    const sliceStart = tail === undefined ? 0 : Math.max(0, all.length - tail);
+    const messages = tail === undefined ? all : all.slice(sliceStart);
+    const markersBeforeWindow = sliceStart === 0
+      ? []
+      : all.slice(0, sliceStart).filter((message) => (message.blocks ?? []).some((block) => block.type === "compaction"));
     return c.json({
-      sessionId: c.req.param("sessionId"), messages,
-      // 分页元信息：`total` = 全会话条数，`tailStart` = 这次返回的第一条在全会话里的下标
+      sessionId: c.req.param("sessionId"),
+      messages: markersBeforeWindow.length === 0 ? messages : [...markersBeforeWindow, ...messages],
+      // 分页元信息：`total` = 全会话条数，`tailStart` = 这次返回的**首条正文**在全会话里的下标
+      //（补回队首的压缩标记不算正文，否则缓存键里的下标会跟着标记数量漂）
       total: all.length,
-      tailStart: all.length - messages.length,
+      tailStart: sliceStart,
       // payload 是观测（Task 0012 P1）：图片/文本字节 + 上限从哪来；limit=null 表示该 provider 未声明上限
       meta: { ...sessionMeta(agent.id, state), payload: await payloadMetaOf(state) },
       ...(integrity !== undefined ? { integrity } : {}),

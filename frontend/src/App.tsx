@@ -49,7 +49,7 @@ import {
 } from "./groups-panel";
 import { layout } from "./design/layout";
 import { useFilePanel } from "./useFilePanel";
-import { MessageView, type Block } from "./Message";
+import { CompactionCard, MessageView, type Block } from "./Message";
 import { MobileNav, type Level } from "./mobile-nav";
 import { MobileHeaderActions, MOBILE_HEADER_ACTIONS } from "./mobile-header-actions";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
@@ -3989,6 +3989,15 @@ export default function App() {
                 let lastAssistantIndex = -1;
                 messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
                 const rendered = messages.map((message, index) => {
+                  /*
+                   * 压缩卡（P7-S9b）：位置在消息流最前面，而渲染窗口只保留最后 50 条 ——
+                   * 不特判的话"补回队首的压缩标记"会被窗口裁掉，界面上依旧看不到压缩发生过
+                   * （实测：接口有 1 条、页面上 0 张卡）。它是"从这里往前被压缩过"的说明，必须常显。
+                   */
+                  const cardBlock = (message.blocks ?? []).find((block) => block.type === "compaction");
+                  if (cardBlock !== undefined) {
+                    return <CompactionCard key={message.id ?? `card-${index}`} block={cardBlock} />;
+                  }
                   if (index < windowStart.startIndex) return null;   // P4-S2：窗口外不渲染
                   if (folded.has(index)) return null;
                   // 动作挂在"被重发的那条用户消息"上（不是助手的错误提示）；不另起一行
@@ -4005,7 +4014,13 @@ export default function App() {
                   const isFirstReply = replies.length > 0 && replies[0] === index;
                   /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
                   const replyLive = replyMessages.some((m) => m.streaming === true);
-                  if (!isUser && isFirstReply) {
+                  /*
+                   * 压缩卡不能当过程条的宿主（P7-S9b）：它常是**隐式轮**（userIndex = -1）的第一条回复，
+                   * 而它后面到第一条用户消息之间的 assistant 段会被整段折进它——卡片没有 ResponseBar，
+                   * 折进去的消息就彻底消失了（实测：320 条消息的会话只剩 3 条可见）。
+                   */
+                  const firstReplyIsCard = (replyMessages[0]?.blocks ?? []).some((block) => block.type === "compaction");
+                  if (!isUser && isFirstReply && !firstReplyIsCard) {
                     const allBlocks = replyMessages.flatMap((m) => m.blocks);
                     // 时长（Task 0015 · P4）：**墙钟**，与 SessionBar 的累计口径、以及「当前回合」
                     // 进行中那个秒数是同一个函数（`turnWallMsOf`）算出来的。
