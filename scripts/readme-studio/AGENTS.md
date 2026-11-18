@@ -21,6 +21,7 @@ README 的图与产品宣传片不是一次手工活——每次改版都要重�
 | `capture.mjs` | 捕获：`recordVideo`（25fps→GIF）/ CDP `startScreencast`（实测 1080p 93fps→60fps 视频）；执行动作；每步抓关键帧；断外网 |
 | `encode.mjs` | GIF / MP4 / WebP；空白帧检测；体积断言与预警 |
 | `run.mjs` | CLI：读 YAML storyboard → 录制（单镜头或多镜头）→ 编码 → 输出审核材料 |
+| `refresh.mjs` | **一键重跑全部素材**（体检三件套 → 8 个 storyboard → 体积汇总 → doc-links）。README 频繁更新时用这个 |
 | `stub-model.mjs` | OpenAI 兼容的**打桩模型服务**（SSE 流式），拍摄专用 |
 | `storyboards/*.yml` | 每张素材一份动作脚本（人可读、可审、可单独重跑） |
 
@@ -32,9 +33,9 @@ LIFEOS_HOME=~/.lifeos-showcase node --experimental-strip-types src/main.ts --por
 VITE_DEV_API=http://127.0.0.1:<N> pnpm --dir frontend exec vite --port <M>
 node scripts/readme-studio/stub-model.mjs          # 打桩，默认 127.0.0.1:43140
 
-# 1 拍
+# 1 拍（日常用一键入口；只拍单个用 run.mjs）
+STUDIO_APP=http://127.0.0.1:<M> node scripts/readme-studio/refresh.mjs
 STUDIO_APP=http://127.0.0.1:<M> node scripts/readme-studio/run.mjs hero
-STUDIO_APP=... node scripts/readme-studio/run.mjs --all
 
 # 2 看审核材料
 ls /tmp/lifeos-studio/<name>/keys/    # 每步一张 PNG

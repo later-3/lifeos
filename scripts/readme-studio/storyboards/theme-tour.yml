@@ -13,7 +13,7 @@ viewport: { width: 1000, height: 625 }
 size: { width: 1000, height: 625 }
 path: /
 outputs:
-  - { type: gif, file: theme.gif, fps: 10, width: 1000, colors: 128 }
+  - { type: gif, file: theme.gif, fps: 8, width: 1000, colors: 96 }
 
 scenes:
   # 镜头 1：演"怎么换"——全窗、无角标（观众正看着操作本身）
