@@ -100,10 +100,3 @@ export function routeEvent(event: RouteEvent, focus: RouteFocus, baseline: numbe
   return [{ kind: "message", event }];
 }
 
-/**
- * 流是否陈旧（看门狗判定）：服务端每 10 秒发一次具名心跳；超过阈值没有任何帧 = 连接已死。
- * 为什么要有：经代理（如 Vite 开发代理）的 SSE 断开时，浏览器可能收不到 error，EventSource 不会自己重连。
- */
-export function isStreamStale(lastSeenMs: number, nowMs: number, staleMs: number): boolean {
-  return nowMs - lastSeenMs >= staleMs;
-}

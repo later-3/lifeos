@@ -14,6 +14,7 @@ import { MessageActionBar } from "./message-actions";
 import type { MessageAction } from "../api/action-bar";
 import { failureLabel, type FailureKind } from "../api/failure-text";
 import { toolState } from "../api/tool-state";
+import { thinkingRequestOf, type ThinkingOrigin } from "../api/thinking-origin";
 import { ImageTrigger } from "../design/image-viewer";
 import { AppIcon } from "../design/icons";
 
@@ -47,10 +48,13 @@ import { AppIcon } from "../design/icons";
  */
 
 /**
- * 取一段思考正文（P8 / B2）。由 App 注入：它知道 agentId/sessionId，而消息层只认消息身份。
+ * 取一段思考正文（P8 / B2）。由 App 注入：它知道 agentId/sessionId，而消息层只认"原点"。
  * 返回值是正文；抛错由组件转成可见的失败提示（不静默）。
+ *
+ * **入参是一个原点**（Task 0028 · P1）：`entryId` 与 `blockIndex` 必须属于同一条 entry。
+ * 拆成两个独立入参曾导致 96–99% 的错配（0027 · R4）—— 类型上让"不同源"无法表达。
  */
-export type ThinkingLoader = (entryId: string, blockIndex: number) => Promise<string>;
+export type ThinkingLoader = (origin: ThinkingOrigin) => Promise<string>;
 
 export type Block =
   /**
@@ -66,7 +70,10 @@ export type Block =
   | { type: "image"; url?: string; data?: string; mimeType: string }
   /**
    * 思考块。`deferred` = 后端没有下发正文（P8 / B2：200 条窗口里 thinking 占 68% 字节），
-   * 第一次展开才按 `entryId + blockIndex` 取回（loader 由 App 注入，见 `MessageViewProps.loadThinking`）。
+   * 第一次展开才按**原点**（`entryId` + 该 entry 内的真实下标）取回（loader 由 App 注入，见 `blockOrigins`）。
+   *
+   * Task 0028 · P1：原点必须与块一起传进来。以前是"本条的 messageId + 本块 index"，
+   * 而过程折叠时渲染的是**整轮合并块** —— 两个坐标系不同源，错配率实测 96–99%（0027 · R4）。
    */
   | { type: "thinking"; text: string; deferred?: true; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
   | {
@@ -122,7 +129,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, loadThinking, annotationsOfBlock, annotationActions, responseBar, markBar, draftRequest = null, onDraftHandled }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, loadThinking, blockOrigins, annotationsOfBlock, annotationActions, responseBar, markBar, draftRequest = null, onDraftHandled }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -160,6 +167,13 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   messageId?: string;
   /** ★ 取思考正文（P8 / B2）：只有 `deferred` 的思考块会用到；不传就永远不取（历史时间线等）。 */
   loadThinking?: ThinkingLoader;
+  /**
+   * ★ 每个块的原点（Task 0028 · P1）：与 `blocks` **一一对应**。
+   *
+   * 传了就用它取思考正文；不传则退回"本条 messageId + 本块下标"（未折叠时坐标系统一，是等价的）。
+   * 折叠时**必须**传：那时 `blocks` 是整轮合并块，下标已不属于本条消息。
+   */
+  blockOrigins?: readonly (ThinkingOrigin | undefined)[];
   /** ★ 取某块的批注（Task 0003 · P2）。不传 = 这条消息没有批注，行为与改造前完全一致。 */
   annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
@@ -256,6 +270,9 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   const renderBlock = (block: Block, index: number, keyScope: string) => (
     <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId}
       {...(loadThinking !== undefined ? { loadThinking } : {})}
+      /* 原点优先（Task 0028 · P1）：折叠时 blocks 是整轮合并块，下标已不属于本条 messageId；
+         没给原点（未折叠）时 BlockView 才退回"本条 id + 本块下标"，那时两者本来就同源。 */
+      {...(blockOrigins?.[index] !== undefined ? { blockOrigin: blockOrigins[index] } : {})}
       blockAnnotations={blockAnnotationsOf(index)} blockActions={annotationActions}
       draftRequest={draftRequest !== null && draftRequest.messageId === messageId ? draftRequest : null}
       {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
@@ -360,27 +377,31 @@ function useAutoOpen(live: boolean, closeOnEnd: boolean, initialOpen = live): [b
  * 失败给一行可点的重试，**不**假装"思考是空的"（错误必须可见）。
  * 参考 pi-web：`components/MessageView.tsx:889-905` 同样在展开时按 entryId 拉取并就地保存。
  */
-function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpen = false, entryId, blockIndex, loadThinking }: {
+function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpen = false, origin, loadThinking }: {
   text: string; deferred?: boolean; live: boolean; turnLive?: boolean; forceOpen?: boolean;
-  entryId?: string; blockIndex?: number; loadThinking?: ThinkingLoader;
+  /** 这个块的原点（Task 0028 · P1）：`entryId` 与 `blockIndex` 同源；`undefined` = 无法定位（老数据/无 id）。 */
+  origin?: ThinkingOrigin;
+  loadThinking?: ThinkingLoader;
 }) {
   // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
   const [open, toggle] = useAutoOpen(live || turnLive, !forceOpen, forceOpen);
   const [body, setBody] = useState<string | undefined>(deferred ? undefined : text);
   const [failed, setFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  /** 能不能取：无原点或参数不合法就**不发请求**（否则换来一串 400/404，见 0027 · R4）。 */
+  const request = thinkingRequestOf(origin);
   useEffect(() => {
     if (!deferred || !open || body !== undefined || failed && reloadKey === 0) return;
-    if (entryId === undefined || blockIndex === undefined || loadThinking === undefined) return;
+    if (request === undefined || loadThinking === undefined) return;
     let cancelled = false;
     void (async () => {
       try {
-        const fetched = await loadThinking(entryId, blockIndex);
+        const fetched = await loadThinking(request);
         if (!cancelled) { setBody(fetched); setFailed(false); }
       } catch { if (!cancelled) setFailed(true); }
     })();
     return () => { cancelled = true; };
-  }, [deferred, open, body, failed, reloadKey, entryId, blockIndex, loadThinking]);
+  }, [deferred, open, body, failed, reloadKey, request?.entryId, request?.blockIndex, loadThinking]);
   return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <ClickableRow onClick={toggle}
@@ -402,7 +423,12 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
         */}
       {open && (
         <div className="border-t border-line px-3 py-2 text-ink-700">
-          {failed ? (
+          {request === undefined ? (
+            /* 定位不到（老记录没有 entry id / 参数不合法）：说清"取不回"的原因，不给一个注定失败的重试按钮 */
+            <div className="text-micro text-ink-500" data-testid="thinking-unavailable">
+              这段思考属于旧记录，取不回正文
+            </div>
+          ) : failed ? (
             /* 取不回来必须说出来并给出口（规范：错误可见、可行动），不能显示"思考是空的" */
             <div className="flex flex-wrap items-center gap-2 text-micro text-ink-500" data-testid="thinking-load-failed">
               <span>思考正文没取回来</span>
@@ -588,7 +614,7 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
  * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-function BlockView({ block, live, turnLive = false, forceOpen = false, onOpenPeer, blockIndex, messageId, loadThinking, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
+function BlockView({ block, live, turnLive = false, forceOpen = false, onOpenPeer, blockIndex, messageId, loadThinking, blockOrigin, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
   block: Block; live: boolean;
   /** 这一轮是否还在跑（Task 0018 · T2）：思考卡只在**整轮结束**时收起，不在每段思考结束时收起。 */
   turnLive?: boolean;
@@ -601,6 +627,11 @@ function BlockView({ block, live, turnLive = false, forceOpen = false, onOpenPee
   messageId?: string;
   /** ★ 取思考正文（P8 / B2）：仅 `deferred` 的思考块需要。 */
   loadThinking?: ThinkingLoader;
+  /**
+   * ★ 本块的原点（Task 0028 · P1）：折叠时由 `MessageView` 按 `blockOrigins[index]` 传入。
+   * 不给 = 未折叠（坐标系统一，用本条 messageId + 本块下标即可）。
+   */
+  blockOrigin?: ThinkingOrigin;
   /** ★ 本块的批注（Task 0003 · P2）：为空数组时行为与没有批注完全一致。 */
   blockAnnotations?: readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。 */
@@ -620,10 +651,16 @@ function BlockView({ block, live, turnLive = false, forceOpen = false, onOpenPee
     );
   }
   if (block.type === "thinking") {
+    /*
+     * 原点优先（Task 0028 · P1）：给了 `blockOrigin` 就用它；否则退回"本条 messageId + 本块下标"。
+     *
+     * 退回这一支**只在未折叠时成立**（那时 blocks 就是本条消息自己的块，下标天然属于它）；
+     * 折叠时 `MessageView` 一定会传 `blockOrigin`，因为那时块是整轮合并的。
+     */
+    const origin = blockOrigin ?? (messageId !== undefined && blockIndex !== undefined ? { entryId: messageId, blockIndex } : undefined);
     return <ThinkingBlock text={block.text} deferred={block.deferred === true} live={live} turnLive={turnLive} forceOpen={forceOpen}
-      {...(block.deferred === true && messageId !== undefined && blockIndex !== undefined && loadThinking !== undefined
-        ? { entryId: messageId, blockIndex, loadThinking }
-        : {})} />;
+      {...(origin !== undefined ? { origin } : {})}
+      {...(block.deferred === true && loadThinking !== undefined ? { loadThinking } : {})} />;
   }
   return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
 }

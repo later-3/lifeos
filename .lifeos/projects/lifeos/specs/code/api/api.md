@@ -15,10 +15,14 @@
 - 规则：一切列表接口返回 `{items:[…]}`；失败统一 `{error:{code, message}}`；前端对"包"只认一种。
 - 依据：现行实现（`src/server.ts` 全部路由）；事实清单见 `knowledge/architecture/agent.md`。
 
-### 2.2 SSE 事件名 = 事件类型；每条带 seq；可 since 续传；沿用 Pi 不发明新名
+### 2.2 事件名 = 事件类型；每条带 seq；可 since 续传；沿用 Pi 不发明新名
 
 - 规则：事件名与 Pi 一致（`snapshot/thinking/…/done/error`），新事件先在映射层加类型与来源，再进入 UI；不把生命周期事件（compact/queue）泄漏成 UI 事件。
-- 依据：`knowledge/architecture/conversation.md`（事件全集唯一事实源）+ `test/stream-events.test.mjs`。
+- **传输是 WebSocket，帧信封 `{t, seq, d}`**（2026-11-18 · Task 0028）。`t` = 事件名，`seq` = 原 SSE 的 `id:`，
+  `d` = 原 `data:`。理由与约束见 `specs/code/backend/code.md` 2.20（同源 6 条连接上限）。
+  SSE 仍是**显式**兼容路径（`?transport=sse`），不带参数时返回 426。
+- 依据：`knowledge/architecture/conversation.md` §14（事件通道事实）+ `test/stream-events.test.mjs` +
+  `test/event-socket.test.mjs`（ws 上的同一批契约）。
 
 ### 2.3 状态码语义：409 打架 / 400 参数 / 404 不存在；"资源在、失败在别处"不重构成 404
 

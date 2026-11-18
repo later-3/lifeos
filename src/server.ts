@@ -805,8 +805,23 @@ app.use(async (c, next) => {
     return c.json({ level: result.level });
   });
 
-  // 会话当前 Task 切换（activeTaskId）：只影响下一轮；当前 run 已装配的 prompt 不变。
+  /*
+   * 全局事件通道（Task 0028 · P3：默认 WebSocket）。
+   *
+   * 浏览器同源 HTTP/1.1 只有 6 条连接，而每个标签页都要一条常驻通道 —— 用 SSE 时
+   * 开满 6 个标签就会把**整页**（连静态资源）堵死（Task 0027 · E1/E3 实测）。
+   * WebSocket 不占那 6 条额度，所以默认走 ws（实现在 `src/event-socket.ts`）。
+   *
+   * 这里保留 SSE 分支，但**必须显式** `?transport=sse`：
+   *  - 只读工具（`scripts/session-state.mjs`）与排障时用；
+   *  - 未带该参数时返回 426，让"谁还在用 SSE"这件事可见（不静默降级）。
+   */
   app.get("/api/events", (c) => {
+    if (c.req.query("transport") !== "sse") {
+      c.header("Connection", "Upgrade");
+      c.header("Upgrade", "websocket");
+      return c.body("事件通道已改为 WebSocket：请连接 ws://…/api/events；如需 SSE 兼容路径请加 ?transport=sse", 426);
+    }
     return streamSSE(c, async (stream) => {
       await pruneSessionViewsOnce();   // 先清孤儿未读，再生成快照（否则快照会把已删会话的蓝点带给界面）
       const connectionId = randomUUID();

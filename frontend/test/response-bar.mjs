@@ -18,6 +18,7 @@
  * 每条都读真实渲染结果（DOM + computed style + localStorage），不接受"代码看起来对"。
  */
 import pw from "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js";
+import { EVENT_CHANNEL_STUB } from "./event-channel-stub.mjs";
 
 const V = process.env.APP_URL ?? "http://127.0.0.1:5222";
 const S = process.env.SESSION ?? "7424b2a4-99fa-46e6-840d-3fa955112da7";
@@ -226,22 +227,8 @@ async function open(opts = {}) {
   await page.route("**/api/profile", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "me" }) }));
   await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: [], draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
+  await page.addInitScript(EVENT_CHANNEL_STUB);
   await page.addInitScript(() => {
-    window.__ssePush = null;
-    class FakeES {
-      constructor() {
-        this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => {
-          const ev = { data: typeof data === "string" ? data : JSON.stringify(data) };
-          for (const fn of this.listeners[name] ?? []) fn(ev);
-        };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0);
-      }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {}
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
     try { localStorage.setItem("lifeos.response.sess-live", "folded"); } catch { /* 忽略 */ }
   });
   await page.goto(V + "/?agent=lifeosagent&project=workspace&session=sess-live", { waitUntil: "domcontentloaded" });
@@ -317,23 +304,7 @@ async function open(opts = {}) {
   await page.route("**/api/profile", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "me" }) }));
   await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: [], draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
-  await page.addInitScript(() => {
-    window.__ssePush = null;
-    class FakeES {
-      constructor() {
-        this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => {
-          const ev = { data: typeof data === "string" ? data : JSON.stringify(data) };
-          for (const fn of this.listeners[name] ?? []) fn(ev);
-        };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0);
-      }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {}
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
-  });
+  await page.addInitScript(EVENT_CHANNEL_STUB);
   await page.goto(V + "/?agent=lifeosagent&project=workspace&session=sess-live2", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => typeof window.__ssePush === "function", null, { timeout: 15000 });
   const push = async (name, data) => { await page.evaluate(([n, d]) => window.__ssePush?.(n, d), [name, data]); await page.waitForTimeout(250); };
@@ -383,23 +354,7 @@ async function open(opts = {}) {
   await page.route("**/api/profile", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "me" }) }));
   await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: [], draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
-  await page.addInitScript(() => {
-    window.__ssePush = null;
-    class FakeES {
-      constructor() {
-        this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => {
-          const ev = { data: typeof data === "string" ? data : JSON.stringify(data) };
-          for (const fn of this.listeners[name] ?? []) fn(ev);
-        };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0);
-      }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {}
-      close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
-  });
+  await page.addInitScript(EVENT_CHANNEL_STUB);
   await page.goto(V + "/?agent=lifeosagent&project=workspace&session=sess-turn", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => typeof window.__ssePush === "function", null, { timeout: 15000 });
 
@@ -495,17 +450,7 @@ async function open(opts = {}) {
   await page.route("**/api/profile", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "me" }) }));
   await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: running ? [{ agentId: "lifeosagent", projectId: "workspace", sessionId: "s-a", startedAt: new Date(Date.now() - 42_000).toISOString() }] : [], draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
-  await page.addInitScript(() => {
-    window.__ssePush = null;
-    class FakeES {
-      constructor() { this.listeners = {}; this.readyState = 1;
-        window.__ssePush = (name, data) => { const ev = { data: typeof data === "string" ? data : JSON.stringify(data) }; for (const fn of this.listeners[name] ?? []) fn(ev); };
-        setTimeout(() => (this.listeners.open ?? []).forEach((f) => f({})), 0); }
-      addEventListener(name, fn) { (this.listeners[name] ??= []).push(fn); }
-      removeEventListener() {} close() { this.readyState = 2; }
-    }
-    window.EventSource = FakeES;
-  });
+  await page.addInitScript(EVENT_CHANNEL_STUB);
 
   const opened = [];
   for (const round of [0, 1, 2]) {

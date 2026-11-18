@@ -113,7 +113,7 @@ async function layerSse() {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const res = await fetch(`${BASE}/api/events`, { headers: { Accept: "text/event-stream" }, signal: ctrl.signal });
+    const res = await fetch(`${BASE}/api/events?transport=sse`, { headers: { Accept: "text/event-stream" }, signal: ctrl.signal });
     if (!res.ok || res.body === null) return { error: `HTTP ${res.status}` };
     const reader = res.body.getReader();
     const dec = new TextDecoder();

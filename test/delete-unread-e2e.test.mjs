@@ -16,7 +16,7 @@ async function snapshot(base) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const res = await fetch(`${base}/api/events`, { signal: ctrl.signal });
+    const res = await fetch(`${base}/api/events?transport=sse`, { signal: ctrl.signal });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -38,7 +38,7 @@ async function snapshot(base) {
 async function snapshotKeepOpen(base) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20000);
-  const res = await fetch(`${base}/api/events`, { signal: ctrl.signal });
+  const res = await fetch(`${base}/api/events?transport=sse`, { signal: ctrl.signal });
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";

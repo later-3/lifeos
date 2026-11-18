@@ -3070,7 +3070,13 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
      *
      * 所以只 mock 列表 = 夹具注入到一个没人读的地方（testing 2.15「夹具跟实现走」的反面：
      * 实现换了数据源，夹具没换 → 这条断言从 Task 0005 起就没真正生效过，一直红）。
-     * 现在把 **SSE 快照**也打桩，走实现真正消费的那条通道。
+     * 现在把 **快照帧**也打桩，走实现真正消费的那条通道。
+     *
+     * **2026-11-18 再改（Task 0028 · P3）**：通道换成 WebSocket，快照不再是一段 SSE 文本，
+     * 而是一帧 `{t:"snapshot", seq, d}`。夹具**必须**跟着换 —— `page.route` 打不到 ws
+     * （浏览器根本不发 HTTP GET），漏改的表现正是 testing 2.15 警告的那种"注入到没人读的地方"：
+     * 页面照常渲染，`[data-state-count]` 仍然出现，但数字全是真实家目录算出来的，断言变成随机的。
+     * 打桩方式见 playwright 的 `routeWebSocket`（`types.d.ts:10309`）。
      */
     const snapshot = {
       connectionId: "fixture-count",
@@ -3081,13 +3087,10 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
         { sessionId: ids[5], agentId: "lifeosagent", projectId: "workspace", state: "error", since: new Date().toISOString() },
       ],
     };
-    await countPage.route("**/api/events", (route) => route.request().method() === "GET"
-      ? route.fulfill({
-          status: 200,
-          headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
-          body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`,
-        })
-      : route.continue().catch(() => {}));
+    await countPage.routeWebSocket("**/api/events", (ws) => {
+      ws.onMessage(() => undefined);   // 客户端不发有意义的东西；读掉即可
+      ws.send(JSON.stringify({ t: "snapshot", seq: snapshot.seq, d: snapshot }));
+    });
     await countPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
     const ready = await countPage.waitForFunction(
       () => document.querySelectorAll('[data-state-count]').length > 0, null, { timeout: 15000 },

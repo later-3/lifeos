@@ -16,7 +16,7 @@ async function snapshot(base) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const res = await fetch(`${base}/api/events`, { signal: ctrl.signal });
+    const res = await fetch(`${base}/api/events?transport=sse`, { signal: ctrl.signal });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -35,7 +35,7 @@ async function rowsDuring(base, action, ms = 12000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms + 3000);
   const seen = [];
-  const res = await fetch(`${base}/api/events`, { signal: ctrl.signal });
+  const res = await fetch(`${base}/api/events?transport=sse`, { signal: ctrl.signal });
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
