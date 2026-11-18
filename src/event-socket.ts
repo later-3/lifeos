@@ -70,6 +70,14 @@ export type EventSocketOptions = {
   pingMs?: number;
   /** 积压上限（测试可注入更小的值来触发过载）。 */
   highWaterBytes?: number;
+  /**
+   * **仅测试用**：写快照之前 await 一次，用来稳定复现"快照还没写出去，客户端就断了"的竞态。
+   *
+   * 这段窗口在真实环境里是存在的（`pruneSessionViewsOnce()` 首次调用要读盘、`writeFrame` 本身是异步），
+   * 但它的宽度只有毫秒级，靠碰运气复现不出来 —— 而没有稳定复现，那条"必须先挂 close 再写快照"的
+   * 顺序就成了一句无测试支撑的注释。
+   */
+  snapshotGate?: () => Promise<void>;
 };
 
 /**
@@ -81,13 +89,24 @@ export type EventSocketOptions = {
 export function attachEventSocket(server: HttpServer, options: EventSocketOptions = {}): { close(): void } {
   const pingMs = options.pingMs ?? PING_MS;
   const highWaterBytes = options.highWaterBytes ?? HIGH_WATER_BYTES;
+  const snapshotGate = options.snapshotGate;
   // `noServer`：自己处理 upgrade，才能精确控制"只接 /api/events"与 426 回退
   const wss = new WebSocketServer({ noServer: true });
 
   const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (url.pathname !== "/api/events") { socket.destroy(); return; }
-    wss.handleUpgrade(req, socket, head, (ws) => { void serve(ws, pingMs, highWaterBytes); });
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      /*
+       * `.catch(...)` 不能省：`serve()` 是 async 函数且**没有调用者**，它 reject 出去就是
+       * `unhandledRejection` —— Node 15+ 默认**终止进程**。一条客户端在错误时刻断开
+       * （快照还没写出去就断了）就能把后端打掉，这是只需一次就能复现的全站故障。
+       * 这里的失败全部是"这条连接没建立起来"，属于可预期路径，记一条 warn 即可。
+       */
+      void serve(ws, { pingMs, highWaterBytes, snapshotGate }).catch((error: unknown) => {
+        log.warn("event-socket", "serve", "ws 连接异常结束", { details: { reason: error instanceof Error ? error.message : String(error) } });
+      });
+    });
   };
 
   server.on("upgrade", onUpgrade);
@@ -101,7 +120,8 @@ export function attachEventSocket(server: HttpServer, options: EventSocketOption
 }
 
 /** 一条连接的生命周期：订阅 → 快照 → 心跳 → 等关闭。 */
-async function serve(ws: WebSocket, pingMs: number, highWaterBytes: number): Promise<void> {
+async function serve(ws: WebSocket, options: { pingMs: number; highWaterBytes: number; snapshotGate?: (() => Promise<void>) | undefined }): Promise<void> {
+  const { pingMs, highWaterBytes, snapshotGate } = options;
   await pruneSessionViewsOnce();   // 先清孤儿未读，再生成快照（与 SSE 分支同序）
   const connectionId = randomUUID();
 
@@ -127,14 +147,30 @@ async function serve(ws: WebSocket, pingMs: number, highWaterBytes: number): Pro
     void writeFrame(ws, { t: "ping", seq: eventsSeq(), d: {} }).catch(() => finished());
   }, pingMs);
 
+  /*
+   * **close/error 必须在第一个 await 之前注册**：客户端可能在快照写出去之前就断开
+   * （关标签、拔网线、代理掐断）。若等 `await writeFrame(...)` 之后才注册，那条 close 已经发生过了，
+   * `finishedPromise` 永远不 resolve —— `finally` 不执行 → 总线与 sink 都不关，registry 里留下一条死连接，
+   * 之后每次广播都往它 offer（它永远不成功，直到积压超限才被动摘除）。
+   * 顺序改成"先挂监听，再写快照"，最坏情况只是 finished 早于 ready，`finally` 照样收尾。
+   */
+  ws.on("close", () => finished());
+  ws.on("error", () => finished());
+  // 客户端主动发的帧当前没有语义；读掉它们以免 TCP 缓冲堆积（未来可承载 ack）
+  ws.on("message", () => undefined);
+
   try {
-    await writeFrame(ws, { t: "snapshot", seq: bus.seq, d: snapshot });
-    bus.ready();
-    ws.on("close", () => finished());
-    ws.on("error", () => finished());
-    // 客户端主动发的帧当前没有语义；读掉它们以免 TCP 缓冲堆积（未来可承载 ack）
-    ws.on("message", () => undefined);
-    log.info("event-socket", undefined, "ws 事件通道已连接", { details: { connectionId } });
+    if (snapshotGate !== undefined) await snapshotGate();
+    /*
+     * 快照写失败 = 客户端已经走了（`writeFrame` 在 readyState 非 OPEN 或写超时时 reject）。
+     * 这是**正常结局**，不是异常：不 ready()、不往外抛，直接走到 finally 收尾。
+     * （若在这里抛出去，`serve()` 的调用者不存在 —— 见上面 upgrade 回调里的说明。）
+     */
+    await writeFrame(ws, { t: "snapshot", seq: bus.seq, d: snapshot }).catch(() => undefined);
+    if (ws.readyState === ws.OPEN) {
+      bus.ready();
+      log.info("event-socket", undefined, "ws 事件通道已连接", { details: { connectionId } });
+    }
     await finishedPromise;
   } finally {
     clearInterval(ping);

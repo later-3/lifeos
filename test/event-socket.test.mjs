@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { installHome } from "../src/home.ts";
-import { publish } from "../src/events.ts";
+import { connectionCount, publish } from "../src/events.ts";
 import { startOn } from "./server-harness.mjs";
 
 /** 连上事件通道，返回 { ws, frames[], next(predicate) }（帧按到达顺序累积）。 */
@@ -150,4 +150,41 @@ test("T28-12b 帧顺序：snapshot 之后的事件 seq 严格大于快照基线"
     const after = await conn.next((f) => f.t === "turn" && f.d.turnId === "t-seq");
     assert.ok(after.seq > snapshot.seq, `事件 seq(${after.seq}) 必须大于快照基线(${snapshot.seq})`);
   } finally { conn.ws.close(); server.close(); }
+});
+
+test("T28-19 客户端在快照写出前断开 → 服务端必须收尾干净（不漏订阅、不抛未处理拒绝）", async () => {
+  /*
+   * 竞态（自查发现，2026-11-18）：原来 `ws.on("close")` 注册在 `await writeFrame(snapshot)` **之后**。
+   * 客户端若在快照写出前断开（关标签、拔网线、代理掐断），那条 close 已经发生过了，
+   * `finishedPromise` 永不 resolve → `finally` 不执行 → 总线与 sink 都不关 → registry 留下一条死连接，
+   * 之后每次广播都往它 offer（永不成功，直到积压超限才被动摘除）。
+   *
+   * 复现靠 `snapshotGate`：把"快照还没写出去"这段窗口撑开，让客户端在这个窗口里断开。
+   * 活性：把 close 注册移回 `await` 之后，这条必红。
+   */
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(String(reason));
+  process.on("unhandledRejection", onUnhandled);
+
+  let openGate = () => undefined;
+  const gate = new Promise((resolve) => { openGate = resolve; });
+  const home = await mkdtemp(join(tmpdir(), "lifeos-ws-early-close-"));
+  await installHome(process.cwd(), home);
+  const { server, base } = await startOn(home, { snapshotGate: () => gate });
+  try {
+    const before = connectionCount();
+    const ws = new WebSocket(`${base.replace("http", "ws")}/api/events`);
+    ws.on("error", () => undefined);
+    await new Promise((resolve) => ws.once("open", resolve));
+    // 此刻服务端正卡在 snapshotGate 上：close/error 还没注册（修复前）
+    ws.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    openGate();                                      // 放行：服务端才会走到写快照那一步
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(connectionCount(), before, `必须收尾干净，实际残留 ${connectionCount() - before} 条订阅`);
+    assert.deepEqual(unhandled, [], `serve() 不得产生未处理的拒绝：${unhandled.slice(0, 2).join(" | ")}`);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    server.close();
+  }
 });

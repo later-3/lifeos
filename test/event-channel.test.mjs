@@ -61,16 +61,26 @@ test("T28-18b 陈旧判定：阈值边界（正好等于阈值即判陈旧）", 
   assert.equal(isChannelStale(1000, 1000 + 25_000, 25_000), true);
 });
 
-test("T28-18c SSE 兼容路径的事件名清单与 App 保持同步（漏一个 = 那条事件在 sse 下静默丢失）", () => {
-  const app = readFileSync(new URL("../frontend/src/App.tsx", import.meta.url), "utf8");
-  const block = /const STREAM_EVENT_NAMES = \[([\s\S]*?)\] as const;/.exec(app);
-  assert.ok(block, "App.tsx 里找不到 STREAM_EVENT_NAMES");
-  const fromApp = [...block[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
-  const fromChannel = [...CHANNEL_EVENT_NAMES];
-  // App 的清单是 channel 清单的子集：channel 多一个 review_open 是允许的差异吗？
-  // 不允许 —— 两边都该有（review_open 是回合级事件，App 靠它开检视面板）。
-  const missingInApp = fromChannel.filter((name) => !fromApp.includes(name));
-  const missingInChannel = fromApp.filter((name) => !fromChannel.includes(name));
-  assert.deepEqual(missingInApp, [], `App 缺少事件名：${missingInApp.join(",")}`);
-  assert.deepEqual(missingInChannel, [], `channel 缺少事件名：${missingInChannel.join(",")}`);
+test("T28-18c SSE 兼容路径的事件名清单覆盖服务端全集（漏一个 = 那条事件在 sse 下静默丢失）", () => {
+  /*
+   * 为什么改成"读服务端"：只要清单是手写的，就可能漏（本任务就漏过 `review_open`
+   * —— 那条事件从上线起在界面里从未生效）。清单的**唯一事实源**应该是服务端能发的东西，
+   * 所以这里从 `src/events.ts` 的 `TURN_LEVEL` 与 `src/stream-events.ts` 的 `type:` 字面量取全集。
+   * 反过来读前端常量没有意义：常量自己漏了，测试也就跟着漏。
+   */
+  const eventsSrc = readFileSync(new URL("../src/events.ts", import.meta.url), "utf8");
+  const turnLevel = /const TURN_LEVEL = new Set\(\[([\s\S]*?)\]\);/.exec(eventsSrc);
+  assert.ok(turnLevel, "src/events.ts 里找不到 TURN_LEVEL");
+  const turnNames = [...turnLevel[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+
+  const streamSrc = readFileSync(new URL("../src/stream-events.ts", import.meta.url), "utf8");
+  const streamNames = [...streamSrc.matchAll(/type: "([a-z_]+)"/g)].map((m) => m[1]);
+
+  const serverNames = new Set([...turnNames, ...streamNames]);
+  const fromChannel = new Set(CHANNEL_EVENT_NAMES);
+  const missing = [...serverNames].filter((name) => !fromChannel.has(name));
+  assert.deepEqual(missing, [], `SSE 清单缺少服务端会发的事件：${missing.join(",")}`);
+  // 反向：清单里不该有服务端不存在的事件名（拼错的名字等于静默失效）
+  const extra = [...fromChannel].filter((name) => !serverNames.has(name));
+  assert.deepEqual(extra, [], `SSE 清单里有服务端不会发的事件：${extra.join(",")}`);
 });

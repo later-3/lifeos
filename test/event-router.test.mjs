@@ -41,7 +41,11 @@ test("T51 细节事件只属于焦点会话；其他会话的 delta 必须丢弃
 // T52 的 Agent 二选一语义已由状态映射取代（见 test/status-map.test.mjs T61–T63）
 
 // T59：流是否"死了"（任务 0007 补充：经代理的 SSE 断开可能不触发 error，必须有客户端看门狗）
-import { isStreamStale } from "../frontend/src/api/event-router.ts";
+//
+// 2026-11-18（Task 0028 · P3）：判定函数随看门狗一起搬进 `event-channel.ts` 的 `isChannelStale`
+// （ws 与 sse 两条传输共用同一套"陈旧 → 重建"）。这里改测那份唯一实现，
+// 原 `event-router.isStreamStale` 已删除 —— 留着就是第二个实现，两处阈值迟早漂。
+import { isChannelStale as isStreamStale } from "../frontend/src/api/event-channel.ts";
 test("T59 流陈旧判定：超过阈值没有任何帧（含心跳）才算死；刚收到过不算", async () => {
   assert.equal(isStreamStale(1_000, 1_000 + 24_999, 25_000), false);
   assert.equal(isStreamStale(1_000, 1_000 + 25_000, 25_000), true);

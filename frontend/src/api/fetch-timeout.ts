@@ -80,17 +80,6 @@ export async function withTimeout<T>(
 }
 
 /**
- * 把一次 HTTP 响应当作"需要 2xx"的结果来判定。
- *
- * 单独一个函数的原因：`fetch` 对 4xx/5xx **不抛错**，直接 `await response.json()`
- * 会得到 `{error:{...}}` 然后被当成正常数据用 —— 那正是"失败被静默吞掉"的常见写法。
- */
-export function okOrFailure<T>(response: Response, label: string, ms: number): LoadResult<T> {
-  if (response.ok) return { ok: true, value: response as unknown as T };
-  return { ok: false, failure: { kind: "http", status: response.status, label, ms } };
-}
-
-/**
  * 一次性完成"取 JSON"，四种结局都收敛到 `LoadResult`。
  *
  * `timeoutMs` 与 `LoadFailure.ms`（真实耗时）是两个不同的量 —— 曾经用同一个变量名，
