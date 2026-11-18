@@ -951,6 +951,8 @@ export default function App() {
   });
 
   const current = useRef<string | undefined>(undefined);
+  /** 当前 agent id 的即时值（P8 的思考按需取用；`loadThinkingOf` 是稳定回调，不能闭包旧 agent）。 */
+  const agentIdRef = useRef<string | undefined>(undefined);
   const ctx = useRef<{ agentId?: string }>({});
   const selectedProjectRef = useRef<string | undefined>(undefined);
   useEffect(() => { selectedProjectRef.current = selectedProjectId; }, [selectedProjectId]);
@@ -1079,7 +1081,11 @@ export default function App() {
     }
   }
 
-  useEffect(() => { current.current = sessionId; if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId); }, [sessionId, agent?.id]);
+  useEffect(() => {
+    current.current = sessionId;
+    agentIdRef.current = agent?.id;
+    if (sessionId !== undefined && agent !== undefined) writeLast(lastSessionKey(agent.id), sessionId);
+  }, [sessionId, agent?.id]);
   // —— 用户档案（你本人）：取一次；失败不阻断界面（只是没头像/用默认名） ——
   useEffect(() => {
     let alive = true;
@@ -1499,8 +1505,28 @@ export default function App() {
 
   /** 只做网络取数（不碰任何 React 状态）—— 缓存命中时它变成后台刷新。 */
   async function fetchSessionPayload(id: string, sid: string): Promise<SessionPayload> {
-    return await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}`)).json() as SessionPayload;
+    /*
+     * `deferThinking=1`（P8 / B2）：思考正文不随行下发，只留 `deferred: true`。
+     * 实测 200 条窗口的响应 1475 KB → **493 KB**（思考占 999 KB / 68%），而首屏思考块默认折叠。
+     * 展开时走 `loadThinking()`（见下方）取回那一段。
+     */
+    return await (await fetch(`/api/agents/${id}/sessions/${sid}?tail=${LOAD_TAIL_COUNT}&deferThinking=1`)).json() as SessionPayload;
   }
+
+  /**
+   * 取一段思考正文（P8 / B2）：只有被 `deferThinking` 置空的块会调到这里。
+   * 作用域显式绑定在**当前** agent/session 上（规范 2.12：跨作用域状态要带归属）——
+   * 切走之后旧块的展开请求不该打到新会话上。
+   */
+  const loadThinkingOf = useCallback(async (entryId: string, blockIndex: number): Promise<string> => {
+    const id = agentIdRef.current;
+    const sid = current.current;
+    if (id === undefined || sid === undefined) throw new Error("no_session");
+    const response = await fetch(`/api/agents/${id}/sessions/${sid}/entries/${entryId}/thinking?blockIndex=${blockIndex}`);
+    if (!response.ok) throw new Error(`thinking_${response.status}`);
+    const body = await response.json() as { text?: unknown };
+    return typeof body.text === "string" ? body.text : "";
+  }, []);
 
   async function loadMessages(id: string, sid: string) {
     /*
@@ -4143,6 +4169,7 @@ export default function App() {
 
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
+                      loadThinking={loadThinkingOf}
                       annotationsOfBlock={annotationsOfBlockOf(message.id)}
                       annotationActions={annoActions}
                       draftRequest={draftRequest !== null && draftRequest.messageId === message.id ? draftRequest : null}

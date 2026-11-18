@@ -608,7 +608,7 @@ for (const width of widths) {
   });
   // 会话详情只用一组工具图：一张在、一张不在
   // 只拦**详情**这一条（带尾 $），不要吞掉 /annotations、/turns/last
-  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+(\?[^/]*)?$/, async (route) => {
     await route.fulfill({
       status: 200, contentType: "application/json",
       body: JSON.stringify({
@@ -684,7 +684,7 @@ for (const width of widths) {
   if (sessionId !== null) {
     const [agentId, projectId, sid] = sessionId.split("|");
     // 只延迟"会话详情"这一条（`?tail=` 是 P3-S3 加的，正则必须允许，否则拦不到）
-    await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
+    await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+(\?[^/]*)?$/, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       await route.continue();
     });
@@ -998,7 +998,7 @@ for (const width of [360, 390]) {
       blocks: [{ type: "text", text: `消息 ${i}` }],
     })),
   ];
-  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+\?(tail=\d+)?$/, async (route) => {
+  await page.route(/\/api\/agents\/[^/]+\/sessions\/[^/?]+(\?[^/]*)?$/, async (route) => {
     // 复刻后端的裁剪语义：只给最后 50 条 + 把窗口外的压缩标记补回队首
     const tail = 50;
     const start = Math.max(0, messages.length - tail);

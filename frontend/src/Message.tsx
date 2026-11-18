@@ -46,6 +46,12 @@ import { AppIcon } from "./design/icons";
  * 后续若要再往下压，方向是"把输入框 state 从 App 拆出去"（todo #1），不是给消息加 memo。
  */
 
+/**
+ * 取一段思考正文（P8 / B2）。由 App 注入：它知道 agentId/sessionId，而消息层只认消息身份。
+ * 返回值是正文；抛错由组件转成可见的失败提示（不静默）。
+ */
+export type ThinkingLoader = (entryId: string, blockIndex: number) => Promise<string>;
+
 export type Block =
   /**
    * 压缩卡（Task 0016 · P7-S9）：Pi 把早期历史压成一段摘要，这块就是那张卡。
@@ -58,7 +64,11 @@ export type Block =
    * 两者必有其一；渲染统一走 `imageSrcOf()`。
    */
   | { type: "image"; url?: string; data?: string; mimeType: string }
-  | { type: "thinking"; text: string; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
+  /**
+   * 思考块。`deferred` = 后端没有下发正文（P8 / B2：200 条窗口里 thinking 占 68% 字节），
+   * 第一次展开才按 `entryId + blockIndex` 取回（loader 由 App 注入，见 `MessageViewProps.loadThinking`）。
+   */
+  | { type: "thinking"; text: string; deferred?: true; /** 仅客户端流式段：思考是否仍在该段内进行 */ live?: boolean }
   | {
       type: "toolCall"; id?: string; name: string; arguments?: unknown;
       result?: string; isError?: boolean; truncated?: boolean; durationMs?: number;
@@ -112,7 +122,7 @@ function formatClock(at: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, annotationsOfBlock, annotationActions, responseBar, markBar, draftRequest = null, onDraftHandled }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
+export function MessageView({ role, blocks, busy, error, failure, align = "end", onRetry, at, historical, retriedTimes, fixHintText, onOpenPeer, avatar, authorName, process, messageId, loadThinking, annotationsOfBlock, annotationActions, responseBar, markBar, draftRequest = null, onDraftHandled }: {  role: "user" | "assistant"; blocks: Block[]; busy: boolean; error?: string; failure?: FailureKind;
   /** 消息时间（毫秒）：失败块据此显示时刻（历史失败不该被当成当前状态） */
   at?: number;
   /** 聊天区用户消息靠右（end）；历史时间线里靠左（start），避免与头像/时间脱开 */
@@ -148,6 +158,8 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
   /** ★ 消息身份（Task 0003 · P1）：批注挂到"哪条消息"上靠它。
    *  不传就不渲染属性（老数据/老会话兼容）。 */
   messageId?: string;
+  /** ★ 取思考正文（P8 / B2）：只有 `deferred` 的思考块会用到；不传就永远不取（历史时间线等）。 */
+  loadThinking?: ThinkingLoader;
   /** ★ 取某块的批注（Task 0003 · P2）。不传 = 这条消息没有批注，行为与改造前完全一致。 */
   annotationsOfBlock?: (blockIndex: number) => readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。不传 = 只读（历史时间线等）。 */
@@ -243,6 +255,7 @@ export function MessageView({ role, blocks, busy, error, failure, align = "end",
     annotationsOfBlock === undefined ? [] : annotationsOfBlock(index);
   const renderBlock = (block: Block, index: number, keyScope: string) => (
     <BlockView key={`${keyScope}-${index}`} block={block} blockIndex={index} messageId={messageId}
+      {...(loadThinking !== undefined ? { loadThinking } : {})}
       blockAnnotations={blockAnnotationsOf(index)} blockActions={annotationActions}
       draftRequest={draftRequest !== null && draftRequest.messageId === messageId ? draftRequest : null}
       {...(onDraftHandled !== undefined ? { onDraftHandled } : {})}
@@ -322,9 +335,37 @@ function useAutoOpen(live: boolean, closeOnEnd: boolean, initialOpen = live): [b
   return [open, toggle];
 }
 
-function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: boolean; forceOpen?: boolean }) {
+/**
+ * 思考块（P8 / B2 起支持"按需取正文"）。
+ *
+ * 正文没随会话下发时（`deferred`）**第一次展开才去取**：首屏省下 68% 的字节，
+ * 而"要不要看思考"本来就是展开那一刻才决定的。取回后就地保存（父组件重渲染不重取）；
+ * 失败给一行可点的重试，**不**假装"思考是空的"（错误必须可见）。
+ *
+ * 参考 pi-web：`components/MessageView.tsx:889-905` 同样在展开时按 entryId 拉取并就地保存，
+ * 服务端形状见 `app/api/sessions/[id]/entries/[entryId]/thinking/route.ts`。
+ */
+function ThinkingBlock({ text, deferred = false, live, forceOpen = false, entryId, blockIndex, loadThinking }: {
+  text: string; deferred?: boolean; live: boolean; forceOpen?: boolean;
+  entryId?: string; blockIndex?: number; loadThinking?: ThinkingLoader;
+}) {
   // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
   const [open, toggle] = useAutoOpen(live, !forceOpen, forceOpen);
+  const [body, setBody] = useState<string | undefined>(deferred ? undefined : text);
+  const [failed, setFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    if (!deferred || !open || body !== undefined || failed && reloadKey === 0) return;
+    if (entryId === undefined || blockIndex === undefined || loadThinking === undefined) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const fetched = await loadThinking(entryId, blockIndex);
+        if (!cancelled) { setBody(fetched); setFailed(false); }
+      } catch { if (!cancelled) setFailed(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [deferred, open, body, failed, reloadKey, entryId, blockIndex, loadThinking]);
   return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <ClickableRow onClick={toggle}
@@ -346,7 +387,24 @@ function ThinkingBlock({ text, live, forceOpen = false }: { text: string; live: 
         */}
       {open && (
         <div className="border-t border-line px-3 py-2 text-ink-700">
-          <Markdown text={text} className="md-body--compact" />
+          {failed ? (
+            /* 取不回来必须说出来并给出口（规范：错误可见、可行动），不能显示"思考是空的" */
+            <div className="flex flex-wrap items-center gap-2 text-micro text-ink-500" data-testid="thinking-load-failed">
+              <span>思考正文没取回来</span>
+              <ClickableRow className="w-auto min-h-0 px-2 py-1 text-micro text-ink-700 underline"
+                onClick={() => { setFailed(false); setReloadKey((key) => key + 1); }}>
+                重试
+              </ClickableRow>
+            </div>
+          ) : body === undefined ? (
+            /* 展开那一刻才去取：给一行"正在取"，而不是空白（空白看起来像"没有思考"） */
+            <div className="flex items-center gap-1.5 text-micro text-ink-500" data-testid="thinking-loading">
+              <Spinner size={12} className="text-accent" />
+              <span>正在取思考正文…</span>
+            </div>
+          ) : (
+            <Markdown text={body} className="md-body--compact" />
+          )}
         </div>
       )}
     </div>
@@ -514,7 +572,7 @@ function ImageBlockView({ block }: { block: Extract<Block, { type: "image" }> })
  * **无批注时行为与原来完全一致**：不加 DOM 节点、不挂监听、不产生副作用。
  * 上色必须每次渲染后重跑：整块重渲染会让旧 Range 失效（P1 实测）。
  */
-function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
+function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, messageId, loadThinking, blockAnnotations = [], blockActions, draftRequest = null, onDraftHandled }: {
   block: Block; live: boolean; forceOpen?: boolean;
   onOpenPeer?: (target: { agentId: string; sessionId: string; agentName: string }) => void;
   /** ★ 该块在 message.blocks 里的下标（Task 0003 · P1）。
@@ -522,6 +580,8 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
   blockIndex?: number;
   /** ★ 消息身份（Task 0003 · P1）：调试打印与后续批注挂载都用它。 */
   messageId?: string;
+  /** ★ 取思考正文（P8 / B2）：仅 `deferred` 的思考块需要。 */
+  loadThinking?: ThinkingLoader;
   /** ★ 本块的批注（Task 0003 · P2）：为空数组时行为与没有批注完全一致。 */
   blockAnnotations?: readonly Annotation[];
   /** ★ 批注操作（Task 0003 · P3）。 */
@@ -539,6 +599,11 @@ function BlockView({ block, live, forceOpen = false, onOpenPeer, blockIndex, mes
         draftRequest={draftRequest} {...(onDraftHandled !== undefined ? { onDraftHandled } : {})} />
     );
   }
-  if (block.type === "thinking") return <ThinkingBlock text={block.text} live={live} forceOpen={forceOpen} />;
+  if (block.type === "thinking") {
+    return <ThinkingBlock text={block.text} deferred={block.deferred === true} live={live} forceOpen={forceOpen}
+      {...(block.deferred === true && messageId !== undefined && blockIndex !== undefined && loadThinking !== undefined
+        ? { entryId: messageId, blockIndex, loadThinking }
+        : {})} />;
+  }
   return <ToolCallBlock block={block} live={live} {...(onOpenPeer !== undefined ? { onOpenPeer } : {})} />;
 }

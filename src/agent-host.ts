@@ -1697,7 +1697,7 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 }
 
 type TextBlock = { type: "text"; text: string };
-type ThinkingBlock = { type: "thinking"; text: string };
+type ThinkingBlock = { type: "thinking"; text: string; /** 正文未下发，展开时按需取（P8） */ deferred?: true };
 type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean;
   /** 图片：`url` = 按需取回（P3-S1）；`data` = 老会话内联（D8 不迁移）。两者必有其一。 */
   images?: Array<{ url?: string; data?: string; mimeType: string }>;
@@ -1758,7 +1758,7 @@ export function sessionImageBytesOf(state: SessionState): number {
  * （`frontend/src/App.tsx:2953-2971` 的 `messageLive` 就是读它）。
  * 为什么不放前端补：运行真相在服务端（`specs/code/architecture` §2.4）；peer、历史接口共用同一份。
  */
-export function messagesOf(state: SessionState) {
+export function messagesOf(state: SessionState, options: { deferThinking?: boolean } = {}) {
   // Pi 的失败信息（stopReason=error 时的 errorMessage）必须透出：否则界面只看到空回复、不知道为什么
   // durationMs / tokens（2026-11-02）：过程条要数“花了多久 / 多少 token”，两者都在 assistant 消息上，不在块里
   const out: Array<{
@@ -1864,7 +1864,19 @@ export function messagesOf(state: SessionState) {
       const blocks: MessageBlock[] = [];
       for (const part of message.content) {
         if (part.type === "text") blocks.push({ type: "text", text: part.text });
-        else if (part.type === "thinking") blocks.push({ type: "thinking", text: part.thinking });
+        /*
+         * 思考文本**按需取**（P8 / B2）：一条 200 消息的窗口里 thinking 占响应字节的 68%
+         *（本任务实测：1475 KB 中 999 KB），而首屏默认折叠、用户多半不看。
+         * defer 时只给一个 `deferred` 标记与空正文，展开时再走
+         * `GET …/entries/:entryId/thinking?blockIndex=N`（参考 pi-web 同形：
+         * `lib/reader.ts:389-395` 置空 + `app/api/sessions/[id]/entries/[entryId]/thinking/route.ts` 取回）。
+         * **默认不 defer**：peer 的 `lastReply` / 计数这些消费者要的是正文，不能被动瘦身。
+         */
+        else if (part.type === "thinking") {
+          blocks.push(options.deferThinking === true && part.thinking.trim() !== ""
+            ? { type: "thinking", text: "", deferred: true }
+            : { type: "thinking", text: part.thinking });
+        }
         else if (part.type === "toolCall") blocks.push({ type: "toolCall", id: part.id, name: part.name, arguments: part.arguments });
       }
       const text = blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("");

@@ -508,7 +508,15 @@ app.use(async (c, next) => {
      */
     const tailRaw = c.req.query("tail");
     const tail = tailRaw === undefined ? undefined : Math.max(1, Math.min(2000, Number(tailRaw) || 0));
-    const all = messagesOf(state);
+    /*
+     * `?deferThinking=1`（P8 / B2）：思考正文不下发，只给 `deferred: true`。
+     * 实测：200 条消息的窗口里 thinking 占 **999 KB / 1475 KB（68%）**，而首屏思考块默认折叠。
+     * 展开时前端再走下面那条 `/entries/:entryId/thinking` 取回。
+     * 参考 pi-web（`lib/reader.ts:389-395` + 独立 thinking 路由），但**只在显式请求时**生效：
+     * 桌面与 peer 路径要正文，不能被动瘦身。
+     */
+    const deferThinking = c.req.query("deferThinking") === "1";
+    const all = messagesOf(state, { deferThinking });
     /*
      * 压缩标记永远跟着首屏（P7-S9b，真机验收才暴露）：压缩卡的投影位置是**第一条**
      * （pi 把 compaction 放在保留段之前），而 `?tail=200` 只取最后 200 条 ——
@@ -535,6 +543,40 @@ app.use(async (c, next) => {
       ...(integrity !== undefined ? { integrity } : {}),
     });
   });
+  /*
+   * 单段思考正文（P8 / B2）：会话详情用 `?deferThinking=1` 时不发思考正文，
+   * 前端展开某一段时按 `entryId + blockIndex` 取回。
+   *
+   * 为什么用 entryId 而不是消息下标：下标会随窗口/分页漂，entry id 是稳定身份
+   *（批注也靠它，Task 0003 的既有口径）。`blockIndex` 是该 entry 内 assistant content 的下标，
+   * 前后端**同一份投影顺序**（`messagesOf` 与这里都用 Pi 的 content 数组序），所以能对上。
+   *
+   * 参考 pi-web：`app/api/sessions/[id]/entries/[entryId]/thinking/route.ts`
+   *（它同样按 entryId 取，且只认 assistant 的 thinking 块）。
+   */
+  app.get("/api/agents/:id/sessions/:sessionId/entries/:entryId/thinking", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const raw = await readSessionEntries(agent.id, c.req.param("sessionId"));
+    if (raw === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    const entryId = c.req.param("entryId");
+    const entry = raw.entries.find((candidate) => candidate.id === entryId);
+    if (entry === undefined) { const error = problem("entry_not_found", "找不到这条记录", 404); return c.json(error.body, error.status); }
+    const message = entry.message as { role?: string; content?: unknown } | undefined;
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+      const error = problem("not_thinking", "这条记录没有思考块", 400); return c.json(error.body, error.status);
+    }
+    const blockIndex = Number(c.req.query("blockIndex") ?? "0");
+    if (!Number.isInteger(blockIndex) || blockIndex < 0 || blockIndex >= message.content.length) {
+      const error = problem("invalid_request", "blockIndex 越界", 400); return c.json(error.body, error.status);
+    }
+    const part = message.content[blockIndex] as { type?: string; thinking?: unknown };
+    if (part.type !== "thinking") {
+      const error = problem("not_thinking", "这个下标不是思考块", 400); return c.json(error.body, error.status);
+    }
+    return c.json({ entryId, blockIndex, text: typeof part.thinking === "string" ? part.thinking : "" });
+  });
+
   // 对账端点（协议 P1·1.2）：内存账本（running/done/error）在，进程重启则兜底读 JSONL（done/lost）。
   app.get("/api/agents/:id/sessions/:sessionId/turns/last", async (c) => {
     const agent = await readAgent(c.req.param("id"));
