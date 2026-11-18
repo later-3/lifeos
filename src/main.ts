@@ -1,5 +1,6 @@
 // 进程入口：只校验家目录已安装（安装是 `pnpm home:install` 的事，启动不创建、不覆盖），然后起 HTTP 服务。
-import { serve } from "@hono/node-server";
+import { createAdaptorServer } from "@hono/node-server";
+import { attachEventSocket } from "./event-socket.ts";
 import { installProxyIfConfigured } from "./http-proxy.ts";
 import { pathExists, resolveHome } from "./home.ts";
 import { createApp } from "./server.ts";
@@ -21,7 +22,20 @@ if (!await pathExists(home)) {
 }
 await initLogs();
 await ensureMediaDir(home);   // 媒体库目录与说明文件（协议 §5.2）；已存在不覆盖
-serve({ fetch: createApp().fetch, port, hostname: "127.0.0.1" }, (info) => {
+/*
+ * 用 `createAdaptorServer` 而不是 `serve`：需要拿到 `http.Server` 才能挂 `upgrade`
+ * （事件通道走 WebSocket，见 `src/event-socket.ts`；`serve()` 内部把 server 建好就直接 listen 了，
+ * 没有暴露升级钩子）。
+ */
+/*
+ * `as unknown as http.Server`：`createAdaptorServer` 的返回类型是 `Server | Http2Server | Http2SecureServer`，
+ * 而默认参数（不传 `serverOptions.createServer`）实际总是 Node 的 `http.Server`。
+ * 这里只用到 `listen`/`address`/`on("upgrade")`，三者签名一致；不为此引入类型分支。
+ */
+const server = createAdaptorServer({ fetch: createApp().fetch }) as unknown as import("node:http").Server;
+attachEventSocket(server);
+server.listen(port, "127.0.0.1", () => {
+  const info = server.address() as { port: number };
   console.log(`Life OS 后端已启动: http://127.0.0.1:${info.port}（家目录 ${home}）`);
   if (proxySetup.installed) {
     console.log(`出站代理已按环境变量启用：${proxySetup.proxy}（NO_PROXY 命中的地址仍直连）`);

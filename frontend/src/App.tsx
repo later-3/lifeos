@@ -66,6 +66,7 @@ import type { TurnStep } from "./api/working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
 import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
 import { fetchJsonWithTimeout, failureLogOf, failureTextOf, withTimeout, type LoadFailure, type LoadResult } from "./api/fetch-timeout";
+import { createEventChannel } from "./api/event-channel";
 import { TurnInspector } from "./views/SessionHistory";
 import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
@@ -189,13 +190,26 @@ function StatusMarks({ status, unit }: { status: { running: number; unreadDone: 
   );
 }
 
-/** 全局事件流上所有会走分流的事件名（与服务端 StreamEvent / 回合级事件一致）。 */
+/**
+ * 全局事件流上所有会走分流的事件名（与服务端 `events.ts` 的 `AgentEventPayload` 一致）。
+ *
+ * 只对 **SSE 兼容路径**有用：`EventSource` 必须按名字 `addEventListener`，
+ * 漏一个名字 = 那条事件静默收不到。ws 路径不需要这份清单（帧自带 `t`）。
+ *
+ * 2026-11-18（Task 0028 · P3 自查发现）：这里长期漏了 `review_open` ——
+ * 它是回合级事件（`src/events.ts:77` 的 `TURN_LEVEL` 含它），`lifeos_review_open` 工具广播它，
+ * 但 SSE 客户端从没注册监听，于是「Agent 请求打开检视面板」在界面上**一直没生效**。
+ * 换成 ws 之后这条自动恢复（帧按 `t` 分发）；这里补上名字，让兼容路径也一致。
+ * `test/event-channel.test.mjs` 的 T28-18c 锁住"两边清单一致"。
+ */
 const STREAM_EVENT_NAMES = [
-  "turn", "done", "error", "agents_changed", "row",
+  "turn", "done", "error", "agents_changed", "row", "review_open",
   "message_start", "message_end", "delta", "thinking", "thinking_end",
   "tool_call", "tool_start", "tool_update", "tool_result", "retrying", "retry_end",
 ] as const;
 
+/** 服务端心跳间隔（`src/event-socket.ts` 的 `PING_MS` / SSE 分支的 `STREAM_PING_MS`，两处同值）。 */
+const STREAM_PING_MS = 10_000;
 /** 流陈旧阈值 = 服务端心跳间隔的 2.5 倍；看门狗检查间隔。 */
 const STREAM_STALE_MS = 25_000;
 /** 运行态对账间隔：与 SSE 心跳无关的兜底，收敛"漏掉 done 事件"的绿点。 */
@@ -2041,46 +2055,34 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   streamHandlers.current = { snapshot: onStreamSnapshot, event: onStreamEvent };
 
   useEffect(() => {
-    let stream: EventSource | undefined;
-    let lastSeen = Date.now();
-    // 建立（或重建）连接：每次都从新快照开始（服务端快照优先，C119/任务 0007）
-    const connect = () => {
-      stream?.close();
-      lastSeen = Date.now();
-      stream = new EventSource("/api/events");
-      logger.info("transport", "sse-open", {});
-      const touch = () => { lastSeen = Date.now(); };
-      stream.addEventListener("ping", touch);
-      stream.addEventListener("snapshot", (event) => {
-        touch();
-        logger.debug("transport", "sse-snapshot");   // debug 只本地，不上报
-        streamHandlers.current?.snapshot(JSON.parse((event as MessageEvent).data) as StreamSnapshot);
-      });
-      for (const name of STREAM_EVENT_NAMES) {
-        stream.addEventListener(name, (event) => {
-          touch();
-          const data = (event as MessageEvent).data;
-          // 连接级 error（没有 data）不是服务端事件：交给看门狗与 EventSource 自身的重连
-          if (typeof data !== "string" || data === "") return;
-          const parsed = JSON.parse(data) as AgentEvent;
-          streamHandlers.current?.event(parsed);
-          for (const listener of liveSubscribers.current) listener(parsed);
-        });
-      }
-    };
-    connect();
-    // 看门狗：经代理的断开可能不触发 error，EventSource 不会自己重连 → 陈旧就主动重建
-    const watchdog = setInterval(() => {
-      if (stream === undefined) return;
-      if (stream.readyState === EventSource.CLOSED || isStreamStale(lastSeen, Date.now(), STREAM_STALE_MS)) {
-        logger.warn("transport", "sse-stale", { readyState: stream.readyState });
-        connect();
-      }
-    }, STREAM_WATCHDOG_MS);
-    return () => {
-      clearInterval(watchdog);
-      stream?.close();
-    };
+    /*
+     * 常驻事件通道（Task 0028 · P3）。
+     *
+     * **换的是传输，不是协议**：帧的解包、重连退避、陈旧看门狗都在 `event-channel.ts` 里（纯逻辑、有单测）；
+     * 这里只把 `snapshot` / `event` 两个回调接到既有处理器上 —— 分流规则仍是 `event-router.ts`。
+     *
+     * 为什么必须换：浏览器同源 HTTP/1.1 只有 6 条连接，每个标签页一条常驻 SSE 会把整页堵死
+     * （实测：6 标签 × 1 SSE → 六个标签 fetch 全部超时；6 标签 × 1 WS → 全部 1–6ms）。
+     *
+     * 排障时可用 `?transport=sse` 退回 SSE（服务端保留兼容路径，见 `src/server.ts` 的 426 分支）。
+     */
+    const transport = new URLSearchParams(window.location.search).get("transport") === "sse" ? "sse" : "ws";
+    const channel = createEventChannel({
+      snapshot: (snapshot) => {
+        logger.debug("transport", "channel-snapshot");   // debug 只本地，不上报
+        streamHandlers.current?.snapshot(snapshot as StreamSnapshot);
+      },
+      event: (event) => {
+        const parsed = event as unknown as AgentEvent;
+        streamHandlers.current?.event(parsed);
+        for (const listener of liveSubscribers.current) listener(parsed);
+      },
+      status: (state) => {
+        if (state === "open") logger.info("transport", "channel-open", { transport });
+        else if (state === "retry") logger.warn("transport", "channel-retry", { transport });
+      },
+    }, { transport, pingMs: STREAM_PING_MS, staleMs: STREAM_STALE_MS, watchdogMs: STREAM_WATCHDOG_MS });
+    return () => { channel.close(); };
   }, []);
 
   /** 焦点上报的当前值（只读 ref，任何时候调用都是最新的）。 */
@@ -4929,7 +4931,7 @@ function IconArrowUpIcon() {
 }
 import { logger } from "./api/logger";
 import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./api/run-facts";
-import { isStreamStale, routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./api/event-router";
+import { routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./api/event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./api/status-map";
 import { outcomeOfTurn, turnNoticeOf } from "./api/turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./api/event-guards";

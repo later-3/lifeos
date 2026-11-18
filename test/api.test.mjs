@@ -691,7 +691,7 @@ test("创建/归档助手会广播 agents_changed（前端据此自动刷新列�
   const { server, base } = await start();
   const controller = new AbortController();
   try {
-    const response = await fetch(`${base}/api/events`, { signal: controller.signal });   // 任务 0007：全局流（agents_changed 是回合级，全部连接都收）
+    const response = await fetch(`${base}/api/events?transport=sse`, { signal: controller.signal });   // 任务 0007：全局流（agents_changed 是回合级，全部连接都收）
     assert.equal(response.status, 200);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -736,7 +736,7 @@ test("换头像（上传/reset）必须广播 agents_changed：img src 带 ?v=re
   const { server, base } = await start();
   const controller = new AbortController();
   try {
-    const response = await fetch(`${base}/api/events`, { signal: controller.signal });
+    const response = await fetch(`${base}/api/events?transport=sse`, { signal: controller.signal });
     assert.equal(response.status, 200);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

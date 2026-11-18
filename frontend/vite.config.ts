@@ -58,6 +58,17 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), lifeosBuildVersion()],
   server: {
     // 后端地址：默认 43120；调试别的端口时用 VITE_DEV_API=http://127.0.0.1:43121 pnpm dev:web
-    proxy: { "/api": process.env.VITE_DEV_API ?? "http://127.0.0.1:43120" },
+    proxy: {
+      "/api": {
+        target: process.env.VITE_DEV_API ?? "http://127.0.0.1:43120",
+        /*
+         * `ws: true` 必须显式写：事件通道是 WebSocket（Task 0028 · P3），
+         * 而 http-proxy 默认**不转发** upgrade 请求 —— 漏了它，开发模式下整条事件通道静默失效
+         * （表现为：页面能开、但运行点/未读/流式全不动，且控制台只有一句 ws 连接失败）。
+         * `testing.md` 2.12 要求"断线重连必须经真实代理路径验证"，本行就是那条路径的前提。
+         */
+        ws: true,
+      },
+    },
   },
 });

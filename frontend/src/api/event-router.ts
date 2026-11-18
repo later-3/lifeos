@@ -103,6 +103,10 @@ export function routeEvent(event: RouteEvent, focus: RouteFocus, baseline: numbe
 /**
  * 流是否陈旧（看门狗判定）：服务端每 10 秒发一次具名心跳；超过阈值没有任何帧 = 连接已死。
  * 为什么要有：经代理（如 Vite 开发代理）的 SSE 断开时，浏览器可能收不到 error，EventSource 不会自己重连。
+ *
+ * 2026-11-18（Task 0028 · P3）：看门狗搬进 `event-channel.ts`（`isChannelStale`），
+ * 因为现在 ws 与 sse 两条传输共用同一套"陈旧 → 重建"逻辑。本函数保留给路由层的历史调用方与测试；
+ * 两边判据相同（`now - lastSeen >= staleMs`），由 `test/event-channel.test.mjs` 的 T28-18b 对齐。
  */
 export function isStreamStale(lastSeenMs: number, nowMs: number, staleMs: number): boolean {
   return nowMs - lastSeenMs >= staleMs;

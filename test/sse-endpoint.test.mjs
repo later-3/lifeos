@@ -1,4 +1,7 @@
 // T43–T46：全局事件流真实端点契约（任务 0007 P3）——快照优先、回合级广播、细节级焦点路由、未知连接 404。
+//
+// 2026-11-18（Task 0028 · P3）：默认传输换成 WebSocket，本文件的用例走 **SSE 兼容路径**（`?transport=sse`）。
+// 契约本身没变，所以同一批断言在 `event-socket.test.mjs` 里对 ws 再跑一遍（迁移而不是新建第二套语义）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -33,7 +36,7 @@ test("T43–T46 全局流：快照优先、回合级跨 Agent 送达、细节级
   const home = await mkdtemp(join(tmpdir(), "lifeos-events-http-"));
   await installHome(process.cwd(), home);
   const { server, base } = await startOn(home);
-  const response = await fetch(`${base}/api/events`);
+  const response = await fetch(`${base}/api/events?transport=sse`);
   const reader = response.body.getReader();
   try {
     const head = await readUntil(reader, (b) => b.includes("event: snapshot") && b.includes("\n\n"));
@@ -86,7 +89,7 @@ test("T66 全局快照的未读条目带 projectId（否则项目层与数量无
   const created = await (await fetch(`${base}/api/agents/lifeosagent/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
   const probe = created.sessionId;
   sessionViewsOf().markCompleted("lifeosagent", probe, new Date().toISOString(), "proj-x");   // 快照在连接时生成，先写
-  const reader = (await fetch(`${base}/api/events`)).body.getReader();
+  const reader = (await fetch(`${base}/api/events?transport=sse`)).body.getReader();
   try {
     const head = await readUntil(reader, (b) => b.includes(probe));
     const snapshot = firstSnapshot(head);
