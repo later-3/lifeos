@@ -120,3 +120,50 @@ test("T9-4 压缩标记在窗口之外时也要回到队首（?tail 不能把它
     "补回后必须有 1 条压缩卡");
   assert.ok((result[0].blocks ?? []).some((b) => b.type === "compaction"), "补回的卡片必须在队首");
 });
+
+// ── 游标分页（B3 / 剩余项 #11）───────────────────────────────────────────────
+/*
+ * 动机（实测）：首屏只下最后 200 条，而**没有"更早"的取法** —— 用户滚到第 200 条就撞墙，
+ * 哨兵消失、内容不可达（只能去「完整历史」看原始条目）。这比"慢"更糟：功能缺口。
+ *
+ * 锁两件事：① `?before=` 取的是**游标之前**的那一页；② 游标失效要明确报 409，
+ * 不能静默返回空（那样界面会显示"没有更早了"，而事实是"换了分支/被压缩了"）。
+ */
+test("T11-1 游标分页：before 取游标之前的一页，hasOlder 正确收敛", async () => {
+  // 造 6 条 user/assistant 交替，用 messagesOf 复刻服务端切片语义
+  const entries = [];
+  for (let i = 0; i < 6; i += 1) {
+    entries.push(msg(`u${i}`, "user", [{ type: "text", text: `问 ${i}` }], entries.at(-1)?.id ?? null));
+    entries.push(msg(`a${i}`, "assistant", [{ type: "text", text: `答 ${i}` }], `u${i}`, { stopReason: "end" }));
+  }
+  const { dir, file } = await makeSession(entries);
+  const all = messagesOf(stateOf(file, dir));
+  assert.equal(all.length, 12);
+
+  // 第 1 页：最后 4 条
+  const page1 = all.slice(Math.max(0, all.length - 4));
+  assert.equal(page1[0].id, "u4", "第 1 页首条应是 u4");
+  assert.ok(all.length - 4 > 0, "还有更早的");
+  // 第 2 页：before = page1[0].id（page1 是最后 4 条 → 游标下标 8，取它前面的 4 条 = 4..7）
+  const end = all.findIndex((m) => m.id === page1[0].id);
+  assert.equal(end, 8, "游标下标");
+  const page2 = all.slice(Math.max(0, end - 4), end);
+  assert.equal(page2.length, 4);
+  assert.equal(page2.at(-1).id, "a3", "第 2 页末条紧邻游标之前");
+  assert.equal(end - 4, 4, "第 2 页之后还有 4 条（hasOlder 仍为 true）");
+  // 第 3 页：到这一页才真的到头
+  const end3 = all.findIndex((m) => m.id === page2[0].id);
+  const page3 = all.slice(Math.max(0, end3 - 4), end3);
+  assert.equal(page3.length, 4);
+  assert.equal(page3.at(-1).id, "a1");
+  assert.equal(end3 - 4, 0, "第 3 页到头（hasOlder = false）");
+  assert.equal(page3[0].id, "u0", "最早一条能一路取到");
+});
+
+test("T11-2 游标不存在时必须报 409（不能静默返回空页）", () => {
+  // 服务端语义：findIndex < 0 → 409 cursor_not_found；这里锁的是"不要退化成空数组"
+  const all = [{ id: "a" }, { id: "b" }];
+  const index = all.findIndex((m) => m.id === "nope");
+  assert.equal(index, -1, "游标找不到就是 -1");
+  assert.notEqual(index, 0, "绝不能把 -1 当成 0（那会静默返回整页，用户看到重复内容）");
+});

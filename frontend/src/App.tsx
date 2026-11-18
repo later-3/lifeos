@@ -1050,6 +1050,15 @@ export default function App() {
    * 反过来从短切长又可能因为大窗口一次渲染全部。
    */
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  /**
+   * 服务端还有没有更早的消息（B3）。`undefined` = 还没问过/不知道，按"有"处理不影响渲染。
+   *
+   * 为什么需要：`visibleCount` 只放大**客户端**渲染窗口，而首屏只下载了最后 200 条 ——
+   * 用户滚到第 200 条时窗口还能再涨，但**数据到头了**，界面就卡在那个哨兵上。
+   */
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const olderCursorRef = useRef<string | undefined>(undefined);
+  const loadingOlderRef = useRef(false);
   /** 顶部哨兵：滚到这里就再加载一页（IntersectionObserver，root = 消息区）。 */
   const loadEarlierRef = useRef<HTMLDivElement>(null);
   /** 前置内容后要恢复的"距底部距离"；`undefined` = 没有待恢复的锚点。 */
@@ -1505,6 +1514,10 @@ export default function App() {
     total?: number;
     /** 这次返回的第一条在全会话里的下标 */
     tailStart?: number;
+    /** 还能不能再往前取（B3 游标分页） */
+    hasOlder?: boolean;
+    /** 再往前取时传给 `?before=` 的锚点（首条的 entry id） */
+    olderCursor?: string;
   };
 
   /** 只做网络取数（不碰任何 React 状态）—— 缓存命中时它变成后台刷新。 */
@@ -1557,6 +1570,12 @@ export default function App() {
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+    /*
+     * 游标状态（B3）：首屏/刷新一次性重置 —— 它属于"这一页"，换会话/重新加载都要重来。
+     * 不给 `data.hasOlder` 就按 false（老后端兼容：没有这条就不会显示"加载更早"）。
+     */
+    setHasOlderMessages(data.hasOlder === true);
+    olderCursorRef.current = data.olderCursor;
 
     /**
      * 批注生命周期（Task 0008）：发送受理成功后挂起的批注，在这里补打 `consumedBy`。
@@ -1608,6 +1627,39 @@ export default function App() {
     return data;
   }
 
+  /**
+   * 往前取一页（B3）：`?before=<olderCursor>` → 把更早的一页**前置**进消息数组。
+   *
+   * 为什么必须有：首屏只下最后 200 条，而这个会话有 280 条 —— 用户滚到顶时窗口还能涨，
+   * 但数据已经到头，界面卡在"加载更早的消息…"上不动（修复前实测就是这样）。
+   *
+   * 三条纪律：
+   * 1. **游标失效要重置**：会话被压缩/切换分支时后端回 409 `cursor_not_found` ——
+   *    此时重新拉最新一页（消息 id 变了，旧游标永远取不到东西），不假装"没有更早的"；
+   * 2. **不写缓存**：缓存存的是"首屏那一页"，混进历史会让下次进入时窗口与游标不一致；
+   * 3. **并发保护**：哨兵进视口可能连发几次，`loadingOlderRef` 挡住重复请求。
+   */
+  async function loadOlder(id: string, sid: string): Promise<void> {
+    const cursor = olderCursorRef.current;
+    if (cursor === undefined || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    try {
+      const response = await fetch(`/api/agents/${id}/sessions/${sid}?before=${encodeURIComponent(cursor)}&deferThinking=1`);
+      if (response.status === 409) { await loadMessages(id, sid); return; }
+      if (!response.ok) return;
+      const data = await response.json() as SessionPayload;
+      if (current.current !== sid) return;              // 期间切走了：不要把别人的历史拼进来
+      const older = data.messages ?? [];
+      if (older.length === 0) { setHasOlderMessages(false); return; }
+      setMessages((existing) => [...older, ...existing]);
+      setHasOlderMessages(data.hasOlder === true);
+      olderCursorRef.current = data.olderCursor;
+      // 前置了内容：让"渲染窗口"也一起长大（否则刚取回来的还是被窗口裁掉）
+      setVisibleCount((count) => count + older.length);
+    } catch { /* 网络失败：保留哨兵，用户上滑可再试（不静默改成"没有更早的"） */ }
+    finally { loadingOlderRef.current = false; }
+  }
+
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
   async function refreshMeta(id: string, sid: string) {
     const data = await (await fetch(`/api/agents/${id}/sessions/${sid}`)).json() as {
@@ -1652,11 +1704,22 @@ export default function App() {
     const observer = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting !== true) return;
       pendingScrollAnchor.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
+      /*
+       * 哨兵只在"客户端窗口已贴到已下载的边界"时才需要问后端（B3）：
+       *  - 先放大渲染窗口（本地零成本）；
+       *  - 窗口已经覆盖了全部已下载消息、而后端还有更早的 → 取下一页。
+       * 顺序很重要：先本地放大，避免每次滚到顶都发一个请求。
+       */
+      const reachedDownloadedEdge = visibleCount >= messages.length;
       setVisibleCount((current) => nextVisibleCount(current));
+      if (reachedDownloadedEdge && hasOlderMessages && sessionId !== undefined && agent !== undefined) {
+        void loadOlder(agent.id, sessionId);
+      }
     }, { root: container, threshold: 0 });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, messages.length, sessionId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadOlder 用 ref 读游标，不进依赖（否则每次渲染重建 observer）
+  }, [visibleCount, messages.length, sessionId, hasOlderMessages, agent?.id]);
 
   /** 窗口变大后恢复滚动位置（前置内容不跑）。 */
   useLayoutEffect(() => {
@@ -4195,7 +4258,11 @@ export default function App() {
                 });
                 // 顶部哨兵 + 提示（P4-S2）：只有真的还有更早的内容才出现。
                 // 放"渲染数组的最前"而不是 message 列表里，避免被过程条折叠逻辑影响。
-                if (!windowStart.hasMore) return rendered;
+                /*
+                 * 哨兵出现条件（B3 修正）：客户端渲染窗口之外还有内容 **或** 服务端还有更早的一页。
+                 * 只判前者的话，200 条到顶后哨兵消失 —— 用户以为"这就是全部"，而实际还有 80 条。
+                 */
+                if (!windowStart.hasMore && !hasOlderMessages) return rendered;
                 return [
                   <div key="load-earlier" ref={loadEarlierRef} data-testid="load-earlier"
                     className="flex items-center justify-center rounded-control bg-sunken py-2 text-micro text-ink-500">

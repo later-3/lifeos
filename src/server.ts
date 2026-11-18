@@ -548,8 +548,30 @@ app.use(async (c, next) => {
      * 所以把**窗口之外的**压缩标记补回队首。它只有一条、且是"说明"不是内容，
      * 语义上也对：用户看到这段窗口，前面确实被压缩过。
      */
-    const sliceStart = tail === undefined ? 0 : Math.max(0, all.length - tail);
-    const messages = tail === undefined ? all : all.slice(sliceStart);
+    /*
+     * 游标分页（Task 0016 · B3 / 剩余项 #11）：`?before=<messageId>` 取它**之前**的 N 条。
+     *
+     * 为什么必须有：`?tail=200` 让首屏只下 200 条，但**没有"更早"的取法** —— 用户往上滚到
+     * 200 条就撞墙（哨兵消失），比"加载慢"更糟：内容直接不可达（只能去「完整历史」看原始条目）。
+     *
+     * 为什么用 entry id 而不是下标：下标会随"新增消息/压缩"漂移，而 entry id 是稳定身份
+     * （批注与 thinking 端点都靠它）。参考 lobe-chat 游标分页
+     * `store/chat/slices/message/actions/transcript.ts:82-125`：以首条的 id 作为下一页的锚点。
+     */
+    const before = c.req.query("before");
+    let sliceEnd = all.length;
+    if (before !== undefined) {
+      const index = all.findIndex((message) => message.id === before);
+      if (index < 0) {
+        // 游标失效（会话被压缩/分支切换）：明确报错，让前端退回最新一页，不假装"没有更早的"
+        const error = problem("cursor_not_found", "这个游标不在当前会话里（可能刚发生过压缩）", 409);
+        return c.json(error.body, error.status);
+      }
+      sliceEnd = index;
+    }
+    const limit = tail ?? 200;
+    const sliceStart = before === undefined && tail === undefined ? 0 : Math.max(0, sliceEnd - limit);
+    const messages = sliceEnd === all.length && before === undefined && tail === undefined ? all : all.slice(sliceStart, sliceEnd);
     const markersBeforeWindow = sliceStart === 0
       ? []
       : all.slice(0, sliceStart).filter((message) => (message.blocks ?? []).some((block) => block.type === "compaction"));
@@ -560,6 +582,9 @@ app.use(async (c, next) => {
       //（补回队首的压缩标记不算正文，否则缓存键里的下标会跟着标记数量漂）
       total: all.length,
       tailStart: sliceStart,
+      // 更早的还能不能取（B3）：`olderCursor` 传回 `?before=` 即可再取一页
+      hasOlder: sliceStart > 0,
+      ...(messages.length > 0 && messages[0] !== undefined ? { olderCursor: messages[0].id } : {}),
       // payload 是观测（Task 0012 P1）：图片/文本字节 + 上限从哪来；limit=null 表示该 provider 未声明上限
       meta: { ...sessionMeta(agent.id, state), payload: await payloadMetaOf(state) },
       ...(integrity !== undefined ? { integrity } : {}),
