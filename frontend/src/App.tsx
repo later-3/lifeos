@@ -64,6 +64,7 @@ import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./api/r
 import { failureLabel, fixHint, type FailureKind } from "./api/failure-text";
 import type { TurnStep } from "./api/working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
+import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
 import { TurnInspector } from "./views/SessionHistory";
 import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
@@ -1397,11 +1398,16 @@ export default function App() {
    * 作用域显式绑定在**当前** agent/session 上（规范 2.12：跨作用域状态要带归属）——
    * 切走之后旧块的展开请求不该打到新会话上。
    */
-  const loadThinkingOf = useCallback(async (entryId: string, blockIndex: number): Promise<string> => {
+  const loadThinkingOf = useCallback(async (origin: ThinkingOrigin): Promise<string> => {
     const id = agentIdRef.current;
     const sid = current.current;
     if (id === undefined || sid === undefined) throw new Error("no_session");
-    const response = await fetch(`/api/agents/${id}/sessions/${sid}/entries/${entryId}/thinking?blockIndex=${blockIndex}`);
+    /*
+     * 参数来自**同一个原点**（Task 0028 · P1）：`entryId` 与 `blockIndex` 都属于那一条 entry。
+     * 之前这里接的是 `(entryId, blockIndex)` 两个独立入参，而调用方给的 `blockIndex` 是"整轮合并块"
+     * 的下标、`entryId` 却是这一轮第一条回复的 id —— 两者不同源，错配率实测 96–99%（0027 · R4）。
+     */
+    const response = await fetch(`/api/agents/${id}/sessions/${sid}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`);
     if (!response.ok) throw new Error(`thinking_${response.status}`);
     const body = await response.json() as { text?: unknown };
     return typeof body.text === "string" ? body.text : "";
@@ -4067,6 +4073,8 @@ export default function App() {
                   // 折叠后的容器是这一轮的**第一条**回复（通常是 assistant）；其余回复被收进它的过程条
                   let process: { stats: ProcessStats; live: boolean; textIndexes: readonly number[] } | undefined;
                   let mergedBlocks: Block[] | undefined;
+                  /** 与 `mergedBlocks` 一一对应的原点（Task 0028 · P1）：取思考正文时用，保证 (entryId, blockIndex) 同源。 */
+                  let mergedOrigins: Array<ThinkingOrigin | undefined> | undefined;
                   const isFirstReply = replies.length > 0 && replies[0] === index;
                   /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
                   const replyLive = replyMessages.some((m) => m.streaming === true);
@@ -4131,7 +4139,13 @@ export default function App() {
                       }
                       process = { stats, live, textIndexes };
                       // 这一轮的块已合并：渲染时用**全部回复的块**，否则最终正文在后面的回复里就丢了
-                      mergedBlocks = allBlocks;
+                      {
+                        // 合并块与原点**同一次循环**产出：这样 blocks[i] 与 origins[i] 必然是同一条 entry 里的同一个块
+                        //（Task 0028 · P1；分成两次算就是 D3 的成因）。
+                        const merged = originsOf(replyMessages);
+                        mergedBlocks = merged.blocks;
+                        mergedOrigins = merged.origins;
+                      }
                       // 标记：其余回复消息已被过程条收进去，不再单独渲染
                       for (const i of replies) if (i !== index) folded.add(i);
                     }
@@ -4157,6 +4171,7 @@ export default function App() {
 
                   // 折叠时 blocks 用合并后的全轮块；不折叠时就是本条消息的块
                   const renderBlocks = mergedBlocks ?? message.blocks;
+                  const renderOrigins = mergedOrigins;   // 未折叠时为 undefined：坐标系统一，用本条的 messageId + index
 
                   /**
                    * MarkBar 的数据（Task 0008 · P2 修订）：按**轮**分组后挂在本回复下的批注。
@@ -4221,6 +4236,7 @@ export default function App() {
 
                   return (
                     <MessageView key={message.id ?? index} role={message.role} blocks={renderBlocks} messageId={message.id} busy={message.streaming === true}
+                      {...(renderOrigins !== undefined ? { blockOrigins: renderOrigins } : {})}
                       loadThinking={loadThinkingOf}
                       annotationsOfBlock={annotationsOfBlockOf(message.id)}
                       annotationActions={annoActions}
