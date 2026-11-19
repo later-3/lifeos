@@ -124,7 +124,7 @@ async function checkTask(
   if (id === undefined) errors.push(`task.md 缺少 ID 字段：${docRel}/task.md`);
   else if (id !== dirId) errors.push(`task.md 的 ID（${id}）与目录编号（${dirId}）不一致：${docRel}/`);
   const type = field("类型") ?? "";
-  if (!TASK_TYPES.has(type)) errors.push(`task.md 的类型 "${type}" 不在 daily/development/general 之内：${docRel}/task.md`);
+  if (!TASK_TYPES.has(type)) errors.push(`task.md 的类型 "${type}" 不在 ${[...TASK_TYPES].join("/")} 之内：${docRel}/task.md`);
   // 共同结构（协议 §5.1）
   for (const file of ["AGENTS.md", "concept-space.md", "flywheel.md"]) {
     if (!await isFile(join(doc, file))) errors.push(`Task 缺少 ${file}：${docRel}/`);
