@@ -23,6 +23,7 @@ import { promisify } from "node:util";
 import { resolveHome } from "./home.ts";
 import { parseUnifiedPatchToHunks, type DiffHunk } from "./review-patch.ts";
 import { HOME_DIR, REPO_DIR } from "./task-worktree.ts";
+import { worktreeMountKindOf } from "./worktree-mount.ts";
 
 const run = promisify(execFile);
 
@@ -153,7 +154,13 @@ export async function locateSources(taskDir: string): Promise<ReviewSource[]> {
         // **home/ 不参加扫描**（0018 用户实测）：home/ 是家目录文档源的 worktree（含 .git
         // 指针文件），没有 repo/ 的 Task 会被它误认成"项目代码"——两组源指向同一目录，
         // 项目代码组显示的全是任务文档（agent-3909 0003 实测）。它不是代码。
-        if (entry.name === HOME_DIR) continue;
+        //
+        // 判据走 `worktreeMountKindOf` 而不是硬编码名字（Task 0004 · P1：挂载点一处判定），
+        // 但**只跳 home**：历史 `worktree/` 恰恰是这个分支要找的项目代码源（reviewer 0003：
+        // 没有 repo/、只有 worktree/）。改成"跳过所有挂载点"会让它的代码源静默消失——
+        // 不报错、检视面板只是少了半屏（`test/worktree-mount.test.mjs` T5 锁住这一条）。
+        const mountKind = worktreeMountKindOf(join(taskDir, entry.name));
+        if (mountKind === HOME_DIR) continue;
         const candidate = join(taskDir, entry.name);
         if (await gitMarkerExists(join(candidate, ".git"))) {
           worktreePath = candidate;
