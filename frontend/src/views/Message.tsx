@@ -384,7 +384,14 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
   loadThinking?: ThinkingLoader;
 }) {
   // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
-  const [open, toggle] = useAutoOpen(live || turnLive, !forceOpen, forceOpen);
+  /*
+   * deferred 块**不自动展开**（Task 0028 · P7）：
+   * `turnLive` 是"这一轮还在跑"，不是"这个块有正文"。用它自动展开 deferred 块，
+   * 等于一进会话就替用户把所有历史思考都点开 —— 每点开一个就发一条取数请求。
+   * 用户 2026-11-19 截图的那一屏「正在取思考正文…」就是这么来的（实测峰值并发 9 条）。
+   * 自动展开只对**正在流**的块有意义（那时正文在手里，不需要请求）。
+   */
+  const [open, toggle] = useAutoOpen(deferred ? live : live || turnLive, !forceOpen, deferred ? false : forceOpen);
   /**
    * **只在按需取（deferred）时才需要自己存一份正文。**
    *
