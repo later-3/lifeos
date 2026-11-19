@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 /**
- * 消息导航竖条的界面契约（Task 0020 · P6）。
+ * 消息导航条的界面契约（Task 0020 · P6，横条形态）。
  *
  * 与 `test/rail-*.test.mjs` 的分工：那些测**纯函数**（刻度投影、几何、跳转判定、锚点选择），
- * 这个测**用户在屏幕上看到的东西**——几何、可见性、交互、主题。`testing.md` 2.15：
- * 界面契约必须断言到几何，且"命中 0 个的断言是恒绿的假断言"，所以每条都先打印命中数。
+ * 这个测**用户在屏幕上看到的东西** —— 几何、可见性、交互、主题、跳转。
+ * `testing.md` 2.15：界面契约必须断言到几何，且"命中 0 个的断言是恒绿的假断言"，
+ * 所以每条都先打印命中数。
  *
  * 用法：
  *   APP_URL=http://localhost:5176 RAIL_SESSION=<sid> node frontend/test/message-rail.mjs
  *
- * 需要一条**有历史**的会话（`RAIL_SESSION`），且家目录里它至少有 20 条刻度。
- * 没有的话脚本会明确报"没测到"，而不是静默通过。
+ * `RAIL_SESSION` 需要一条**回复被过程条折叠**的会话（每轮带工具调用的那种），
+ * 否则"点答能跳转"这条测不到真实形态。
  */
 import pw from "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js";
 const { chromium } = pw;
@@ -24,39 +25,47 @@ const check = (name, ok, detail = "") => {
 };
 
 if (SESSION === "") {
-  console.error("缺 RAIL_SESSION：这条契约要一条有历史的会话（例：RAIL_SESSION=01a2…beef）");
+  console.error("缺 RAIL_SESSION：这条契约要一条有历史的会话（例：RAIL_SESSION=01a2…abcd）");
   process.exit(2);
 }
 
 const url = `${APP_URL}/?agent=lifeosagent&project=workspace&session=${SESSION}`;
 const browser = await chromium.launch({ headless: true });
 
-/** 竖条的几何快照（一律用页面内 getBoundingClientRect，见 jump-to-latest.mjs 的同一教训）。 */
 const snapshot = (page) => page.evaluate(() => {
   const rail = document.querySelector('[data-testid="message-rail"]');
   if (rail === null) return { found: false };
+  const list = rail.firstElementChild;
   const railRect = rail.getBoundingClientRect();
+  const listRect = list.getBoundingClientRect();
   const main = document.querySelector("main");
   const mainRect = main.getBoundingClientRect();
   const content = main.querySelector(".max-w-reading");
   const contentRect = content?.getBoundingClientRect();
-  const ticks = [...document.querySelectorAll('[data-testid="rail-tick"]')].map((node) => {
-    const rect = node.getBoundingClientRect();
-    const style = getComputedStyle(node);
+  const ticks = [...list.querySelectorAll('[data-testid="rail-tick"]')].map((node) => {
+    const bar = node.querySelector(".rail-tick-bar");
+    const barRect = bar.getBoundingClientRect();
+    const rowRect = node.getBoundingClientRect();
     return {
       id: node.getAttribute("data-rail-id"),
       role: node.getAttribute("data-rail-role"),
       active: node.getAttribute("data-rail-active") === "true",
-      top: rect.top, bottom: rect.bottom, height: rect.height, width: rect.width,
-      background: style.backgroundColor,
+      rowHeight: rowRect.height,
+      rowWidth: rowRect.width,
+      barWidth: barRect.width,
+      barHeight: barRect.height,
+      barLeft: barRect.left,
+      rowLeft: rowRect.left,
+      background: getComputedStyle(bar).backgroundColor,
     };
   });
   return {
     found: true,
-    windowed: rail.getAttribute("data-rail-windowed") === "true",
-    range: rail.getAttribute("data-rail-range"),
-    anchor: rail.getAttribute("data-rail-anchor"),
+    scrollable: rail.getAttribute("data-rail-scrollable") === "true",
+    activeIndex: rail.getAttribute("data-rail-active-index"),
+    band: rail.getAttribute("data-rail-band"),
     rail: { top: railRect.top, bottom: railRect.bottom, left: railRect.left, width: railRect.width, height: railRect.height },
+    list: { top: listRect.top, bottom: listRect.bottom, height: listRect.height, scrollHeight: list.scrollHeight, scrollTop: list.scrollTop },
     main: { top: mainRect.top, bottom: mainRect.bottom },
     gutter: contentRect ? contentRect.left - mainRect.left : null,
     ticks,
@@ -73,85 +82,152 @@ for (const [label, viewport, expectVisible] of [
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(String(error).slice(0, 160)));
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  // 先等消息区真的有内容，再判竖条（testing.md 2.26：注入类夹具先断言对象存在）
+  // 先等消息区真的有内容（testing.md 2.26：注入类夹具先断言对象存在）
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="message"]').length > 0, undefined, { timeout: 30000 })
     .catch(() => {});
   await page.waitForTimeout(1200);
   const snap = await snapshot(page);
   console.log(`\n── ${label} ──`);
-  check(`[${label}] 竖条存在`, snap.found === (expectVisible ? true : snap.found), JSON.stringify({ found: snap.found, windowed: snap.windowed, range: snap.range }));
+  check(`[${label}] 竖条区域存在`, snap.found === (expectVisible ? true : snap.found), JSON.stringify({ found: snap.found }));
   if (!snap.found) { await context.close(); continue; }
 
   check(`[${label}] 刻度数 > 0（命中 0 个 = 没测）`, snap.ticks.length > 0, `${snap.ticks.length} 条`);
-  check(`[${label}] 刻度高度都有实际尺寸（不是 0×0）`, snap.ticks.every((tick) => tick.height >= 1 && tick.width >= 1),
-    `h ${Math.min(...snap.ticks.map((t) => t.height)).toFixed(1)}–${Math.max(...snap.ticks.map((t) => t.height)).toFixed(1)}px`);
-  check(`[${label}] 刻度不越出消息区（上下各留边）`,
-    snap.ticks[0].top >= snap.main.top - 0.5 && snap.ticks.at(-1).bottom <= snap.main.bottom + 0.5,
-    `首 ${snap.ticks[0].top.toFixed(0)} 末 ${snap.ticks.at(-1).bottom.toFixed(0)} / main ${snap.main.top.toFixed(0)}–${snap.main.bottom.toFixed(0)}`);
-  check(`[${label}] 轨道贴消息区左缘、垂直居中`,
-    Math.abs(snap.rail.top - snap.main.top) < 2 && Math.abs(snap.rail.bottom - snap.main.bottom) < 2,
-    `rail ${snap.rail.top.toFixed(0)}–${snap.rail.bottom.toFixed(0)}`);
 
-  // 用户刻度比 Agent 深（颜色通道：不靠"看起来差不多"，比实际计算值）
+  // ① 每条刻度是**横条**：宽度有差异（= 内容量），厚度是细线
+  const widths = snap.ticks.map((tick) => tick.barWidth);
+  const distinct = new Set(widths.map((width) => Math.round(width))).size;
+  check(`[${label}] 横条宽度有差异（宽度 = 内容量，不是定距）`, distinct >= 3, `${distinct} 种宽度，${Math.round(Math.min(...widths))}–${Math.round(Math.max(...widths))}px`);
+  check(`[${label}] 横条厚度是细线（≤8px）且 > 0`, snap.ticks.every((tick) => tick.barHeight > 0 && tick.barHeight <= 8),
+    `${Math.min(...snap.ticks.map((t) => t.barHeight))}–${Math.max(...snap.ticks.map((t) => t.barHeight))}px`);
+  check(`[${label}] 横条左对齐（同一列的起点一致）`,
+    new Set(snap.ticks.slice(0, 12).map((tick) => Math.round(tick.barLeft - tick.rowLeft))).size === 1,
+    JSON.stringify([...new Set(snap.ticks.slice(0, 12).map((tick) => Math.round(tick.barLeft - tick.rowLeft)))]));
+
+  // ② 行高在 [12, 24]：条少时舒适、条多时压到下限并改为滚动
+  const rowHeights = [...new Set(snap.ticks.map((tick) => Math.round(tick.rowHeight)))];
+  check(`[${label}] 行高在 [12, 24]`, rowHeights.every((h) => h >= 12 && h <= 24), JSON.stringify(rowHeights));
+
+  // ③ 整列有最大高度，超了就**内部滚动**（不是压行的可点性）
+  const maxAllowed = (snap.main.bottom - snap.main.top) * 0.62 + 1;
+  check(`[${label}] 整列不超过可用高度的 62%`, snap.list.height <= maxAllowed,
+    `列高 ${Math.round(snap.list.height)} / 上限 ${Math.round(maxAllowed)}`);
+  check(`[${label}] 装不下时是"整列滚动"，不是"压行"`,
+    snap.list.scrollHeight <= snap.list.height + 1 || rowHeights[0] === 12,
+    `内容高 ${Math.round(snap.list.scrollHeight)} / 可视 ${Math.round(snap.list.height)} / 行高 ${rowHeights[0]}`);
+  check(`[${label}] 列在自己的区域内，不越出消息区`,
+    snap.list.top >= snap.main.top - 1 && snap.list.bottom <= snap.main.bottom + 1,
+    `列 ${Math.round(snap.list.top)}–${Math.round(snap.list.bottom)} / 区 ${Math.round(snap.main.top)}–${Math.round(snap.main.bottom)}`);
+
+  // ④ 颜色通道
   const userTick = snap.ticks.find((tick) => tick.role === "user");
   const agentTick = snap.ticks.find((tick) => tick.role === "assistant");
-  const luminance = (rgb) => {
-    const [r, g, b] = (rgb.match(/\d+/g) ?? [0, 0, 0]).map(Number);
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  };
-  check(`[${label}] 用户刻度与 Agent 刻度颜色不同`,
+  check(`[${label}] 用户条与 Agent 条颜色不同`,
     userTick !== undefined && agentTick !== undefined && userTick.background !== agentTick.background,
     `user ${userTick?.background} / agent ${agentTick?.background}`);
-  void luminance;
 
-  // 正文的拖选不被吞：轨道容器除刻度外必须 pointer-events:none
-  const passthrough = await page.evaluate(() => {
-    const rail = document.querySelector('[data-testid="message-rail"]');
-    const style = getComputedStyle(rail);
-    return { pointerEvents: style.pointerEvents };
-  });
-  check(`[${label}] 轨道容器不吞正文点击（pointer-events: none）`, passthrough.pointerEvents === "none", JSON.stringify(passthrough));
+  // ⑤ 轨道不吞正文点击
+  const pointer = await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="message-rail"]')).pointerEvents);
+  check(`[${label}] 轨道容器不吞正文点击（pointer-events: none）`, pointer === "none", pointer);
 
+  // ⑥ 当前条：跨满整列 + 强调色（两个独立通道）
+  const active = snap.ticks.find((tick) => tick.active);
+  if (active !== undefined) {
+    const maxOther = Math.max(...snap.ticks.filter((tick) => !tick.active).map((tick) => tick.barWidth));
+    check(`[${label}] 当前条比任何别的条都宽（"当前"的第二通道）`, active.barWidth > maxOther,
+      `当前 ${Math.round(active.barWidth)} > 最长 ${Math.round(maxOther)}`);
+    check(`[${label}] 当前条更厚`, active.barHeight > Math.min(...snap.ticks.map((t) => t.barHeight)),
+      `${active.barHeight}px`);
+  } else {
+    check(`[${label}] 有当前条`, false, "没有 data-rail-active=true 的行");
+  }
+
+  // ⑦ 悬停 → 卡片，与该行垂直居中
   if (expectVisible && snap.ticks.length > 2) {
-    // 悬停 → 卡片，且与该刻度垂直居中
-    const target = snap.ticks[Math.min(2, snap.ticks.length - 1)];
+    const target = snap.ticks[Math.min(3, snap.ticks.length - 1)];
     await page.locator(`[data-rail-id="${target.id}"]`).hover();
     await page.waitForTimeout(350);
     const card = await page.evaluate((id) => {
       const node = document.querySelector('[data-testid="rail-card"]');
       if (node === null) return null;
       const rect = node.getBoundingClientRect();
-      const tick = document.querySelector(`[data-rail-id="${id}"]`).getBoundingClientRect();
+      const row = document.querySelector(`[data-rail-id="${id}"]`).getBoundingClientRect();
       return {
         text: node.textContent?.slice(0, 40),
-        height: rect.height,
         inViewport: rect.top >= 0 && rect.bottom <= window.innerHeight,
-        centerGap: Math.round((rect.top + rect.height / 2) - (tick.top + tick.height / 2)),
+        centerGap: Math.round((rect.top + rect.height / 2) - (row.top + row.height / 2)),
+        leftOfRow: Math.round(rect.left - row.right),
       };
     }, target.id);
     check(`[${label}] 悬停出卡片`, card !== null, card?.text ?? "");
-    check(`[${label}] 卡片与该刻度垂直居中（偏差 ≤ 2px）`, card !== null && Math.abs(card.centerGap) <= 2, `偏差 ${card?.centerGap}px`);
+    check(`[${label}] 卡片在该行垂直居中（偏差 ≤ 2px）`, card !== null && Math.abs(card.centerGap) <= 2, `偏差 ${card?.centerGap}px`);
+    check(`[${label}] 卡片在轨道右侧`, card !== null && card.leftOfRow >= 0, `间距 ${card?.leftOfRow}px`);
     check(`[${label}] 卡片不出视口`, card !== null && card.inViewport === true);
-
-    // 高亮只有一条
-    const actives = snap.ticks.filter((tick) => tick.active).length;
-    check(`[${label}] 当前刻度只有一条高亮`, actives <= 1, `${actives} 条`);
   }
 
   check(`[${label}] 无页面错误`, pageErrors.length === 0, pageErrors.join(" | "));
   await context.close();
 }
 
-/*
- * 深色主题：竖条与卡片都要跟着换（用 token 派生，不允许写死浅色值）。
- *
- * **深色必须打桩 `/api/ui-prefs`**：主题的权威来源是服务端 `~/.lifeos/config/ui.json`
- * （`/api/ui-prefs`），不是 localStorage —— 第一版改 localStorage 完全没生效，
- * 两个 context 读到的都是同一个 rgb（实测）。打桩同时保证测试不写用户数据。
- */
+/* ── 点"答"必须能跳（用户实测缺陷的回归锁）───────────────── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  const hosts = await page.evaluate(async (session) => {
+    const response = await fetch(`/api/agents/lifeosagent/sessions/${session}/rail`);
+    const data = await response.json();
+    return Object.fromEntries(data.items.map((tick) => [tick.id, tick.host ?? null]));
+  }, SESSION).catch(() => ({}));
+  const assistantIds = Object.entries(hosts).filter(([, host]) => host !== null).map(([id]) => id);
+  console.log("\n── 点「答」的跳转 ──");
+  /*
+   * 没有 host 时**跳过而不是失败**：`host` 只在"轮末回复被过程条折叠"时出现，
+   * 而纯文字会话（每轮只有一条回复）本来就不会折叠 —— 那是夹具的选择，不是实现的缺陷。
+   * 但必须打印出来，否则"0 条 → 一条都没测"会被误读成通过（`testing.md` 2.26）。
+   */
+  if (assistantIds.length === 0) {
+    console.log("⤼ 跳过：这条会话的回复没有被过程条折叠（纯文字会话），本条测不到");
+  }
+  for (const id of assistantIds.slice(0, 3)) {
+    await page.evaluate((tid) => document.querySelector(`[data-rail-id="${tid}"]`)?.scrollIntoView({ block: "center" }), id);
+    await page.waitForTimeout(300);
+    const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.locator(`[data-rail-id="${id}"]`).click().catch(() => {});
+    await page.waitForTimeout(2200);
+    const after = await page.evaluate(({ tid, host }) => {
+      const main = document.querySelector("main");
+      const mainRect = main.getBoundingClientRect();
+      const node = document.querySelector(`[data-message-id="${host}"]`);
+      const rect = node?.getBoundingClientRect();
+      return {
+        scrollTop: Math.round(main.scrollTop),
+        hostInDom: node !== null,
+        hostCenterGap: rect ? Math.round(rect.top - mainRect.top + rect.height / 2 - mainRect.height / 2) : null,
+        // 贴顶/贴底时 `scrollIntoView({block:"center"})` **做不到居中**（上方/下方没内容可滚），
+        // 这不是缺陷。所以判据分两种：能居中的地方要求居中，端点只要求"落在视口里且靠那一侧"。
+        atTop: Math.round(main.scrollTop) <= 1,
+        hostVisible: rect ? rect.top >= mainRect.top - 1 && rect.bottom <= mainRect.bottom + 1 : false,
+      };
+    }, { tid: id, host: hosts[id] });
+    const landed = after.hostInDom && (Math.abs(after.hostCenterGap) <= 120
+      || (after.atTop && after.hostVisible && after.hostCenterGap <= 0));
+    check(`点答 ${id}（host=${hosts[id]}）会跳，并停在那一轮的回答区`,
+      after.scrollTop !== before && landed,
+      `${before} → ${after.scrollTop}，host 距视口中心 ${after.hostCenterGap}px${after.atTop ? "（贴顶：做不到居中，只要求落在视口里）" : ""}`);
+  }
+  await context.close();
+}
+
+/* ── 深色主题 ─────────────────────────────────────────── */
+
 const themeSnapshot = async (mode) => {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage();
+  // 主题的权威来源是服务端 `config/ui.json`（`/api/ui-prefs`），不是 localStorage；
+  // 打桩同时保证测试不写用户数据。
   await page.route("**/api/ui-prefs", async (route) => {
     if (route.request().method() === "GET") {
       const response = await route.fetch();
@@ -166,12 +242,13 @@ const themeSnapshot = async (mode) => {
   await page.waitForTimeout(900);
   const read = await page.evaluate(() => {
     const cs = getComputedStyle(document.documentElement);
-    const tick = document.querySelector('[data-rail-role="user"]');
+    const bar = document.querySelector('[data-rail-role="user"] .rail-tick-bar');
+    const band = document.querySelector(".rail-band");
     return {
       mode: document.documentElement.dataset.themeMode,
       surface: cs.getPropertyValue("--color-surface").trim(),
-      ink900: cs.getPropertyValue("--color-ink-900").trim(),
-      tick: tick === null ? null : getComputedStyle(tick).backgroundColor,
+      bar: bar === null ? null : getComputedStyle(bar).backgroundColor,
+      band: band === null ? null : getComputedStyle(band).backgroundColor,
     };
   });
   await context.close();
@@ -179,17 +256,14 @@ const themeSnapshot = async (mode) => {
 };
 const light = await themeSnapshot("light");
 const dark = await themeSnapshot("dark");
-{
-  console.log("\n── 深浅色 ──");
-  check("深浅两套下刻度颜色都跟着变（不是写死的）", light.tick !== null && dark.tick !== null && light.tick !== dark.tick,
-    `light ${light.tick} / dark ${dark.tick}`);
-  check("深色下轨道用深色主题的 ink（与 surface 有对比）", dark.mode === "dark" && dark.tick !== dark.surface,
-    `ink ${dark.ink900} / surface ${dark.surface}`);
-}
+console.log("\n── 深浅色 ──");
+check("深浅两套下条的颜色都跟着变（不是写死的）",
+  light.bar !== null && dark.bar !== null && light.bar !== dark.bar, `light ${light.bar} / dark ${dark.bar}`);
+check("深色下条与底色有对比", dark.mode === "dark" && dark.bar !== dark.surface, `bar ${dark.bar} / surface ${dark.surface}`);
 
 await browser.close();
 if (failures.length > 0) {
-  console.error(`\n消息导航竖条契约失败 ${failures.length} 项`);
+  console.error(`\n消息导航条契约失败 ${failures.length} 项`);
   process.exit(1);
 }
-console.log("\n消息导航竖条契约通过");
+console.log("\n消息导航条契约通过");

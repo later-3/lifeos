@@ -52,6 +52,19 @@ export type RailTick = {
   chars: number;
   /** 悬停卡片的正文预览，按**码点**截断到 {@link RAIL_PREVIEW_CHARS}。 */
   preview: string;
+  /**
+   * **回落锚点**：`id` 那条消息在界面上不一定有 DOM 节点。
+   *
+   * 为什么需要（2026-11-19 用户实测："点答没有跳转"）：轮末回复经常被**过程条折叠**了
+   * （`frontend/src/App.tsx` 的 `folded.add(i)` —— 折叠条挂在**这一轮的第一条回复**上），
+   * 于是它的 `data-message-id` 从来没进 DOM。跳转靠 `querySelector` 找锚点，找不到就静默不动。
+   *
+   * 所以对 assistant 刻度额外给出"这一轮的第一条回复"的 id：过程条就挂在那上面，
+   * 它一定在 DOM 里（除非这一轮整个没渲染）。前端先试 `id`，不行再试 `host`。
+   *
+   * 用户刻度不需要回落（用户消息永远单独渲染），此时不出现该字段。
+   */
+  host?: string;
 };
 
 /** 本模块需要的消息形状（只读我们真正用到的字段，不绑死前端类型）。 */
@@ -88,6 +101,8 @@ export function truncateByCodePoint(text: string, limit: number): string {
  *   用户 2026-11-04 原话："只是 agent 的最终回复才需要的，工具和思考那些都不需要的。"
  * - **还在流式的那一条**：它不是"最终回复"，这一轮还没结束。前端在轮内补一条待定刻度
  *   （`02-design.md` §6），结束时重新取。
+ * - **`host` 什么时候出现**：只有"轮末回复不是这一轮第一条带文字的回复"时才有 ——
+ *   那种情况下它会被过程条折叠，界面上没有它的 DOM 节点，跳转需要回落。
  * - **第一条用户消息之前的孤儿 assistant**（压缩后可能残留）：不出刻度。
  *   它没有对应的"问"，画出来会是一条用户点不出所以然的刻痕。
  * - **没有 id 的消息**：不出刻度。跳转靠 id 定位，没有 id 的刻度点了也没法跳（`messagesOf`
@@ -99,6 +114,8 @@ export function railTicksOf(messages: readonly RailMessage[]): RailTick[] {
   let pendingReply: RailTick | undefined;
   /** 当前是否在某一轮里（见过一条用户消息）。开局就是 false，所以开头的孤儿 assistant 不会被收。 */
   let inTurn = false;
+  /** 这一轮的第一条 assistant 消息 id（过程条挂在它身上 → 折叠时唯一还在 DOM 里的锚点）。 */
+  let turnHost: string | undefined;
 
   const flush = (): void => {
     if (pendingReply !== undefined) ticks.push(pendingReply);
@@ -110,6 +127,7 @@ export function railTicksOf(messages: readonly RailMessage[]): RailTick[] {
     if (message.role === "user") {
       flush();
       inTurn = true;
+      turnHost = undefined;
       if (message.id === undefined || message.id === "") continue;
       ticks.push({
         id: message.id,
@@ -121,6 +139,16 @@ export function railTicksOf(messages: readonly RailMessage[]): RailTick[] {
     }
     if (message.role !== "assistant") continue;
     if (!inTurn) continue;                                // 孤儿：没有对应的"问"
+    /*
+     * 回落锚点 = **这一轮的第一条 assistant 消息**（不管它有没有文字）。
+     *
+     * 为什么不是"第一条带文字的回复"（第一版就是这么写的，实测错了）：过程条挂在
+     * `App.tsx` 的 `isFirstReply` 上 —— 那是"这一轮的第一条 assistant 消息"，
+     * 而这类会话里第一条几乎总是**空文字的工具段**。实测 DOM 里能查到的是 `t26a`/`t39a` 这种 id，
+     * 而第一版给出的 host 是 `t21b`/`t39b` 这种"后来才有的带文字段" —— 一样不在 DOM 里。
+     * 结果：13/40 条答刻度带了 host，点了仍旧不跳。
+     */
+    if (turnHost === undefined && message.id !== undefined && message.id !== "") turnHost = message.id;
     if (message.streaming === true) continue;             // 不是最终回复
     if (text.trim() === "") continue;                     // 工具段 / 思考段 / 压缩卡
     if (message.id === undefined || message.id === "") continue;
@@ -129,6 +157,7 @@ export function railTicksOf(messages: readonly RailMessage[]): RailTick[] {
       role: "assistant",
       chars: text.length,
       preview: truncateByCodePoint(text.trim(), RAIL_PREVIEW_CHARS),
+      ...(turnHost !== undefined && turnHost !== message.id ? { host: turnHost } : {}),
     };
   }
   flush();

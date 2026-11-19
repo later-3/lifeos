@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  RAIL_JUMP_MAX_PAGES, railJumpFailureText, railJumpOf,
+  RAIL_JUMP_MAX_PAGES, railAnchorCandidates, railJumpFailureText, railJumpOf,
 } from "../frontend/src/api/rail-jump.ts";
 
 const order = ["u1", "a1", "u2", "a2", "u3", "a3"];
@@ -50,4 +50,18 @@ test("四种失败原因各有各的文案，且都指向下一步动作", () =>
   assert.match(texts[2], /完整历史/, "到上限要给出替代出路");
   assert.match(texts[3], /不在当前会话/);
   for (const text of texts) assert.equal(text.includes("找不到"), false, "不许用『找不到』糊住（api.md 2.3）");
+});
+
+/* ── 回落锚点：被过程条折叠时怎么跳（用户实测缺陷）────────── */
+
+test("没 host → 只试自己", () => {
+  assert.deepEqual(railAnchorCandidates("a1", undefined), ["a1"]);
+});
+
+test("host 与自己相同 → 只试一次（不要重复查 DOM）", () => {
+  assert.deepEqual(railAnchorCandidates("a1", "a1"), ["a1"]);
+});
+
+test("有 host → 先试自己，再试 host（没被折叠时应该停在它自己身上）", () => {
+  assert.deepEqual(railAnchorCandidates("a5", "a1"), ["a5", "a1"]);
 });

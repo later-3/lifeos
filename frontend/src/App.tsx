@@ -39,7 +39,7 @@ import { hasProcess, statsOf, type ProcessStats } from "./api/process-stats";
 import { processOpenOf } from "./api/response-fold";
 import { SessionBar, type SessionBarTurn } from "./views/session-bar";
 import { MessageRail, type RailTickView } from "./views/message-rail";
-import { RAIL_JUMP_MAX_PAGES, railJumpFailureText, railJumpOf, type RailJumpFailure } from "./api/rail-jump";
+import { RAIL_JUMP_MAX_PAGES, railAnchorCandidates, railJumpFailureText, railJumpOf, type RailJumpFailure } from "./api/rail-jump";
 import { sessionTotalsOf } from "./api/session-totals";
 import { groupIntoSpans } from "./api/turn-group";
 import {
@@ -996,6 +996,9 @@ export default function App() {
    */
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
+  /** 等锚点出现的上限（ms）。放大渲染窗口要提交一帧，长会话展开十几轮需要几步；400ms 是安全余量。 */
+  const RAIL_ANCHOR_WAIT_MS = 400;
+
   /** 已下载消息的 id 顺序（竖条用来判"已下载到哪一条"，见 `MessageRail` 的 `loadedIds`）。 */
   const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
 
@@ -1706,18 +1709,42 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * 为什么不复用批注定位：那条路径只用 `scrollIntoView`，预设目标已经渲染。
    * 这里的目标可能**根本没下载**（实测最长会话 2290 条 entry），所以要先补数据。
    */
-  const jumpToTick = useCallback(async (tickId: string): Promise<void> => {
+  const jumpToTick = useCallback(async (tick: RailTickView): Promise<void> => {
+    /*
+     * 锚点候选（顺序有意义）：先试这条消息自己，不行再试 `host`。
+     *
+     * 为什么需要回落（2026-11-19 用户实测"点答没有跳转"）：轮末回复常被**过程条折叠**
+     *（`folded.add(i)`，条挂在这一轮第一条回复上），它的 `data-message-id` 从没进 DOM，
+     * `querySelector` 找不到锚点就静默不动。`host` 由服务端给出（`src/rail-ticks.ts`），
+     * 不让前端按渲染规则再推一遍 —— 渲染规则会变，投影是事实。
+     */
+    const tickId = tick.id;
     const id = agentIdRef.current;
     const sid = current.current;
     if (id === undefined || sid === undefined) return;
-    const scroll = () => {
-      const node = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(tickId)}"]`);
-      if (node === null) return false;
-      // 用户主动离开底部了：不要让随后的流式 delta 把他拽回来
-      followTail.current = false;
-      setAtBottom(false);
-      node.scrollIntoView({ block: "center", behavior: "smooth" });
-      return true;
+    const candidates = railAnchorCandidates(tickId, tick.host);
+    /**
+     * 等锚点出现（最多 `RAIL_ANCHOR_WAIT_MS`），找到就滚过去。
+     *
+     * 为什么必须**等**而不是查一次：放大渲染窗口（`expandWindow`）是 React 状态更新，
+     * 提交之后目标那一整轮才会被渲染出来。第一版只等了两个 `requestAnimationFrame`，
+     * 19 轮一起展开时远远不够 —— 实测点 `a21` 时两个候选都还没渲染，于是静默不滚（"点了没反应"）。
+     */
+    const scrollWhenReady = async (): Promise<string | undefined> => {
+      const started = performance.now();
+      while (performance.now() - started < RAIL_ANCHOR_WAIT_MS) {
+        for (const candidate of candidates) {
+          const node = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(candidate)}"]`);
+          if (node === null) continue;
+          // 用户主动离开底部了：不要让随后的流式 delta 把他拽回来
+          followTail.current = false;
+          setAtBottom(false);
+          node.scrollIntoView({ block: "center", behavior: "smooth" });
+          return candidate;
+        }
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
+      }
+      return undefined;
     };
     /** 放大渲染窗口直到覆盖目标；返回是否覆盖到了。 */
     const expandWindow = (index: number): void => {
@@ -1727,12 +1754,12 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     const order = messagesRef.current.map((message) => message.id);
     const verdict = railJumpOf(tickId, order, visibleStartRef.current);
     if (verdict.kind === "visible") {
-      requestAnimationFrame(() => { scroll(); });
+      void scrollWhenReady();
       return;
     }
     if (verdict.kind === "inWindow") {
       expandWindow(verdict.index);
-      requestAnimationFrame(() => requestAnimationFrame(() => { scroll(); }));
+      void scrollWhenReady();
       return;
     }
 
@@ -1752,7 +1779,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       if (found) {
         const index = messagesRef.current.findIndex((message) => message.id === tickId);
         expandWindow(index);
-        requestAnimationFrame(() => requestAnimationFrame(() => { scroll(); }));
+        void scrollWhenReady();
         return;
       }
       if (!grew) {
@@ -4594,7 +4621,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
               ticks={railTicks}
               scrollContainer={scrollRef}
               contentRef={contentRef}
-              onJump={(tickId) => { void jumpToTick(tickId); }}
+              onJump={(tick) => { void jumpToTick(tick); }}
               hasOlder={hasOlderMessages}
               loadedIds={messageIds}
             />

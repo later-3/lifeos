@@ -126,3 +126,40 @@ test("真实会话形态：多轮、每轮多条回复、中间夹空文字段",
   assert.equal(ticks[3].chars, 203);
   assert.ok(ticks[3].preview.length <= RAIL_PREVIEW_CHARS * 2, "预览截断后长度受控（UTF-16 单元上界）");
 });
+
+/* ── host：被过程条折叠时的回落锚点（用户实测"点答没跳转"的根因）───── */
+
+test("轮末回复不是这一轮第一条 assistant → 带 host（过程条宿主 = 第一条 assistant）", () => {
+  // 真实形态：user → 空文字工具段（过程条挂它，在 DOM 里）→ 轮末回复（被折叠，不在 DOM 里）
+  const ticks = railTicksOf([
+    user("u1", "查"),
+    assistant("t1", ""),                     // 空文字工具段 = 过程条宿主
+    assistant("a1", "最终答案"),
+  ]);
+  assert.equal(ticks.length, 2, "只出用户 + 轮末两条刻度");
+  assert.equal(ticks[1].id, "a1");
+  assert.equal(ticks[1].host, "t1", "回落锚点是这一轮第一条 assistant（空文字段也算）");
+});
+
+test("一条纯文字回复（没有工具段）→ 它就是宿主，不带 host", () => {
+  const ticks = railTicksOf([user("u1", "问"), assistant("a1", "唯一一段答案")]);
+  assert.equal(ticks[1].id, "a1");
+  assert.equal(Object.hasOwn(ticks[1], "host"), false, "不需要回落时不要写这个字段");
+});
+
+
+
+test("用户刻度永远不带 host（用户消息一定单独渲染）", () => {
+  const ticks = railTicksOf([user("u1", "问"), assistant("a1", "答")]);
+  assert.equal(Object.hasOwn(ticks[0], "host"), false);
+});
+
+test("host 不会串到下一轮（每轮重置）", () => {
+  const ticks = railTicksOf([
+    user("u1", "问一"), assistant("a1", "答一"),
+    user("u2", "问二"), assistant("t2", ""), assistant("a3", "答二"),
+  ]);
+  assert.deepEqual(ticks.map((tick) => tick.id), ["u1", "a1", "u2", "a3"]);
+  assert.equal(ticks[1].host, undefined, "第一轮的轮末就是它自己");
+  assert.equal(ticks[3].host, "t2", "第二轮的回落锚点是 t2，不是上一轮的 a1");
+});

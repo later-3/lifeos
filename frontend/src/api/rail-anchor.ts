@@ -149,3 +149,55 @@ export function railLockActive(
 ): lock is { index: number; until: number } {
   return lock !== undefined && now < lock.until;
 }
+
+/**
+ * 只按滚动比例估一个锚点（**零成本**的即时值，DOM 还没量出来时用它）。
+ *
+ * 为什么需要它：精确锚点要量每条消息的偏移（一次几十个 `getBoundingClientRect`），
+ * 只能节流做（pi-web 上游 `ChatMinimap.tsx` 也是 150ms 节流）。两次测量之间用比例兜着，
+ * 保证"滚到顶就一定显示最前面那些刻度"——单调性是对的，误差只在中间段。
+ */
+export function railAnchorByFraction(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  count: number,
+): number {
+  if (count <= 1) return 0;
+  const scrollable = scrollHeight - clientHeight;
+  if (!(scrollable > 0)) return 0;
+  if (!Number.isFinite(scrollTop)) return 0;              // 量测还没就绪时传进来的是 NaN
+  const ratio = Math.min(1, Math.max(0, scrollTop / scrollable));
+  return Math.round(ratio * (count - 1));
+}
+
+/**
+ * 会话还没全下载时，**已下载的那一段是刻度列表的尾巴**，不是全部。
+ *
+ * 由此得出"滚到哪儿 = 第几条刻度"的分段映射：
+ *  - 滚到顶（ratio 0）→ 已下载部分的第一条刻度（`loadedFrom`），**不是刻度 0**；
+ *  - 滚到底（ratio 1）→ 最后一条刻度。
+ *
+ * 为什么不能直接用"全列表比例"：首屏只下载最后 200 条消息，实测 560 条刻度的会话里
+ * 已下载部分只覆盖最后 ~100 条。用全列表比例，滚到顶会算出"第 0 条"，
+ * 于是窗口显示的是**一根都没下载的最前面几十条**，用户当前读的位置反倒不在窗口里。
+ *
+ * 反过来，滚到顶时把锚点放在 `loadedFrom`（已下载部分的第一条）有个额外好处：
+ * 竖排一列以它为中心，**上半截正好是还没下载的那些** —— 用户可以点它们触发补取。
+ *
+ * @param loadedFrom 已下载消息对应的最小刻度下标（全下载完时是 0）
+ */
+export function railAnchorWithLoadedTail(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  total: number,
+  loadedFrom: number,
+): number {
+  if (total <= 1) return 0;
+  const from = Math.max(0, Math.min(loadedFrom, total - 1));
+  const scrollable = scrollHeight - clientHeight;
+  if (!(scrollable > 0) || !Number.isFinite(scrollTop)) return from;
+  const ratio = Math.min(1, Math.max(0, scrollTop / scrollable));
+  return Math.round(from + ratio * (total - 1 - from));
+}
