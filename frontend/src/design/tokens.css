@@ -522,3 +522,55 @@
     scrollbar-color: var(--color-ink-300) transparent;
   }
 }
+
+/*
+ * 消息导航竖条（Task 0020）——只放**样式**，不放数值。
+ *
+ * 高度、宽度、间距这些**算出来的**数值在 `frontend/src/api/rail-geometry.ts`
+ * （与 `design/layout.ts` 管列宽同一个分工：几何数字归 TS 纯函数，可穷举单测；
+ * 颜色/圆角/过渡归 tokens.css）。这样一处只有一个来源，不会出现"CSS 写 72、TS 写 70"。
+ */
+@layer components {
+  /* 单条刻度：一个高度可变的圆角竖线。宽度与颜色在悬停/当前时过渡。 */
+  .rail-tick {
+    border-radius: var(--radius-full);
+    background: var(--color-ink-300);
+    /* 200/250ms + emphasized 曲线 = Material 3 motion token
+       （`material-components/material-web` 的 `tokens/v0_192/_md-sys-motion.scss`）。 */
+    transition:
+      width 250ms cubic-bezier(0.2, 0, 0, 1),
+      background-color 200ms cubic-bezier(0.2, 0, 0, 1),
+      opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  /* 用户消息的刻度更深（"我问的"与"它答的"一眼分得开）。
+     用 ink-900 而不是自造色：它在深浅两套主题下都由引擎派生为"正文色"，
+     深色主题里自然是亮色 —— 这正是我们要的（深底上的刻度必须是亮的）。 */
+  .rail-tick[data-rail-role="user"] {
+    background: var(--color-ink-900);
+  }
+  /*
+   * 当前这一条：变宽 + 强调色 + **一圈描边**。整个轨道里只有一条是强调色。
+   *
+   * 为什么要描边（2026-11-19 实测）：中性预设的 accent 是灰阶（浅色 #747474 / 深色 #a8a8a8），
+   * 它紧邻的刻度是 ink-300（#aeaaa9 / #7e7b7a），实测对比度只有 **2.03 / 2.14**（< 3:1）。
+   * 只靠"变宽"能指认，但一眼看去仍然像"稍微粗一点的一条"，不像"当前这条"。
+   * 描边用 ink-900（正文色，任何主题下都是最高对比档），于是"当前"有了
+   * **两个独立通道**：宽度 3→8px、以及一圈高对比描边 —— 与 pi-web 上游
+   * `ChatMinimap.tsx` 的 `border: 1.5px solid rgba(...)` + `box-shadow: 0 0 0 2px var(--bg-panel)` 同思路。
+   */
+  .rail-tick[data-rail-active="true"] {
+    background: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-ink-900);
+  }
+  /* 悬停的那一条也用强调色（原型同款）：它比"当前"少一圈描边，所以两者仍可区分。 */
+  .rail-tick[data-rail-hovered="true"] {
+    background: var(--color-accent);
+  }
+  /* 悬停时其余刻度退到背景里，避免一片刻度里找不到鼠标下那条。 */
+  .rail-tracking[data-rail-hovering="true"] .rail-tick:not([data-rail-active="true"]) {
+    opacity: 0.45;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rail-tick { transition: none; }
+  }
+}
