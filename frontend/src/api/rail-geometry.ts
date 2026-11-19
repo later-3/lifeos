@@ -256,3 +256,53 @@ export function railCardPlaceOf(
   const maxLeft = Math.max(pad, viewport.width - size.width - pad);
   return { top, left: Math.min(Math.max(rawLeft, pad), maxLeft) };
 }
+
+/* ── 拖动 scrub（Task 0020 · P7）────────────────────────── */
+
+/**
+ * 拖动时"正文该滚到哪"（**相对位移**语义，与滚动条拇指同一套）。
+ *
+ * ## 为什么是相对位移，而不是"指针绝对位置"
+ *
+ * 绝对位置映射（`指针 y ÷ 整列高 → 内容比例`）在**可滚的列**上会打架：
+ * 列自己的滚动位置也是映射的一部分，一旦"跟随正文自动滚列"在拖动中生效，
+ * 映射基准每帧都在变 → 指针没动、正文却在加速跑。
+ *
+ * 相对位移没有这个问题：记下按下时的 `scrollTop`，之后只按**指针移动了多少**换算。
+ * 灵敏度 = `可滚动距离 ÷ 整列内容高`，所以拖过整列高度正好滚完整个会话
+ * —— 与在 VSCode/Sublime 的 minimap 上按住拖的手感一致。
+ *
+ * @param startScrollTop 按下那一刻正文的 `scrollTop`
+ * @param deltaY         指针从按下到现在移动了多少 px（向下为正）
+ * @param contentHeight  整列内容高（`count × rowHeight`）
+ * @param viewHeight     正文可视高
+ * @param scrollHeight   正文内容总高
+ * @returns 应该设置的 `scrollTop`（已夹在合法区间内）
+ */
+export function railScrubTargetOf(
+  startScrollTop: number,
+  deltaY: number,
+  contentHeight: number,
+  viewHeight: number,
+  scrollHeight: number,
+): number {
+  if (!(contentHeight > 0) || !(viewHeight > 0)) return Math.max(0, startScrollTop);
+  const scrollable = Math.max(0, scrollHeight - viewHeight);
+  if (scrollable <= 0) return 0;
+  if (!Number.isFinite(deltaY)) return Math.max(0, Math.min(scrollable, startScrollTop));
+  const sensitivity = scrollable / contentHeight;
+  const next = startScrollTop + deltaY * sensitivity;
+  return Math.max(0, Math.min(scrollable, next));
+}
+
+/**
+ * 一次指针交互是"点击"还是"拖动"（阈值 4px）。
+ *
+ * 为什么需要区分：同一处按下既可能是"点这条跳过去"，也可能是"按住拖"。没有阈值的话，
+ * 手抖 1px 就会把点击吃掉；阈值太大则短距离拖动失效。4px 与浏览器判定 click vs drag 的常规量级一致。
+ */
+export const RAIL_SCRUB_THRESHOLD = 4;
+
+export function railGestureOf(deltaX: number, deltaY: number): "click" | "scrub" {
+  return Math.abs(deltaX) > RAIL_SCRUB_THRESHOLD || Math.abs(deltaY) > RAIL_SCRUB_THRESHOLD ? "scrub" : "click";
+}

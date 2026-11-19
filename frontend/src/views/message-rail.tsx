@@ -50,12 +50,14 @@ import {
 import {
   BAR_HEIGHT,
   BAR_HEIGHT_HOVER,
-  RAIL_MAX_RATIO,
   BAR_WIDTH_MIN,
+  RAIL_MAX_RATIO,
   railBandOf,
   railCardPlaceOf,
   railEnsureVisible,
+  railGestureOf,
   railRowsOf,
+  railScrubTargetOf,
   railSlotOf,
   railWidthsOf,
 } from "../api/rail-geometry";
@@ -162,6 +164,18 @@ export const MessageRail = memo(function MessageRail({
   const pendingCardRef = useRef<{ tick: RailTickView; rowRect: DOMRect; railRight: number } | undefined>(undefined);
   /** 最近一次由"正文滚动"驱动的高亮行 —— 用它把条自己滚到可见（而不是用 scrollIntoView）。 */
   const followRef = useRef<{ index: number } | undefined>(undefined);
+  /**
+   * 拖动 scrub 的状态（Task 0020 · P7）。
+   *
+   * 形态参照 **VSCode / Sublime 的 minimap**：在缩略图上按住拖动，编辑器内容跟着滚。
+   * 语义是**相对位移**（`railScrubTargetOf`）：按下时记 `scrollTop`，之后只按"指针移动了多少"换算
+   * ——不是"指针的绝对位置 → 内容比例"。后者在可滚的列上会打架：列自己也在跟着滚，
+   * 映射基准每帧都变，指针不动正文却在加速跑。
+   */
+  const scrubRef = useRef<{ pointerId: number; startY: number; startScrollTop: number; moved: boolean } | undefined>(undefined);
+  /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
+  const suppressClickRef = useRef(false);
+  const [scrubbing, setScrubbing] = useState(false);
 
   /* ── 1. 量容器 ─────────────────────────────────────────── */
 
@@ -402,9 +416,82 @@ export const MessageRail = memo(function MessageRail({
     return () => document.removeEventListener("keydown", onKey, true);
   }, [card, clearHideTimer]);
 
-  /* ── 7. 点击 ───────────────────────────────────────────── */
+  /* ── 7. 拖动 scrub（按住拖，正文连续跟手）───────────────── */
+
+  /**
+   * 按下：只记起点，**不改任何状态** —— 因为这次按下也可能是一次点击。
+   * 触屏不参与（`pointerType === "touch"`）：触屏上下滑应该是**滚这一列**，与原生行为一致；
+   * 把它抢过来做 scrub 会让"想看更多刻度"变成"正文乱跑"。
+   */
+  const onRowPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "touch") return;
+    if (event.button !== 0) return;
+    const container = scrollContainer.current;
+    if (container === null) return;
+    scrubRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startScrollTop: container.scrollTop,
+      moved: false,
+    };
+    // 捕获指针：拖到列表外面也继续收事件（否则拖快了会"掉线"）
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, [scrollContainer]);
+
+  const onRowPointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const scrub = scrubRef.current;
+    if (scrub === undefined || scrub.pointerId !== event.pointerId) return;
+    const container = scrollContainer.current;
+    if (container === null) return;
+    const deltaY = event.clientY - scrub.startY;
+    if (!scrub.moved) {
+      if (railGestureOf(0, deltaY) === "click") return;    // 阈值内：还可能是一次点击
+      scrub.moved = true;
+      setScrubbing(true);
+      suppressClickRef.current = true;
+      // 进入拖动：收起卡片、清掉悬停 —— 拖动途中一路弹卡片会很吵
+      clearHideTimer();
+      setHovered(undefined);
+      setCard(undefined);
+    }
+    /*
+     * 直接写 `scrollTop`，**不用** `scrollIntoView({behavior:"smooth"})`：
+     * 拖动要跟手，平滑滚动会把每次位移排队成动画，表现是"手停了它还在滚"。
+     * 与拖动列宽同一条纪律（`frontend/code.md` 2.19：手势期间写 DOM）。
+     */
+    /*
+     * **一次拖动只能在"已渲染的那一段"里移动**（这条限制必须写出来，它是约束不是缺陷）：
+     * 正文是虚拟化渲染的（`visibleCount` 只渲染最近 50 条所在整轮，更早的滚到顶才加载），
+     * 所以 `container.scrollHeight` 只反映**当前已渲染部分**。于是：
+     *  - 在底部往下拖 = 到底了，不动（与滚动条一致）；
+     *  - 往上拖正常跟手；拖到顶时顶部哨兵会加载更早的一页，继续拖就能再往前。
+     *
+     * 为什么不用"整个会话的高度"当基准：那个数前端**不知道**（未加载的页还没量）。
+     * 若按"整列内容高 → 全会话高度"硬映射，用户会拖到一片还没加载的区域，
+     * 表现是"指针在动、画面不动"—— 比现在的"渐进式"更糟。
+     */
+    container.scrollTop = railScrubTargetOf(
+      scrub.startScrollTop,
+      deltaY,
+      rows.rowHeight * ticks.length,
+      container.clientHeight,
+      container.scrollHeight,
+    );
+  }, [scrollContainer, rows.rowHeight, ticks.length, clearHideTimer]);
+
+  const endScrub = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    const scrub = scrubRef.current;
+    if (scrub === undefined || scrub.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    scrubRef.current = undefined;
+    setScrubbing(false);
+  }, []);
+
+  /* ── 8. 点击 ───────────────────────────────────────────── */
 
   const handleJump = useCallback((tick: RailTickView, index: number) => {
+    // 刚拖完的那一下点击要吃掉（松手时浏览器会补一个 click）
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
     lockRef.current = { index, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
     setActive(tick.id);
     onJump(tick);
@@ -429,6 +516,8 @@ export const MessageRail = memo(function MessageRail({
         ref={listRef}
         className="rail-scroll rail-tracking pointer-events-auto relative overflow-y-auto overscroll-y-contain"
         data-rail-hovering={hovering ? "true" : "false"}
+        /* 拖动中：CSS 用这个属性把整列的光标切成 grabbing（挂在 `.rail-tracking` 上才是选择器基准） */
+        data-rail-scrubbing={scrubbing ? "true" : "false"}
         role="toolbar"
         aria-orientation="vertical"
         aria-label="消息导航"
@@ -458,6 +547,11 @@ export const MessageRail = memo(function MessageRail({
           onEnter={onTickEnter}
           onLeave={onTickLeave}
           onJump={handleJump}
+          onPointerDown={onRowPointerDown}
+          onPointerMove={onRowPointerMove}
+          onPointerUp={endScrub}
+          onPointerCancel={endScrub}
+          scrubbing={scrubbing}
         />
       </div>
 
@@ -494,6 +588,7 @@ export const MessageRail = memo(function MessageRail({
  */
 const RailRows = memo(function RailRows({
   ticks, widths, rowHeight, slotWidth, activeId, hoveredId, onEnter, onLeave, onJump,
+  onPointerDown, onPointerMove, onPointerUp, onPointerCancel, scrubbing,
 }: {
   ticks: readonly RailTickView[];
   widths: readonly number[];
@@ -504,6 +599,13 @@ const RailRows = memo(function RailRows({
   onEnter: (tick: RailTickView, node: HTMLElement) => void;
   onLeave: () => void;
   onJump: (tick: RailTickView, index: number) => void;
+  /** 拖动 scrub（P7）：按下/移动/松手。语义是"相对位移"，见 `railScrubTargetOf`。 */
+  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  /** 正在拖动：光标变 grabbing、文字不可选。 */
+  scrubbing: boolean;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -530,7 +632,10 @@ const RailRows = memo(function RailRows({
   };
 
   return (
-    <div ref={listRef} className="relative flex flex-col">
+    <div
+      ref={listRef}
+      className={`relative flex flex-col ${scrubbing ? "select-none" : ""}`}
+    >
       {ticks.map((tick, index) => {
         const isActive = activeId === tick.id;
         const isHovered = hoveredId === tick.id;
@@ -546,8 +651,12 @@ const RailRows = memo(function RailRows({
             aria-label={`跳到${tick.role === "user" ? "提问" : "回复"}：${tick.preview.slice(0, 20)}`}
             aria-current={isActive ? "true" : undefined}
             tabIndex={index === focusIndex ? 0 : -1}
-            className="rail-tick relative flex shrink-0 cursor-pointer items-center justify-start pl-0.5"
+            className="rail-tick relative flex shrink-0 items-center justify-start pl-0.5"
             style={{ height: rowHeight, width: slotWidth }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
             onMouseEnter={(event) => onEnter(tick, event.currentTarget)}
             onMouseLeave={onLeave}
             onFocus={(event) => onEnter(tick, event.currentTarget)}

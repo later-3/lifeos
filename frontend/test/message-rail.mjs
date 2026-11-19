@@ -236,6 +236,70 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
+/* ── 拖动 scrub（P7，参照 VSCode/Sublime minimap 的按住拖动）──── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  console.log("\n── 拖动 scrub ──");
+
+  const pickRow = () => page.evaluate(() => {
+    const list = document.querySelector('[data-testid="message-rail"]').firstElementChild;
+    const listRect = list.getBoundingClientRect();
+    const row = [...document.querySelectorAll('[data-testid="rail-tick"]')].find((node) => {
+      const box = node.getBoundingClientRect();
+      return box.top > listRect.top + 60 && box.bottom < listRect.top + 120;
+    });
+    if (row === undefined) return null;
+    const box = row.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+
+  const row = await pickRow();
+  if (row === null) {
+    console.log("⤼ 跳过：列里没有落在可视区的行");
+  } else {
+    const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.mouse.move(row.x, row.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 12; step += 1) {
+      await page.mouse.move(row.x, row.y - step * 10);
+      await page.waitForTimeout(16);
+    }
+    const during = await page.evaluate(() => ({
+      scrollTop: Math.round(document.querySelector("main").scrollTop),
+      scrubbing: document.querySelector("[data-rail-scrubbing]")?.getAttribute("data-rail-scrubbing"),
+      cursor: getComputedStyle(document.querySelector('[data-testid="rail-tick"]')).cursor,
+      card: document.querySelector('[data-testid="rail-card"]') !== null,
+    }));
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    const settled = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+
+    check("按住拖动时正文跟着滚（连续跟手，不是只跳一次）", during.scrollTop < before,
+      `${before} → ${during.scrollTop}（往上拖 120px）`);
+    check("拖动中整列切到 grabbing、且不弹预览卡片",
+      during.scrubbing === "true" && during.cursor === "grabbing" && during.card === false,
+      JSON.stringify({ scrubbing: during.scrubbing, cursor: during.cursor, card: during.card }));
+    check("松手不再额外跳转（拖动后的那次 click 被吃掉）", Math.abs(settled - during.scrollTop) < 5,
+      `${during.scrollTop} → ${settled}`);
+
+    // 单击仍然跳（拖动阈值 4px 内不误判）
+    const again = await pickRow();
+    if (again !== null) {
+      const beforeClick = settled;
+      await page.mouse.click(again.x, again.y);
+      await page.waitForTimeout(1500);
+      const afterClick = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+      check("拖动之后单击仍能跳转（阈值内算点击）", afterClick !== beforeClick, `${beforeClick} → ${afterClick}`);
+    }
+  }
+  await context.close();
+}
+
 /* ── 深色主题 ─────────────────────────────────────────── */
 
 const themeSnapshot = async (mode) => {

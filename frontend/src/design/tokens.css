@@ -598,8 +598,26 @@
       top 200ms cubic-bezier(0.2, 0, 0, 1),
       height 200ms cubic-bezier(0.2, 0, 0, 1);
   }
-  /* 长会话的可滚区域：隐藏滚动条（整列就是"缩略图"，一条滚动条会显得很吵）。
-     滚轮/触摸仍可用 —— 只是不画那条灰杠。 */
+  /*
+   * 拖动 scrub 期间（光标变 grabbing、列表不可选）：
+   * 拖动时若允许选中文字，鼠标划过会顺带拉起选区，松手后正文里留一片高亮 —— 很吵。
+   * 参考 VSCode / Sublime 的 minimap：按住拖动时整块是"抓取"语义。
+   */
+  .rail-tick {
+    cursor: grab;
+  }
+  /*
+   * 拖动中：整个轨道都是 grabbing（不只是指针下那一条 —— 拖到别的行上光标不该变回抓手）。
+   * 用 `!important` 不值得，靠"轨道级属性 + 选择器优先级"就够了：两段类名 > 一段类名。
+   */
+  .rail-tracking[data-rail-scrubbing="true"] .rail-tick,
+  .rail-tracking[data-rail-scrubbing="true"] .rail-tick:active {
+    cursor: grabbing;
+  }
+  /*
+   * 长会话的可滚区域：隐藏滚动条（整列就是"缩略图"，一条滚动条会显得很吵）。
+     滚轮/触摸仍可用 —— 只是不画那条灰杠。
+   */
   .rail-scroll {
     scrollbar-width: none;
     -ms-overflow-style: none;

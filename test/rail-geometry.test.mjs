@@ -13,7 +13,8 @@ import test from "node:test";
 import {
   BAR_HEIGHT, BAR_HEIGHT_HOVER, BAR_WIDTH_MAX, BAR_WIDTH_MIN, CARD_GAP, CARD_PADDING, RAIL_MAX_RATIO,
   RAIL_WIDTH_MAX, RAIL_WIDTH_MIN, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
-  railBandOf, railCardPlaceOf, railEnsureVisible, railRowsOf, railSlotOf, railWidthsOf, zipWidthOf,
+  RAIL_SCRUB_THRESHOLD, railBandOf, railCardPlaceOf, railEnsureVisible, railGestureOf, railRowsOf,
+  railScrubTargetOf, railSlotOf, railWidthsOf, zipWidthOf,
 } from "../frontend/src/api/rail-geometry.ts";
 
 /* ── 1. sqrt 宽度映射 ───────────────────────────────────── */
@@ -227,4 +228,41 @@ test("一屏能看多少条：与可用高度成正比、与条数无关", () =>
   const long = railRowsOf(560, 804).visibleRows;
   assert.ok(long > 30 && long < 60, `560 条时一屏约 ${long} 条（12px 行高 / 62% 高度）`);
   assert.ok(short >= 10);
+});
+
+/* ── 7. 拖动 scrub（P7）─────────────────────────────────── */
+
+test("拖过整列高度 = 滚完整个会话（相对位移，灵敏度 = 可滚动距离 ÷ 整列内容高）", () => {
+  // 560 条 × 12px = 6720px 内容高；正文 9000 内容 / 800 可视 → 可滚 8200
+  const start = 0;
+  const full = railScrubTargetOf(start, 6720, 6720, 800, 9000);
+  assert.equal(Math.round(full), 8200, "拖满整列 → 滚到底");
+  const half = railScrubTargetOf(start, 3360, 6720, 800, 9000);
+  assert.equal(Math.round(half), 4100, "拖一半 → 滚一半");
+});
+
+test("相对位移：从中间开始拖，结果是「起点 + 位移」，不是「指针绝对位置」", () => {
+  // 这正是它在可滚列上不打架的原因：列自己滚到哪里都不影响映射
+  const fromMiddle = railScrubTargetOf(4000, 1200, 6720, 800, 9000);
+  assert.equal(Math.round(fromMiddle), Math.round(4000 + 1200 * (8200 / 6720)));
+});
+
+test("拖动目标夹在 [0, 可滚动距离]：拖出边界不产生负数或越过底部", () => {
+  assert.equal(railScrubTargetOf(100, -99999, 6720, 800, 9000), 0, "往上拖到底 → 0");
+  assert.equal(railScrubTargetOf(100, 99999, 6720, 800, 9000), 8200, "往下拖到底 → 可滚距离");
+});
+
+test("退化输入不产生 NaN：内容高 0 / 视口高 0 / 正文不够滚 / 非法 delta", () => {
+  assert.equal(railScrubTargetOf(500, 100, 0, 800, 9000), 500);
+  assert.equal(railScrubTargetOf(500, 100, 6720, 0, 9000), 500);
+  assert.equal(railScrubTargetOf(500, 100, 6720, 800, 700), 0, "正文不够滚 → 0");
+  assert.equal(railScrubTargetOf(500, Number.NaN, 6720, 800, 9000), 500);
+});
+
+test("点击 vs 拖动：4px 阈值（手抖不算拖）", () => {
+  assert.equal(RAIL_SCRUB_THRESHOLD, 4);
+  assert.equal(railGestureOf(0, 0), "click");
+  assert.equal(railGestureOf(3, 2), "click", "3px 内算点击（手抖）");
+  assert.equal(railGestureOf(0, 5), "scrub");
+  assert.equal(railGestureOf(5, 0), "scrub", "横向超过也算拖（不误触成点击）");
 });
