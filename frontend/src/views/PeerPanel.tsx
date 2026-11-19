@@ -12,12 +12,15 @@ import { Spinner, MicroButton } from "../design/ui";
 
 export type PeerTarget = { agentId: string; sessionId: string; agentName: string };
 
-type Row = { role: "user" | "assistant"; blocks: Block[]; streaming: boolean };
+/** 一行 = 一条消息。`id` 是服务端 entry id：思考块的兜底定位要用它（Task 0028 · P8）。 */
+type Row = { id?: string; role: "user" | "assistant"; blocks: Block[]; streaming: boolean };
 
-export function PeerPanel({ target, liveEvents, onClose }: {
+export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
   target: PeerTarget;
   /** 该连接收到的全部事件（已按 watching 投递）；面板自己挑属于这条会话的。 */
   liveEvents: { subscribe: (listener: (event: unknown) => void) => () => void };
+  /** 取思考正文（与主对话同一个入口：带并发闸与去重）。不传则该面板不提供展开。 */
+  loadThinking?: (origin: { entryId: string; blockIndex: number }) => Promise<string>;
   onClose: () => void;
 }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -45,11 +48,17 @@ export function PeerPanel({ target, liveEvents, onClose }: {
     setLoading(true);
     void (async () => {
       try {
-        const response = await fetch(`/api/agents/${target.agentId}/sessions/${target.sessionId}`);
+        /*
+         * 与主对话同口径带 `deferThinking=1`（P8/B2）：思考正文按需取，首屏省 68% 字节。
+         * 侧边栏是**旁观**，更没有理由为了"能展开"而全量下载几十万字思考。
+         * 取数走主对话同一个 `loadThinking`（它带并发闸与去重，见 Task 0028 · P7）。
+         */
+        const response = await fetch(`/api/agents/${target.agentId}/sessions/${target.sessionId}?deferThinking=1`);
         if (!response.ok) throw new Error(`读取对话失败（HTTP ${response.status}）`);
-        const data = (await response.json()) as { messages?: Array<{ role: string; text?: string; blocks?: Block[] }> };
+        const data = (await response.json()) as { messages?: Array<{ id?: string; role: string; text?: string; blocks?: Block[] }> };
         if (cancelled) return;
         setRows((data.messages ?? []).map((message) => ({
+          ...(message.id !== undefined ? { id: message.id } : {}),
           role: message.role === "user" ? "user" : "assistant",
           blocks: message.blocks ?? [{ type: "text" as const, text: message.text ?? "" }],
           streaming: false,
@@ -127,7 +136,11 @@ export function PeerPanel({ target, liveEvents, onClose }: {
         )}
         <div className="mx-auto flex w-full max-w-reading flex-col gap-4">
           {rows.map((row, index) => (
-            <MessageView key={index} role={row.role} blocks={row.blocks} busy={row.streaming} align="start" />
+            <MessageView key={index} role={row.role} blocks={row.blocks} busy={row.streaming} align="start"
+              /* 与主对话共用同一个取数入口（含并发闸 + 同 key 去重）：侧边栏展开思考不该另写一套。 */
+              {...(loadThinking !== undefined ? { loadThinking } : {})}
+              /* 思考块的 messageId 用于兜底定位（未折叠时 origin = 本条 id + 块下标）。 */
+              {...(loadThinking !== undefined && row.id !== undefined ? { messageId: row.id } : {})} />
           ))}
         </div>
       </div>
