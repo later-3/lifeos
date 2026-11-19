@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { Spinner, ClickableRow } from "../design/ui";
+import { Spinner, ClickableRow, MicroButton } from "../design/ui";
 import { ResponseBar } from "./response-bar";
 import { MarkBar } from "./mark-bar";
 import { formatTokens, type ProcessStats } from "../api/process-stats";
@@ -85,6 +85,14 @@ export type Block =
       images?: Array<{ url?: string; data?: string; mimeType: string }>;
       /** 仅客户端：由 tool_execution_start/update/end 驱动，不靠整轮 busy */
       running?: boolean;
+      /**
+       * 这次工具调用产生的**对端会话 id**（后端给，`lifeos_ask` / `lifeos_send` 才有）。
+       *
+       * 以前从 `result` 文本里正则抓 `session <uuid>`，而后端输出是 `session: <uuid>`（多个冒号）,
+       * 正则恒不命中 → 「查看对话过程」入口静默消失（2026-11-19 用户报"侧边栏弄丢了"）。
+       * 结构化字段不随文案变化。
+       */
+      peerSessionId?: string;
     };
 export type Message = {
   role: "user" | "assistant"; text: string; blocks: Block[];
@@ -549,17 +557,31 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
     ? (typeof (block.arguments as Record<string, unknown> | undefined)?.agent === "string"
       ? String((block.arguments as Record<string, unknown>).agent) : undefined)
     : undefined;
-  // 对端会话 id：工具结果文本里带 "session <uuid>"（lifeos_ask / lifeos_send 都返回它）。
+  /*
+   * 对端会话 id：**优先用后端给的 `peerSessionId`**（结构化，不随文案变化）。
+   * 文本正则是**老会话兜底**（后端加字段之前落盘的历史），且要同时容忍 `session: <id>` 与
+   * `session <id>` 两种写法 —— 曾经只认后者，后端改成带冒号之后入口静默消失了 16 天。
+   */
   const peerSessionId = peerTarget === undefined
     ? undefined
-    : /session ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(String(block.result ?? ""))?.[1];
+    : block.peerSessionId
+      ?? /session:?\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(String(block.result ?? ""))?.[1];
   const canOpenPeer = peerTarget !== undefined && peerSessionId !== undefined && onOpenPeer !== undefined;
   const seconds = running ? undefined : block.durationMs !== undefined ? `${(block.durationMs / 1000).toFixed(1)}s` : undefined;
   const surface = state === "error" ? "bg-message-tool-error" : state === "done" ? "bg-message-tool-done" : "bg-message-tool";
   return (
     <div className={`overflow-hidden rounded-panel ring-1 ring-line ${surface}`} data-message-kind={`tool-${state}`}>
-      <ClickableRow onClick={toggle}
-        className="gap-1.5 px-3 py-2 text-meta text-ink-700">
+      {/*
+        * 结构（`specs/code/frontend/code.md` 2.25）：主点击区（展开参数）与行内动作（查看对话过程）
+        * 必须是**兄弟**，不能把一个可点元素放进另一个可点元素里 ——
+        * 那会触发 axe `nested-interactive`（读屏/键盘出现两个叠在一起的目标）。
+        *
+        * 这条缺陷此前**潜伏**着：`peerSessionId` 恒为 undefined（见上面的正则 bug），
+        * 「查看对话过程」从不渲染，所以没人踩到；一旦入口恢复，结构问题就会显形。
+        */}
+      <div className="flex items-stretch">
+        <ClickableRow onClick={toggle}
+          className="min-w-0 flex-1 gap-1.5 px-3 py-2 text-meta text-ink-700">
         {running ? <Spinner size={12} className="text-accent" /> : <AppIcon name="tool" size={14} className="shrink-0 text-ink-300" />}
         <span className="shrink-0 font-medium">{peerTarget === undefined ? block.name : "与 Agent 对话"}</span>
         {peerTarget !== undefined && (
@@ -570,23 +592,19 @@ function ToolCallBlock({ block, live, onOpenPeer }: { block: Extract<Block, { ty
         <span className={`ml-auto shrink-0 text-micro ${tone}`}
           {...(state === "missing" ? { title: "这一轮已结束，但没有拿到工具结果（可能被中断）" } : {})}>{status}</span>
         {seconds !== undefined && <span className="shrink-0 tabular-nums text-micro text-ink-700">{seconds}</span>}
+        </ClickableRow>
         {canOpenPeer && (
-          // 与其他 Agent 的对话：详情入口常显——它不在"展开"里，否则用户根本不知道有这个入口
-          <span role="button" tabIndex={0} data-testid="open-peer"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! });
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" && event.key !== " ") return;
-              event.stopPropagation();
-              onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! });
-            }}
-            className="ml-1 shrink-0 rounded border border-line px-1.5 py-0.5 text-micro text-accent hover:bg-hover">
+          /*
+           * 与其他 Agent 的对话：入口**常显**（不在"展开"里，否则用户根本不知道有它）。
+           * 它是主点击区的**兄弟**（见上面的结构说明），不是子节点。
+           */
+          <MicroButton tone="accent" data-testid="open-peer"
+            onClick={() => onOpenPeer({ agentId: peerTarget!, sessionId: peerSessionId!, agentName: peerTarget! })}
+            className="my-1.5 mr-2 self-center ring-1 ring-line">
             查看对话过程
-          </span>
+          </MicroButton>
         )}
-      </ClickableRow>
+      </div>
       {open && (
         <>
           <pre className="overflow-x-auto whitespace-pre-wrap border-t border-line px-3 py-2 font-mono text-micro leading-relaxed text-ink-700">{JSON.stringify(block.arguments ?? {}, null, 2)}</pre>

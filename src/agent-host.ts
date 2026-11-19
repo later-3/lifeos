@@ -1699,6 +1699,15 @@ function pushTitlePatch(agentId: string, sessionId: string, projectId: string | 
 type TextBlock = { type: "text"; text: string };
 type ThinkingBlock = { type: "thinking"; text: string; /** 正文未下发，展开时按需取（P8） */ deferred?: true };
 type ToolCallBlock = { type: "toolCall"; id?: string; name: string; arguments: unknown; result?: string; isError?: boolean;
+  /**
+   * 这次工具调用产生的**对端会话 id**（只有 `lifeos_ask` / `lifeos_send` 有）。
+   *
+   * 为什么由后端给：前端曾经从结果文本里正则抓 `session <uuid>`，
+   * 而后端在 Task 0014 把输出改成了 `session: <uuid>`（多一个冒号）——
+   * 正则从此失配，「查看对话过程」入口静默消失 16 天（2026-11-19 用户报"侧边栏弄丢了"）。
+   * 结构化字段不依赖文案格式：改文案不会再打断功能。
+   */
+  peerSessionId?: string;
   /** 图片：`url` = 按需取回（P3-S1）；`data` = 老会话内联（D8 不迁移）。两者必有其一。 */
   images?: Array<{ url?: string; data?: string; mimeType: string }>;
   /** 工具结果的产生时刻（ms，= Pi `toolResult.timestamp`）。
@@ -1932,6 +1941,16 @@ export function messagesOf(state: SessionState, options: { deferThinking?: boole
          */
         const images = toolResultImageRefs(message, call.result);
         if (images.length > 0) call.images = images;
+        /*
+         * 对端会话 id（见 `ToolCallBlock.peerSessionId`）：只认 Pi 的 `details.sessionId`，
+         * 不从结果文本里猜。`lifeos_ask` / `lifeos_send` 两条路径都把 sessionId 放进了 details
+         *（`agent-tools.ts` 的 `details: { agent, sessionId, … }`）。
+         */
+        const details = (message as { details?: unknown }).details;
+        if (typeof details === "object" && details !== null) {
+          const sessionId = (details as { sessionId?: unknown }).sessionId;
+          if (typeof sessionId === "string" && sessionId !== "") call.peerSessionId = sessionId;
+        }
         break;
       }
     }

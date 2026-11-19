@@ -1467,6 +1467,32 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * 作用域显式绑定在**当前** agent/session 上（规范 2.12：跨作用域状态要带归属）——
    * 切走之后旧块的展开请求不该打到新会话上。
    */
+  /**
+   * 取数**绑定作用域**（Task 0028 · P8）。
+   *
+   * 为什么不能只有一个全局 `loadThinkingOf`：它按"当前主对话的 agent+session"拼 URL，
+   * 而**侧边栏（PeerPanel）看的是另一条会话**（另一个 agent + 另一个 sessionId）。
+   * 复用同一个回调会让侧边栏拿着主对话的坐标去取下端的 entry → 404 → 显示「思考正文没取回来」。
+   * 参考 pi-web：`loadThinkingContent(sessionId, entryId, blockIndex)` 把 sessionId 当**入参**传，
+   * 不依赖"当前是哪个会话"这个隐式状态（`components/MessageView.tsx:150-161`）。
+   */
+  const thinkingLoaderFor = useCallback((agentId: string, sessionId: string) =>
+    async (origin: ThinkingOrigin): Promise<string> => withThinkingSlot(
+      `${agentId}\u0000${sessionId}\u0000${origin.entryId}\u0000${origin.blockIndex}`,
+      async () => {
+        const result = await fetchJsonWithTimeout<{ text?: unknown }>(
+          `/api/agents/${agentId}/sessions/${sessionId}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`,
+          THINKING_LOAD_TIMEOUT_MS,
+          "thinking",
+        );
+        if (!result.ok) {
+          logger.warn("load", "思考正文取回失败", failureLogOf(result.failure));
+          throw new Error(result.failure.kind === "timeout" ? "thinking_timeout" : `thinking_${result.failure.status ?? result.failure.kind}`);
+        }
+        return typeof result.value.text === "string" ? result.value.text : "";
+      },
+    ), []);
+
   const loadThinkingOf = useCallback(async (origin: ThinkingOrigin): Promise<string> => {
     const id = agentIdRef.current;
     const sid = current.current;
@@ -4723,7 +4749,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
             className={`border-l border-nav-line bg-surface ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer}` : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
-                <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
+                <PeerPanel target={peerTarget} liveEvents={liveEvents} loadThinking={thinkingLoaderFor(peerTarget.agentId, peerTarget.sessionId)} onClose={closePeerPanel} />
               </div>
             ) : isMobile ? (
               showTree ? (
@@ -4739,12 +4765,13 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                 </div>
               )
             ) : (
+              /*
+               * 内层不再判 `peerTarget`：外层 `peerTarget !== undefined ? … : (isMobile ? … : …)` 已经把
+               * "有对端"这一支走完了，这里必然没有对端（再判一次 TS 会窄化成 never）。
+               * 2026-11-19 自查：这里原本留着一份重复的 PeerPanel 分支，是死代码。
+               */
               <>
-                {peerTarget !== undefined ? (
-                  <div className="min-w-0 flex-1 overflow-hidden">
-                    <PeerPanel target={peerTarget} liveEvents={liveEvents} onClose={closePeerPanel} />
-                  </div>
-                ) : showTree ? (
+                {showTree ? (
                   <>
                     <ResizeColumn resizeKey="c4t" width={box.tree} onStart={(event) => beginDrag("c4t", event)}
                       as="div" className="min-w-0 flex-col">
