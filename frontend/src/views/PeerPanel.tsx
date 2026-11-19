@@ -6,7 +6,7 @@
 //   - 实时：同一条 SSE 连接，对端会话加进 focus.watching（服务端 events.ts matchesFocus 命中即投递）
 // 输入：由发起方驱动，这里禁止发言（服务端也会拒，这里只是别让用户白打字）。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type StreamState } from "../api/stream-blocks";
+import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type StreamState, seedStreamState } from "../api/stream-blocks";
 import { MessageView, type Block } from "./Message";
 import { Spinner, MicroButton } from "../design/ui";
 
@@ -28,6 +28,8 @@ export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
   const [error, setError] = useState<string | undefined>(undefined);
   const [running, setRunning] = useState(false);
   const stream = useRef<StreamState>(createStreamState());
+  /** 服务端已生成的尾部块（对端正在跑时）：流式状态机首次收到事件前先播种（C307 同一族）。 */
+  const seed = useRef<Block[] | undefined>(undefined);
   const streaming = useRef(false);
   // 与主对话同款的"贴底跟随"：用户往上翻就不再抢滚动，回到底部自动恢复。
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -55,9 +57,15 @@ export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
          */
         const response = await fetch(`/api/agents/${target.agentId}/sessions/${target.sessionId}?deferThinking=1`);
         if (!response.ok) throw new Error(`读取对话失败（HTTP ${response.status}）`);
-        const data = (await response.json()) as { messages?: Array<{ id?: string; role: string; text?: string; blocks?: Block[] }> };
+        const data = (await response.json()) as {
+          messages?: Array<{ id?: string; role: string; text?: string; blocks?: Block[]; streaming?: boolean }>;
+          meta?: { running?: boolean };
+        };
         if (cancelled) return;
-        setRows((data.messages ?? []).map((message) => ({
+        const list = data.messages ?? [];
+        const last = list[list.length - 1];
+        seed.current = (data.meta?.running === true || last?.streaming === true) && last?.role === "assistant" ? last.blocks : undefined;
+        setRows(list.map((message) => ({
           ...(message.id !== undefined ? { id: message.id } : {}),
           role: message.role === "user" ? "user" : "assistant",
           blocks: message.blocks ?? [{ type: "text" as const, text: message.text ?? "" }],
@@ -99,7 +107,20 @@ export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
         return;
       }
       const tailIsStreaming = streaming.current;
-      if (!tailIsStreaming) stream.current = createStreamState();
+      if (!tailIsStreaming) {
+        stream.current = createStreamState();
+        /*
+         * 种子（与主对话同款，C307）：打开侧边栏时对端可能正在跑，
+         * `loadMessages` 已经渲染了它**已生成的部分**，而这里的状态机是空的。
+         * 不播种的话，下一个 delta 会把那部分整体覆盖 —— 屏幕上"内容突然没了又从新来"。
+         * 种子在历史加载时记下（`seed.current`），播种一次即清。
+         */
+        if (seed.current !== undefined) {
+          const segment = typeof (event as { segment?: unknown }).segment === "string" ? String((event as { segment: string }).segment) : undefined;
+          stream.current = seedStreamState(seed.current, segment);
+          seed.current = undefined;
+        }
+      }
       const next = applyStreamEvent(stream.current, event as never);
       stream.current = next;
       const blocks = blocksOfStream(next);

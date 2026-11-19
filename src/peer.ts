@@ -669,7 +669,14 @@ export async function peerSessionTitle(targetAgentId: string, sessionId: string)
   return undefined;
 }
 
-/** 把状态快照渲染成给人/给模型看的文本（`ask` 的返回值）。 */
+/**
+ * 把状态快照渲染成**给人/给模型看的文本**（`lifeos_ask` 的返回值正文）。
+ *
+ * ⚠️ 这段文字**不是协议**（`specs/code/frontend/code.md` 2.37）：
+ * 它的措辞可以随时改（"在做什么"→"当前步"、`session:` → `会话:`），**不得**有代码解析它。
+ * 前端曾用正则从这段输出里抓 `session <uuid>`，后端加了个冒号 → 入口静默失效 16 天（C310）。
+ * 需要给程序用的值一律走 `details`（`peerSessionId` 就是这么来的）。
+ */
 export function snapshotText(peerName: string, snapshot: PeerSnapshot, hint?: string): string {
   const lines: string[] = [];
   lines.push(`${peerName} · state=${snapshot.state}${hint !== undefined ? `（${hint}）` : ""}`);
