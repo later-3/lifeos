@@ -67,6 +67,7 @@ import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream,
 import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
 import { fetchJsonWithTimeout, failureLogOf, failureTextOf, withTimeout, type LoadFailure, type LoadResult } from "./api/fetch-timeout";
 import { createEventChannel } from "./api/event-channel";
+import { withThinkingSlot } from "./api/thinking-queue";
 import { TurnInspector } from "./views/SessionHistory";
 import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
@@ -1471,20 +1472,29 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     const sid = current.current;
     if (id === undefined || sid === undefined) throw new Error("no_session");
     /*
-     * 参数来自**同一个原点**（Task 0028 · P1）：`entryId` 与 `blockIndex` 都属于那一条 entry。
-     * 之前这里接的是 `(entryId, blockIndex)` 两个独立入参，而调用方给的 `blockIndex` 是"整轮合并块"
-     * 的下标、`entryId` 却是这一轮第一条回复的 id —— 两者不同源，错配率实测 96–99%（0027 · R4）。
+     * 过闸（Task 0028 · P7）：一屏里可能同时展开多个思考卡（执行中/失败轮会自动展开），
+     * 而每条请求在后端都要重读解析整个会话文件（实测 4.2MB 会话单条 21–23ms）。
+     * 不设上限时实测**峰值并发 9 条** → 把浏览器 6 条连接占满 → 切会话详情请求排队 → 页面像卡死。
+     * `withThinkingSlot` 同时做两件事：限流 3 条 + 同 key 去重（主对话与侧边栏共享同一次请求）。
      */
-    const result = await fetchJsonWithTimeout<{ text?: unknown }>(
-      `/api/agents/${id}/sessions/${sid}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`,
-      THINKING_LOAD_TIMEOUT_MS,
-      "thinking",
-    );
-    if (!result.ok) {
-      logger.warn("load", "思考正文取回失败", failureLogOf(result.failure));
-      throw new Error(result.failure.kind === "timeout" ? "thinking_timeout" : `thinking_${result.failure.status ?? result.failure.kind}`);
-    }
-    return typeof result.value.text === "string" ? result.value.text : "";
+    const key = `${id}\u0000${sid}\u0000${origin.entryId}\u0000${origin.blockIndex}`;
+    return withThinkingSlot(key, async () => {
+      /*
+       * 参数来自**同一个原点**（Task 0028 · P1）：`entryId` 与 `blockIndex` 都属于那一条 entry。
+       * 之前这里接的是 `(entryId, blockIndex)` 两个独立入参，而调用方给的 `blockIndex` 是"整轮合并块"
+       * 的下标、`entryId` 却是这一轮第一条回复的 id —— 两者不同源，错配率实测 96–99%（0027 · R4）。
+       */
+      const result = await fetchJsonWithTimeout<{ text?: unknown }>(
+        `/api/agents/${id}/sessions/${sid}/entries/${origin.entryId}/thinking?blockIndex=${origin.blockIndex}`,
+        THINKING_LOAD_TIMEOUT_MS,
+        "thinking",
+      );
+      if (!result.ok) {
+        logger.warn("load", "思考正文取回失败", failureLogOf(result.failure));
+        throw new Error(result.failure.kind === "timeout" ? "thinking_timeout" : `thinking_${result.failure.status ?? result.failure.kind}`);
+      }
+      return typeof result.value.text === "string" ? result.value.text : "";
+    });
   }, []);
 
   async function loadMessages(id: string, sid: string): Promise<SessionPayload | undefined> {

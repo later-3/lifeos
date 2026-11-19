@@ -266,7 +266,17 @@ export function argPreview(toolName: string, args: unknown): string {
  * - **必须** 纯函数：不碰 DOM、不碰 React，可被 node 测试穷举。
  */
 export function seedStreamState(blocks: readonly Block[], segmentKey?: string): StreamState {
-  const slots: StreamSlot[] = blocks.map((block, index) => ({ index, block }));
+  /*
+   * `deferred` 思考块不进种子（注释里早就写了"必须不播种"，代码此前没实现）：
+   * 它的正文是空串，播进去等于给了一个"空正文 + 真实下标"的块 ——
+   * 而流式期它会因为 `turnLive` 自动展开，于是立刻发一条取数请求。
+   * 一轮里几十个 deferred 块同时这样，就是"一屏正在取 + 页面卡死"的直接来源。
+   * 跳过它不影响正确性：正文本来就要靠 delta 追加（`thinking` 事件照常建块）。
+   */
+  const slots: StreamSlot[] = blocks
+    .map((block, index) => ({ block, index }))                       // 先带上**服务端原下标**
+    .filter((item) => !(item.block.type === "thinking" && item.block.deferred === true))
+    .map((item) => ({ index: item.index, block: item.block }));      // 过滤后仍用原下标：增量按 contentIndex 对位
   return {
     segments: [{ key: segmentKey ?? "seed", slots, live: true }],
     phase: slots.some((slot) => slot.block.type === "thinking") ? "thinking" : slots.length > 0 ? "text" : "waiting",

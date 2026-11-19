@@ -142,7 +142,12 @@ test("T28-21 播种服务端已生成的块后，增量接在后面（不覆盖�
    */
   const seeded = seedStreamState([{ type: "thinking", text: "", deferred: true }, { type: "text", text: "前半段" }], "msg-1");
   assert.equal(seeded.segments.length, 1);
-  assert.equal(seeded.segments[0].slots.length, 2, "服务端的块必须都在");
+  /*
+   * `deferred` 思考块**不进种子**（Task 0028 · P7）：它正文为空，播进去会被自动展开并触发取数请求。
+   * 所以这里只剩 1 个块（那段 text），且槽位下标沿用服务端原下标（1），增量才能对上。
+   */
+  assert.equal(seeded.segments[0].slots.length, 1, "deferred 思考块不进种子");
+  assert.equal(seeded.segments[0].slots[0].index, 1, "槽位下标沿用服务端原下标");
   assert.equal(seeded.segments[0].key, "msg-1", "必须用真实 segment 键，否则下一个 delta 会另起一段");
 
   const afterThinking = applyStreamEvent(seeded, { type: "delta", index: 1, text: "后半段", segment: "msg-1" });
