@@ -63,7 +63,7 @@ import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./api/resend";
 import { failureLabel, fixHint, type FailureKind } from "./api/failure-text";
 import type { TurnStep } from "./api/working";
-import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
+import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, seedStreamState, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
 import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
 import { fetchJsonWithTimeout, failureLogOf, failureTextOf, withTimeout, type LoadFailure, type LoadResult } from "./api/fetch-timeout";
 import { createEventChannel } from "./api/event-channel";
@@ -903,6 +903,20 @@ export default function App() {
   /** 当前活动回合的 turnId（C119）：终态必须匹配它，旧回合的 done 不得关闭新回合。 */
   const activeTurnIdRef = useRef<string | null>(null);
   const streaming = useRef(false);
+  /**
+   * 从服务端载入的"这一轮还在跑"的尾部块（打开/切回/重连时服务端已经生成的那部分）。
+   *
+   * **为什么必须有它**（用户 2026-11-19："先回复了一些内容，突然一下没了"）：
+   * 跑到一半才打开会话时，`loadMessages` 会拿到该轮**已生成的部分**，
+   * 而 `streamRef`（客户端的流式状态机）是空的 —— 它只知道"我到了之后收到的事件"。
+   * 下一个 delta 到达时若直接 `[…list.slice(0,-1), {…last, blocks}]` 替换，
+   * **打开之前生成的正文会被整体覆盖掉**，屏幕上只剩新来的那几句。
+   *
+   * 做法（对齐 pi-web 的"服务端事实与流式增量分开管"）：
+   * 把服务端那份块当作**种子**灌进流式状态机的第一个 segment，
+   * 之后同一个 contentIndex 的增量就自然**接在**原有文本后面，而不是替换。
+   */
+  const streamSeed = useRef<Block[] | undefined>(undefined);
   const scrollRef = useRef<HTMLElement>(null);
   /** 检视面板的容器（可复制区域之一；与 `<main>` 是兄弟节点，必须单独列）。 */
   const reviewRef = useRef<HTMLElement>(null);
@@ -1509,6 +1523,13 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+    /*
+     * 种子（见 `streamSeed` 的注释）：尾部是"还在跑"的 assistant 时，把它的块记下来。
+     * 只有这样，随后到达的增量才会**接在**这些块后面，而不是把它们覆盖掉。
+     * 不在这条分支里重置 `streamRef`：它属于"这一轮"，`openSession` 已经在 resetChatState 里清过了。
+     */
+    const tail = (data.messages ?? [])[(data.messages ?? []).length - 1];
+    streamSeed.current = data.meta?.running === true && tail?.role === "assistant" ? tail.blocks : undefined;
     /*
      * 游标状态（B3）：首屏/刷新一次性重置 —— 它属于"这一页"，换会话/重新加载都要重来。
      * 不给 `data.hasOlder` 就按 false（老后端兼容：没有这条就不会显示"加载更早"）。
@@ -2397,7 +2418,19 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   function applyStreamMessage(payload: AgentEvent): void {
     lastEventAtRef.current = Date.now();
     const tailIsStreaming = streaming.current;
-    if (!tailIsStreaming) streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
+    if (!tailIsStreaming) {
+      streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
+      streamSeed.current = undefined;
+    } else if (streamRef.current.segments.length === 0 && streamSeed.current !== undefined) {
+      /*
+       * 种子播种：服务端已经给出这一轮的前半段，客户端流式状态机还是空的。
+       * 用那个**真实 segment 键**建第一段，把服务端块按下标放进去 ——
+       * 之后同一个 contentIndex 的增量会 `text + delta` 接在后面（而不是从空白重建）。
+       */
+      const segment = "segment" in payload && typeof payload.segment === "string" ? payload.segment : undefined;
+      streamRef.current = seedStreamState(streamSeed.current, segment);
+      streamSeed.current = undefined;
+    }
     const next = applyStreamEvent(streamRef.current, payload as never);
     streamRef.current = next;
     setPhase(next.phase);
