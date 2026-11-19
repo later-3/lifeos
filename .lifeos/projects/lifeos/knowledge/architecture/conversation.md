@@ -146,6 +146,35 @@ assistant message B（contentIndex 又从 0 开始：thinking/toolCall/text）�
 | 工具 running | 每个 toolCall 带 `running`；由 `tool_execution_start/update/end` 驱动，`message_end` 不会误导为“未完成” | `ToolCallBlock` 看 result 是否存在；`rawInput` 区分参数流式；phase 由 `tool_execution_*` 单独维护 | `ToolExecutionComponent` 由 `tool_execution_start/end/update` 驱动；结束即更新为完成/错误 |
 | 最终输出 | `finalTextOfStream` 取最后一段 text；过程块仍按段顺序可见 | `splitFinalAssistantBlocks` 把最后一段 text/image 作为 answer，之前作为 process；`ProcessDetailsGroup` 可折叠 | 按消息/工具组件顺序渲染；最终 assistant text 自然在最后 |
 
+### 事实 2：流式期那条 assistant 消息**没有 entry id**（2026-11-19 补，源码可核）
+
+`message_start` 事件里的 `message.timestamp` 只是 segment 键，**不是** session entry id。
+entry id 由 `SessionManager` 在**落盘那一刻**生成：
+
+- `pi/packages/coding-agent/src/core/session-manager.ts:277-297` `generateId()`；
+- 只在 `_appendEntry()`（`:1191-1196`）里被调用；
+- 反查也印证这点：`agent-session.ts:1218-1236` 的 `_findPersistedMessageEntryId()` 要遍历
+  `sessionManager.getBranch()` 才把消息映射回 entry id。
+
+**推论（直接影响渲染分支）**：流式期那一条消息的 `entryId` **必然不存在**。
+所以任何"能不能按需取这段思考的正文"的判断，在流式期都只会得到 `false` ——
+**不能据此说"取不回"**，那时正文就在手里（`message_update` 一直在给）。
+判据固定为：**先看手里有没有正文，再看能不能取**（`specs/code/frontend/code.md` 2.35）。
+
+### 事实 3：服务端事实与客户端增量是两条来源（2026-11-19 补）
+
+一轮跑到一半时打开/切回/重连会话，会同时存在两份内容：
+
+| 来源 | 内容 | 写入方 |
+|---|---|---|
+| 服务端事实 | 这一轮**已经生成**的部分（`GET …/sessions/:id`） | `loadMessages` |
+| 客户端增量 | **我到达之后**收到的 `message_update` | `applyStreamMessage` |
+
+两者都写进同一个 `messages` 数组时，增量到达会把事实那部分**整体替换**掉
+（实测现象："先回复了一些内容，突然一下没了"）。修法二选一，见
+`specs/code/frontend/code.md` 2.36：分开存（pi-web 的做法）或把事实当**种子**喂给增量状态机
+（本项目 `frontend/src/api/stream-blocks.ts` 的 `seedStreamState()`）。
+
 ### 这解释了用户看到的错乱
 
 1. **工具后的下一条 assistant message contentIndex 从 0 开始**，但 Life OS 把 0 当成整轮同一个槽位：
@@ -351,6 +380,12 @@ useLayoutEffect(() => {
 
 - 断流是一等场景（休眠/代理/网络/服务端重启），**事件允许丢**，但对账必须能补：重连＝快照（seq/since）+ `GET …/turns/last` 的组合，不依赖"一条不丢"；
 - 前端恢复三分支（FR-13）：已完成（响应在下方） / 中断（带重发） / 进行中已恢复；heartbeat 窗口（60s）与轮询间隔（5s）**常量可注入**（测试用 addInitScript 覆盖）；
+### 14.3 实现与排障细节（指针）
+
+帧格式的完整字段、连接生命周期、客户端退避参数、逐项排查手册见
+Task 0028 的 `knowledge/ws-transport.md`（`agents/coder/projects/lifeos/tasks/0028-*/`，
+随任务目录走）；本文只留"是什么"的结论。**不复制正文**（协议 §11「不复制」）。
+
 -背诵点："丢了快照"永远不会丢"真相"——真相在注册表/账本/JSONL 三层，每层都能独立回答"完了吗"。
 
 ## 12 开放决策

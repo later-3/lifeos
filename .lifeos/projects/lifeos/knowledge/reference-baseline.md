@@ -241,3 +241,20 @@
 | **读请求没有闸会怎样**（用户报告：卡住时页面没有任何提示） | **pi-web** `f3a5c91` `app/api/models-config/catalog/route.ts:13`（`FETCH_TIMEOUT_MS = 15_000`，但只给**服务端出站**请求）；**open-webui** `c38885a1a`（零散 `AbortSignal.timeout`，无统一出口）；**plane** `9cefae8`（stale chunk 自愈：reload-once + 30s 防循环） | 没有闸的读请求只有"成功"与"永远等待"两种结局，后者在用户眼里等于坏掉且无任何线索 | 失败变成可读的一句话 + 一个重试动作；日志里留下"哪个请求、什么种类、多少毫秒" | 代价：超时值必须由真实分布定（本项目 p99=206ms → 取 15s ≈ 70×），否则会误杀慢而正常的请求 | 实测 127 个真实会话 p50=11ms / p90=53ms / p99=206ms / max=256ms；旧实现全仓 `AbortController` / `AbortSignal.timeout` **0 处**，前端日志全天只有 2 条 `sse-open` | **采用"一个纯函数模块 + 六条读路径共用 + 失败必留痕"**，比两家参考都强一层（它们只有零散/服务端侧超时）。**复核触发**：出现 >1s 的正常读请求（如超大 diff）→ 按类别分档而不是统一放大 |
 
 **复核触发**：默认标签数常态 > 20，或需要省电/省连接 → 重评 SharedWorker 单连接（gitea 先例）；浏览器若普遍支持 HTTP/2 到本服务（当前 h2c 明文被 Chrome 拒绝，实测 `ERR_INVALID_HTTP_RESPONSE`）→ 该结论的前提（HTTP/1.1 6 条上限）消失，需重评。
+
+## 思考块渲染：正文从哪来 / 什么时候说取不回（2026-11-19 补，五家源码可核）
+
+用户 2026-11-19 点名"pi agent、pi web、其他 pi 插件、lobehub"。逐行核对**同一个问题**，五家一致：
+
+| 场景 / 需求 | 参考（项目 + 位置 + commit） | 那一行 | 借什么 | 不借什么 |
+|---|---|---|---|---|
+| **思考正文的显示来源** | **pi agent** `pi@90d863f` `packages/coding-agent/src/modes/interactive/components/assistant-message.ts:91-170` | `updateContent(message)` 每次事件到达重建整块；正文直读 `message.content` | "会变的东西不复制"：每次事件到达重新渲染 props | 它的 TUI 容器模型 / `thinkingVisibilityOverrides` 的点击切换（我们用 React state 表达展开态） |
+| 同上 | **pi-web** `f3a5c91` `components/MessageView.tsx:946` | `{loading ? … : error ?? (block.deferred ? content : block.thinking)}` | **正文永远直读 block；只有 deferred 才用取回来的 content**；判定顺序 = 正文 → 错误 → 加载 | 它的 per-block `useState`（`expanded`/`content`/`loading`/`error` 四个，我们合成三个） |
+| 同上 | **lobe-chat** `867a15a` `src/features/Conversation/components/Thinking/index.tsx:70-82` | `<MarkdownMessage animated={thinkingAnimated}>{content}</MarkdownMessage>`（content 是 props） | 只有"展开态"进 state，内容不进 | `useAutoScroll`（我们用自己的贴底跟随） |
+| 同上 | **opencode** `6a89e9f` `packages/session-ui/src/message/message-content.tsx:1306` | `<PacedMarkdown text={props.content.text} streaming={props.streaming} />` | 内容 + 流式标志都走 props，分开传 | `PacedMarkdown` 的逐字节奏（我们不做打字机效果） |
+| 同上 | **open-webui** `c38885a` `src/lib/components/chat/Messages/ContentRenderer.svelte:353-368` | structural blocks（含 reasoning）走 `content={extracted.detailsContent}` | 先派生再渲染，渲染层不做二次状态 | 它的 Svelte store 结构 |
+| **流式消息与服务端事实** | **pi-web** `f3a5c91` `components/ChatWindow.tsx:924-925` + `hooks/useAgentSession.ts:170-173` | `streamState.streamingMessage` 与 `messages` **两个来源**；流式那条**不进** `messages` 数组，单独渲染 | "事实"与"增量"分开存 | 它把流式消息只渲染在末尾（我们允许历史上多条并存，改用"种子"方案） |
+
+**结论（条文）**：正文直读 props；只有"服务端没下发、需另外取"的部分进 state；判定顺序是
+**有没有正文 → 取失败 → 定位不到 → 正在取**。规范见 `specs/code/frontend/code.md` 2.35 / 2.36。
+**复核触发**：换渲染框架（React → 其他）、或引入"服务端流式快照"机制（那时"事实"与"增量"可能合成一条来源）。
