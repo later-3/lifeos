@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { readProjectManifest, sanitizeSegment } from "./projects.ts";
 import { ensureTaskSkeleton, skeletonText } from "./project-skeleton.ts";
-import { createTaskWorktrees, HOME_DIR } from "./task-worktree.ts";
+import { createTaskWorktrees } from "./task-worktree.ts";
+import { taskDocRootOf } from "./task-doc-path.ts";
 
 /** 类型是开放集合：由 task-types/<类型>/ 下的模板定义；daily 为系统保留（默认 Task）。 */
 export type TaskType = string;
@@ -61,13 +62,10 @@ const projectDir = (ctx: TaskContext) => join(resolveHome(), "agents", ctx.agent
 /**
  * Task 文档的读根（协议 §3.7「读侧能穿透」）：
  * 有家目录工作区时文档在工作区里，主区那份是**上次合并**的版本，不能拿来读。
- * 判断标准是“工作区里那份 task.md 在不在”，不看目录是否存在（工作区可能建了一半）。
+ * 判定在 `task-doc-path.ts` 里一份（结构校验 `home-check.ts` 用同一个，否则两边会读到不同的东西）。
  */
 export async function taskDocPathOf(ctx: TaskContext, dirName: string): Promise<string> {
-  const main = join(tasksRoot(ctx), dirName);
-  const inWorktree = join(main, HOME_DIR, "agents", ctx.agentId, "projects", ctx.projectId, "tasks", dirName);
-  const info = await stat(join(inWorktree, "task.md")).catch(() => undefined);
-  return info?.isFile() === true ? inWorktree : main;
+  return taskDocRootOf(join(tasksRoot(ctx), dirName), ctx, dirName);
 }
 
 const isDoc = (value: unknown): value is TaskDocTemplate => {

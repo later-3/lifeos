@@ -1,7 +1,18 @@
 // 家目录结构校验（协议 §5、§6；`pnpm home:check`）：Life OS 生成或安装出来的结构是否符合协议。
 // 只读、不修改任何文件；错误 = 不符合协议，警告 = 需要人看一眼。
+//
+// 两条形态前提（协议 §3.7，2026-11-12 起是默认形态，不是可选项）：
+// 1. **Task 的文档在工作区里**：`<taskDir>/home/agents/<a>/projects/<p>/tasks/<NNNN-x>/`，
+//    主区 `<taskDir>/` 只剩 `home/`、`repo/` 两个挂载点与 `evidence/`。所以读 Task 一律先穿透
+//    （`taskDocRootOf`，与业务层同一份判定），另加主区那份 `evidence/`。
+// 2. **工作区与外部检出不是协作层**：它们有自己的目录结构，逐目录要求 AGENTS.md 会把别人的仓库
+//    当成违规。判据是「协议保留名 ∪ 结构事实（`.git` / `.lifeos-worktree.json`）」，不是一张
+//    今天恰好凑齐的名字清单——2026-11-19 实测：只按名字跳过时，一个历史 `worktree/`
+//    让 check 报了 195 条假错误，而挂载点自身仍被要求说明文件（再 24 条）。
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { HOME_DIR, MARKER_FILE, REPO_DIR } from "./task-worktree.ts";
+import { taskDocRootOf, type TaskScope } from "./task-doc-path.ts";
 
 export type HomeCheckReport = { errors: string[]; warnings: string[]; checked: number };
 
@@ -10,11 +21,21 @@ const LEGACY_HARNESS = ["flywheel.md", "memory.md", "concept-space.md", "concept
 const DATE_FILE = /^\d{4}-\d{2}-\d{2}\.md$/;
 const TASK_DIR = /^(\d{4})-.+$/;
 
+/** 工作区挂载点与历史形态的目录名（协议 §3.7）：工作区还没建全（没有 `.git`）时也不当协作层。 */
+const WORKTREE_DIR_NAMES = new Set([HOME_DIR, REPO_DIR, "worktree"]);
+/** 过程资料：自身要说明文件（协议 §5.2），内部不递归（里面是外部克隆、截图、原始输出、探针脚本）。 */
+const MATERIAL_DIR_NAMES = new Set(["evidence", "refs", "shots", "probe"]);
+/** 依赖与生成物：不是协作层，逐目录要求说明文件只会把别人的构件树翻一遍（与遍历类工具的默认忽略一致）。 */
+const GENERATED_DIR_NAMES = new Set(["node_modules", "__pycache__"]);
+
 async function isDir(path: string): Promise<boolean> {
   return stat(path).then((info) => info.isDirectory(), () => false);
 }
 async function isFile(path: string): Promise<boolean> {
   return stat(path).then((info) => info.isFile(), () => false);
+}
+async function exists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
 }
 async function readJsonFile(path: string): Promise<Record<string, unknown> | undefined> {
   const text = await readFile(path, "utf8").catch(() => undefined);
@@ -28,13 +49,34 @@ async function subdirs(path: string): Promise<string[]> {
     .sort();
 }
 
-/** 每个目录都必须有 AGENTS.md（协议 §5.2）；递归检查。
- * **不进 `evidence/`**：协议 §3.7 允许那里放外部项目、克隆的仓库、过程 worktree，
- * 它们有自己的目录结构与说明文件，不是本协议的协作层，逐目录要求 AGENTS.md 会把
- * 别人的仓库当成违规（Task 0016 实测：一个 worktree 产生 11 处假错误）。 */
-async function requireNotes(home: string, root: string, errors: string[], counter: { n: number }): Promise<void> {
+/** 这个目录是不是「从别处来的检出」（git 仓或本项目的 Task 工作区）——不是协作层。 */
+async function isForeignCheckout(dir: string): Promise<boolean> {
+  return (await isFile(join(dir, MARKER_FILE))) || (await exists(join(dir, ".git")));
+}
+
+/**
+ * 每个目录都必须有 AGENTS.md（协议 §5.2）；从 `root` 往下递归。三类子目录不按家目录结构查（协议 §3.7）：
+ *
+ * - **不是协作层**（`home/`、`repo/`、历史 `worktree/`、任何 git 检出）：**自身也不要**说明文件、不进去。
+ *   它们是外部仓库的检出，`home/` 里甚至是整份家目录副本——进去等于把家目录再查一遍。
+ * - **过程资料**（`evidence/`、`refs/`、`shots/`）：**自身要**说明文件，但不进去。
+ * - **依赖与生成物**（`node_modules/` 等）：不进去，也不要求说明文件。
+ *
+ * `owned`（绝对路径）里的目录由调用方负责，这里整棵跳过：Task 目录的文档在工作区里，
+ * 由 `checkTask` 按穿透后的读根检查，在这里再查一次只会重复报错。
+ */
+async function requireNotes(
+  home: string,
+  root: string,
+  errors: string[],
+  counter: { n: number },
+  owned: ReadonlySet<string> = new Set(),
+): Promise<void> {
   for (const name of await subdirs(root)) {
     const dir = join(root, name);
+    if (owned.has(dir)) continue;
+    if (GENERATED_DIR_NAMES.has(name)) continue;
+    if (WORKTREE_DIR_NAMES.has(name) || await isForeignCheckout(dir)) continue;
     counter.n += 1;
     const note = join(dir, "AGENTS.md");
     if (!await isFile(note)) errors.push(`缺少说明文件 AGENTS.md：${relative(home, dir)}/`);
@@ -42,56 +84,80 @@ async function requireNotes(home: string, root: string, errors: string[], counte
       const text = await readFile(note, "utf8").catch(() => "");
       if (text.trim() === "") errors.push(`说明文件为空：${relative(home, dir)}/AGENTS.md`);
     }
-    // 工作区与过程证据不按家目录结构检查：`repo/` `home/` 是 Task 的 git worktree
-    // （`home/` 里是整份家目录副本，进去会把它当作家目录再查一遍），`evidence/` 是外部资料。
-    if (name === "evidence" || name === "repo" || name === "home") continue;
-    await requireNotes(home, dir, errors, counter);
+    if (MATERIAL_DIR_NAMES.has(name)) continue;
+    await requireNotes(home, dir, errors, counter, owned);
   }
 }
 
-/** 检查一个 Task 目录（协议 §3.7、§6）。 */
-async function checkTask(home: string, dir: string, errors: string[], warnings: string[]): Promise<{ type: string; isDefault: boolean } | undefined> {
-  const rel = relative(home, dir);
-  const taskMd = join(dir, "task.md");
-  if (!await isFile(taskMd)) { errors.push(`Task 缺少 task.md：${rel}/`); return undefined; }
+/** `必需文档` 是人写的字段：剥掉装饰（`**`）与句尾批注（`（…）`，如「phases/（P1 已收口）」），只留路径。 */
+function requiredDocPathOf(item: string): string {
+  return item.replaceAll("**", "").replace(/(（[^）]*）)+\s*$/, "").trim();
+}
+
+/**
+ * 检查一个 Task（协议 §3.7、§6）。
+ *
+ * 读文档一律走 `doc`（`taskDocRootOf`：有工作区就是工作区里那份）；`evidence/` 不进版本控制、
+ * 只存在于主区，所以「必需文档」在两个根上都认——只认一个会漏报，或逼人把证据挪进工作区。
+ * 返回 `type`（默认 Task 计数用）——读不到 `task.md` 时返回 undefined，那条错误已经报出去了。
+ */
+async function checkTask(
+  home: string,
+  dir: string,
+  scope: TaskScope,
+  errors: string[],
+  warnings: string[],
+  counter: { n: number },
+): Promise<{ type: string; isDefault: boolean } | undefined> {
+  const dirName = relative(join(home), dir).split("/").pop() ?? "";
+  const doc = await taskDocRootOf(dir, scope, dirName);
+  const docRel = relative(home, doc);
+  const taskMd = join(doc, "task.md");
+  if (!await isFile(taskMd)) { errors.push(`Task 缺少 task.md：${docRel}/`); return undefined; }
   const text = await readFile(taskMd, "utf8");
   const field = (label: string): string | undefined => {
     const line = text.split("\n").find((candidate) => candidate.startsWith(`${label}：`) || candidate.startsWith(`${label}:`));
     return line === undefined ? undefined : line.slice(line.indexOf(label) + label.length + 1).trim();
   };
   const id = field("ID");
-  const dirId = TASK_DIR.exec(relative(join(home), dir).split("/").pop() ?? "")?.[1];
-  if (id === undefined) errors.push(`task.md 缺少 ID 字段：${rel}/task.md`);
-  else if (id !== dirId) errors.push(`task.md 的 ID（${id}）与目录编号（${dirId}）不一致：${rel}/`);
+  const dirId = TASK_DIR.exec(dirName)?.[1];
+  if (id === undefined) errors.push(`task.md 缺少 ID 字段：${docRel}/task.md`);
+  else if (id !== dirId) errors.push(`task.md 的 ID（${id}）与目录编号（${dirId}）不一致：${docRel}/`);
   const type = field("类型") ?? "";
-  if (!TASK_TYPES.has(type)) errors.push(`task.md 的类型 "${type}" 不在 daily/development/general 之内：${rel}/task.md`);
+  if (!TASK_TYPES.has(type)) errors.push(`task.md 的类型 "${type}" 不在 daily/development/general 之内：${docRel}/task.md`);
   // 共同结构（协议 §5.1）
   for (const file of ["AGENTS.md", "concept-space.md", "flywheel.md"]) {
-    if (!await isFile(join(dir, file))) errors.push(`Task 缺少 ${file}：${rel}/`);
+    if (!await isFile(join(doc, file))) errors.push(`Task 缺少 ${file}：${docRel}/`);
   }
   for (const sub of ["specs", "cases", "knowledge", "tools", "todo"]) {
-    if (!await isDir(join(dir, sub))) errors.push(`Task 缺少 ${sub}/：${rel}/`);
+    if (!await isDir(join(doc, sub))) errors.push(`Task 缺少 ${sub}/：${docRel}/`);
   }
   // 类型决定的日志（协议 §3.8）
-  const hasLog = await isFile(join(dir, "log.md"));
-  const hasDaily = await isDir(join(dir, "daily"));
+  const hasLog = await isFile(join(doc, "log.md"));
+  const hasDaily = await isDir(join(doc, "daily"));
   if (type === "daily") {
-    if (!hasDaily) errors.push(`日常 Task 缺少 daily/：${rel}/`);
-    if (hasLog) warnings.push(`日常 Task 不应有 log.md（日志就是 daily/）：${rel}/log.md`);
-    const shards = (await readdir(join(dir, "daily")).catch(() => [] as string[])).filter((name) => name !== "AGENTS.md");
-    for (const shard of shards) if (!DATE_FILE.test(shard)) errors.push(`daily/ 分片名应为 YYYY-MM-DD.md：${rel}/daily/${shard}`);
-    if (field("日期") !== undefined) warnings.push(`默认 Task 不应写"日期"字段（按天分片）：${rel}/task.md`);
+    if (!hasDaily) errors.push(`日常 Task 缺少 daily/：${docRel}/`);
+    if (hasLog) warnings.push(`日常 Task 不应有 log.md（日志就是 daily/）：${docRel}/log.md`);
+    const shards = (await readdir(join(doc, "daily")).catch(() => [] as string[])).filter((name) => name !== "AGENTS.md");
+    for (const shard of shards) if (!DATE_FILE.test(shard)) errors.push(`daily/ 分片名应为 YYYY-MM-DD.md：${docRel}/daily/${shard}`);
+    if (field("日期") !== undefined) warnings.push(`默认 Task 不应写"日期"字段（按天分片）：${docRel}/task.md`);
   } else {
-    if (type === "development" && !hasLog) errors.push(`开发类 Task 缺少 log.md：${rel}/`);
-    if (type === "general" && hasLog) warnings.push(`普通类 Task 没有 log.md 的约定，这里多出了 log.md：${rel}/`);
-    if (hasDaily) warnings.push(`非日常 Task 不应有 daily/：${rel}/`);
-    const required = (field("必需文档") ?? "").split("·").map((item) => item.trim()).filter((item) => item !== "");
+    if (type === "development" && !hasLog) errors.push(`开发类 Task 缺少 log.md：${docRel}/`);
+    if (type === "general" && hasLog) warnings.push(`普通类 Task 没有 log.md 的约定，这里多出了 log.md：${docRel}/`);
+    if (hasDaily) warnings.push(`非日常 Task 不应有 daily/：${docRel}/`);
+    const required = (field("必需文档") ?? "").split("·").map(requiredDocPathOf).filter((item) => item !== "");
     for (const item of required) {
-      const target = join(dir, item);
-      const ok = item.endsWith("/") ? await isDir(target) : await isFile(target);
-      if (!ok) errors.push(`必需文档缺失：${rel}/${item}`);
+      // 文档树（工作区优先）与主区都认：`evidence/` 这类不进版本控制的只在主区。
+      const root = await exists(join(doc, item)) ? doc : dir;
+      const ok = item.endsWith("/") ? await isDir(join(root, item)) : await isFile(join(root, item));
+      if (!ok) errors.push(`必需文档缺失：${relative(home, root)}/${item}`);
     }
   }
+  // Task 子树里每个目录也要有说明文件（协议 §5.2）；Task 根由上面那组共同结构检查覆盖。
+  await requireNotes(home, doc, errors, counter);
+  // 工作区形态下主区那份只有挂载点与 `evidence/`：前者按名字跳过，后者照 §5.2 要说明文件。
+  if (doc !== dir) await requireNotes(home, dir, errors, counter);
+  counter.n += 1;
   return { type, isDefault: type === "daily" };
 }
 
@@ -189,18 +255,21 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
         if (!await isDir(join(pdir, sub))) errors.push(`Agent × 项目缺少 ${sub}/：${rel}/`);
       }
       await checkSpecIndex(home, pdir, errors);
-      // 任务：编号连续、类型合法、默认 Task 恰好一个
+      // 任务：编号连续、类型合法、默认 Task 恰好一个。Task 目录由 checkTask 负责，
+      // 所以 `requireNotes` 那趟要把它们整棵跳过（否则同一个 Task 会被查两遍、报两遍）。
       const tasksDir = join(pdir, "tasks");
+      const scope: TaskScope = { agentId: id, projectId: pid };
+      const taskDirs = new Set<string>();
       let defaults = 0;
       for (const name of await subdirs(tasksDir)) {
         if (!TASK_DIR.test(name)) { errors.push(`Task 目录名应为 NNNN-标题：${rel}/tasks/${name}`); continue; }
-        const info = await checkTask(home, join(tasksDir, name), errors, warnings);
+        taskDirs.add(join(tasksDir, name));
+        const info = await checkTask(home, join(tasksDir, name), scope, errors, warnings, counter);
         if (info?.isDefault) defaults += 1;
-        counter.n += 1;
       }
       if (defaults === 0) errors.push(`Agent × 项目缺少默认 Task（类型 daily）：${rel}/tasks/`);
       if (defaults > 1) errors.push(`默认 Task 应只有一个，现在有 ${defaults} 个：${rel}/tasks/`);
-      await requireNotes(home, pdir, errors, counter);
+      await requireNotes(home, pdir, errors, counter, taskDirs);
     }
   }
   await requireNotes(home, harness, errors, counter);
