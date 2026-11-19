@@ -39,3 +39,22 @@
 
 - 规则：知识按"能否定位/登录/干扰系统"判密；本机运维记录不入仓库模板；架构/需求/页面设计命名入 `knowledge/`。
 - 依据：2026-10-21 远程访问文档判密（项目 task 0001/0002 系列）＋`knowledge/architecture/remote-access.md` 的边界行。
+
+### 2.7 「从这个 Task 读哪一份文档」只有一个实现，校验器与业务层共用（必须）
+
+- 场景：任何需要拿到 Task 的 `task.md` / `AGENTS.md` / 各文档的代码——装配、列表、`ensureDailyShard`、
+  结构校验（`pnpm home:check`）。
+- 规则：
+  - **必须** 只经由 `src/task-doc-path.ts` 的 `taskDocRootOf(taskDir, scope, dirName)` 得到读根，
+    再由它拼文件名；**必须不** 在别的模块里自己 `join(taskDir, "task.md")`。
+  - **必须** 判据是"工作区里那份 `task.md` 在不在"（协议 §3.7「读侧能穿透」），
+    **必须不** 用"`home/` 目录存不存在"当代替——工作区可能建了一半。
+  - **必须** 让结构校验也走这条判定，并在两个根上都检查：文档树读工作区，
+    `evidence/` 这类不进版本控制的读主区。
+- 为什么：2026-11-19 实测（Task 0029）——`home-check.ts` 自己拼 `join(dir, "task.md")`，
+  于是 42 条"Task 缺少 task.md / 缺少 AGENTS.md"、20 条 Task 骨架缺失、2 条"缺少默认 Task"
+  全是假阳性（工作区里一直都有）。这类漂移**不会报错**：读主区读到的是"上次合并的版本"或空，
+  校验器把"我看不到"当成"不存在"。
+- 同族条文：`specs/code/api/api.md` 2.7（同一个对象只有一个形状、一处实现）。
+- 机器检查：`test/home-check-worktree.test.mjs`（T-A 工作区形态不报、T-A 活性：工作区里真缺时必须报；
+  把 `checkTask` 改回读主区 → 必红）。

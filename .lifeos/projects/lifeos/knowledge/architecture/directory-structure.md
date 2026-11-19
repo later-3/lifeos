@@ -16,6 +16,7 @@ lifeos/
 │  ├─ tasks.ts              Task：默认 Task、分片、普通 Task、模板选择、列表
 │  ├─ project-skeleton.ts   结构骨架（各层与子目录的创建，说明文字来自协议目录的 skeleton/）
 │  ├─ home-check.ts         家目录结构校验（pnpm home:check）
+│  ├─ task-doc-path.ts      Task 文档读根：有工作区就是工作区那份（业务与校验共用）
 │  ├─ install.ts / home.ts  家目录安装（模板整树复制）
 │  ├─ agents.ts / projects.ts / project-registry.ts  Agent、项目绑定与全局注册表
 │  ├─ agent-tools.ts        Pi 工具（Agent / 项目 / Task），调用 tasks.ts 等共享实现
@@ -43,10 +44,16 @@ lifeos/
 ├─ agents/<id>/                 Agent 本身：AGENTS.md · agent.json · identity.md · tools/ · memory/
 │  └─ projects/<pid>/           Agent × 项目（默认项目 pid = workspace）：AGENTS.md · flywheel.md · concept-space.md · specs/ · cases/ · knowledge/ · tools/ · todo/ · memory/ · task-types/ · sessions/ · tasks/
 │     └─ tasks/NNNN-标题/       Task：AGENTS.md · task.md · flywheel.md · concept-space.md · specs/ · cases/ · knowledge/ · tools/ · todo/ · 日志（开发类 log.md；日常类 daily/）
+│        ├─ repo/               项目仓工作区（git worktree，建 Task 时自动建；协议 §3.7）
+│        ├─ home/               家目录仓工作区（同上）；**Task 的文档实际在这里**，主区只剩挂载点
+│        └─ evidence/           过程证据（不进版本控制，只存在于主区；§3.7）
 └─ install-receipt.json         安装收据
 ```
 
 - 默认 Task 是 `tasks/0001-default/`（类型 `daily`）：日常对话按天写进 `daily/<日期>.md`。
+- **Task 的文档在工作区里**（协议 §3.7「读侧能穿透」）：`<taskDir>/home/agents/<a>/projects/<p>/tasks/<NNNN>/`。
+  主区 `<taskDir>/` 只剩三个东西：`home/`、`repo/` 挂载点与 `evidence/`。读文档一律走 `src/task-doc-path.ts`
+  的 `taskDocRootOf()`（业务层与 `home:check` 共用），**不得**自己拼 `<taskDir>/task.md`。
 - `project.json` **只在共享层**（`projects/<pid>/`），绑定目录不写身份（协议 §5.3）。
 - `users/` 下**只有一个**目录（一个家目录一个使用者，Obsidian 式）；`id` 是 URL 安全 ASCII，`name` 给人看。
 - 老的 `config/profile.json` 仍可读（迁移回落），**不再写**——它留作回滚点。
