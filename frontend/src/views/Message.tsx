@@ -385,23 +385,62 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
 }) {
   // 失败轮次：默认展开并保持展开（不回收到"思考过程"一行），否则用户看不到它做过什么
   const [open, toggle] = useAutoOpen(live || turnLive, !forceOpen, forceOpen);
-  const [body, setBody] = useState<string | undefined>(deferred ? undefined : text);
+  /**
+   * **只在按需取（deferred）时才需要自己存一份正文。**
+   *
+   * 非 deferred 的块（流式块、`deferThinking` 关掉的调用）正文就在 `text` 里 ——
+   * 复制进 state 是错的：`useState` 只在挂载时取值，而流式块的 `text` 每来一个 delta 就变长，
+   * 界面会永远停在第一个 delta 那几个字（2026-11-18 自查发现，用户报"内容一下就没了"）。
+   *
+   * 同款做法（A 级）：pi-web `components/MessageView.tsx:946`
+   * `{loading ? … : error ?? (block.deferred ? content : block.thinking)}` ——
+   * 正文直接读 block，只有 deferred 才用取回来的 `content`。
+   */
+  const [content, setContent] = useState<string | undefined>(undefined);
+  /**
+   * 流式期已经在屏幕上滚过的正文（内存里记一份）。
+   *
+   * 为什么需要：一轮结束后 `loadMessages` 会用**服务端事实**整体替换消息，那时 thinking 变成
+   * `deferred: true` + `text: ""`（首屏省字节）。于是"刚看着滚完的思考"在展开时又要重新取 ——
+   * 屏幕上的字先消失再回来，正是用户说的"内容突然一下没了"。
+   * 手里已经有过的正文不该再向服务端要一次：`shown` 优先用它（取回成功后再用 `content`）。
+   */
+  const seenText = useRef("");
+  if (!deferred && text !== "") seenText.current = text;
   const [failed, setFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   /** 能不能取：无原点或参数不合法就**不发请求**（否则换来一串 400/404，见 0027 · R4）。 */
   const request = thinkingRequestOf(origin);
   useEffect(() => {
-    if (!deferred || !open || body !== undefined || failed && reloadKey === 0) return;
+    if (!deferred || !open || content !== undefined) return;
+    if (failed && reloadKey === 0) return;
     if (request === undefined || loadThinking === undefined) return;
     let cancelled = false;
     void (async () => {
       try {
         const fetched = await loadThinking(request);
-        if (!cancelled) { setBody(fetched); setFailed(false); }
+        if (!cancelled) { setContent(fetched); setFailed(false); }
       } catch { if (!cancelled) setFailed(true); }
     })();
     return () => { cancelled = true; };
-  }, [deferred, open, body, failed, reloadKey, request?.entryId, request?.blockIndex, loadThinking]);
+  }, [deferred, open, content, failed, reloadKey, request?.entryId, request?.blockIndex, loadThinking]);
+
+  /**
+   * 展开后显示什么（判定顺序即契约）：
+   *
+   * ```
+   * ① 非 deferred        → text（手里就有正文，永远不显示"取不回"）
+   * ② 已有取回的正文      → content
+   * ③ 取失败了            → 原因 + 重试
+   * ④ 定位不到（老记录）  → 说明为什么取不回，不给注定失败的重试
+   * ⑤ 其余                → 正在取
+   * ```
+   *
+   * **① 必须在最前**：流式块没有 entryId（消息还没落盘，Pi 的 entry id 是落盘时生成的），
+   * 所以它的 `request` 一定是 `undefined`。若先判 request，就会把一条**正在生成的新回复**
+   * 说成「这段思考属于旧记录，取不回正文」—— 用户 2026-11-19 报的正是这件事。
+   */
+  const shown = deferred ? content ?? (seenText.current !== "" ? seenText.current : undefined) : text;
   return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <ClickableRow onClick={toggle}
@@ -423,11 +462,9 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
         */}
       {open && (
         <div className="border-t border-line px-3 py-2 text-ink-700">
-          {request === undefined ? (
-            /* 定位不到（老记录没有 entry id / 参数不合法）：说清"取不回"的原因，不给一个注定失败的重试按钮 */
-            <div className="text-micro text-ink-500" data-testid="thinking-unavailable">
-              这段思考属于旧记录，取不回正文
-            </div>
+          {shown !== undefined ? (
+            /* `streaming` 传给 Markdown（Task 0018）：流式期只给纯文本，整轮结束后才着色 */
+            <Markdown text={shown} className="md-body--compact" streaming={live || turnLive} />
           ) : failed ? (
             /* 取不回来必须说出来并给出口（规范：错误可见、可行动），不能显示"思考是空的" */
             <div className="flex flex-wrap items-center gap-2 text-micro text-ink-500" data-testid="thinking-load-failed">
@@ -437,15 +474,17 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
                 重试
               </ClickableRow>
             </div>
-          ) : body === undefined ? (
+          ) : request === undefined ? (
+            /* 定位不到（老记录没有 entry id）：说清"取不回"的原因，不给一个注定失败的重试按钮 */
+            <div className="text-micro text-ink-500" data-testid="thinking-unavailable">
+              这段思考属于旧记录，取不回正文
+            </div>
+          ) : (
             /* 展开那一刻才去取：给一行"正在取"，而不是空白（空白看起来像"没有思考"） */
             <div className="flex items-center gap-1.5 text-micro text-ink-500" data-testid="thinking-loading">
               <Spinner size={12} className="text-accent" />
               <span>正在取思考正文…</span>
             </div>
-          ) : (
-            /* `streaming` 传给 Markdown（Task 0018）：流式期只给纯文本，整轮结束后才着色 */
-            <Markdown text={body} className="md-body--compact" streaming={live || turnLive} />
           )}
         </div>
       )}

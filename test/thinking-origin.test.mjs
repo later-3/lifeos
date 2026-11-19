@@ -149,3 +149,35 @@ test("T28-4 活性：换回旧规则（宿主 id + 合并下标）这条用例�
   assert.ok(wrongUnderOldRule > 0,
     `旧规则必须至少错一条（实得 ${wrongUnderOldRule}/${requests}）——若为 0，说明夹具已经不能证明修复有效性，需换夹具`);
 });
+
+test("T28-20 新消息的思考块不得被说成「旧记录，取不回」", async () => {
+  /*
+   * 用户 2026-11-19 报告（本任务 P1 引入的回归）：
+   * 「我新发的消息，思考那里还在报是旧记录」。
+   *
+   * 成因：流式期那条 assistant 消息是**乐观插入的占位**，没有 entry id
+   * （Pi 的 entry id 在落盘时才生成 —— `session-manager.ts:277-297` 的 `generateId` 在 `_appendEntry` 时调用），
+   * 所以它的思考块 `origin` 必然是 `undefined` → `request` 也是 `undefined`。
+   * 而 P1 把 `request === undefined` 判在了**第一个分支**，于是每一条正在生成的回复，
+   * 它的思考都被显示成「这段思考属于旧记录，取不回正文」。
+   *
+   * 正确语义（pi-web `components/MessageView.tsx:946` 同款）：
+   * `block.deferred ? content : block.thinking` —— **手里有正文就直接显示**，
+   * "能不能按需取"只对 deferred 块有意义。
+   */
+  const source = await readFile(new URL("../frontend/src/views/Message.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /const shown = deferred \? content[^;]*: text;/,
+    "非 deferred 块的正文必须直接读 text（复制进 state 会冻结在首个 delta）",
+  );
+
+  const shownAt = source.indexOf("{shown !== undefined ? (");
+  const failedAt = source.indexOf(") : failed ? (");
+  const requestAt = source.indexOf(") : request === undefined ? (");
+  assert.ok(shownAt > 0 && failedAt > 0 && requestAt > 0, "三个分支都要在（缺一个说明结构被改了，请同步改这条断言）");
+  assert.ok(shownAt < failedAt && shownAt < requestAt,
+    "「有正文」必须是第一个分支：否则新消息的流式思考会被「取不回正文」顶掉（用户 2026-11-19 报的就是这个）");
+  assert.ok(failedAt < requestAt, "「取失败」要在「取不到」之前：失败得有重试按钮");
+});
