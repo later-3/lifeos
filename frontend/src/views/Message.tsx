@@ -396,17 +396,8 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
    * `{loading ? … : error ?? (block.deferred ? content : block.thinking)}` ——
    * 正文直接读 block，只有 deferred 才用取回来的 `content`。
    */
+  /** 只存**取回来的** deferred 正文；非 deferred 的正文直读 `text`（五个参考项目都这么做）。 */
   const [content, setContent] = useState<string | undefined>(undefined);
-  /**
-   * 流式期已经在屏幕上滚过的正文（内存里记一份）。
-   *
-   * 为什么需要：一轮结束后 `loadMessages` 会用**服务端事实**整体替换消息，那时 thinking 变成
-   * `deferred: true` + `text: ""`（首屏省字节）。于是"刚看着滚完的思考"在展开时又要重新取 ——
-   * 屏幕上的字先消失再回来，正是用户说的"内容突然一下没了"。
-   * 手里已经有过的正文不该再向服务端要一次：`shown` 优先用它（取回成功后再用 `content`）。
-   */
-  const seenText = useRef("");
-  if (!deferred && text !== "") seenText.current = text;
   const [failed, setFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   /** 能不能取：无原点或参数不合法就**不发请求**（否则换来一串 400/404，见 0027 · R4）。 */
@@ -440,7 +431,7 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
    * 所以它的 `request` 一定是 `undefined`。若先判 request，就会把一条**正在生成的新回复**
    * 说成「这段思考属于旧记录，取不回正文」—— 用户 2026-11-19 报的正是这件事。
    */
-  const shown = deferred ? content ?? (seenText.current !== "" ? seenText.current : undefined) : text;
+  const shown = deferred ? content : text;
   return (
     <div className="overflow-hidden rounded-panel bg-message-thinking" data-message-kind="thinking">
       <ClickableRow onClick={toggle}

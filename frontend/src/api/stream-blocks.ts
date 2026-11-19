@@ -240,3 +240,35 @@ export function argPreview(toolName: string, args: unknown): string {
   if (toolName === "grep" || toolName === "find") return `${String(record.pattern ?? "")}${record.path === undefined ? "" : ` @ ${String(record.path)}`}`;
   return `${inline}${extra}`.trim();
 }
+
+/**
+ * 用**服务端已生成的部分**播种流式状态（Task 0028 · P6）。
+ *
+ * ## 为什么需要（用户 2026-11-19："先回复了一些内容，突然一下没了，然后又是新的"）
+ *
+ * 跑到一半才打开会话（或断线重连、切回正在跑的会话）时：
+ *  - `loadMessages` 拿到该轮**已生成的部分**（服务端事实）；
+ *  - 而 `streamRef`（客户端状态机）是空的 —— 它只有"我到了之后收到的事件"。
+ *
+ * 下一个 delta 到达时，`blocksOfStream(next)` 只包含**新事件**造出来的块，
+ * 一替换就把打开之前的正文整体抹掉。屏幕上表现为"内容突然消失，然后从头开始长"。
+ *
+ * ## 做法
+ *
+ * 把服务端块按下标放进**第一个 segment**（用真实 segment 键），之后同一个 contentIndex 的
+ * 增量就自然接在既有文本后面（`applyStreamEvent` 的 `text + delta` 分支）。
+ *
+ * ## 边界（必须守住）
+ *
+ * - **必须** 只播种一次（调用方播种后立即清掉种子）：重复播种会让文本翻倍。
+ * - **必须** 不播种 `deferred` 思考块 —— 它的正文还没取回来（`text: ""`），
+ *   播种进去等于给了一个"空正文 + 真实下标"的块，用户展开时才会补上。
+ * - **必须** 纯函数：不碰 DOM、不碰 React，可被 node 测试穷举。
+ */
+export function seedStreamState(blocks: readonly Block[], segmentKey?: string): StreamState {
+  const slots: StreamSlot[] = blocks.map((block, index) => ({ index, block }));
+  return {
+    segments: [{ key: segmentKey ?? "seed", slots, live: true }],
+    phase: slots.some((slot) => slot.block.type === "thinking") ? "thinking" : slots.length > 0 ? "text" : "waiting",
+  };
+}

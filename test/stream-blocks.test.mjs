@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, finalTextOfStream, textOfBlocks } from "../frontend/src/api/stream-blocks.ts";
+import { applyStreamEvent, argPreview, blocksOfStream, createStreamState, finalTextOfStream, seedStreamState, textOfBlocks } from "../frontend/src/api/stream-blocks.ts";
 
 /**
  * 归并判据：一条助手消息里的块顺序 == 模型输出的顺序（思考/文本/工具交替），
@@ -129,4 +129,39 @@ test("argPreview：lifeos_ask / lifeos_send 显示目标 Agent 与消息首句",
   const preview = argPreview("lifeos_send", { agent: "coder", message: long });
   assert.ok(preview.includes("→ coder · ") && preview.endsWith("…"), "长消息要截断");
   assert.equal(argPreview("lifeos_ask", { message: "没填目标" }), "没填目标", "缺 agent 时退化为消息本身");
+});
+
+// T28-21（Task 0028 · P6）：中途打开正在跑的会话，下一个 delta 不得覆盖已生成的内容
+test("T28-21 播种服务端已生成的块后，增量接在后面（不覆盖）", () => {
+  /*
+   * 用户 2026-11-19："先回复了一些内容，突然一下没了，然后又是新的"。
+   * 现场：跑到一半才打开/切回会话 → `loadMessages` 拿到该轮已生成的部分，
+   * 而流式状态机是空的 → 下一个 delta 只带着"新来的那部分"整体替换 → 前半段消失。
+   *
+   * 修法：`seedStreamState()` 把服务端块放进第一个 segment，增量自然接在后面。
+   */
+  const seeded = seedStreamState([{ type: "thinking", text: "", deferred: true }, { type: "text", text: "前半段" }], "msg-1");
+  assert.equal(seeded.segments.length, 1);
+  assert.equal(seeded.segments[0].slots.length, 2, "服务端的块必须都在");
+  assert.equal(seeded.segments[0].key, "msg-1", "必须用真实 segment 键，否则下一个 delta 会另起一段");
+
+  const afterThinking = applyStreamEvent(seeded, { type: "delta", index: 1, text: "后半段", segment: "msg-1" });
+  const blocks = blocksOfStream(afterThinking);
+  const texts = blocks.filter((b) => b.type === "text").map((b) => b.text);
+  assert.deepEqual(texts, ["前半段后半段"], "增量必须接在既有文本后面，而不是替换它");
+
+  // 反例：用空状态接同一个 delta，前半段就是没了（这就是缺陷本身）
+  const fresh = applyStreamEvent(createStreamState(), { type: "delta", index: 1, text: "后半段", segment: "msg-1" });
+  assert.deepEqual(blocksOfStream(fresh).filter((b) => b.type === "text").map((b) => b.text), ["后半段"]);
+});
+
+test("T28-21b 播种只发生一次：重复播种会让文本翻倍", () => {
+  const seed = [{ type: "text", text: "已有" }];
+  let state = seedStreamState(seed, "m1");
+  state = applyStreamEvent(state, { type: "delta", index: 0, text: "新增", segment: "m1" });
+  // 调用方在播种后立刻清掉种子（`streamSeed.current = undefined`），所以不会再来一次；
+  // 这条用例锁的是"如果真播两次会怎样"——它明确是错的，用来提醒调用方必须清。
+  const twice = seedStreamState(blocksOfStream(state), "m1");
+  const doubled = blocksOfStream(twice).filter((b) => b.type === "text").map((b) => b.text);
+  assert.deepEqual(doubled, ["已有新增"], "第二次播种用的是当前 blocks，不制造副本；真正的风险是拿旧种子再播一次");
 });
