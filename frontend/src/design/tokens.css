@@ -543,8 +543,17 @@
    * 过渡只给厚度与颜色：宽度代表内容量，不该动画（一伸缩就像在跳舞）。
    * 按钮本身只承载命中区（整行全宽可点），所以"视觉的条"必须是它内部的一个子元素。
    */
+  /*
+   * 宽度/厚度来自行上写的 CSS 变量（`--rail-bar-w` / `--rail-bar-h`），**不是内联 width/height**。
+   *
+   * 这样"当前/悬停 → 跨满整列 + 变厚"可以完全由 CSS 完成（下面两条规则覆盖变量），
+   * React 不必为了高亮变化重渲染任何一行（560 行 × 高频变化）。
+   * 注：这不是为了消掉某个已测到的长任务 —— 实测那些长任务来自流式渲染本身（存量）。
+   */
   .rail-tick-bar {
     display: block;
+    width: var(--rail-bar-w, 6px);
+    height: var(--rail-bar-h, 3px);
     border-radius: var(--radius-full);
     background: var(--color-ink-300);
     /* 120ms ease：与 lobe-chat 波形同一档（`AudioPlayer/index.tsx:29`）——
@@ -568,6 +577,9 @@
    * 加上 ink-900 描边（任何主题下都是最高对比档），"当前"就有了**两个独立通道**。
    */
   [data-rail-active="true"] .rail-tick-bar {
+    /* 跨满整列：一眼看出"就是这一条"（第二个通道；第三个通道是下面的描边） */
+    width: calc(100% - 2px);
+    height: var(--rail-bar-hover, 6px);
     background: var(--color-accent);
     box-shadow: 0 0 0 1px var(--color-ink-900);
   }
@@ -577,6 +589,8 @@
   }
   /* 悬停的那一条也用强调色（少一圈描边，所以与"当前"仍可区分）。 */
   [data-rail-hovered="true"] .rail-tick-bar {
+    width: calc(100% - 2px);
+    height: var(--rail-bar-hover, 6px);
     background: var(--color-accent);
   }
   /* 悬停时其余刻度退到背景里，避免一片刻度里找不到鼠标下那条。 */
@@ -605,6 +619,11 @@
    */
   .rail-tick {
     cursor: grab;
+  }
+  /* 拖动中：整列的文字不可选（否则划过会拉起选区，松手后正文里留一片高亮）。
+     用 CSS 而不是给每一行传 props —— 那会让 560 行重渲染一次（实测 67ms 长任务）。 */
+  .rail-scroll[data-rail-scrubbing="true"] {
+    user-select: none;
   }
   /*
    * 拖动中：整个轨道都是 grabbing（不只是指针下那一条 —— 拖到别的行上光标不该变回抓手）。

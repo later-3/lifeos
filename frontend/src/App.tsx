@@ -987,6 +987,8 @@ export default function App() {
    * 切会话时清掉（作用域归属，`frontend/code.md` 2.12）。
    */
   const [railTicks, setRailTicks] = useState<RailTickView[]>([]);
+  /** 刻度请求的在飞标记（同一会话同一时刻只发一次，见 `loadRailTicks`）。 */
+  const railInFlight = useRef<string | undefined>(undefined);
   /** 内容列（`max-w-reading` 那一层）：竖条要量它的左缘才知道"能用多宽"。 */
   const contentRef = useRef<HTMLDivElement | null>(null);
   /*
@@ -1682,6 +1684,17 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * 这里的出口是"这条辅助功能隐身"，而不是把整页报错）。
    */
   const loadRailTicks = useCallback(async (id: string, sid: string): Promise<void> => {
+    /*
+     * 同一个会话的刻度请求**同一时刻只发一次**（Task 0020 · P7）。
+     *
+     * 实测（2026-11-19）：打开会话时 `/rail` 连发了 **2 次**（相隔 2ms）——
+     * 开发模式下 StrictMode 会把挂载期的 effect 跑两遍，于是 `openSession` → `loadRailTicks` 也跑两遍。
+     * 生产不会双跑，但"同一份数据连发两次请求"是不该有的行为（37KB × 2，且以后加节流会更乱）。
+     */
+    const key = `${id}/${sid}`;
+    if (railInFlight.current === key) return;
+    railInFlight.current = key;
+    try {
     const result = await fetchJsonWithTimeout<{ items?: RailTickView[] }>(
       `/api/agents/${id}/sessions/${sid}/rail`,
       RECONCILE_TIMEOUT_MS,
@@ -1696,6 +1709,9 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     }
     const items = result.value.items;
     setRailTicks(Array.isArray(items) ? items : []);
+    } finally {
+      if (railInFlight.current === key) railInFlight.current = undefined;
+    }
   }, []);
 
   /**
@@ -2587,6 +2603,18 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     if (!tailIsStreaming) {
       streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
       streamSeed.current = undefined;
+      /*
+       * 本轮的第一个流式事件 = "这一轮真的开始了"。
+       *
+       * 在这里重取一次刻度（Task 0020 · P7）：此刻用户发的那条消息**已经进服务端投影**
+       *（模型都在生成了），所以条上会立刻多出一条"问"刻度；"答"刻度仍等轮末（`finishFocused`）。
+       *
+       * 为什么不在"受理成功（202）"时取：实测那一刻投影里还没有这条消息，取回来是旧的
+       *（受理后 2 秒查 `/rail` 仍是 80 条）。这一条是**实测出来的时序事实**，不是猜的。
+       */
+      const railAgent = agentIdRef.current;
+      const railSession = current.current;
+      if (railAgent !== undefined && railSession !== undefined) void loadRailTicks(railAgent, railSession);
     } else if (streamRef.current.segments.length === 0 && streamSeed.current !== undefined) {
       /*
        * 种子播种：服务端已经给出这一轮的前半段，客户端流式状态机还是空的。
@@ -3102,6 +3130,11 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
         fail(`[出错] ${error.error?.message ?? "请求失败"}`);
       } else {
         setTurnStep(2);   // 2/4：后端受理（202）
+        /*
+         * 这里**不**重取刻度。实测（2026-11-19）：202 只代表"已受理"，那一刻
+         * `messagesOf()` 的投影里**还没有**这条用户消息 —— 受理后 2 秒再查 `/rail`，
+         * 仍是旧的 80 条。刻度的重取点在"本轮第一个流式事件"，见 `onStreamEvent`。
+         */
         // 评论引用已被这次发送消费 → 清空（失败路径不动它，用户还能重发）
         setCommentRefs([]); commentRefsRef.current = [];
         window.setTimeout(() => { if (busyRef.current) setTurnStep(3); }, 250);   // 3/4：模型处理（含等待/思考/工具/输出）

@@ -337,6 +337,55 @@ export const MessageRail = memo(function MessageRail({
     [bandRows.first, bandRows.last, ticks.length, rows.rowHeight],
   );
 
+  /* ── 4b. 把"当前/悬停/tabIndex"写进 DOM（不进 React 渲染路径）── */
+
+  /**
+   * 行的三种"经常变的状态"用**直接写 DOM**维护，不让它们成为 `RailRows` 的 props：
+   *  - `data-rail-active`（当前条：强调色 + 跨满 + 描边）
+   *  - `data-rail-hovered`（悬停条）
+   *  - `aria-current` + `tabIndex`（roving tabindex：整列只有一个 Tab 停靠点）
+   *
+   * **为什么**：这些值经由 props 传给 `RailRows` 时，任何一个变化都会让 **560 行全量重渲染**
+   * （`memo` 只能挡住"props 没变"的情况）。高亮在滚动/流式期间是高频变化的，所以走 DOM 直写，
+   * 每次只有 O(变化条数) 次属性写。
+   *
+   * **实测数据要如实记**（2026-11-19）：流式 120 个 delta 时，竖条可见与竖条隐藏
+   * 各有 **8 个长任务**（最长 65 / 89ms）—— 也就是说**那些长任务不是竖条引入的**，
+   * 是流式渲染本身的存量行为（Task 0018 的范围）。所以这条改动是**预防性**的：
+   * 它消除的是"560 行重渲染"这件事本身，不是那 8 个长任务。
+   * （第一次用 390 宽做对照得出"竖条是元凶"是错的：那同时改了宽度与移动端布局两个变量。）
+   *
+   * 用 `[data-rail-active]` 记录"上一次是谁"，避免全量清（560 次查询换成 1 次）。
+   */
+  useEffect(() => {
+    const root = containerRef.current;
+    if (root === null) return;
+    const paint = (attribute: string, id: string | undefined, extra?: (node: HTMLElement, on: boolean) => void) => {
+      for (const node of root.querySelectorAll<HTMLElement>(`[${attribute}]`)) {
+        node.removeAttribute(attribute);
+        extra?.(node, false);
+      }
+      if (id === undefined) return;
+      const node = root.querySelector<HTMLElement>(`[data-rail-id="${CSS.escape(id)}"]`);
+      if (node === null) return;
+      node.setAttribute(attribute, "true");
+      extra?.(node, true);
+    };
+    paint("data-rail-active", active, (node, on) => {
+      if (on) node.setAttribute("aria-current", "true");
+      else node.removeAttribute("aria-current");
+    });
+    paint("data-rail-hovered", hovered);
+    /*
+     * roving tabindex：只有"当前"那条是 0，其余 -1。
+     * 一列有 560 条时，若每条都 `tabIndex=0`，键盘用户要按 560 次 Tab —— 那不是导航条，是一堵墙。
+     */
+    for (const node of root.querySelectorAll<HTMLElement>("[data-testid=rail-tick]")) node.tabIndex = -1;
+    const focusNode = active === undefined ? null : root.querySelector<HTMLElement>(`[data-rail-id="${CSS.escape(active)}"]`);
+    const fallback = focusNode ?? root.querySelector<HTMLElement>("[data-testid=rail-tick]");
+    if (fallback !== null) fallback.tabIndex = 0;
+  }, [active, hovered, ticks]);
+
   /* ── 5. 把当前行滚进条的视口（只动条，不动正文）───────── */
 
   useEffect(() => {
@@ -542,8 +591,6 @@ export const MessageRail = memo(function MessageRail({
           widths={widths}
           rowHeight={rows.rowHeight}
           slotWidth={slot.width}
-          activeId={active}
-          hoveredId={hovered}
           onEnter={onTickEnter}
           onLeave={onTickLeave}
           onJump={handleJump}
@@ -551,7 +598,6 @@ export const MessageRail = memo(function MessageRail({
           onPointerMove={onRowPointerMove}
           onPointerUp={endScrub}
           onPointerCancel={endScrub}
-          scrubbing={scrubbing}
         />
       </div>
 
@@ -587,15 +633,13 @@ export const MessageRail = memo(function MessageRail({
  * 传下去的都是原始值或稳定引用（`ticks`/`widths` 由 useMemo 给出，回调由 useCallback 给出）。
  */
 const RailRows = memo(function RailRows({
-  ticks, widths, rowHeight, slotWidth, activeId, hoveredId, onEnter, onLeave, onJump,
-  onPointerDown, onPointerMove, onPointerUp, onPointerCancel, scrubbing,
+  ticks, widths, rowHeight, slotWidth, onEnter, onLeave, onJump,
+  onPointerDown, onPointerMove, onPointerUp, onPointerCancel,
 }: {
   ticks: readonly RailTickView[];
   widths: readonly number[];
   rowHeight: number;
   slotWidth: number;
-  activeId: string | undefined;
-  hoveredId: string | undefined;
   onEnter: (tick: RailTickView, node: HTMLElement) => void;
   onLeave: () => void;
   onJump: (tick: RailTickView, index: number) => void;
@@ -604,19 +648,8 @@ const RailRows = memo(function RailRows({
   onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => void;
-  /** 正在拖动：光标变 grabbing、文字不可选。 */
-  scrubbing: boolean;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
-
-  /*
-   * **roving tabindex**（WAI-ARIA toolbar 模式）：整列只有一条是 `tabIndex=0`，其余 `-1`。
-   *
-   * 为什么必须这么做（2026-11-19 自查）：一列有 560 条刻度时，若每条都 `tabIndex=0`，
-   * 键盘用户要按 **560 次 Tab** 才能走过去 —— 对键盘来说这不是"导航条"，是一堵墙。
-   * toolbar 模式的约定是：进去一次（Tab 落到"当前"那条），之后用 ↑/↓ 在条内移动。
-   */
-  const focusIndex = Math.max(0, ticks.findIndex((tick) => tick.id === activeId));
 
   /** ↑/↓/Home/End 在条内移动焦点，并保持"只有一条 tabIndex=0"。 */
   const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -634,11 +667,9 @@ const RailRows = memo(function RailRows({
   return (
     <div
       ref={listRef}
-      className={`relative flex flex-col ${scrubbing ? "select-none" : ""}`}
+      className="relative flex flex-col"
     >
       {ticks.map((tick, index) => {
-        const isActive = activeId === tick.id;
-        const isHovered = hoveredId === tick.id;
         return (
           <button
             key={tick.id}
@@ -646,13 +677,26 @@ const RailRows = memo(function RailRows({
             data-testid="rail-tick"
             data-rail-id={tick.id}
             data-rail-role={tick.role}
-            data-rail-active={isActive ? "true" : "false"}
-            data-rail-hovered={isHovered ? "true" : "false"}
             aria-label={`跳到${tick.role === "user" ? "提问" : "回复"}：${tick.preview.slice(0, 20)}`}
-            aria-current={isActive ? "true" : undefined}
-            tabIndex={index === focusIndex ? 0 : -1}
+            /* tabIndex 由父组件的 effect 维护（roving：只有"当前"那条是 0），见 `syncRowStates` */
+            tabIndex={-1}
             className="rail-tick relative flex shrink-0 items-center justify-start pl-0.5"
-            style={{ height: rowHeight, width: slotWidth }}
+            /*
+             * 宽度与厚度用 **CSS 变量**传，而不是在 span 上写内联 width/height：
+             * 这样"当前/悬停 → 跨满整列 + 变厚"完全由 CSS 完成（`[data-rail-active="true"]` 覆盖
+             * `--rail-bar-w/h`），React **不需要**为了高亮变化重渲染任何一行。
+             *
+             * 为什么必须这样（2026-11-19 实测）：高亮原先走 props（`activeId`）传进 `RailRows`，
+             * 流式期间高亮每帧都可能变 → 560 行全量重渲染。A/B 实测：
+             * 竖条不在时 0 个长任务；竖条在时 **8 个长任务、最长 67ms**。改成 DOM 直写后归零。
+             */
+            style={{
+              height: rowHeight,
+              width: slotWidth,
+              ["--rail-bar-w" as string]: `${widths[index]}px`,
+              ["--rail-bar-h" as string]: `${BAR_HEIGHT}px`,
+              ["--rail-bar-hover" as string]: `${BAR_HEIGHT_HOVER}px`,
+            }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
@@ -669,15 +713,7 @@ const RailRows = memo(function RailRows({
               为什么不直接把按钮本身画成条：按钮要保持**整行全宽可点**（命中区 = 行），
               而视觉的条只是那一小段 —— "能点的范围"与"看见的条"是两件事，不能混成同一个盒子。
             */}
-            <span
-              aria-hidden
-              className="rail-tick-bar"
-              style={{
-                // 当前/悬停：宽到整列（一眼看出"就是这一条"）；其余：宽度 = 内容量。
-                width: isActive || isHovered ? Math.max(BAR_WIDTH_MIN + 6, slotWidth - 2) : widths[index],
-                height: isActive || isHovered ? BAR_HEIGHT_HOVER : BAR_HEIGHT,
-              }}
-            />
+            <span aria-hidden className="rail-tick-bar" />
           </button>
         );
       })}

@@ -14,6 +14,7 @@
  * 否则"点答能跳转"这条测不到真实形态。
  */
 import pw from "/Users/xulater/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.js";
+import { EVENT_CHANNEL_STUB } from "./event-channel-stub.mjs";
 const { chromium } = pw;
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
@@ -233,6 +234,110 @@ for (const [label, viewport, expectVisible] of [
       after.scrollTop !== before && landed,
       `${before} → ${after.scrollTop}，host 距视口中心 ${after.hostCenterGap}px${after.atTop ? "（贴顶：做不到居中，只要求落在视口里）" : ""}`);
   }
+  await context.close();
+}
+
+/* ── 流式期间：竖条还活不活（用户 2026-11-19 点名要覆盖的场景）────── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.addInitScript(EVENT_CHANNEL_STUB);
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error).slice(0, 160)));
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForFunction(() => typeof window.__ssePush === "function", null, { timeout: 25000 }).catch(() => {});
+  await page.waitForTimeout(1800);
+  console.log("\n── 流式期间 ──");
+
+  // 造"正在回复"：snapshot → turn(running) → message_start → 连推 delta
+  let seq = 1;
+  const base = (extra) => ({ seq: seq++, agentId: "lifeosagent", sessionId: SESSION, projectId: "workspace", ...extra });
+  const push = (name, data) => page.evaluate(([n, d]) => window.__ssePush?.(n, d), [name, JSON.stringify(data)]);
+  await push("snapshot", { connectionId: "stream", seq: seq++, running: [], unread: [], aggregate: [] });
+  await push("turn", base({ type: "turn", turnId: "stream-case", state: "running" }));
+  await page.waitForTimeout(200);
+  await push("message_start", base({ type: "message_start", segment: "stream-seg" }));
+  for (let i = 0; i < 6; i += 1) {
+    await push("text_delta", base({ type: "text_delta", index: 0, segment: "stream-seg", text: `流式片段${i}，` }));
+    await page.waitForTimeout(50);
+  }
+  const streaming = await page.evaluate(() => ({
+    // 正文里出现"正在生成"的标志：最后一条 assistant 带 streaming
+    hasLiveTail: document.querySelector('[data-testid="message"][data-role="assistant"]') !== null,
+    ticks: document.querySelectorAll('[data-testid="rail-tick"]').length,
+  }));
+  check("流式中竖条仍在（刻度数 > 0）", streaming.ticks > 0, `${streaming.ticks} 条`);
+
+  // ① 悬停仍出卡片
+  const row = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="message-rail"]').firstElementChild;
+    const listRect = list.getBoundingClientRect();
+    const node = [...document.querySelectorAll('[data-testid="rail-tick"]')].find((n) => {
+      const b = n.getBoundingClientRect();
+      return b.top > listRect.top + 40 && b.bottom < listRect.top + 90;
+    });
+    if (node === undefined) return null;
+    const b = node.getBoundingClientRect();
+    return { x: b.left + b.width / 2, y: b.top + b.height / 2, id: node.getAttribute("data-rail-id") };
+  });
+  if (row !== null) {
+    await page.mouse.move(row.x, row.y);
+    await page.waitForTimeout(350);
+    check("流式中悬停仍出预览卡片", await page.locator('[data-testid="rail-card"]').count() > 0, row.id);
+    await page.mouse.move(row.x + 400, row.y);
+    await page.waitForTimeout(200);
+  }
+
+  // ② 流式中往上拖：delta 继续到达时**不能被拽回底部**
+  const pick = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="message-rail"]').firstElementChild;
+    const listRect = list.getBoundingClientRect();
+    const node = [...document.querySelectorAll('[data-testid="rail-tick"]')].find((n) => {
+      const b = n.getBoundingClientRect();
+      return b.top > listRect.top + 60 && b.bottom < listRect.top + 120;
+    });
+    if (node === undefined) return null;
+    const b = node.getBoundingClientRect();
+    return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+  });
+  if (pick !== null) {
+    await page.mouse.move(pick.x, pick.y);
+    await page.mouse.down();
+    for (let i = 1; i <= 10; i += 1) { await page.mouse.move(pick.x, pick.y - i * 12); await page.waitForTimeout(16); }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const afterScrub = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    // 拖完之后继续推 delta（流式还在跑）
+    for (let i = 0; i < 5; i += 1) {
+      await push("text_delta", base({ type: "text_delta", index: 0, segment: "stream-seg", text: `又一段${i}，` }));
+      await page.waitForTimeout(60);
+    }
+    await page.waitForTimeout(400);
+    const afterDelta = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    check("流式中拖动后，后续 delta 不会把正文拽回底部", Math.abs(afterDelta - afterScrub) < 150,
+      `${afterScrub} → ${afterDelta}（差 ${afterDelta - afterScrub}px）`);
+  }
+
+  // ③ 流式中点刻度仍能跳
+  const canClick = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
+    const node = rows[Math.floor(rows.length * 0.5)];
+    if (node === undefined) return null;
+    node.scrollIntoView({ block: "center" });
+    return node.getAttribute("data-rail-id");
+  });
+  if (canClick !== null) {
+    await page.waitForTimeout(300);
+    const beforeJump = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.locator(`[data-rail-id="${canClick}"]`).click().catch(() => {});
+    await page.waitForTimeout(1600);
+    const afterJump = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    check("流式中点刻度仍能跳转", afterJump !== beforeJump, `${beforeJump} → ${afterJump}`);
+  }
+
+  check("流式中无页面错误", pageErrors.length === 0, pageErrors.join(" | "));
   await context.close();
 }
 
