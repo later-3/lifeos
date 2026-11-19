@@ -474,10 +474,17 @@ function ThinkingBlock({ text, deferred = false, live, turnLive = live, forceOpe
                 重试
               </ClickableRow>
             </div>
-          ) : request === undefined ? (
-            /* 定位不到（老记录没有 entry id）：说清"取不回"的原因，不给一个注定失败的重试按钮 */
+          ) : request === undefined || loadThinking === undefined ? (
+            /*
+             * 到这里说明：既没有正文、也没在取。
+             * 两种成因**必须分开说**，否则用户会被误导：
+             *  - `request === undefined`：定位不到（老记录没有 entry id）；
+             *  - `loadThinking === undefined`：这个渲染位置没有接取数能力
+             *    （`PeerPanel` / `SessionHistory` 复用 MessageView 但没传这个属性）——
+             *    文案若照抄"旧记录"，用户就会去问"我这条是新消息啊"。
+             */
             <div className="text-micro text-ink-500" data-testid="thinking-unavailable">
-              这段思考属于旧记录，取不回正文
+              {request === undefined ? "这段思考属于旧记录，取不回正文" : "这个位置不支持展开思考正文"}
             </div>
           ) : (
             /* 展开那一刻才去取：给一行"正在取"，而不是空白（空白看起来像"没有思考"） */

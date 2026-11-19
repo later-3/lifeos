@@ -175,7 +175,7 @@ test("T28-20 新消息的思考块不得被说成「旧记录，取不回」", a
 
   const shownAt = source.indexOf("{shown !== undefined ? (");
   const failedAt = source.indexOf(") : failed ? (");
-  const requestAt = source.indexOf(") : request === undefined ? (");
+  const requestAt = source.indexOf(") : request === undefined || loadThinking === undefined ? (");
   assert.ok(shownAt > 0 && failedAt > 0 && requestAt > 0, "三个分支都要在（缺一个说明结构被改了，请同步改这条断言）");
   assert.ok(shownAt < failedAt && shownAt < requestAt,
     "「有正文」必须是第一个分支：否则新消息的流式思考会被「取不回正文」顶掉（用户 2026-11-19 报的就是这个）");
