@@ -71,6 +71,13 @@ async function openApp({ history = [] } = {}) {
     const p = new URL(route.request().url()).pathname;
     if (p === "/api/agents") return json(route, { items: [AGENT] });
     if (/^\/api\/agents\/[^/]+\/projects$/.test(p)) return json(route, { items: [PROJECT] });
+    /*
+     * `/groups` 必须也给：列表从 Task 0017 起走这个聚合端点（`fetchGroups`）。
+     * 不给的话它落到兜底的 `{}` → 分组为空 → 会话行不出现 → 下面的 `page.waitForSelector` 拿不到
+     * 初始消息，于是**推帧全推给了一个没有宿主的页面**：T1 报 "0/0 帧"（空集恒绿）、
+     * T2 报 null、T1b 报 []。这正是 `testing.md` 2.15 说的"夹具注入到没人读的地方"。
+     */
+    if (/^\/api\/agents\/[^/]+\/projects\/[^/]+\/groups$/.test(p)) return json(route, { items: [{ project: PROJECT, sessions: [row()] }] });
     if (/^\/api\/agents\/[^/]+\/projects\/[^/]+\/sessions$/.test(p)) return json(route, { items: [row()] });
     if (/^\/api\/agents\/[^/]+\/config$/.test(p)) return json(route, { model: null, thinkingLevel: "medium" });
     if (/turns\/last$/.test(p)) return json(route, { turn: null });
@@ -195,6 +202,50 @@ if (RUN === "all" || RUN === "T1") {
   check("T1 已显示的正文块不向上跳（相邻帧上移 ≤ 40px）", probe.maxRiseBack <= 40, `最大上移 ${probe.maxRiseBack}px`);
   check("T1 无页面异常", app.errors.length === 0, app.errors[0] ?? "");
   void afterFirst;
+  await app.close();
+}
+
+if (RUN === "all" || RUN === "T1c") {
+  /*
+   * T1c：**一轮之内，已经显示出来的文字只增不减**（用户 2026-11-18："先回复了一些内容，突然一下没了"）。
+   *
+   * T1 只看正文块"搬不搬家、跳不跳"，看不到"整段消失"。这里直接盯字数：
+   * 同一轮里，正文区与过程区的**总字数**只允许增长或持平 —— 只有"这一轮结束"才允许折叠掉文字。
+   *
+   * 为什么这条能抓住真问题：流式期间任何让正文变短的路径（新建一条消息顶掉旧的、
+   * 状态机重置、按服务端事实中途覆盖）都会让字数下降，而它一律不是用户想要的。
+   */
+  const app = await openApp();
+  await app.page.evaluate(() => {
+    window.__lens = [];
+    const tick = () => {
+      const all = [...document.querySelectorAll('[data-testid="message"] [data-testid="message-text"], [data-testid="process-body"] .md-body')];
+      const total = all.reduce((sum, el) => sum + (el.textContent ?? "").replace(/\s+/g, "").length, 0);
+      window.__lens.push(total);
+      window.__raf = requestAnimationFrame(tick);
+    };
+    window.__raf = requestAnimationFrame(tick);
+  });
+  await pushSegment(app, { segment: "msg-1", text: "过渡语一。", tool: "c1" });
+  await pushSegment(app, { segment: "msg-2", text: "过渡语二。", tool: "c2" });
+  await pushSegment(app, { segment: "msg-3", text: "最终正文：结论在这里。" });
+  const probe = await app.page.evaluate(() => {
+    cancelAnimationFrame(window.__raf);
+    const lens = window.__lens;
+    let worstDrop = 0;
+    let peak = 0;
+    for (const len of lens) {
+      if (len < peak) worstDrop = Math.max(worstDrop, peak - len);
+      peak = Math.max(peak, len);
+    }
+    return { frames: lens.length, peak, final: lens[lens.length - 1] ?? 0, worstDrop };
+  });
+  /*
+   * 允许 2 个字符的抖动：Markdown 渲染会给围栏/列表补标记字符（Task 0018 · T5 记录过同一现象），
+   * 但**不允许整段消失**（那会是十几个字以上的跌幅）。
+   */
+  check("T1c 一轮之内文字只增不减（轮中不整段消失）", probe.worstDrop <= 2, JSON.stringify(probe));
+  check("T1c 无页面异常", app.errors.length === 0, app.errors[0] ?? "");
   await app.close();
 }
 
