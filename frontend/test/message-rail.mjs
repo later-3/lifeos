@@ -141,6 +141,21 @@ for (const [label, viewport, expectVisible] of [
     check(`[${label}] 有当前条`, false, "没有 data-rail-active=true 的行");
   }
 
+  // ⑥b 键盘：整列只有一个 Tab 停靠点，↑/↓ 在条内移动（WAI-ARIA toolbar）
+  if (expectVisible && snap.ticks.length > 3) {
+    const tabbable = await page.evaluate(() => [...document.querySelectorAll('[data-testid="rail-tick"]')].filter((n) => n.tabIndex === 0).length);
+    check(`[${label}] 整列只有 1 个 Tab 停靠点（roving tabindex，不是 ${snap.ticks.length} 次 Tab）`, tabbable === 1, `${tabbable} 个`);
+    await page.evaluate(() => document.querySelector('[data-testid="rail-tick"][tabindex="0"]')?.focus());
+    const before = await page.evaluate(() => document.activeElement?.getAttribute("data-rail-id"));
+    await page.keyboard.press("Home");
+    await page.keyboard.press("ArrowDown");
+    const after = await page.evaluate(() => document.activeElement?.getAttribute("data-rail-id"));
+    check(`[${label}] ↑/↓ 在条内移动焦点`, after !== null && after !== undefined, `Home→↓ 落在 ${after}（原 ${before}）`);
+    const cardOnFocus = await page.evaluate(() => document.querySelector('[data-testid="rail-card"]') !== null);
+    check(`[${label}] 焦点落到某条时卡片跟着出现（键盘也能预览）`, cardOnFocus);
+    await page.keyboard.press("Escape");
+  }
+
   // ⑦ 悬停 → 卡片，与该行垂直居中
   if (expectVisible && snap.ticks.length > 2) {
     const target = snap.ticks[Math.min(3, snap.ticks.length - 1)];

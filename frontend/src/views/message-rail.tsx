@@ -50,6 +50,7 @@ import {
 import {
   BAR_HEIGHT,
   BAR_HEIGHT_HOVER,
+  RAIL_MAX_RATIO,
   BAR_WIDTH_MIN,
   railBandOf,
   railCardPlaceOf,
@@ -90,8 +91,6 @@ export type MessageRailProps = {
   onJump: (tick: RailTickView) => void;
   /** 已下载消息的 id 顺序（判"已下载到哪一条"）。 */
   loadedIds: readonly (string | undefined)[];
-  /** 还有更早的没下载（顶部虚线提示）。 */
-  hasOlder?: boolean;
 };
 
 /**
@@ -103,11 +102,23 @@ export type MessageRailProps = {
 function measureAnchors(container: HTMLElement, ticks: readonly RailTickView[]): Array<{ id: string; top: number }> {
   const containerTop = container.getBoundingClientRect().top;
   const offset = container.scrollTop - containerTop;
+  /*
+   * **一次** `querySelectorAll` 建索引，再按刻度的顺序取 —— 而不是对每条刻度各来一次 `querySelector`。
+   * 实测代价：560 条刻度的会话里，逐条查是 560 次选择器解析 + 560 次布局读取，
+   * 耳朵贴在滚动路径上（`frontend/code.md` 2.19 反对"滚动时做与数据量成正比的工作"）。
+   * 这里只量**已渲染**的那些（几十条），没渲染的根本不在 DOM 里，跳过不猜位置。
+   */
+  const topOf = new Map<string, number>();
+  for (const node of container.querySelectorAll<HTMLElement>("[data-message-id]")) {
+    const id = node.getAttribute("data-message-id");
+    if (id === null || topOf.has(id)) continue;
+    topOf.set(id, node.getBoundingClientRect().top + offset);
+  }
   const anchors: Array<{ id: string; top: number }> = [];
   for (const tick of ticks) {
-    const node = container.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(tick.id)}"]`);
-    if (node === null) continue;                          // 没渲染/没下载：跳过，不猜位置
-    anchors.push({ id: tick.id, top: node.getBoundingClientRect().top + offset });
+    const top = topOf.get(tick.id);
+    if (top === undefined) continue;
+    anchors.push({ id: tick.id, top });
   }
   return anchors;
 }
@@ -127,7 +138,6 @@ export const MessageRail = memo(function MessageRail({
   contentRef,
   onJump,
   loadedIds,
-  hasOlder = false,
 }: MessageRailProps) {
   const [slot, setSlot] = useState<{ visible: boolean; width: number; gutter: number }>({ visible: false, width: 0, gutter: 0 });
   /** 可用高度（= 对话区高度）。 */
@@ -193,8 +203,22 @@ export const MessageRail = memo(function MessageRail({
   useEffect(() => {
     const container = scrollContainer.current;
     if (container === null) return;
+    let raf = 0;
+    let lastCommitted = container.scrollTop;
     const onScroll = () => {
-      setScrollTop(container.scrollTop);
+      /*
+       * 滚动期间**每帧只提交一次**、且只在值真的变了时提交（`frontend/code.md` 2.19：
+       * 连续手势不驱动 React 状态）。直接 `setScrollTop(...)` 会让滚动事件频率（~120Hz）
+       * 带着整棵子树重渲染 —— 尽管这里只更新一个数，"每帧一次 commit"本身就是滚动抖动的来源。
+       */
+      if (raf !== 0) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const next = container.scrollTop;
+        if (next === lastCommitted) return;
+        lastCommitted = next;
+        setScrollTop(next);
+      });
       if (measureTimerRef.current !== undefined) return;
       measureTimerRef.current = setTimeout(() => {
         measureTimerRef.current = undefined;
@@ -209,6 +233,7 @@ export const MessageRail = memo(function MessageRail({
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       container.removeEventListener("scroll", onScroll);
+      if (raf !== 0) cancelAnimationFrame(raf);
       if (measureTimerRef.current !== undefined) { clearTimeout(measureTimerRef.current); measureTimerRef.current = undefined; }
       if (settleTimerRef.current !== undefined) { clearTimeout(settleTimerRef.current); settleTimerRef.current = undefined; }
     };
@@ -263,12 +288,18 @@ export const MessageRail = memo(function MessageRail({
   const bandRows = useMemo(() => {
     const top = scrollTop;
     const bottom = scrollTop + metrics.clientHeight;
+    /*
+     * 先建 id → top 的索引再扫一遍：直接在内层 `anchors.find()` 是 O(条数 × 锚点数)，
+     * 560 条刻度的会话里每次滚动要跑 30 万次比较（实测这属于"滚动路径上的重算"，`frontend/code.md` 2.19 反对）。
+     */
+    const topOf = new Map<string, number>();
+    for (const anchor of anchors) topOf.set(anchor.id, anchor.top);
     let first = -1;
     let last = -1;
     for (let index = 0; index < ticks.length; index += 1) {
-      const anchor = anchors.find((item) => item.id === ticks[index].id);
-      if (anchor === undefined) continue;
-      if (anchor.top >= top - metrics.clientHeight * 0.5 && anchor.top <= bottom) {
+      const anchorTop = topOf.get(ticks[index].id);
+      if (anchorTop === undefined) continue;
+      if (anchorTop >= top - metrics.clientHeight * 0.5 && anchorTop <= bottom) {
         if (first < 0) first = index;
         last = index;
       }
@@ -401,7 +432,7 @@ export const MessageRail = memo(function MessageRail({
         role="toolbar"
         aria-orientation="vertical"
         aria-label="消息导航"
-        style={{ width: slot.width, maxHeight: avail > 0 ? Math.max(0, avail * 0.62) : undefined }}
+        style={{ width: slot.width, maxHeight: avail > 0 ? Math.max(0, avail * RAIL_MAX_RATIO) : undefined }}
       >
         {/*
           「当前可视范围」带：绝对定位在行之上、不参与布局。
@@ -417,50 +448,17 @@ export const MessageRail = memo(function MessageRail({
             style={{ top: band.top, height: Math.max(2, band.height) }}
           />
         )}
-        <div className="relative flex flex-col">
-          {ticks.map((tick, index) => {
-            const isActive = active === tick.id;
-            const isHovered = hovered === tick.id;
-            return (
-              <button
-                key={tick.id}
-                type="button"
-                data-testid="rail-tick"
-                data-rail-id={tick.id}
-                data-rail-role={tick.role}
-                data-rail-active={isActive ? "true" : "false"}
-                data-rail-hovered={isHovered ? "true" : "false"}
-                aria-label={`跳到${tick.role === "user" ? "提问" : "回复"}：${tick.preview.slice(0, 20)}`}
-                aria-current={isActive ? "true" : undefined}
-                className="rail-tick relative flex shrink-0 cursor-pointer items-center justify-start pl-0.5"
-                style={{
-                  height: rows.rowHeight,
-                  width: slot.width,
-                }}
-                onMouseEnter={(event) => onTickEnter(tick, event.currentTarget)}
-                onMouseLeave={onTickLeave}
-                onFocus={(event) => onTickEnter(tick, event.currentTarget)}
-                onBlur={onTickLeave}
-                onClick={() => handleJump(tick, index)}
-              >
-                {/*
-                  真条：宽度 = 内容量（内联），厚度走 CSS 变量（`.rail-tick` 的 ::before 用它）。
-                  为什么用伪元素而不是按钮自身的背景：按钮要保持全宽可点（命中区 = 整行），
-                  而视觉的条只是那一小段 —— 两件事不能混成同一个盒子。
-                */}
-                <span
-                  aria-hidden
-                  className="rail-tick-bar"
-                  style={{
-                    // 当前/悬停：宽到整列（一眼看出"就是这一条"）；其余：宽度 = 内容量。
-                    width: isActive || isHovered ? Math.max(BAR_WIDTH_MIN + 6, slot.width - 2) : widths[index],
-                    height: isActive || isHovered ? BAR_HEIGHT_HOVER : BAR_HEIGHT,
-                  }}
-                />
-              </button>
-            );
-          })}
-        </div>
+        <RailRows
+          ticks={ticks}
+          widths={widths}
+          rowHeight={rows.rowHeight}
+          slotWidth={slot.width}
+          activeId={active}
+          hoveredId={hovered}
+          onEnter={onTickEnter}
+          onLeave={onTickLeave}
+          onJump={handleJump}
+        />
       </div>
 
       {card !== undefined && (
@@ -480,6 +478,100 @@ export const MessageRail = memo(function MessageRail({
           </p>
         </div>
       )}
+    </div>
+  );
+});
+
+/**
+ * 一列行（**单独 memo**）。
+ *
+ * 为什么拆出来：父组件在滚动时会 `setScrollTop`（每帧最多一次），若行是父组件里直接 map 出来的，
+ * 每次重渲染都会重建 560 个 `<button>` 的 props 与内联 style。拆成 `memo` 之后，
+ * 滚动导致的父重渲染只传下**没变的**几个引用，行树整体跳过（`frontend/code.md` 2.31 的同一条思路：
+ * 热路径上的重算量必须与历史长度无关）。
+ *
+ * 传下去的都是原始值或稳定引用（`ticks`/`widths` 由 useMemo 给出，回调由 useCallback 给出）。
+ */
+const RailRows = memo(function RailRows({
+  ticks, widths, rowHeight, slotWidth, activeId, hoveredId, onEnter, onLeave, onJump,
+}: {
+  ticks: readonly RailTickView[];
+  widths: readonly number[];
+  rowHeight: number;
+  slotWidth: number;
+  activeId: string | undefined;
+  hoveredId: string | undefined;
+  onEnter: (tick: RailTickView, node: HTMLElement) => void;
+  onLeave: () => void;
+  onJump: (tick: RailTickView, index: number) => void;
+}) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  /*
+   * **roving tabindex**（WAI-ARIA toolbar 模式）：整列只有一条是 `tabIndex=0`，其余 `-1`。
+   *
+   * 为什么必须这么做（2026-11-19 自查）：一列有 560 条刻度时，若每条都 `tabIndex=0`，
+   * 键盘用户要按 **560 次 Tab** 才能走过去 —— 对键盘来说这不是"导航条"，是一堵墙。
+   * toolbar 模式的约定是：进去一次（Tab 落到"当前"那条），之后用 ↑/↓ 在条内移动。
+   */
+  const focusIndex = Math.max(0, ticks.findIndex((tick) => tick.id === activeId));
+
+  /** ↑/↓/Home/End 在条内移动焦点，并保持"只有一条 tabIndex=0"。 */
+  const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const forward = event.key === "ArrowDown" || event.key === "ArrowRight";
+    const backward = event.key === "ArrowUp" || event.key === "ArrowLeft";
+    const toHome = event.key === "Home";
+    const toEnd = event.key === "End";
+    if (!forward && !backward && !toHome && !toEnd) return;
+    event.preventDefault();
+    const next = toHome ? 0 : toEnd ? ticks.length - 1 : Math.max(0, Math.min(ticks.length - 1, index + (forward ? 1 : -1)));
+    const nodes = listRef.current?.querySelectorAll<HTMLButtonElement>("[data-testid=rail-tick]");
+    nodes?.[next]?.focus();
+  };
+
+  return (
+    <div ref={listRef} className="relative flex flex-col">
+      {ticks.map((tick, index) => {
+        const isActive = activeId === tick.id;
+        const isHovered = hoveredId === tick.id;
+        return (
+          <button
+            key={tick.id}
+            type="button"
+            data-testid="rail-tick"
+            data-rail-id={tick.id}
+            data-rail-role={tick.role}
+            data-rail-active={isActive ? "true" : "false"}
+            data-rail-hovered={isHovered ? "true" : "false"}
+            aria-label={`跳到${tick.role === "user" ? "提问" : "回复"}：${tick.preview.slice(0, 20)}`}
+            aria-current={isActive ? "true" : undefined}
+            tabIndex={index === focusIndex ? 0 : -1}
+            className="rail-tick relative flex shrink-0 cursor-pointer items-center justify-start pl-0.5"
+            style={{ height: rowHeight, width: slotWidth }}
+            onMouseEnter={(event) => onEnter(tick, event.currentTarget)}
+            onMouseLeave={onLeave}
+            onFocus={(event) => onEnter(tick, event.currentTarget)}
+            onBlur={onLeave}
+            onClick={() => onJump(tick, index)}
+            onKeyDown={(event) => onKeyDown(event, index)}
+          >
+            {/*
+              真条是**按钮内的一个 span**，宽度 = 内容量（内联）。
+              为什么不直接把按钮本身画成条：按钮要保持**整行全宽可点**（命中区 = 行），
+              而视觉的条只是那一小段 —— "能点的范围"与"看见的条"是两件事，不能混成同一个盒子。
+            */}
+            <span
+              aria-hidden
+              className="rail-tick-bar"
+              style={{
+                // 当前/悬停：宽到整列（一眼看出"就是这一条"）；其余：宽度 = 内容量。
+                width: isActive || isHovered ? Math.max(BAR_WIDTH_MIN + 6, slotWidth - 2) : widths[index],
+                height: isActive || isHovered ? BAR_HEIGHT_HOVER : BAR_HEIGHT,
+              }}
+            />
+          </button>
+        );
+      })}
     </div>
   );
 });

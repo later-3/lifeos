@@ -13,9 +13,15 @@
  * ```
  *
  * 所以"长度"从**高**变成了**宽**：
- *  - 竖条时代：高度表示内容量，装不下只能"只画附近一段"（窗口），并为此接受了单条 6px 的妥协；
- *  - 横条时代：**宽度**表示内容量，纵向是一列行，**装不下就整列滚动** —— 不再需要窗口，
- *    也不再需要把行压到 2px（那正是上一版"低于 WCAG 24×24"的账）。
+ *  - 竖条时代：高度表示内容量；装不下时只能"只画附近一段"（窗口），被裁掉的那些**看不见也点不到**
+ *    （实测 548 条里丢 380 条）；
+ *  - 横条时代：**宽度**表示内容量，纵向是一列行；装不下时**整列滚动** ——
+ *    每条仍然存在、仍然可点，只是**一屏看不全**。
+ *
+ * **"装不下"没有消失**（用户 2026-11-19 追问过这一点，问得对）：它换成了"要滚一下这一列"。
+ * 差别在于**代价的性质**：从"内容丢失"变成"多看一步"。同时行高不必再压到 2px ——
+ * 但**仍然会压到 12px**，那依然低于 WCAG 2.5.8 的 24px（短会话才达标）。这条账只还了一半，
+ * 见 `ROW_HEIGHT_MIN` 的注释与 todo#3（两级导航才是真解法）。
  *
  * 用户原话：「我们就默认一个最大的高度，如果对话太长了，用户可以滑动这个对话预览」。
  *
@@ -24,7 +30,7 @@
  * | 常量 | 值 | 来源 |
  * |---|---|---|
  * | `BAR_WIDTH_MIN` / `BAR_WIDTH_MAX` | 6 / 32 px | 形制取自 **lobe-chat** `src/features/ChatMiniMap/utils.ts:5-6`（`MIN_WIDTH=5`、`MAX_WIDTH=16`，横向 dash 按内容量变宽）；我们放大到 6–32 是因为左缘空白最多有 242px，不必挤在 16px 里 |
- * | `ROW_HEIGHT_MIN` / `MAX` | 10 / 24 px | `MAX=24` = WCAG 2.5.8 指针下限（短会话用舒适的 24px 行高）；`MIN=10` 是"能指到 + 不糊成一片"的下限（长会话靠滚动，不再压行高） |
+ * | `ROW_HEIGHT_MIN` / `MAX` | 12 / 24 px | `MAX=24` = WCAG 2.5.8 指针下限（短会话用舒适的 24px 行高）；`MIN=12` 是"能指到 + 不糊成一片"的下限（长会话靠滚动，不再压行高）。**12 仍低于 24**，见 `ROW_HEIGHT_MIN` 的注释 |
  * | `BAR_HEIGHT` / `BAR_HEIGHT_HOVER` | 3 / 6 px | 用户 2026-11-04「原始的竖线的宽度也可以再稍微宽点儿」的同一条诉求，横条时代对应"厚度" |
  * | `RAIL_MAX_RATIO` | 0.62 | 整列最多占对话区高度的 62%（留出 header / composer 的呼吸；lobe-chat 的 `max-height: 50vh` 是同一意图，我们用容器高度而非视口高度算，见下） |
  * | `CARD_GAP` / `CARD_PADDING` | 20 / 8 px | 卡片贴轨道右侧（`frontend-spec` 的浮层间距档）；8px 与 `design/popover.ts` 的 `POPOVER_VIEWPORT_PADDING` 同值 |
@@ -59,8 +65,21 @@ export const RAIL_WIDTH_MIN = 24;
 export const BAR_HEIGHT = 3;
 export const BAR_HEIGHT_HOVER = 6;
 
-/** 行高（px）：短会话用 24（舒适），长会话压到 10 并改为滚动。 */
+/** 行高（px）：短会话用 24（舒适 + 满足 WCAG 2.5.8 的 24px 指针下限），长会话压到 12 并改为滚动。 */
 export const ROW_HEIGHT_MAX = 24;
+/**
+ * 行高下限（px）。
+ *
+ * **它仍然低于 WCAG 2.5.8 的 24px 指针下限**，这条账只还了一半，如实记在这里：
+ * - 短会话（行高算出来 ≥ 24）达标；
+ * - 长会话压到 12px —— 是一屏能看多少条与"点得准不准"的折中。
+ *
+ * 为什么不再往下压（上一版竖条压到 6px）：再压就点不准了。真正解决要**两级导航**
+ * （整列画"轮"这个粗粒度、悬停展开轮内细刻度），已登记 todo#3，不在本任务里硬上。
+ *
+ * 12 的依据：`.rail-tick` 是 3px 厚的横条 + 12px 行高 = 上下各 4.5px 余量，
+ * 相邻两条的视觉间隙清晰可辨；实测截图可区分。
+ */
 export const ROW_HEIGHT_MIN = 12;
 
 /** 整列最多占可用高度的比例。 */
@@ -125,8 +144,12 @@ export function railWidthsOf(ticks: readonly RailTickShape[], maxWidth: number =
  * 整列的排布：行高、总高、要不要滚动。
  *
  * **行高随条数自适应**（这是"不僵"的第一个机制）：条少 → 24px 舒适行高（达到 WCAG 24px 指针下限）；
- * 条多 → 压到 10px 并**改为滚动**。压到 10px 就不再往下压 —— 再压就点不准了，
+ * 条多 → 压到 12px 并**改为滚动**。压到 12px 就不再往下压 —— 再压就点不准了，
  * 而竖条时代正是"继续压到 2px"才丢掉了可点性。
+ *
+ * **"装不下"没有消失，只是换了表现形式**：竖条时代装不下 = 刻度被裁掉（看不见也点不到）；
+ * 横条时代装不下 = 一屏看不全，需要滚动这一列。差别在于**每条仍然存在、仍然可点**。
+ * `scrollable` 就是这个区别的标志，`visibleRows` 告诉调用方"一屏能看几条"。
  *
  * @param count 条数
  * @param avail 可用高度（对话区高度）
@@ -232,16 +255,4 @@ export function railCardPlaceOf(
   const rawLeft = row.right + CARD_GAP;
   const maxLeft = Math.max(pad, viewport.width - size.width - pad);
   return { top, left: Math.min(Math.max(rawLeft, pad), maxLeft) };
-}
-
-/**
- * 滚动条自己的滚动位置 → 它"看到"的是整列的第几行（用于把带状指示画对）。
- *
- * 用户会在条上滚动（看更多刻度），但**正文不一定跟着动**；这两件事必须分开：
- *  - 条滚动 → 只改变"条显示了哪一段刻度"；
- *  - 正文滚动 → 改变"当前是第几条"（active）与"哪些条在可视区"（band）。
- */
-export function railRowAt(scrollTop: number, rowHeight: number, count: number): number {
-  if (!(rowHeight > 0)) return 0;
-  return Math.max(0, Math.min(count - 1, Math.floor(scrollTop / rowHeight)));
 }

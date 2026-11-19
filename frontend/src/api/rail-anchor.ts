@@ -66,25 +66,18 @@ export function railAnchorIndexAt(
 }
 
 /**
- * 从"这一屏能看见的消息"里选当前刻度。
+ * 选当前是哪一条刻度（组件**唯一**的入口）。
  *
- * 这是本模块**唯一**给组件用的入口：它同时给出"当前刻度下标"和"窗口锚点下标"，
- * 两者由同一次测量得出，不会出现"高亮用的是新值、窗口用的是旧值"。
+ * 三个来源，按优先级：
+ *  1. **两端吸附**：贴底 = 最后一条（会话末尾是最常停留的位置）；贴顶 = 第一条，
+ *     **但只在整段都下载完时成立** —— 还有更早的没下载时，用户贴的是"已下载部分的顶"；
+ *  2. **量到的锚点**：只在"这一屏的消息真的渲染了"时才有意义；
+ *  3. **兜底下标 / 比例**：渲染窗口只覆盖别处时用。
  *
- * ## 为什么要分两层（实测教训）
+ * 为什么要 3：消息区只渲染最近 50 条所在整轮，滚到中段时可见消息压根没渲染
+ *（实测 560 条刻度的会话滚到 50%，纯锚点算法把高亮定到尾部 `u269`，与眼前内容完全错位）。
  *
- * 消息区只渲染最近 50 条所在整轮。滚到会话中段时：
- *  - 能看见的消息**没有渲染**（`querySelector` 找不到）→ 一个锚点都没有；
- *  - 已渲染的那些全在视口外很远；
- *  - 而"按滚动比例估"只在**整段都渲染了**时才准（否则 `scrollHeight` 只反映已渲染的部分）。
- *
- * 所以：**有可见锚点就用它**（准），**没有就用"已下载消息里的最后一条可见者"兜底**，
- * 两者都没有才退回比例。三种来源都标在返回值里，便于断言与排障。
- *
- * @param anchors 已渲染消息的锚点（`top` 是内容坐标系里的偏移）
- * @param band    视口在内容坐标系里的范围
- * @param visible 这些锚点里哪些真的落在视口内（由调用方用同一批 DOM 判定）
- * @param fallbackIndex 兜底下标（调用方按"已下载里最后一条可见刻度"算）
+ * @param bounds `loadedFrom` = 已下载部分对应的最小刻度下标（0 = 全下载完）
  */
 export function railActivePick(
   anchors: readonly RailAnchor[],
@@ -92,14 +85,8 @@ export function railActivePick(
   clientHeight: number,
   fallbackIndex: number | undefined,
   fractionIndex: number,
-  /** `loadedFrom` = 已下载部分对应的最小刻度下标（0 = 全下载完）。 */
   bounds?: { lastIndex: number; scrollHeight: number; loadedFrom: number },
 ): { index: number | undefined; source: "anchor" | "fallback" | "fraction" | "edge" } {
-  /*
-   * 两端吸附：贴底 = 最后一条（会话末尾是最常停留的位置，不吸附的话高亮会停在屏幕正中那条，
-   * 而用户眼睛在最底下）；贴顶 = 第一条，**但只在整段都下载完时**成立 ——
-   * 还有更早的没下载时，用户贴的是"已下载部分的顶"，标成第 0 条等于说他读到了开头（没这回事）。
-   */
   if (bounds !== undefined) {
     if (bounds.loadedFrom === 0 && scrollTop <= RAIL_EDGE_TOLERANCE) return { index: 0, source: "edge" };
     const maxScroll = bounds.scrollHeight - clientHeight;
@@ -114,31 +101,6 @@ export function railActivePick(
 }
 
 /**
- * 选当前刻度：**优先用能看见的锚点，看不见就退回比例估算**。
- *
- * 为什么不能只用锚点：消息区有渲染窗口（只渲染最近 50 条所在整轮），滚到会话中部时
- * 可见的那几条消息**根本没渲染**，量到的锚点全在视口外。实测（560 条刻度的会话）：
- * 滚到 50% 位置时，唯一能用的锚点是尾部的 `u256`，纯锚点算法会把高亮定到尾部，
- * 而用户眼前是中段的内容 —— 高亮和内容完全对不上。
- *
- * @param anchors     已量到的锚点（可能只覆盖一小段）
- * @param band        当前视口在滚动内容里的范围 `[top, bottom]`
- * @param fractionIndex 按滚动比例估出来的下标（零成本的兜底）
- */
-export function railActiveIndexOf(
-  anchors: readonly RailAnchor[],
-  band: { top: number; bottom: number },
-  scrollTop: number,
-  clientHeight: number,
-  fractionIndex: number,
-): { index: number; source: "anchor" | "fraction" } {
-  const visible = anchors.filter((anchor) => anchor.top >= band.top - clientHeight && anchor.top <= band.bottom + clientHeight);
-  if (visible.length === 0) return { index: fractionIndex, source: "fraction" };
-  const index = railAnchorIndexAt(visible, scrollTop, clientHeight);
-  return { index: index ?? fractionIndex, source: "anchor" };
-}
-
-/**
  * 高亮锁是否还有效（跳转后的平滑滚动期间用它压住中线重算）。
  *
  * @param lock 上一次跳转的锁定记录（`undefined` = 没锁过）
@@ -148,27 +110,6 @@ export function railLockActive(
   now: number,
 ): lock is { index: number; until: number } {
   return lock !== undefined && now < lock.until;
-}
-
-/**
- * 只按滚动比例估一个锚点（**零成本**的即时值，DOM 还没量出来时用它）。
- *
- * 为什么需要它：精确锚点要量每条消息的偏移（一次几十个 `getBoundingClientRect`），
- * 只能节流做（pi-web 上游 `ChatMinimap.tsx` 也是 150ms 节流）。两次测量之间用比例兜着，
- * 保证"滚到顶就一定显示最前面那些刻度"——单调性是对的，误差只在中间段。
- */
-export function railAnchorByFraction(
-  scrollTop: number,
-  scrollHeight: number,
-  clientHeight: number,
-  count: number,
-): number {
-  if (count <= 1) return 0;
-  const scrollable = scrollHeight - clientHeight;
-  if (!(scrollable > 0)) return 0;
-  if (!Number.isFinite(scrollTop)) return 0;              // 量测还没就绪时传进来的是 NaN
-  const ratio = Math.min(1, Math.max(0, scrollTop / scrollable));
-  return Math.round(ratio * (count - 1));
 }
 
 /**

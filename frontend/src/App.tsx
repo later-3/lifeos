@@ -4622,7 +4622,6 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
               scrollContainer={scrollRef}
               contentRef={contentRef}
               onJump={(tick) => { void jumpToTick(tick); }}
-              hasOlder={hasOlderMessages}
               loadedIds={messageIds}
             />
           )}

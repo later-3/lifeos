@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  RAIL_ACTIVE_LOCK_MS, RAIL_EDGE_TOLERANCE, RAIL_FOCUS_RATIO, railActiveIndexOf, railActivePick, railAnchorIndexAt, railLockActive,
+  RAIL_ACTIVE_LOCK_MS, RAIL_EDGE_TOLERANCE, RAIL_FOCUS_RATIO, railActivePick, railAnchorIndexAt, railLockActive,
 } from "../frontend/src/api/rail-anchor.ts";
 
 const anchors = [
@@ -66,28 +66,17 @@ test("锁定窗口与 pi-web 同值（1600ms）", () => {
 
 /* ── 渲染窗口没覆盖视口时不能瞎选（实测缺陷）───────────────── */
 
-test("锚点全在视口外（渲染窗口只覆盖尾部）→ 退回比例估算，不把高亮定到看不见的尾部", () => {
-  // 实测场景：560 条刻度的会话滚到 50%，可见区根本没渲染，唯一量到的锚点在尾部
-  const tailOnly = [{ id: "u256", top: 8800 }, { id: "a280", top: 9200 }];
-  const band = { top: 4724, bottom: 5568 };
-  const picked = railActiveIndexOf(tailOnly, band, 4724, 844, 140);
-  assert.deepEqual(picked, { index: 140, source: "fraction" });
+test("没有任何锚点 → 用兜底下标（渲染窗口只覆盖别处时的常态）", () => {
+  // 实测场景：560 条刻度的会话滚到 50%，可见区根本没渲染（一个锚点都量不到）
+  const picked = railActivePick([], 4724, 844, 140, 999);
+  assert.deepEqual(picked, { index: 140, source: "fallback" });
 });
 
-test("有锚点落在可见区附近 → 用锚点（更准）", () => {
-  const near = [{ id: "u140", top: 4700 }, { id: "a141", top: 5000 }, { id: "u256", top: 8800 }];
-  const band = { top: 4724, bottom: 5568 };
-  const picked = railActiveIndexOf(near, band, 4724, 844, 999);
+test("有锚点 → 用锚点（比兜底准）", () => {
+  const near = [{ id: "u140", top: 4700 }, { id: "a141", top: 5000 }];
+  const picked = railActivePick(near, 4724, 844, 999, 999);
   assert.equal(picked.source, "anchor");
-  assert.ok(picked.index < 3, "选中的应是可见区里的那两条之一，不是尾部那条");
-});
-
-test("视口上下各留一个视口高度作为容差（贴近边缘的锚点仍然可用）", () => {
-  const justAbove = [{ id: "x", top: 4724 - 800 }];
-  const band = { top: 4724, bottom: 5568 };
-  assert.equal(railActiveIndexOf(justAbove, band, 4724, 844, 7).source, "anchor");
-  const farAbove = [{ id: "x", top: 4724 - 2000 }];
-  assert.equal(railActiveIndexOf(farAbove, band, 4724, 844, 7).source, "fraction");
+  assert.ok(picked.index !== undefined && picked.index < 2, "选中的应是可见区里的那两条之一");
 });
 
 /* ── 三来源选择（组件实际调用的是这个）────────────────────── */

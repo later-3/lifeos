@@ -13,7 +13,7 @@ import test from "node:test";
 import {
   BAR_HEIGHT, BAR_HEIGHT_HOVER, BAR_WIDTH_MAX, BAR_WIDTH_MIN, CARD_GAP, CARD_PADDING, RAIL_MAX_RATIO,
   RAIL_WIDTH_MAX, RAIL_WIDTH_MIN, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
-  railBandOf, railCardPlaceOf, railEnsureVisible, railRowAt, railRowsOf, railSlotOf, railWidthsOf, zipWidthOf,
+  railBandOf, railCardPlaceOf, railEnsureVisible, railRowsOf, railSlotOf, railWidthsOf, zipWidthOf,
 } from "../frontend/src/api/rail-geometry.ts";
 
 /* ── 1. sqrt 宽度映射 ───────────────────────────────────── */
@@ -193,9 +193,38 @@ test("跟随滚动：只在真的被裁时才动，两端各留余量", () => {
   assert.equal(railEnsureVisible(900, 20, 200, 500, 0), 420, "margin=0 时退回'顶到下沿'");
 });
 
-test("滚动位置 → 第几行", () => {
-  assert.equal(railRowAt(0, 10, 100), 0);
-  assert.equal(railRowAt(95, 10, 100), 9);
-  assert.equal(railRowAt(1e9, 10, 100), 99, "夹在最后一行");
-  assert.equal(railRowAt(50, 0, 100), 0, "行高 0 不崩");
+
+/* ── 6. "装不下"在本形态下的真实含义 ─────────────────────── */
+
+test("装不下没有消失：条数超过一屏 → 整列滚动，但每条仍然存在且行高不降到 12 以下", () => {
+  /*
+   * 用户 2026-11-19 的追问："装不下就整列滚动，那笔账直接消掉？这仍然存在装不下吧？"
+   * 对 —— 它没有消失，只是**换了表现形式**：
+   *   竖条时代装不下 = 刻度被裁掉（看不见、也点不到，实测 548 条里丢 380 条）；
+   *   横条时代装不下 = 一屏看不全，要滚一下这一列，**每一条仍然有 12px 的可点高度**。
+   * 这条断言锁的就是这个差别：滚动 yes、行高 ≥ 12 yes、条数不减少 yes。
+   */
+  const avail = 804;
+  const count = 560;
+  const rows = railRowsOf(count, avail);
+  assert.equal(rows.scrollable, true, "装不下 → 滚动");
+  assert.equal(rows.rowHeight, ROW_HEIGHT_MIN, "行高停在下限，不继续压");
+  assert.ok(rows.rowHeight >= 12, "每条仍有 12px 可点高度");
+  assert.ok(rows.visibleRows < count, `一屏只看到 ${rows.visibleRows} / ${count} 条`);
+  // 关键差别：滚动模式下**没有任何一条被丢弃**（渲染层永远渲染全部 ticks，只是可滚）
+  assert.equal(count * rows.rowHeight, 560 * 12, "内容总高 = 全部行的高度和，一条不少");
+});
+
+test("短会话不产生滚动：一屏看得全，行高用舒适的 24px", () => {
+  const rows = railRowsOf(10, 804);
+  assert.equal(rows.scrollable, false);
+  assert.equal(rows.rowHeight, ROW_HEIGHT_MAX);
+  assert.ok(rows.visibleRows >= 10, "10 条全在可视区内");
+});
+
+test("一屏能看多少条：与可用高度成正比、与条数无关", () => {
+  const short = railRowsOf(10, 804).visibleRows;
+  const long = railRowsOf(560, 804).visibleRows;
+  assert.ok(long > 30 && long < 60, `560 条时一屏约 ${long} 条（12px 行高 / 62% 高度）`);
+  assert.ok(short >= 10);
 });
