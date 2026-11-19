@@ -1020,6 +1020,15 @@ export default function App() {
   hasOlderRef.current = hasOlderMessages;
   const olderCursorRef = useRef<string | undefined>(undefined);
   const loadingOlderRef = useRef(false);
+  /**
+   * 导航条正在拖动（Task 0020 · P7）。
+   *
+   * 拖动中**暂停"滚到顶自动加载更早一页"**：否则拖到顶 → 前置一页 → "距底距离"锚点把
+   * `scrollTop` 弹回新的最大值 → 滑块跳回中间。用户看到的是"我拖到最顶，它自己弹回来"。
+   * 松手后再允许加载（那时用户已经看到"到顶了"，弹跳可接受）。
+   */
+  const railScrubbingRef = useRef(false);
+
   /** 顶部哨兵：滚到这里就再加载一页（IntersectionObserver，root = 消息区）。 */
   const loadEarlierRef = useRef<HTMLDivElement>(null);
   /** 前置内容后要恢复的"距底部距离"；`undefined` = 没有待恢复的锚点。 */
@@ -1858,6 +1867,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     if (sentinel === null || container === null) return;
     const observer = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting !== true) return;
+      // 拖动中不加载（见 `railScrubbingRef` 的注释）
+      if (railScrubbingRef.current) return;
       pendingScrollAnchor.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
       /*
        * 哨兵只在"客户端窗口已贴到已下载的边界"时才需要问后端（B3）：
@@ -4656,6 +4667,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
               contentRef={contentRef}
               onJump={(tick) => { void jumpToTick(tick); }}
               loadedIds={messageIds}
+              onScrubbingChange={(active) => { railScrubbingRef.current = active; }}
             />
           )}
           {!settingsOpen && !atBottom && (

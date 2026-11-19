@@ -52,7 +52,8 @@ import {
   BAR_HEIGHT_HOVER,
   BAR_WIDTH_MIN,
   RAIL_MAX_RATIO,
-  railBandOf,
+  railBandOfViewport,
+  railBandTopOf,
   railCardPlaceOf,
   railEnsureVisible,
   railGestureOf,
@@ -93,6 +94,11 @@ export type MessageRailProps = {
   onJump: (tick: RailTickView) => void;
   /** 已下载消息的 id 顺序（判"已下载到哪一条"）。 */
   loadedIds: readonly (string | undefined)[];
+  /**
+   * 拖动开始/结束的通知。调用方（App）用它**暂停"滚到顶自动加载"** ——
+   * 否则拖到顶会加载并弹回，看起来是"拖不到最顶"（实测 2026-11-19）。
+   */
+  onScrubbingChange?: (scrubbing: boolean) => void;
 };
 
 /**
@@ -140,6 +146,7 @@ export const MessageRail = memo(function MessageRail({
   contentRef,
   onJump,
   loadedIds,
+  onScrubbingChange,
 }: MessageRailProps) {
   const [slot, setSlot] = useState<{ visible: boolean; width: number; gutter: number }>({ visible: false, width: 0, gutter: 0 });
   /** 可用高度（= 对话区高度）。 */
@@ -172,10 +179,19 @@ export const MessageRail = memo(function MessageRail({
    * ——不是"指针的绝对位置 → 内容比例"。后者在可滚的列上会打架：列自己也在跟着滚，
    * 映射基准每帧都变，指针不动正文却在加速跑。
    */
-  const scrubRef = useRef<{ pointerId: number; startY: number; startScrollTop: number; moved: boolean } | undefined>(undefined);
+  const scrubRef = useRef<{
+    pointerId: number; startY: number; startScrollTop: number;
+    /** 按下那一刻的滑块几何（px），拖动中冻结，见 `onRowPointerDown` */
+    ratio: number; bandRows: number; bandBase: number; bandMaxTop: number; moved: boolean;
+  } | undefined>(undefined);
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
   const [scrubbing, setScrubbing] = useState(false);
+
+  /** 拖动状态变化时通知调用方（App 用它暂停"滚到顶自动加载"，见 prop 注释）。 */
+  useEffect(() => {
+    onScrubbingChange?.(scrubbing);
+  }, [scrubbing, onScrubbingChange]);
 
   /* ── 1. 量容器 ─────────────────────────────────────────── */
 
@@ -332,10 +348,47 @@ export const MessageRail = memo(function MessageRail({
    * 踩过：可滚时用 `rows.height`（= 62% 上限 523px）当基准，而真实内容高 960px ——
    * 带的位置只到 523/960 的位置，指向"中段偏上"，与正文实际读到的地方对不上。
    */
-  const band = useMemo(
-    () => railBandOf(bandRows.first, bandRows.last, ticks.length, ticks.length * rows.rowHeight),
-    [bandRows.first, bandRows.last, ticks.length, rows.rowHeight],
-  );
+  /*
+   * 带的**位置**跟 `anchorIndex`（当前读到第几条），**高度**跟实测的"一屏几条"。
+   *
+   * 早先位置是用 anchors 算的（"哪些锚点落在视口内"），那在虚拟化渲染下是错的 ——
+   * 锚点只覆盖队尾一小段，于是用户滚到会话 10% 时那块还指着末尾（实测 513-519/560）。
+   * 详见 `railBandOf` 头注。
+   */
+  /*
+   * 滑块（可视范围带）：位置 = `scrollTop × ratio`，与拖动**互逆**（VSCode `minimap.ts:391/:254`）。
+   *
+   * **拖动中必须用冻结的 ratio**：`scrollTop` 每帧都在变，而 `visibleTicks`（bandRows）由锚点算，
+   * 锚点每 150ms 才重量一次 —— 用实时 ratio 会出现"指针走 10px、滑块走 7px"（实测）。
+   * 冻结之后严格 1:1，这才是"拖那个块它跟着鼠标走"。
+   */
+  const liveBand = useMemo(() => railBandOfViewport(
+    scrollTop, metrics.scrollHeight, metrics.clientHeight,
+    ticks.length, loadedFromRef.current, rows.rowHeight,
+  ), [scrollTop, metrics, ticks.length, rows.rowHeight]);
+
+  /**
+   * 最新 `liveBand` 的转发（供 `onRowPointerDown` 读）。
+   *
+   * 为什么用 ref 而不是进依赖表：`onRowPointerDown` 依赖 liveBand 会让它每帧重建，
+   * 进而让 `RailRows` 的 props 变、560 行白重渲一次。
+   *
+   * 为什么必须有它（实测 2026-11-19）：漏了这一步，`onRowPointerDown` 的闭包捕获的是
+   * **首次渲染时**的 liveBand（那时 `metrics` 还是 0 → `ratio` 落在"不可滚动"分支 = 1），
+   * 于是拖动一开始滑块就跳到末端、之后再也不动。
+   */
+  const liveBandRef = useRef(liveBand);
+  liveBandRef.current = liveBand;
+
+  const bandRatio = scrubbing && scrubRef.current !== undefined ? scrubRef.current.ratio : liveBand.ratio;
+  const bandRowsCount = scrubbing && scrubRef.current !== undefined ? scrubRef.current.bandRows : liveBand.height;
+  /*
+   * 拖动中用**冻结的** `ratio` 算位置（否则"指针 10px、滑块 7px"，实测）。
+   * 单位全部是 px（与 VSCode 一致，也避免了"行/px × px"的单位混用）。
+   */
+  const band = scrubbing && scrubRef.current !== undefined
+    ? { top: scrubRef.current.bandBase + railBandTopOf(scrollTop, bandRatio, scrubRef.current.bandMaxTop), height: bandRowsCount }
+    : { top: liveBand.top, height: liveBand.height };
 
   /* ── 4b. 把"当前/悬停/tabIndex"写进 DOM（不进 React 渲染路径）── */
 
@@ -477,12 +530,52 @@ export const MessageRail = memo(function MessageRail({
     if (event.button !== 0) return;
     const container = scrollContainer.current;
     if (container === null) return;
+    /*
+     * **按在滑块里 = 拖动；按在滑块外 = 点击跳转**（与 VSCode 的分工一致）。
+     *
+     * 源码依据：`microsoft/vscode` `minimap.ts:1459-1484` 把拖动绑在 **slider 元素**上
+     * （`_sliderPointerDownListener`），点 minimap 其他区域走另一条路径 —— 它**没有**"位移超过阈值才算拖"。
+     *
+     * 我们原来只有 4px 阈值，于是"想拖但手没动起来"会被判成点击 → **跳到那一行**。
+     * 用户 2026-11-19 报的"有时突然一下又到顶部了，我都没点顶部的横条"就是这个：
+     * 按在视口上方某一行、手没动够 4px 就松手 → 跳到上面去了。
+     * 现在只要按在滑块范围内，就一定是拖动，绝不会因为"没动够"变成跳转。
+     */
+    /*
+     * **几何没就绪就不当拖动处理**（2026-11-19 修"一刷新、一拖动就跳到最顶"）：
+     * 刚刷新时 `metrics` 还是 `{0,0}`，此时 `ratio` 落在"不可滚动"分支，
+     * 拖动会把 band 算成 0（= 最顶），看起来就是"跳上去了"。
+     */
+    if (!liveBandRef.current.ready) return;
+    const bandNode = containerRef.current?.querySelector<HTMLElement>(".rail-band");
+    const bandRect = bandNode?.getBoundingClientRect();
+    const onBand = bandRect !== undefined && bandRect !== null
+      && event.clientY >= bandRect.top && event.clientY <= bandRect.bottom;
     scrubRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
       startScrollTop: container.scrollTop,
-      moved: false,
+      /*
+       * 冻结 ratio 与滑块条数。为什么必须冻结（实测 2026-11-19）：
+       * 不冻结时"指针走 10px、滑块只走 7px"—— 因为滑块位置用的是每帧重算的 ratio，
+       * 而拖动用的 ratio 是按下那一刻的，两者不互逆。冻结后严格 1:1。
+       * 同时也避免"拖动中加载了更早的页 → scrollHeight 变 → 滑块突然变长变位"。
+       */
+      ratio: liveBandRef.current.ratio,
+      bandRows: Math.max(1, liveBandRef.current.height),
+      bandBase: liveBandRef.current.base,
+      bandMaxTop: liveBandRef.current.maxTop,
+      // 按在滑块上：直接进入拖动（不看阈值）；按在外面：先按"可能的点击"处理
+      moved: onBand,
     };
+    if (onBand) {
+      setScrubbing(true);
+      // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
+      suppressClickRef.current = true;
+      clearHideTimer();
+      setHovered(undefined);
+      setCard(undefined);
+    }
     // 捕获指针：拖到列表外面也继续收事件（否则拖快了会"掉线"）
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }, [scrollContainer]);
@@ -522,9 +615,9 @@ export const MessageRail = memo(function MessageRail({
     container.scrollTop = railScrubTargetOf(
       scrub.startScrollTop,
       deltaY,
-      rows.rowHeight * ticks.length,
-      container.clientHeight,
+      scrub.ratio,
       container.scrollHeight,
+      container.clientHeight,
     );
   }, [scrollContainer, rows.rowHeight, ticks.length, clearHideTimer]);
 

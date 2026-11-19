@@ -85,6 +85,13 @@ export const ROW_HEIGHT_MIN = 12;
 /** 整列最多占可用高度的比例。 */
 export const RAIL_MAX_RATIO = 0.62;
 
+/**
+ * 滑块的最小高度（px）。取自 VSCode `scrollbarState.ts:10` 的 `MINIMUM_SLIDER_SIZE = 20`
+ * （注释原文："The minimal size of the slider (such that it can still be clickable) -- it is artificially enlarged."）。
+ * 会话再长，滑块也不会细到点不住。
+ */
+export const RAIL_SLIDER_MIN = 20;
+
 /** 卡片与轨道的间距、与视口边缘的最小距离（px）。 */
 export const CARD_GAP = 20;
 export const CARD_PADDING = 8;
@@ -209,28 +216,99 @@ export function railEnsureVisible(
 }
 
 /**
- * "当前可视范围"在整列里的位置（一条半透明带状指示）。
+ * 可视范围带（滑块）的几何 —— **直接照 VSCode 的滚动条标准实现**。
  *
- * 这是 minimap 类控件的通用元素（滚动条与缩略图都靠它），也是本控件**唯一告诉你
- * "现在读的是整段对话的哪一部分"**的东西。带状区域用 `top/height` 表达，
- * 变化时加 `transition` 就会有"跟着滑"的感觉，而不是死板地跳。
+ * 源码：`microsoft/vscode` `src/vs/base/browser/ui/scrollbar/scrollbarState.ts:126-156`（2026-11-19 `main`）：
  *
- * @param firstIndex 可视区第一条刻度的下标
- * @param lastIndex  可视区最后一条刻度的下标
- * @param count      总条数
- * @param contentHeight 整列高度（可滚动时的总内容高）
+ * ```ts
+ * const computedSliderSize = Math.round(Math.max(MINIMUM_SLIDER_SIZE,
+ *   Math.floor(visibleSize * computedRepresentableSize / scrollSize)));   // 按比例，有 20px 下限
+ * const computedSliderRatio = (computedRepresentableSize - computedSliderSize) / (scrollSize - visibleSize);
+ * const computedSliderPosition = (scrollPosition * computedSliderRatio);
+ * ```
+ * 拖动（同文件 `:234-241`）：
+ * ```ts
+ * getDesiredScrollPositionFromDelta(delta) {
+ *   const desiredSliderPosition = this._computedSliderPosition + delta;
+ *   return Math.round(desiredSliderPosition / this._computedSliderRatio);
+ * }
+ * ```
+ *
+ * ## 为什么必须照抄它的"按比例"
+ *
+ * 我第一版用"实测一屏有几条刻度"当 `sliderSize`。那个量**每 150ms 才重量一次、会抖**，
+ * 于是 `ratio` 每帧都在变，而拖动用的是按下那一刻的 `ratio` —— 两者不互逆，
+ * 表现就是"**正文在滑、滑块不跟手**"（用户 2026-11-19 报的正是这个）。
+ * 按比例算出来的 `sliderSize` 在同一段内容里是**常量**，`ratio` 稳定，滑块才严格跟手。
+ *
+ * ## 我们与 VSCode 的唯一差异：轨道与正文不是同一段内容
+ *
+ * VSCode 的滚动条里，`track`（滚动条长度）与 `scrollSize`（内容高）是同一段内容。
+ * 我们的刻度列画的是**整个会话**（560 条 × 12px），而正文的 `scrollHeight` 只含
+ * **已下载的那一段**（实测 ≈90 条刻度）。直接套公式会得到 600px 的滑块（≈50 条刻度），
+ * 而实际一屏只有 8 条 —— 差 6 倍。
+ *
+ * 所以先把"已下载段"折算成滑块自己的坐标系：
+ *
+ * ```
+ *   segmentTop    = loadedFrom × rowHeight            // 这段在整列里的起点（px）
+ *   segmentHeight = (totalTicks - loadedFrom) × rowHeight   // 这段的总高（px）
+ *   sliderSize    = max(MIN, segmentHeight × clientHeight / scrollHeight)   // ← 按比例
+ *   ratio         = (segmentHeight - sliderSize) / (scrollHeight - clientHeight)
+ *   position      = segmentTop + scrollTop × ratio
+ * ```
+ *
+ * 这样 `segmentHeight` 与 `scrollHeight` 是**同一段内容**（这正是 VSCode 公式成立的前提），
+ * 而 `segmentTop` 只是把结果平移回整列坐标系。
+ *
+ * @param loadedFrom 已下载段对应的最小刻度下标（0 = 整个会话都下载了）
+ * @param rowHeight  刻度行高（px）
+ * @returns `top/height` 单位 px；`ratio` 单位 px/px（拖动必须用同一个）
  */
-export function railBandOf(
-  firstIndex: number,
-  lastIndex: number,
-  count: number,
-  contentHeight: number,
-): { top: number; height: number } {
-  if (count <= 0 || contentHeight <= 0) return { top: 0, height: 0 };
-  const from = Math.max(0, Math.min(firstIndex, count - 1));
-  const to = Math.max(from, Math.min(lastIndex, count - 1));
-  const rowHeight = contentHeight / count;
-  return { top: from * rowHeight, height: (to - from + 1) * rowHeight };
+export function railBandOfViewport(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  totalTicks: number,
+  loadedFrom: number,
+  rowHeight: number,
+): { top: number; height: number; ratio: number; maxTop: number; base: number; ready: boolean } {
+  const notReady = { top: 0, height: 0, ratio: 1, maxTop: 0, base: 0, ready: false };
+  if (totalTicks <= 0 || !(clientHeight > 0) || !(rowHeight > 0) || !(scrollHeight > 0)) return notReady;
+
+  const from = Math.max(0, Math.min(loadedFrom, totalTicks - 1));
+  const base = from * rowHeight;
+  const segmentHeight = Math.max(rowHeight, (totalTicks - from) * rowHeight);
+
+  // 不可滚动（内容比视口短）：滑块占满整段，也不需要拖动
+  if (scrollHeight <= clientHeight) {
+    return { top: base, height: segmentHeight, ratio: 1, maxTop: 0, base, ready: true };
+  }
+
+  const height = Math.round(Math.max(RAIL_SLIDER_MIN, Math.floor(segmentHeight * clientHeight / scrollHeight)));
+  const maxTop = Math.max(0, segmentHeight - height);
+  const ratio = maxTop / (scrollHeight - clientHeight);
+  if (!Number.isFinite(ratio) || ratio <= 0) {
+    return { top: base, height, ratio: 1, maxTop: 0, base, ready: false };
+  }
+  return { top: base + railBandTopOf(scrollTop, ratio, maxTop), height, ratio, maxTop, base, ready: true };
+}
+
+/**
+ * 滑块位置 = `scrollTop × ratio`，夹在 `[0, maxTop]`（VSCode `minimap.ts:391` 同一行公式）。
+ *
+ * 单独抽出来是为了让**拖动中能用冻结的 `ratio`** 也算出位置：
+ * 拖动时 `scrollTop` 每帧都在变、`visibleTicks` 也可能变（锚点每 150ms 重量一次），
+ * 用每帧重算的 ratio 会让"指针走 10px、滑块走 7px"—— 实测就是这样，不跟手。
+ */
+export function railBandTopOf(scrollTop: number, ratio: number, maxTop: number): number {
+  if (!Number.isFinite(scrollTop) || !Number.isFinite(ratio)) return 0;
+  return Math.max(0, Math.min(maxTop, scrollTop * ratio));
+}
+
+/** 已下载段之外（还没加载的历史）的滑块起点：用于画一条"上面还有"的虚线提示。 */
+export function railLoadedBaseOf(loadedFrom: number, rowHeight: number): number {
+  return Math.max(0, loadedFrom) * rowHeight;
 }
 
 /** 视口矩形（用于卡片定位的单测夹具）。 */
@@ -260,39 +338,35 @@ export function railCardPlaceOf(
 /* ── 拖动 scrub（Task 0020 · P7）────────────────────────── */
 
 /**
- * 拖动时"正文该滚到哪"（**相对位移**语义，与滚动条拇指同一套）。
+ * 拖动时"正文该滚到哪"—— **`railBandOfViewport` 的逆运算**（同 VSCode `:254`）。
  *
- * ## 为什么是相对位移，而不是"指针绝对位置"
+ * ```ts
+ * getDesiredScrollTopFromDelta(delta) { return this.scrollTop + delta / this.computedSliderRatio; }
+ * ```
  *
- * 绝对位置映射（`指针 y ÷ 整列高 → 内容比例`）在**可滚的列**上会打架：
- * 列自己的滚动位置也是映射的一部分，一旦"跟随正文自动滚列"在拖动中生效，
- * 映射基准每帧都在变 → 指针没动、正文却在加速跑。
- *
- * 相对位移没有这个问题：记下按下时的 `scrollTop`，之后只按**指针移动了多少**换算。
- * 灵敏度 = `可滚动距离 ÷ 整列内容高`，所以拖过整列高度正好滚完整个会话
- * —— 与在 VSCode/Sublime 的 minimap 上按住拖的手感一致。
+ * 只有用**同一个 ratio** 才能保证"拖 100px → 滑块走 100px"。早先版本在这里自己算
+ * `可滚动距离 ÷ 内容高`，与滑块位置的算法不互逆，于是用户看到的是"**正文在滑、块不动**"
+ * （2026-11-19 用户报告，已按 VSCode 公式修正）。
  *
  * @param startScrollTop 按下那一刻正文的 `scrollTop`
  * @param deltaY         指针从按下到现在移动了多少 px（向下为正）
- * @param contentHeight  整列内容高（`count × rowHeight`）
- * @param viewHeight     正文可视高
- * @param scrollHeight   正文内容总高
- * @returns 应该设置的 `scrollTop`（已夹在合法区间内）
+ * @param ratio          来自 `railBandOfViewport`（拖动期间应冻结）
+ * @param scrollHeight   正文内容高（用于夹紧）
+ * @param viewHeight     正文可视高（用于夹紧）
  */
 export function railScrubTargetOf(
   startScrollTop: number,
   deltaY: number,
-  contentHeight: number,
-  viewHeight: number,
+  ratio: number,
   scrollHeight: number,
+  viewHeight: number,
 ): number {
-  if (!(contentHeight > 0) || !(viewHeight > 0)) return Math.max(0, startScrollTop);
   const scrollable = Math.max(0, scrollHeight - viewHeight);
   if (scrollable <= 0) return 0;
-  if (!Number.isFinite(deltaY)) return Math.max(0, Math.min(scrollable, startScrollTop));
-  const sensitivity = scrollable / contentHeight;
-  const next = startScrollTop + deltaY * sensitivity;
-  return Math.max(0, Math.min(scrollable, next));
+  if (!Number.isFinite(deltaY) || !Number.isFinite(ratio) || ratio <= 0) {
+    return Math.max(0, Math.min(scrollable, startScrollTop));
+  }
+  return Math.max(0, Math.min(scrollable, startScrollTop + deltaY / ratio));
 }
 
 /**

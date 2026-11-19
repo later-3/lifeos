@@ -320,6 +320,25 @@ for (const [label, viewport, expectVisible] of [
       `${afterScrub} → ${afterDelta}（差 ${afterDelta - afterScrub}px）`);
   }
 
+  // ②b 按在滑块上不动就松手 → **不该跳**（否则"想拖但没动够"会突然跳到别处）
+  {
+    const bandBox = await page.evaluate(() => {
+      const node = document.querySelector(".rail-band");
+      if (node === null) return null;
+      const box = node.getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    if (bandBox !== null) {
+      const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+      await page.mouse.move(bandBox.x, bandBox.y);
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(700);
+      const after = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+      check("按在滑块上不动就松手 → 不跳转（不误判成点击）", Math.abs(after - before) < 60, `${before} → ${after}`);
+    }
+  }
+
   // ③ 流式中点刻度仍能跳
   const canClick = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
@@ -402,6 +421,126 @@ for (const [label, viewport, expectVisible] of [
       check("拖动之后单击仍能跳转（阈值内算点击）", afterClick !== beforeClick, `${beforeClick} → ${afterClick}`);
     }
   }
+  await context.close();
+}
+
+/* ── 滑块跟手（VSCode minimap.ts:391/:254 的互逆关系）────────── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  console.log("\n── 滑块跟手 ──");
+
+  const bandTop = () => page.evaluate(() => {
+    const node = document.querySelector(".rail-band");
+    return node === null ? null : Math.round(parseFloat(node.style.top || "0"));
+  });
+  const scrollTop = () => page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+
+  const target = await page.evaluate(() => {
+    const node = document.querySelector(".rail-band");
+    if (node === null) return null;
+    const box = node.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  if (target === null) {
+    console.log("⤼ 跳过：没有滑块（会话太短，不需要滚动）");
+  } else {
+    const b0 = await bandTop();
+    const s0 = await scrollTop();
+    await page.mouse.move(target.x, target.y);
+    await page.mouse.down();
+    const steps = [];
+    let prevBand = b0;
+    for (let i = 1; i <= 10; i += 1) {
+      await page.mouse.move(target.x, target.y - i * 10);
+      await page.waitForTimeout(30);
+      const band = await bandTop();
+      steps.push(band - prevBand);
+      prevBand = band;
+    }
+    await page.mouse.up();
+    const s1 = await scrollTop();
+    const worst = Math.max(...steps.map((delta) => Math.abs(delta + 10)));
+    check("往上拖：正文确实滚了", s1 < s0, `${s0} → ${s1}`);
+    check("往上拖：**滑块每 10px 指针也走 10px**（互逆 = 跟手）", worst <= 2,
+      `每步滑块位移 ${steps.join("/")}（应全是 -10）`);
+  }
+  await context.close();
+}
+
+/* ── 滑块与 VSCode 滚动条一致：按比例、有下限、按在它上面就是拖 ── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error).slice(0, 160)));
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  console.log("\n── 滑块（VSCode scrollbarState 公式）──");
+
+  const geom = await page.evaluate(() => {
+    const band = document.querySelector(".rail-band");
+    if (band === null) return null;
+    const box = band.getBoundingClientRect();
+    const list = document.querySelector('[data-testid="message-rail"]').firstElementChild;
+    return {
+      height: Math.round(box.height),
+      listHeight: Math.round(list.getBoundingClientRect().height),
+      x: box.left + box.width / 2, y: box.top + box.height / 2,
+    };
+  });
+  if (geom === null) {
+    console.log("⤼ 跳过：没有滑块");
+  } else {
+    check("滑块有高度、且能点住（≥20px，VSCode MINIMUM_SLIDER_SIZE）", geom.height >= 20, `${geom.height}px`);
+
+    // ① 按在滑块上**不动**就松手 → 不跳转
+    const a0 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.mouse.move(geom.x, geom.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+    const a1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    check("按在滑块上不动就松手 → 不跳转", Math.abs(a1 - a0) < 60, `${a0} → ${a1}`);
+
+    // ② 按在滑块上**立刻**就能拖（不需要先点一下别处）
+    const b0 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.mouse.move(geom.x, geom.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 6; step += 1) { await page.mouse.move(geom.x, geom.y - step * 12); await page.waitForTimeout(20); }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const b1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    check("按在滑块上**第一次就能拖**（不需要先点一条刻度）", b1 < b0, `${b0} → ${b1}`);
+  }
+
+  // ③ 刷新后立刻拖：不能因为"几何还没量出来"跳到顶部
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  const early = await page.evaluate(() => {
+    const band = document.querySelector(".rail-band");
+    if (band === null) return null;
+    const box = band.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  if (early !== null) {
+    const c0 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    await page.mouse.move(early.x, early.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 6; step += 1) { await page.mouse.move(early.x, early.y - step * 12); await page.waitForTimeout(20); }
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+    const c1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+    check("刷新后立刻拖 → 不会自己跳到最顶", c1 <= c0 + 20, `${c0} → ${c1}`);
+  }
+
+  check("滑块几何用例无页面错误", pageErrors.length === 0, pageErrors.join(" | "));
   await context.close();
 }
 
