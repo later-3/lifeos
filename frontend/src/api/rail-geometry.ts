@@ -305,14 +305,8 @@ export function railProgressModelOf(input: {
   listViewHeight: number;
   /** 刻度列**当前**的滚动量（px）。滑块要按"行此刻在哪"画，所以必须知道它。 */
   listScrollTop: number;
-  /**
-   * 拖动中：滑块位置**必须**由指针直接决定（`progress × bandRange`），
-   * 不能走"列表不可滚 → 按行位置算"那条分支 —— 否则拖动时滑块会被行位置拽回去，
-   * 与 `dragIndex` 形成回路（实测 cafe：往上拖 72px，正文反而 +800）。
-   */
-  dragging?: boolean;
 }): {
-  /** 滑块在可视框里的顶边与高度（px） */
+  /** 滑块在可视框里的顶边与高度（px）。`bandHeight` **已按整行对齐**（见下） */
   bandTop: number;
   bandHeight: number;
   /** 滑块能移动的范围（`viewHeight - bandHeight`），拖动时用它把指针位置换成进度 */
@@ -324,7 +318,7 @@ export function railProgressModelOf(input: {
   /** 0–100 的整数百分比（顶部 0%、底部 100%） */
   percent: number;
 } {
-  const { resolvedIndex, totalTicks, viewHeight, clientHeight, scrollHeight, dragging } = input;
+  const { resolvedIndex, totalTicks, viewHeight, clientHeight, scrollHeight } = input;
   const listContentHeight = Math.max(0, input.listContentHeight);
   const listViewHeight = Math.max(0, input.listViewHeight);
 
@@ -337,10 +331,9 @@ export function railProgressModelOf(input: {
   const percent = totalTicks <= 1 ? 100 : Math.round((index / (totalTicks - 1)) * 100);
 
   // 滑块长度 = 一屏占内容的比例（VSCode scrollbarState.ts:144），有 20px 下限
-  const bandHeight = scrollHeight <= clientHeight
+  const bandHeightRaw = scrollHeight <= clientHeight
     ? viewHeight
     : Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
-  const bandRange = Math.max(0, viewHeight - bandHeight);
   const rowHeight = totalTicks > 0 ? listContentHeight / totalTicks : 0;
   const listScrollable = Math.max(0, listContentHeight - listViewHeight);
 
@@ -362,7 +355,7 @@ export function railProgressModelOf(input: {
    *
    * 现在反过来，只保留一套坐标（行的坐标）：
    *   1. 列表**只做最小滚动**：行在可视区内就一动不动，出去了才滚到刚好露出来；
-   *   2. 滑块 = 行在可视区里的位置（居中于那一行，再夹进可视框）。
+   *   2. 滑块 = 行在可视区里的位置（**按整行对齐**上下沿，再夹进可视框）。
    * 于是"点哪条 → 滑块就去哪条"，而高亮天然在滑块里（同一行算出来的）。
    */
   const rowTop = rowHeight > 0 ? index * rowHeight : 0;
@@ -380,11 +373,45 @@ export function railProgressModelOf(input: {
       ),
     )
     : currentListScrollTop;
-  const rowInView = rowTop - listScrollTop + rowHeight / 2;
-  const bandTop = Math.min(bandRange, Math.max(0, rowInView - bandHeight / 2));
-  const bandCenter = bandTop + bandHeight / 2;
-  void bandCenter;
-
+  /*
+   * 滑块**边缘对齐到行边界**，不按像素连续居中。
+   *
+   * 为什么（2026-11-19 用户截图："滑动框距离上面的横条有缝隙，下面又贴住了"）：
+   * 逐像素居中时，滑块上下沿落在两条横条之间的**缝隙里**（实测 `bandTopInRows = 5.87`），
+   * 于是上面露出一截 24px 空白、下面正好切在下一条横条上（39px）—— 看起来就是"偏心"。
+   * 行是离散的（一行一整条），滑块也该是离散的：整行整行地包。
+   *
+   * 做法：先把"行中心"缩成整数行号，再按 `bandCenter` 折算滑块边长（至少 1 行），
+   * 最后整行对齐上下沿。这样滑块永远包住**完整的行**，上下留白由"滑块有几行"决定。
+   */
+  /*
+   * **正文**一屏装得下（`scrollHeight <= clientHeight`）时滑块占满可视框 —— 没有移动余地，
+   * 也就没有"行对齐"可谈。
+   *
+   * 注意判据是**正文**能否滚，不是刻度列能否滚：短会话里刻度列装得下（`listScrollable=0`），
+   * 但正文仍可滚（实测 cafe：40 行装进 508px，正文 844/1278），滑块该是 335px 而不是占满。
+   */
+  if (scrollHeight <= clientHeight) {
+    return { bandTop: 0, bandHeight: viewHeight, bandRange: 0, listScrollTop, progress, percent };
+  }
+  /*
+   * 滑块占**奇数行**：只有奇数行时高亮行才可能正好居中（上下留白相等）。
+   * 偶数行时高亮行只能贴着某一边 —— 那正是用户截图里"上面有缝、下面贴住"的形态
+   * （实测 2 行时上 0px / 下 12px）。
+   */
+  const rowsNeeded = Math.max(1, Math.round(bandHeightRaw / Math.max(1, rowHeight)));
+  const rowCount = rowsNeeded % 2 === 0 ? rowsNeeded + 1 : rowsNeeded;
+  const firstRow = index - (rowCount - 1) / 2;                              // 高亮行居中，上下沿落在行边界
+  const lastRow = firstRow + rowCount;
+  const bandHeight = Math.max(rowHeight, (lastRow - firstRow) * rowHeight);
+  const bandRange = Math.max(0, viewHeight - bandHeight);
+  /*
+   * 不做"拖动中滑块跟指针"的特例：滑块始终由**行号**派生，与高亮同源。
+   * 2026-11-19 实测过相反的做法（拖动跟指针 + 刻度列事后追行）—— 滑块每帧已走 25px，
+   * 刻度列要等一个 `useLayoutEffect` 才跟上，拖快一点高亮就被甩出滑块 66px。
+   */
+  const bandTopRaw = (firstRow * rowHeight) - listScrollTop;
+  const bandTop = Math.min(bandRange, Math.max(0, bandTopRaw));
   return { bandTop, bandHeight, bandRange, listScrollTop, progress, percent };
 }
 

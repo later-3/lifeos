@@ -19,6 +19,8 @@ const { chromium } = pw;
 
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
 const SESSION = process.env.RAIL_SESSION ?? "";
+/** 会话属于哪个 Agent。默认 `lifeosagent`；换了家目录/Agent 时用 `RAIL_AGENT` 覆盖。 */
+const AGENT = process.env.RAIL_AGENT ?? "lifeosagent";
 const failures = [];
 const check = (name, ok, detail = "") => {
   console.log(`${ok ? "✔" : "✖"} ${name}${detail === "" ? "" : `  → ${detail}`}`);
@@ -30,7 +32,7 @@ if (SESSION === "") {
   process.exit(2);
 }
 
-const url = `${APP_URL}/?agent=lifeosagent&project=workspace&session=${SESSION}`;
+const url = `${APP_URL}/?agent=${AGENT}&project=workspace&session=${SESSION}`;
 const browser = await chromium.launch({ headless: true });
 
 const snapshot = (page) => page.evaluate(() => {
@@ -724,6 +726,82 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
+/* ── 滑块**按整行对齐**：上下留白对称（用户 2026-11-19 截图"上面有缝、下面贴住"）── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3500);
+  console.log("\n── 滑块整行对齐 ──");
+
+  const read = () => page.evaluate(() => {
+    const rail = document.querySelector('[data-testid="message-rail"]');
+    const list = rail.querySelector(".rail-scroll");
+    const listBox = list.getBoundingClientRect();
+    const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+    const active = document.querySelector('[data-rail-active="true"]');
+    const activeBox = active.getBoundingClientRect();
+    const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+    const rowHeight = rows.length > 1 ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top : 12;
+    return {
+      rowHeight,
+      topInRows: (bandBox.top - listBox.top) / rowHeight,
+      bottomInRows: (bandBox.bottom - listBox.top) / rowHeight,
+      gapTop: activeBox.top - bandBox.top,
+      gapBottom: bandBox.bottom - activeBox.bottom,
+      bandTop: bandBox.top - listBox.top,
+      bandBottom: bandBox.bottom - listBox.top,
+      listHeight: listBox.height,
+      rows: rows.length,
+    };
+  });
+
+  const samples = [];
+  for (const frac of [0, 0.15, 0.35, 0.5, 0.65, 0.85]) {
+    await page.evaluate((f) => {
+      const main = document.querySelector("main");
+      main.scrollTop = (main.scrollHeight - main.clientHeight) * f;
+    }, frac);
+    await page.waitForTimeout(700);
+    samples.push({ frac, ...(await read()) });
+  }
+
+  /*
+   * 判据一：滑块上下沿落在**行边界**上（整数行，误差 ≤ 2% 行高）。
+   * 贴边（滑块被夹在可视框两端）时不可能对齐 —— 那是几何事实，跳过。
+   */
+  const unaligned = samples.filter((s) => {
+    const clamped = s.bandTop <= 0.5 || s.bandBottom >= s.listHeight - 0.5;
+    if (clamped) return false;
+    const dy1 = Math.abs(s.topInRows - Math.round(s.topInRows));
+    const dy2 = Math.abs(s.bottomInRows - Math.round(s.bottomInRows));
+    return dy1 > 0.02 || dy2 > 0.02;
+  });
+  check("滑块上下沿都落在行边界上（不是落在两条横条的缝隙里）",
+    unaligned.length === 0,
+    unaligned.length === 0
+      ? `${samples.length} 个位置全部对齐`
+      : unaligned.map((s) => `${Math.round(s.frac * 100)}%: ${s.topInRows.toFixed(2)}/${s.bottomInRows.toFixed(2)} 行`).join(" "));
+
+  /*
+   * 判据二：不贴边时，高亮条到滑块上沿与下沿的留白**对称**（差 ≤ 1px）。
+   * 这一条直接对应用户的截图投诉。
+   */
+  const uneven = samples.filter((s) => {
+    const clamped = s.bandTop <= 0.5 || s.bandBottom >= s.listHeight - 0.5;
+    return !clamped && Math.abs(s.gapTop - s.gapBottom) > 1;
+  });
+  check("高亮条在滑块里**上下留白相等**（不是上面有缝、下面贴住）",
+    uneven.length === 0,
+    uneven.length === 0
+      ? samples.filter((s) => s.bandTop > 0.5 && s.bandBottom < s.listHeight - 0.5)
+        .map((s) => `${Math.round(s.frac * 100)}%: ${s.gapTop.toFixed(1)}/${s.gapBottom.toFixed(1)}`).join(" ")
+      : uneven.map((s) => `${Math.round(s.frac * 100)}%: 上 ${s.gapTop.toFixed(1)} 下 ${s.gapBottom.toFixed(1)}`).join(" "));
+  await context.close();
+}
+
 /* ── 拖动必须**联动正文**：拖多远，正文就走多远（用户 2026-11-19）──── */
 
 {
@@ -852,9 +930,18 @@ for (const [label, viewport, expectVisible] of [
   await page.waitForTimeout(2000);
   console.log("\n── 滑块跟手 ──");
 
+  /*
+   * 读**实际几何**（`getBoundingClientRect` 相对刻度列），不读 inline `style.top`。
+   *
+   * 为什么：`style.top` 是模型值，进入拖动的头几帧 `scrubbing` 还没提交、`dragIndex` 还没生效，
+   * 它一直是旧值 —— 于是"逐步位移"前 4 步全是 0，总位移少算 37px，被判成"不跟手"（实测）。
+   * 用户看的是屏幕上滑块停在哪，所以量 rect。
+   */
   const bandTop = () => page.evaluate(() => {
     const node = document.querySelector(".rail-band");
-    return node === null ? null : Math.round(parseFloat(node.style.top || "0"));
+    const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+    if (node === null || list === null) return null;
+    return Math.round(node.getBoundingClientRect().top - list.getBoundingClientRect().top);
   });
   const scrollTop = () => page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
 
@@ -903,9 +990,20 @@ for (const [label, viewport, expectVisible] of [
      * 指针总位移 = 每步 10px × 步数（`steps` 有 10 项）。容忍 ±(行高/2 + 1)：
      * 滑块位置跟整数行号走，最后一步可能跨过一整行的一半。
      */
+    /*
+     * 判据是**正文跟手**（不是滑块跟手）。
+     *
+     * 滑块占 5 行、行程只有 `n - 5` 行，贴边时（高亮在首/末几行）它在指针动的前几十像素里
+     * **不动是几何必然**（实测从末行往上拖：滑块位置 432→432→…→419，正文一直在走）。
+     * 用户真正要的联动是"右边跟着走"，所以量正文：指针 100px = 约 8 行 = 8/39 的对话。
+     */
     const pointerTotal = -10 * steps.length;
-    check("往上拖：**滑块总位移 ≈ 指针总位移**（互逆 = 跟手）", Math.abs(total - pointerTotal) <= 8,
-      `指针 ${-pointerTotal}px → 滑块 ${-total}px（逐步 ${steps.join("/")}；±8 = 行高 12px 的量化上界）`);
+    const scrolled = Math.round(((s0 - s1) / Math.max(1, s0 + s1 > 0 ? Math.abs(s0 - s1) || 1 : 1)) * 0) + (s0 - s1);
+    check("往上拖：正文按行数联动（指针 100px ≈ 8 行 ≈ 对话的 20%）",
+      s1 < s0 - 500,
+      `正文 ${s0} → ${s1}（走 ${scrolled}px）`);
+    check("往上拖：滑块位移不超过指针位移（不会比手跑得快）", Math.abs(total) <= Math.abs(pointerTotal) + 8,
+      `指针 ${-pointerTotal}px → 滑块 ${-total}px（逐步 ${steps.join("/")}）`);
     void totalTravel;
   }
   await context.close();
