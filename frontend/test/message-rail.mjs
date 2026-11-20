@@ -475,6 +475,101 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
+/* ── 松手不回弹 / 点击一步到位（用户 2026-11-19 报的两个缺陷）──── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  console.log("\n── 松手不回弹 / 点击一步到位 ──");
+
+  const snapshot = () => page.evaluate(() => {
+    const rail = document.querySelector('[data-testid="message-rail"]');
+    const list = rail.querySelector(".rail-scroll");
+    const listBox = list.getBoundingClientRect();
+    const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+    const active = document.querySelector('[data-rail-active="true"]');
+    const activeBox = active?.getBoundingClientRect();
+    const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+    return {
+      bandTop: Math.round(bandBox.top - listBox.top),
+      index: active ? rows.indexOf(active) : -1,
+      wraps: activeBox === undefined ? false : (activeBox.top >= bandBox.top - 1 && activeBox.bottom <= bandBox.bottom + 1),
+      scrollTop: Math.round(document.querySelector("main").scrollTop),
+    };
+  });
+
+  await page.evaluate(() => { const m = document.querySelector("main"); m.scrollTop = (m.scrollHeight - m.clientHeight) * 0.85; });
+  await page.waitForTimeout(900);
+
+  // ① 拖动 → 松手 → 5 秒内不得挪动
+  const band = await page.evaluate(() => {
+    const box = document.querySelector(".rail-band").getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  await page.mouse.move(band.x, band.y);
+  await page.mouse.down();
+  await page.mouse.move(band.x, band.y - 200);
+  await page.waitForTimeout(200);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const settled = await snapshot();
+  const drift = [];
+  for (let i = 0; i < 8; i += 1) {
+    await page.waitForTimeout(600);
+    drift.push(await snapshot());
+  }
+  check("松手后滑块与高亮**停在原处**（5 秒内不弹走）",
+    drift.every((s) => s.bandTop === settled.bandTop && s.index === settled.index),
+    `松手 ${settled.bandTop}/#${settled.index} → 采样 ${drift.map((s) => `${s.bandTop}/#${s.index}`).join(" ")}`);
+  check("松手后高亮仍在滑块内", drift.every((s) => s.wraps));
+
+  // ② 点一条远处的行 → 立刻切过去（不等平滑滚动）
+  const target = await page.evaluate(() => {
+    const rail = document.querySelector('[data-testid="message-rail"]');
+    const list = rail.querySelector(".rail-scroll");
+    const listBox = list.getBoundingClientRect();
+    const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+    const activeIndex = rows.indexOf(document.querySelector('[data-rail-active="true"]'));
+    const found = rows.map((row, index) => ({ row, index })).find(({ row, index }) => {
+      const box = row.getBoundingClientRect();
+      if (Math.abs(index - activeIndex) < 3) return false;
+      /*
+       * 只挑**真正落在可视区里、且没被滑块盖住**的行：
+       * 短会话（列表不滚）里"第 8 条"可能正好在滑块下面，点它会打到滑块上 → 变成拖动。
+       * 用 `elementFromPoint` 确认命中目标就是这一行。
+       */
+      if (!(box.top > listBox.top + 20 && box.bottom < listBox.bottom - 20)) return false;
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return hit !== null && row.contains(hit);
+    });
+    if (found === undefined) return null;
+    const box = found.row.getBoundingClientRect();
+    return { id: found.row.getAttribute("data-rail-id"), index: found.index, x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  if (target === null) {
+    console.log("⤼ 跳过：列里没有离当前足够远的可见行");
+  } else {
+    const before = await snapshot();
+    await page.mouse.click(target.x, target.y);
+    // 300ms 内必须已经切过去（长距离跳转不允许走 smooth）
+    await page.waitForTimeout(300);
+    const at300 = await snapshot();
+    await page.waitForTimeout(1500);
+    const at1800 = await snapshot();
+    check(`点第 ${target.index} 条 → **300ms 内**高亮已切到它（不是"慢慢爬"）`,
+      at300.index === target.index, `点前 #${before.index} → 300ms #${at300.index}（期望 ${target.index}）`);
+    check("点完之后滑块立刻包裹它、位置也切过去",
+      at300.wraps && at300.bandTop !== before.bandTop, `${before.bandTop} → ${at300.bandTop}`);
+    check("点完之后不再自己变化（1.8s 后与 300ms 一致）",
+      at1800.index === at300.index && at1800.bandTop === at300.bandTop,
+      `300ms ${at300.bandTop}/#${at300.index} → 1.8s ${at1800.bandTop}/#${at1800.index}`);
+  }
+  await context.close();
+}
+
 /* ── 滑块跟手（VSCode minimap.ts:391/:254 的互逆关系）────────── */
 
 {

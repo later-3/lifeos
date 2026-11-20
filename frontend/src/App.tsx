@@ -1773,7 +1773,20 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
           // 用户主动离开底部了：不要让随后的流式 delta 把他拽回来
           followTail.current = false;
           setAtBottom(false);
-          node.scrollIntoView({ block: "center", behavior: "smooth" });
+          /*
+           * **长距离跳转不用 smooth**（用户 2026-11-19："用户都点击了横条，你肯定要把当前所有
+           * 指向性的东西都切到对应的地方去啊，你现在只是往上跳了一格？"）。
+           *
+           * 实测：从会话末尾点第 525 条，`scrollIntoView({behavior:"smooth"})` 在 200ms 时
+           * 只滚了 377px（目标要 6000+px），看起来就是"只跳了一格，然后慢慢爬"。
+           * 短距离（同一屏内）用 smooth 是舒服的，长距离只会让人觉得"没反应"。
+           */
+          const container = scrollRef.current;
+          const mainRect = container?.getBoundingClientRect();
+          const nodeRect = node.getBoundingClientRect();
+          const distance = mainRect === undefined ? 0 : Math.abs(nodeRect.top - mainRect.top);
+          const near = distance <= (mainRect?.height ?? 0) * 1.5;
+          node.scrollIntoView({ block: "center", behavior: near ? "smooth" : "auto" });
           return candidate;
         }
         await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });

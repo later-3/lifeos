@@ -188,8 +188,10 @@ export const MessageRail = memo(function MessageRail({
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
   const [scrubbing, setScrubbing] = useState(false);
-  /** 拖动中由滑块反推出的行号（松开后清空，回到锚点反查）。 */
+  /** 拖动中由滑块反推出的行号（松手后锁住它，见 `endScrub`）。 */
   const [dragIndex, setDragIndex] = useState<number | undefined>(undefined);
+  const dragIndexRef = useRef<number | undefined>(undefined);
+  dragIndexRef.current = dragIndex;
   /** 每秒变一次的计数，仅用于让"锁定到期"能被重算（见 `resolvedIndex`）。 */
   const [scrollTick, setScrollTick] = useState(0);
 
@@ -646,6 +648,7 @@ export const MessageRail = memo(function MessageRail({
       setHovered(undefined);
       setCard(undefined);
     }
+    dragIndexRef.current = index;
     setDragIndex(index);
 
     /*
@@ -663,8 +666,21 @@ export const MessageRail = memo(function MessageRail({
     scrubRef.current = undefined;
     setScrubbing(false);
     notifyScrubbing(false);
-    // 松手：清掉拖动值，回到"由正文反查"（此时已滚到位，两者一致）
-    setDragIndex(undefined);
+    /*
+     * 松手**不清 `dragIndex`**（用户 2026-11-19："松开鼠标之后，就还是放到鼠标的那个位置吧，
+     * 不要自动弹走了"）。
+     *
+     * 为什么清掉会弹走：松手时正文的 `scrollTop` 由拖动最后一步写过，但**正文锚点重算**
+     * （`railActivePick`，走 150ms 节流 + DOM 测量）还没跟上那一帧 —— 于是 `anchorIndex`
+     * 仍是旧值，`resolvedIndex` 退回旧值，滑块跳回去。实测：拖动中 330 → 松手 394（跳 64 条）。
+     *
+     * 所以松手后**保持拖动值**，并用 `lockRef` 把它锁住；等正文滚动事件重新算出可信的锚点
+     * （`scrollTick` 到期）后自然接管。这正是 `RAIL_ACTIVE_LOCK_MS` 的用途。
+     */
+    const lastIndex = dragIndexRef.current;
+    if (lastIndex !== undefined) {
+      lockRef.current = { index: lastIndex, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
+    }
   }, [notifyScrubbing]);
 
   /* ── 8. 点击 ───────────────────────────────────────────── */
