@@ -4749,7 +4749,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
             className={`border-l border-nav-line bg-surface ${isMobile ? `fixed inset-0 ${LAYER_CLASS.drawer}` : ""}`}>
             {peerTarget !== undefined ? (
               <div className="min-w-0 flex-1 overflow-hidden">
-                <PeerPanel target={peerTarget} liveEvents={liveEvents} loadThinking={thinkingLoaderFor(peerTarget.agentId, peerTarget.sessionId)} onClose={closePeerPanel} />
+                <PeerPanel target={peerTarget} liveEvents={liveEvents} loadThinking={thinkingLoaderFor(peerTarget.agentId, peerTarget.sessionId)} onOpen={() => { closePeerPanel(); void openFromNotice(peerTarget.agentId, peerTarget.sessionId); }} onClose={closePeerPanel} />
               </div>
             ) : isMobile ? (
               showTree ? (
