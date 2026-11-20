@@ -15,6 +15,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { createAgentTools } from "./agent-tools.ts";
+import { createLifeOsWriteGuardExtension } from "./write-guard.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { phaseOfStreamEvent, rowPatches } from "./row-patch.ts";
@@ -219,6 +220,8 @@ export async function createHostedResourceLoader(input: {
   cwd: string; configDir: string; settingsManager: SettingsManager; parts: Awaited<ReturnType<typeof buildPromptParts>>;
   /** 每次 run 重新装配（用于会话中途切换 Task）；不传则用固定 parts。 */
   getParts?: () => Promise<Awaited<ReturnType<typeof buildPromptParts>>>;
+  /** 写入守卫的作用域与「当前 Task」来源（Task 0004 · P4）；不传则不挂守卫（离线测试用）。 */
+  writeGuard?: { agentId: string; projectId: string; getTaskId: () => string | undefined };
 }): Promise<DefaultResourceLoader> {
   const loader = new DefaultResourceLoader({
     cwd: input.cwd,
@@ -229,6 +232,9 @@ export async function createHostedResourceLoader(input: {
       createLifeOsPromptExtension(input.getParts ?? input.parts),
       createLifeOsImageBudgetExtension(),
       createLifeOsReadPathExtension(),
+      // 写入守卫（Task 0004 · P4 · L2）：Agent 的 write/edit/bash 只能落在**当前 Task 的工作区**里。
+      // 挂在这里而不是文件系统层：`git merge` 不经过工具层 → "合并写入主区"自动合法，条文才落得下去。
+      ...(input.writeGuard !== undefined ? [createLifeOsWriteGuardExtension(input.writeGuard)] : []),
     ],
   });
   await loader.reload();
@@ -267,7 +273,15 @@ async function createHostedSession(
     const origin = currentOriginOf(sessionManager);
     return origin === undefined ? base : { ...base, speakerSection: speakerSection(origin) };
   };
-  const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts, getParts });
+  const resourceLoader = await createHostedResourceLoader({
+    cwd, configDir, settingsManager, parts, getParts,
+    // 当前 Task 必须**实时读**：会话可以中途切 Task；创建时取一次会永久滞后（与 customTools 同一口径）。
+    writeGuard: {
+      agentId, projectId,
+      getTaskId: () => stateOf(agentId).sessions.get(sessionManager.getSessionId())?.taskId
+        ?? activeTaskOf(sessionManager),
+    },
+  });
 
   const resolution = await resolveModelChoice(agentId);
   let model: ModelOption | undefined;

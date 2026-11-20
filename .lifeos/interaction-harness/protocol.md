@@ -132,7 +132,16 @@
 - **可以** 家目录还不是 git 仓时（例如尚未 `git init`），不建工作区，文档写回主区——这是兼容路径，不是默认形态。
 - **必须** 工作区在 Task 创建时**自动建**，不是“记得就建”；各自一条分支从 `main` 起：家目录 `task/<agent>/<project>/<NNNN>`，项目仓 `dev/<agent>/<project>/<NNNN>`。分支名**必须带 agent 与 project**——Task ID 只在 Agent × Project 内唯一（§3.7），裸 `task/0004` 会让两个 Agent 的 0004 撞在同一条分支上。
 - **必须** 分支按 **Task** 分，不按 Agent 或 Agent × Project 分 —— 同一 Agent 的两个 Task 共用分支会让改动混在一起，检视失去粒度。
-- **必须** 家目录工作区按 Agent 的**可见范围**裁剪（§4.2 的层）：自己的（`agents/<自己>/`）全量 + 共享 workspace + **绑定的**共享 project + `interaction-harness/` + `users/`；其他 Agent 与未绑定 project 的路径**不在里面**。
+- **必须** 家目录工作区按 Agent 的**可见范围**裁剪（§4.2 的层），两种形态并存：
+  - **收窄态**（新建 Task 默认）：自己的身份/工具/记忆（`agents/<自己>/{AGENTS.md,agent.json,identity.md,avatar/,memory/,tools/}`）
+    + 本 Task 所在 project 的 Agent 层（`agents/<自己>/projects/<pid>/`）+ **本 Task 目录** + 共享 workspace + 绑定的共享 project
+    + `interaction-harness/` + `users/`；**其他 Task 不在里面**。
+  - **旧形态**（2026-11 之前建的 Task，不迁移）：`agents/<自己>/` 全量 + 同上。
+  - **必须** 收窄态的取舍是「只装被读或实测会被写的东西」，不是「只装被读的」——
+    `agents/<自己>/projects/<pid>/` 下的 `specs/` `devices/` `tools/` 当前没有读路径指向，但实测被改过
+    （reviewer 全量复核 28 个工作区：`agent-e776/workspace/0009` 有 59 个本 Task 外改动），不放行就会写失败或落主区。
+- **必须不** 在拼 sparse 模式时把用户写的 Task 目录名当普通字符串拼接——它是 **gitignore 语法**，
+  含 `[ ] * ? \` 时必须转义（`escapeGlob`）。实测：目录名 `0001-a[b]` 裸写模式匹配不上，**本 Task 自己都检不出**。
 - **必须** 合并只由用户触发；Agent 不自动合并、不自动删工作区（冲突停下来交给用户）。
 - **必须** 读侧能穿透：Task 自身的 `task.md` 与各文档在工作区里，列表与装配读工作区副本；主区那份是**上次合并**的版本，不是当前状态。
 - **必须** 任何交给模型的 Task 路径（工具回执、错误信息）都是**文档所在的路径**（`docPath`），不是主区挂载点（`path`）。主区那份只由合并写入。
