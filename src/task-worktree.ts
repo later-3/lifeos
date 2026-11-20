@@ -121,6 +121,8 @@ async function identitySkipOf(worktree: string, agentId: string): Promise<{ iden
 /** 家目录工作区：建在家目录仓上，按 Agent 可见范围裁剪。 */
 export async function createHomeWorktree(input: {
   taskDir: string; taskId: string; agentId: string; projectId: string; boundProjects: string[];
+  /** 本 Task 的目录名（`NNNN-标题`）：传了就是**收窄态**，只检出这一个 Task（Task 0004 · P2）。 */
+  taskDirName?: string;
 }): Promise<WorktreeResult> {
   const home = resolveHome();
   if (!await isGitRepo(home)) return { skipped: "家目录不是 git 仓（没有 init 过），跳过家目录工作区" };
@@ -132,7 +134,15 @@ export async function createHomeWorktree(input: {
   const archived = await archiveIfDirty(home);
   await git(home, ["worktree", "add", "--no-checkout", path, "-b", branch, base]);
   try {
-    await git(path, ["sparse-checkout", "set", "--no-cone", ...worktreeProfileOf({ agentId: input.agentId, boundProjects: input.boundProjects })]);
+    // 收窄：只检出本 Task（Task 0004 · P2）。不传 taskDirName 时保持旧形态（存量工作区）。
+    const profile = worktreeProfileOf({
+      agentId: input.agentId,
+      boundProjects: input.boundProjects,
+      ...(input.taskDirName !== undefined
+        ? { taskDirName: input.taskDirName, projectId: input.projectId }
+        : {}),
+    });
+    await git(path, ["sparse-checkout", "set", "--no-cone", ...profile]);
     await git(path, ["read-tree", "-mu", "HEAD"]);
     await writeMarker(path, {
       kind: "home", taskId: input.taskId, agentId: input.agentId,
@@ -197,8 +207,10 @@ export async function createTaskWorktrees(input: {
   const created: { home?: string; project?: string } = {};
   const boundProjects = await boundProjectsOf(input.agentId);
 
+  const taskDirName = input.taskDir.split("/").pop() ?? "";
   const home = await createHomeWorktree({
     taskDir: input.taskDir, taskId: input.taskId, agentId: input.agentId, projectId: input.projectId, boundProjects,
+    ...(taskDirName !== "" ? { taskDirName } : {}),
   });
   if (home.path !== undefined) created.home = home.path;
   if (home.skipped !== undefined) skipped.push(home.skipped);

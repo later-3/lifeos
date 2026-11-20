@@ -34,6 +34,11 @@ test("T1 P1 要求的五种输入（完成标准 9）", () => {
 });
 
 test("T1b 活性：挂载点内部逐级都不是挂载点（只认挂载点本身）", () => {
+  // **前置 true 断言不能省**（architect R1 复核抓出）：本段其余全是 `false` 断言，
+  // 实现被写坏成"永远返回 undefined"时它们会全绿——那就是恒真断言（testing.md 2.15）。
+  // 下面这条 true 让"永远 false"立刻变红。
+  assert.equal(isWorktreeMount(deep("home")), true, "前置：挂载点本身必须能被认出来（否则本段是恒真断言）");
+  assert.equal(isWorktreeMount(deep("repo")), true, "前置：同上");
   for (const tail of [
     "home/agents",
     "home/agents/a",
