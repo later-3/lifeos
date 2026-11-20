@@ -217,13 +217,49 @@ test("百分比：顶部 0%、底部 100%、按行号线性单调", () => {
   }
 });
 
-test("滑块在可视框内，长度有 20px 下限（VSCode MINIMUM_SLIDER_SIZE）", () => {
+test("滑块在可视框内，长度有下限且**按整行对齐**（VSCode MINIMUM_SLIDER_SIZE + 行边界）", () => {
+  /*
+   * 长度下限 20px（VSCode `MINIMUM_SLIDER_SIZE`）先算，再**整行对齐** ——
+   * 于是实际高度是"能装下下限的最少整数行"：508×844/71153=6px → 抬到 20px → 对齐到 2 行 24px。
+   * 为什么必须对齐：逐像素居中时滑块边沿落在两条横条的缝隙里（实测 `bandTopInRows=5.87`），
+   * 用户看到"上面有缝、下面贴着"（2026-11-19 截图）。行是离散的，滑块也该离散。
+   */
   for (const index of [0, 100, 280, 500, 559]) {
     const m = model(index);
     assert.ok(m.bandTop >= 0 && m.bandTop + m.bandHeight <= VIEW.viewHeight + 0.5, `idx=${index} 越界`);
-    assert.ok(m.bandHeight >= RAIL_SLIDER_MIN);
+    assert.ok(m.bandHeight >= RAIL_SLIDER_MIN, `idx=${index} 滑块 ${m.bandHeight} 低于下限`);
+    // 高度是行高的整数倍（对齐）且上沿落在行边界上
+    assert.ok(Math.abs(m.bandHeight % ROW_H) < 0.01 || Math.abs((m.bandHeight % ROW_H) - ROW_H) < 0.01,
+      `idx=${index} 高度 ${m.bandHeight} 不是整行`);
   }
-  assert.equal(model(0).bandHeight, RAIL_SLIDER_MIN, "508×844/71153=6px → 抬到 20px");
+  /*
+   * 508×844/71153=6px → 抬到 20px → 需要 2 行 → **取奇数 3 行**（36px）：
+   * 偶数行时高亮行只能贴着滑块某一边，正是用户报的"上面有缝、下面贴住"。
+   */
+  assert.equal(model(0).bandHeight, ROW_H * 3, "抬到 20px → 2 行 → 取奇数 3 行（36px）");
+});
+
+test("滑块上下沿落在**行边界**上（用户 2026-11-19：「上面有缝隙、下面贴住了」）", () => {
+  let scroll = 0;
+  for (const index of [3, 7, 12, 20, 30, 39, 25, 15]) {
+    const m = model(index, scroll);
+    scroll = m.listScrollTop;
+    const topInRows = (index * ROW_H - m.listScrollTop) / ROW_H;   // 行顶（以行为单位，整数）
+    const bandTopInRows = m.bandTop / ROW_H;
+    /*
+     * 贴边时（滑块被夹在可视框两端）不可能对齐，那是几何事实；其余情况必须整行。
+     */
+    const clamped = m.bandTop <= 0.5 || m.bandTop >= m.bandRange - 0.5;
+    if (clamped) continue;
+    assert.ok(Math.abs(bandTopInRows - Math.round(bandTopInRows)) < 0.02,
+      `idx=${index} 滑块上沿在 ${bandTopInRows.toFixed(3)} 行（应为整数）`);
+    const bandBottomInRows = (m.bandTop + m.bandHeight) / ROW_H;
+    assert.ok(Math.abs(bandBottomInRows - Math.round(bandBottomInRows)) < 0.02,
+      `idx=${index} 滑块下沿在 ${bandBottomInRows.toFixed(3)} 行（应为整数）`);
+    // 行必须完整落在滑块里
+    assert.ok(topInRows >= bandTopInRows - 0.02 && topInRows + 1 <= bandBottomInRows + 0.02,
+      `idx=${index}: 行 [${topInRows}, ${topInRows + 1}] 未完整落在滑块 [${bandTopInRows}, ${bandBottomInRows}] 内`);
+  }
 });
 
 test("**拖动是反向换算**：滑块顶边位置 → 行号（拖动时滑块主导）", () => {
@@ -280,7 +316,7 @@ test("退化输入不产生 NaN；一屏装得下时滑块占满；越界 index 
   assert.equal(zero.bandHeight, 0);
   assert.equal(zero.percent, 0);
   const full = railProgressModelOf({ resolvedIndex: 0, totalTicks: 5, viewHeight: 508, clientHeight: 844, scrollHeight: 800, listContentHeight: 60, listViewHeight: 508, listScrollTop: 0 });
-  assert.equal(full.bandHeight, 508, "一屏装得下全部 → 滑块占满");
+  assert.equal(full.bandHeight, 508, "一屏装得下全部 → 滑块占满可视框（没有移动余地）");
   assert.equal(full.bandTop, 0);
   assert.equal(model(-5).bandTop, model(0).bandTop, "负下标被夹到 0");
   assert.equal(model(99999).bandTop, model(559).bandTop, "超界下标被夹到最后一条");
