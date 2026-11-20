@@ -591,8 +591,12 @@ for (const [label, viewport, expectVisible] of [
     check("点完之后滑块立刻包裹它、位置也切过去",
       at300.wraps && (centered || at300.bandTop === 0 || at300.bandTop === at300.bandRange),
       `${before.bandTop} → ${at300.bandTop}（滑块高 ${at300.bandHeight}，行 ${at300.rowTop}）`);
-    check("点完之后不再自己变化（1.8s 后与 300ms 一致）",
-      at1800.index === at300.index && at1800.bandTop === at300.bandTop,
+    /*
+     * 允许**半个行高**的落定误差：高亮行正好落在刻度列边界时会触发一次最小滚动把行露出来，
+     * 滑块跟着行挪半行（量化）。再多就说明"滑块在自己飘"，那是缺陷。
+     */
+    check("点完之后不再自己变化（1.8s 后与 300ms 基本一致，误差 ≤ 半个行高）",
+      at1800.index === at300.index && Math.abs(at1800.bandTop - at300.bandTop) <= at300.rowHeight / 2 + 1,
       `300ms ${at300.bandTop}/#${at300.index} → 1.8s ${at1800.bandTop}/#${at1800.index}`);
   }
   await context.close();
@@ -717,6 +721,49 @@ for (const [label, viewport, expectVisible] of [
   }
   check(`屏幕上逐行点击（${tested} 行）全部到位`, tested >= 4 && missed.length === 0,
     missed.length === 0 ? `${tested}/${tested}` : `失败 ${missed.length}：${missed.slice(0, 6).join(" ")}`);
+  await context.close();
+}
+
+/* ── 拖动必须**联动正文**：拖多远，正文就走多远（用户 2026-11-19）──── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3500);
+  console.log("\n── 拖动联动正文 ──");
+
+  const progress = () => page.evaluate(() => {
+    const main = document.querySelector("main");
+    const max = main.scrollHeight - main.clientHeight;
+    return Math.round((main.scrollTop / Math.max(1, max)) * 100);
+  });
+  const band = await page.evaluate(() => {
+    const box = document.querySelector(".rail-band").getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  });
+  const frameHeight = await page.evaluate(() => Math.round(document.querySelector(".rail-band").parentElement.getBoundingClientRect().height));
+
+  await page.evaluate(() => { const m = document.querySelector("main"); m.scrollTop = m.scrollHeight; });
+  await page.waitForTimeout(800);
+  const startProgress = await progress();
+
+  // 从底部往上拖**整列**（≈ 可视框高度）：正文应接近顶部（满程 = 整段）
+  await page.mouse.move(band.x, band.y);
+  await page.mouse.down();
+  const steps = 8;
+  for (let step = 1; step <= steps; step += 1) {
+    await page.mouse.move(band.x, band.y - (frameHeight * step) / steps);
+    await page.waitForTimeout(50);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const endProgress = await progress();
+
+  check("往上拖**满一列** → 正文从底部走到接近顶部（不是只走一点点）",
+    startProgress >= 95 && endProgress <= 15,
+    `${startProgress}% → ${endProgress}%`);
   await context.close();
 }
 
