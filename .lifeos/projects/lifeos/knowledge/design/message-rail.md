@@ -32,9 +32,13 @@
 
 | 视觉 | 含义 | 派生 |
 |---|---|---|
-| 高亮条（`data-rail-active`） | 当前读到哪一条 | `resolvedIndex` |
+| 高亮条（`data-rail-active`） | 当前读到哪一条 | `resolvedIndex`（点击/拖动时由 `lockTick` state 驱动，**不能只写 ref** —— 见下） |
 | 滑块（`.rail-band`） | 当前这条在列里的位置 | 高亮行的位置（居中于该行，夹进可视框） |
 | 百分比（`data-testid=rail-percent`） | 整段对话里的进度 | `resolvedIndex / (总数 - 1)` |
+
+**写入即生效**：`lockRef` 只做"读取最新值"用，同时必须写 state 镜像 `lockTick` ——
+`resolvedIndex` 的 `useMemo` 依赖里有它。只写 ref 时点击后界面永不更新
+（实测 `data-rail-last-click` 正确、高亮停在旧值，见 C322）。
 
 `resolvedIndex` 有三档来源，优先级固定：**拖动中** → 拖动值；**刚点击/刚跳转** → 跳转锁；
 其余 → 正文锚点反查（`railAnchorOf`，按视口中线量 DOM）。
@@ -67,8 +71,9 @@
 |---|---|
 | 行高 | 24 → 12px 自适应；条数多时**整列可滚**（不压到 2px） |
 | 条宽 | 6–32px，`zipWidthOf`（分段 + sqrt） |
-| 滑块高 | `viewHeight × clientHeight / scrollHeight`，下限 20px（VSCode `MINIMUM_SLIDER_SIZE`） |
-| 滑块位置 | 高亮行居中；贴边时夹进 `[0, viewHeight − 滑块高]` |
+| 滑块高 | `viewHeight × clientHeight / scrollHeight`，下限 20px（VSCode `MINIMUM_SLIDER_SIZE`），再取**奇数行**（偶数行时高亮只能贴边） |
+| 滑块位置 | **按整行对齐**：`firstRow = index − (行数−1)/2`，上下沿永远落在行边界上（像素连续居中会落在两条横条的缝隙里，实测 5.867 行 → 上 24px/下 39px） |
+| 拖动中 | **长会话**：滑块跟指针 1:1、刻度列同帧同步滚（行程 = 整段对话）；**短会话**（列装得下）：滑块跟高亮行（没有滚动空间，按指针走会露 79px） |
 | 列滚动 | **最小滚动**：行在可视区里就不动，出去了才滚到刚好露出来 |
 | 宽度预算 | `RAIL_WIDTH_MIN/MAX = 24/36`；左缘空白 < 24px 不渲染（1280 左列展开时正好 24） |
 
