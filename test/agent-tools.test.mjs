@@ -265,7 +265,13 @@ test("lifeos_task_create：普通任务（general/G）只生成背景+步骤，�
 
   const created = await taskCreate.execute("g1", { title: "整理资料", type: "general", category: "G" });
   assert.equal(created.details.number, 2, "0001 是默认 Task");
-  const dir = created.details.path;
+  // `details.path` 已改名 `mountPath`（Task 0004 · P2.5）：**文档读写在 docPath**，
+  // mountPath 只是结构身份。这里要读 task.md，所以用 docPath——用 mountPath 会读不到。
+  const dir = created.details.docPath;
+  // 注意这份夹具的临时家目录**不是** git 仓（没有 `git init`），所以不会有工作区，
+  // `docPath === mountPath` 是正确行为（`task-doc-path.ts` 的兼容路径）。
+  // "有工作区时两者必须不同"由 `test/task-create-docpath.test.mjs` 的 L1-1/L1-3 覆盖（那边 init 了 git）。
+  assert.equal(created.details.docPath, created.details.mountPath, "没有工作区时 docPath 回落到主区（兼容路径）");
   const taskMd = await readFile(join(dir, "task.md"), "utf8");
   assert.match(taskMd, /类型：general/);
   assert.match(taskMd, /类别：G 普通任务/);

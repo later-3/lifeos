@@ -163,12 +163,17 @@ export function createAgentTools(ctx: ToolContext) {
       return {
         content: [{
           type: "text" as const,
-          text: `Created task ${task.id} (${task.type} · ${task.category}) at ${task.path}\n`
+          // **给的必须是文档路径**（协议 §3.7「给模型的 Task 路径」）：`task.path` 是两个工作区的
+          // 挂载点，主区那份没有文档（新建的 Task 更是连目录都没有），照着写就是凭空造文件或绕过检视。
+          text: `Created task ${task.id} (${task.type} · ${task.category}) at ${task.docPath}\n`
+            + `(write documents here; ${task.path} is the mount point in the main area — do not write there)\n`
             + `Files: task.md${files.length > 0 ? ` · ${files.join(" · ")}` : ""}\n`
             + (skipped.length > 0 ? `⚠ ${skipped.join("\n⚠ ")}\n` : "")
             + `This conversation now works in task ${task.id} (takes effect from the next turn). Next: fill the background with current facts, then the plan.`,
         }],
-        details: { id: task.id, number: task.number, path: task.path, type: task.type, skipped },
+        // 字段名自解释：`mountPath` 一眼看得出是挂载点（不要往这写），`docPath` 才是写的地方。
+        // 不给裸 `path`——名字中立，模型与人都容易拿错（reviewer 建议，Task 0004 · P2.5）。
+        details: { id: task.id, number: task.number, docPath: task.docPath, mountPath: task.path, type: task.type, skipped },
       };
     },
   });
@@ -215,9 +220,11 @@ export function createAgentTools(ctx: ToolContext) {
       return {
         content: [{
           type: "text" as const,
-          text: `Now working in task ${found.id} · ${found.title} (takes effect from the next turn).`,
+          // 同 `lifeos_task_create`：给文档路径，不给主区挂载点（协议 §3.7）。
+          text: `Now working in task ${found.id} · ${found.title} (takes effect from the next turn).\n`
+            + `Documents: ${found.docPath} (write documents here; ${found.path} is the mount point in the main area — do not write there)`,
         }],
-        details: { id: found.id, title: found.title, dirName: found.dirName },
+        details: { id: found.id, title: found.title, dirName: found.dirName, docPath: found.docPath, mountPath: found.path },
       };
     },
   });
