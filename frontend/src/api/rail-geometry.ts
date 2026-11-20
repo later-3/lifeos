@@ -253,31 +253,118 @@ export function railEnsureVisible(
  * @param clientHeight 正文可视高（px）
  * @param visibleTicks 一屏能看到几条刻度（实测，只用于估算每屏多少）
  */
-export function railOverviewOf(input: {
-  scrollTop: number;
-  scrollHeight: number;
-  clientHeight: number;
+/**
+ * 滑块（可视范围带）与"当前读第几条"之间的**唯一换算**。
+ *
+ * ## 用户的要求（2026-11-19）
+ *
+ * > "当我拖动滑块的时候，高亮横条始终在滑块中间的位置。
+ * >  然后我点击某一个横条，这个横条马上高亮且切到对应的消息，并且我们的滑块也应该是在那个地方。"
+ *
+ * 也就是三个东西必须**同源**：滑块位置、高亮条、列表的滚动位置。
+ *
+ * ## 为什么早先不一致（实测差 364px → 181px → 77px，改了三次才对齐）
+ *
+ * 因为我把它们当成了**三个独立的量**：
+ *  - 滑块位置 = `activeIndex / totalTicks`（占整列比例）；
+ *  - 高亮条 = 列表里第 `activeIndex` 行；
+ *  - 列表滚动 = `railEnsureVisible`（只保证可见）。
+ *
+ * 三者各自"看起来对"，但**滑块的比例是"整列内容的比例"，高亮条的位置是"列表可视区里的位置"**
+ * —— 两个坐标系的量纲不同，永远对不上。
+ *
+ * ## 正确模型：**一个进度值，三处派生**
+ *
+ * ```
+ *   progress = 已读内容高度 / 可滚内容高度        ∈ [0, 1]      ← 唯一的真相源
+ *   滑块 top  = progress × (viewHeight - sliderHeight)
+ *   高亮条    = 第 floor(progress × totalTicks) 条
+ *   列表滚动  = progress × (listContentHeight - listViewHeight)
+ * ```
+ *
+ * 这样"高亮条落在滑块中间"是**代数恒等式**，不是靠调参数凑出来的。
+ *
+ * ## 但正文是虚拟化 + 分页的：`progress` 用哪个分母
+ *
+ * 正文的 `scrollHeight` 只含**已下载段**。若直接用 `scrollTop / (scrollHeight - clientHeight)`，
+ * 未补齐历史时"读到一半"会被算成"读到 90%"（因为已下载段只占会话的一小截）——
+ * 用户拖滑块 90px 就走完，滑块却只动 7%。
+ *
+ * 所以 `progress` 取**按刻度归一**的版本：`(activeIndex + 0.5) / totalTicks`。
+ * `activeIndex` 由 `railActivePick` 给出（锚点 + 比例兜底），覆盖整个会话，与"刻度总数"同源。
+ * 三个派生值都用它 —— 于是**同源**成立，且不受"已下载多少"影响。
+ */
+export function railProgressModelOf(input: {
+  activeIndex: number;
+  totalTicks: number;
   viewHeight: number;
-}): { top: number; height: number; ratio: number } {
-  const { scrollTop, scrollHeight, clientHeight, viewHeight } = input;
-  if (!(viewHeight > 0) || !(scrollHeight > 0)) return { top: 0, height: 0, ratio: 1 };
-  if (scrollHeight <= clientHeight) return { top: 0, height: viewHeight, ratio: 1 };   // 不可滚 → 占满
-
-  // 长度 = 一屏占内容的比例（VSCode `scrollbarState.ts:144` 同一条）
-  const height = Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
-  const maxTop = Math.max(0, viewHeight - height);
-  if (maxTop <= 0) return { top: 0, height: viewHeight, ratio: 1 };
-
+  clientHeight: number;
+  scrollHeight: number;
+  /** 列表（刻度列）的内容高与可视高 —— 高亮条所在的坐标系 */
+  listContentHeight: number;
+  listViewHeight: number;
+  /** 拖动中传"正文的真实滚动比例"（0–1），让滑块逐帧跟手；静止时不传。 */
+  continuousProgress?: number;
+}): {
+  /** 滑块在可视框里的位置与高度（px） */
+  bandTop: number;
+  bandHeight: number;
+  /** 列表应该滚到的 `scrollTop`（让高亮条落在滑块中间） */
+  listScrollTop: number;
+  /** 拖动换算：滑块走 1px ↔ 正文滚多少 px */
+  ratio: number;
+  progress: number;
+} {
+  /** 连续进度（拖动中用）。给了就以它为准 —— 拖动时滑块要跟指针逐帧走，不能等 `activeIndex` 更新。 */
+  const { activeIndex, totalTicks, viewHeight, clientHeight, scrollHeight } = input;
+  const continuous = input.continuousProgress;
+  const listContentHeight = Math.max(0, input.listContentHeight);
+  const listViewHeight = Math.max(0, input.listViewHeight);
   /*
-   * 位置 = `scrollTop × ratio`（VSCode `minimap.ts:391` **逐字**同一条）。
-   *
-   * 早先版本用"当前读第几条刻度（activeIndex）"反推位置，那是**多余的绕路**：
-   * activeIndex 是离散的、还经过锚点估算，而滚动是连续的 —— 两者不可能 1:1，
-   * 表现就是"指针走 10px、滑块走 6px"（实测）。`scrollTop` 是唯一连续且精确的来源。
+   * `progress` 默认由 `activeIndex` 派生（与高亮条同源，保证两者对齐）。
+   * 拖动时传 `continuousProgress`（正文的真实滚动比例）—— 那时滑块要**逐帧跟手**，
+   * 而 `activeIndex` 是离散的、每 150ms 才更新一次，用它会让滑块一顿一顿。
+   * 松手后 `continuousProgress` 撤掉，滑块回到 `activeIndex`，于是又和高亮对齐。
    */
-  const ratio = maxTop / (scrollHeight - clientHeight);
-  if (!Number.isFinite(ratio) || ratio <= 0) return { top: 0, height, ratio: 1 };
-  return { top: railBandTopOf(scrollTop, ratio, maxTop), height, ratio };
+  const discreteProgress = totalTicks <= 0 ? 0
+    : Math.max(0, Math.min(1, (Math.max(0, Math.min(activeIndex, totalTicks - 1)) + 0.5) / totalTicks));
+  const progress = continuous === undefined ? discreteProgress
+    : Math.max(0, Math.min(1, continuous));
+
+  if (totalTicks <= 0 || !(viewHeight > 0) || !(scrollHeight > 0)) {
+    return { bandTop: 0, bandHeight: 0, listScrollTop: 0, ratio: 1, progress };
+  }
+
+  // 滑块长度 = 一屏占内容的比例（VSCode scrollbarState.ts:144）
+  const bandHeight = scrollHeight <= clientHeight
+    ? viewHeight
+    : Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
+  const bandRange = Math.max(0, viewHeight - bandHeight);
+  /*
+   * 位置：让**滑块中心**落在 `progress × viewHeight` 上（而不是 `progress × bandRange`）。
+   *
+   * 为什么是 `progress × viewHeight`：高亮条居中时，它在列表可视区里的位置就是 `listViewHeight/2`，
+   * 而 `listScrollTop = progress × (listContentHeight - listViewHeight)` 让它恰好居中。
+   * 两者都是"progress 映射到可视区的一段"，所以滑块中心必须走满整个 `viewHeight`，
+   * 走 `bandRange` 就会差一个 `bandHeight` 的比例（实测差 74px）。
+   */
+  const bandTop = Math.max(0, Math.min(bandRange, progress * viewHeight - bandHeight / 2));
+
+  const listScrollable = Math.max(0, listContentHeight - listViewHeight);
+  /*
+   * 列表滚动 = `progress × 可滚距离`，但**两端要贴死**：
+   * `progress` 量化到"第几条"时，最后一条给 0.9991（不是 1），乘以可滚距离会差 5.5px；
+   * 而高亮条的行中心已经到底（508），于是两者差一个行高（10px）。
+   * 端点是几何事实（没法再滚），所以显式夹到端点，而不是让量化误差决定。
+   */
+  const atStart = activeIndex <= 0;
+  const atEnd = activeIndex >= totalTicks - 1;
+  const listScrollTop = atStart ? 0 : atEnd ? listScrollable : progress * listScrollable;
+
+  // 拖动：滑块走 1px ↔ 正文滚多少 px（与滑块的位置/高度同源）
+  const scrollable = Math.max(1, scrollHeight - clientHeight);
+  const ratio = bandRange / scrollable;
+  return { bandTop, bandHeight, listScrollTop, ratio: Number.isFinite(ratio) && ratio > 0 ? ratio : 1, progress };
 }
 
 /**
@@ -365,4 +452,23 @@ export const RAIL_SCRUB_THRESHOLD = 4;
 
 export function railGestureOf(deltaX: number, deltaY: number): "click" | "scrub" {
   return Math.abs(deltaX) > RAIL_SCRUB_THRESHOLD || Math.abs(deltaY) > RAIL_SCRUB_THRESHOLD ? "scrub" : "click";
+}
+
+/**
+ * 让某一行**居中**在列的可视区里所需的 `scrollTop`（已夹在合法区间内）。
+ *
+ * 为什么需要"居中"而不是"可见就行"（用户 2026-11-19）：
+ * > "当我拖动滑块的时候，高亮横条始终在滑块中间的位置。"
+ *
+ * 滑块的位置代表"正在读的那一截"，所以高亮条必须**落在滑块中间**。
+ * 早先用 `railEnsureVisible`（只保证可见、留 3 行安全边），于是高亮停在距顶 36px、
+ * 而滑块在 254px —— 两者差 200 多 px，看起来就像"高亮和滑块没关系"。
+ *
+ * 头尾两行无法居中（滚到顶/底时），那时夹到合法区间即可 —— 与滑块贴边一致。
+ */
+export function railCenterTopOf(itemTop: number, itemHeight: number, viewHeight: number, contentHeight: number): number {
+  if (!(viewHeight > 0)) return 0;
+  const centered = itemTop + itemHeight / 2 - viewHeight / 2;
+  const maxTop = Math.max(0, contentHeight - viewHeight);
+  return Math.max(0, Math.min(maxTop, centered));
 }

@@ -52,10 +52,10 @@ import {
   BAR_HEIGHT_HOVER,
   BAR_WIDTH_MIN,
   RAIL_MAX_RATIO,
-  railOverviewOf,
+  railProgressModelOf,
   railBandTopOf,
   railCardPlaceOf,
-  railEnsureVisible,
+  railCenterTopOf,
   railGestureOf,
   railRowsOf,
   railScrubTargetOf,
@@ -172,8 +172,6 @@ export const MessageRail = memo(function MessageRail({
   const loadedFromRef = useRef(0);
   const measureRef = useRef<() => void>(() => {});
   const pendingCardRef = useRef<{ tick: RailTickView; rowRect: DOMRect; railRight: number } | undefined>(undefined);
-  /** 最近一次由"正文滚动"驱动的高亮行 —— 用它把条自己滚到可见（而不是用 scrollIntoView）。 */
-  const followRef = useRef<{ index: number } | undefined>(undefined);
   /**
    * 拖动 scrub 的状态（Task 0020 · P7）。
    *
@@ -307,7 +305,6 @@ export const MessageRail = memo(function MessageRail({
     const tick = ticks[anchorIndex];
     if (tick === undefined) return;
     setActive(tick.id);
-    followRef.current = { index: anchorIndex };
   }, [anchorIndex, ticks]);
 
   /* ── 4. 列的排布 ───────────────────────────────────────── */
@@ -319,6 +316,34 @@ export const MessageRail = memo(function MessageRail({
    * 实测截图里完全看不出哪条是当前（十字路口：宽度这个通道被自己占满了）。
    */
   const barPeak = Math.max(BAR_WIDTH_MIN + 2, slot.width - 10);
+  /*
+   * 滑块 + 列表滚动 + 高亮条的**唯一模型**（见 `railProgressModelOf` 头注）：
+   * 三者都从一个 `progress` 派生，所以"高亮条落在滑块中间"是代数恒等式，不是调参调出来的。
+   */
+  const model = useMemo(() => railProgressModelOf({
+    activeIndex: anchorIndex ?? 0,
+    totalTicks: ticks.length,
+    viewHeight: listViewHeight,
+    clientHeight: metrics.clientHeight,
+    scrollHeight: metrics.scrollHeight,
+    listContentHeight: ticks.length * rows.rowHeight,
+    /*
+     * 列表的可视高必须**实测**（`list.clientHeight`），不能用 `avail × RAIL_MAX_RATIO` 推算：
+     * 可滚时两者不等（实测 508 vs 523），而 `listScrollTop = progress × (content - view)`
+     * 对 `view` 极其敏感 —— 差 15px 会让末端差出几百 px。
+     */
+    listViewHeight,
+    /* 拖动中给连续进度，让滑块逐帧跟手（松手后回到 activeIndex，与高亮条对齐） */
+    ...(scrubbing && metrics.scrollHeight > metrics.clientHeight
+      ? { continuousProgress: scrollTop / (metrics.scrollHeight - metrics.clientHeight) }
+      : {}),
+  }), [anchorIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight, scrubbing, scrollTop]);
+
+  const band = { top: model.bandTop, height: model.bandHeight };
+  /** 拖动用的 ratio（与滑块几何同源）。 */
+  const bandRatio = model.ratio;
+
+
   const widths = useMemo(() => railWidthsOf(ticks, barPeak), [ticks, barPeak]);
 
   /**
@@ -378,36 +403,28 @@ export const MessageRail = memo(function MessageRail({
    * 滑块（可视范围带）：**画在列的可视框坐标系里**，所以它永远可见（不会随刻度列滚动而消失）。
    * 长度 = 一屏占全会话的比例，位置 = 当前刻度在全会话里的比例。见 `railOverviewOf` 头注。
    */
-  const liveBand = useMemo(() => railOverviewOf({
-    scrollTop,
-    scrollHeight: metrics.scrollHeight,
-    clientHeight: metrics.clientHeight,
-    viewHeight: listViewHeight,
-  }), [scrollTop, metrics.scrollHeight, metrics.clientHeight, listViewHeight]);
-
   /**
-   * 最新 `liveBand` 的转发（供 `onRowPointerDown` 读）。
+   * 最新 `bandRatio` 的转发（供 `onRowPointerDown` 读）。
    *
-   * 为什么用 ref 而不是进依赖表：`onRowPointerDown` 依赖 liveBand 会让它每帧重建，
+   * 为什么用 ref 而不是进依赖表：`onRowPointerDown` 依赖它会让它每帧重建，
    * 进而让 `RailRows` 的 props 变、560 行白重渲一次。
    *
    * 为什么必须有它（实测 2026-11-19）：漏了这一步，`onRowPointerDown` 的闭包捕获的是
-   * **首次渲染时**的 liveBand（那时 `metrics` 还是 0 → `ratio` 落在"不可滚动"分支 = 1），
+   * **首次渲染时**的 ratio（那时 `metrics` 还是 0 → 落在"不可滚动"分支 = 1），
    * 于是拖动一开始滑块就跳到末端、之后再也不动。
    */
-  const liveBandRef = useRef(liveBand);
-  liveBandRef.current = liveBand;
+  const bandRatioRef = useRef(bandRatio);
+  bandRatioRef.current = bandRatio;
   /** `metrics` 的最新值转发（pointerdown 的闭包不能直接读 state）。 */
   const metricsRef = useRef(metrics);
   metricsRef.current = metrics;
 
   /*
-   * 滑块的位置**直接来自 `liveBand`**（跟 `activeIndex` 走），不需要手算 ——
-   * 因为 `activeIndex` 本身就跟正文滚动同步变化，所以拖动时滑块自然跟手。
-   * 拖动中只冻结 `ratio`（位置与滚动的换算系数），避免它随测量抖动。
+   * 滑块的位置**直接来自 `model`**（与列表滚动、高亮条同一个 progress），不需要手算 ——
+   * 因为 `progress` 由 `activeIndex` 派生，而 `activeIndex` 跟正文滚动同步，
+   * 所以拖动时滑块自然跟手。冻结 `ratio` 只为避免它随测量抖动。
    */
-  const band = liveBand;
-  void scrubbing;
+
 
   /* ── 4b. 把"当前/悬停/tabIndex"写进 DOM（不进 React 渲染路径）── */
 
@@ -462,12 +479,40 @@ export const MessageRail = memo(function MessageRail({
 
   useEffect(() => {
     const list = listRef.current;
-    const follow = followRef.current;
-    if (list === null || follow === undefined || !rows.scrollable) return;
-    const target = railEnsureVisible(follow.index * rows.rowHeight, rows.rowHeight, list.scrollTop, list.clientHeight);
+    /*
+     * **列表跟着当前条滚**（用户 2026-11-19："点击某一个横条，这个横条马上高亮" —
+     * 但如果高亮那一条滚在列的可视区外面，用户根本看不到高亮）。
+     *
+     * 早先这里用 `followRef`（只有正文滚动时才跟随），于是**拖动滑块**时列表不动 ——
+     * 实测"滑块中心 400、高亮在 36"（贴在列顶部的不可见区域）。
+     * 现在：只要 `activeIndex` 变了就让列表跟上（`active` 变化也覆盖"点某条"的情形）。
+     */
+    if (list === null) return;
+    if (!rows.scrollable) return;
+    /*
+     * **居中**而不是"可见就行"：滑块代表"正在读的那一截"，高亮条必须在滑块中间
+     *（用户 2026-11-19 明确要求）。`railEnsureVisible` 只保证可见，高亮会停在距顶 30 多 px，
+     * 而滑块在 200 多 px —— 实测差 200px。
+     */
+    /*
+     * 列表滚到 `model.listScrollTop`（与滑块同一个 progress 派生）——
+     * 不再用"第 index 行 × 行高 − 半屏"各自算一遍，那会与滑块差一个量纲。
+     */
+    const target = Math.max(0, Math.min(
+      Math.max(0, list.scrollHeight - list.clientHeight),
+      model.listScrollTop,
+    ));
     if (Math.abs(target - list.scrollTop) < 1) return;
-    list.scrollTo({ top: target, behavior: "smooth" });
-  }, [anchorIndex, rows.scrollable, rows.rowHeight]);
+    /*
+     * **一律用 `auto`（不用 smooth）**。
+     *
+     * 为什么：`smooth` 有 ~300ms 动画，而正文滚动是连续的 —— 列表永远在追，
+     * 追的过程中高亮条与滑块**不同步**（实测正文 90% 时差 1187px，因为列表还在动画中间）。
+     * 用户要的是"高亮条始终在滑块中间"，那是**同步**关系，不能有动画滞后。
+     * 拖动时更必须 `auto`（否则列表追不上手）。
+     */
+    list.scrollTop = target;
+  }, [anchorIndex, rows.scrollable, rows.rowHeight, scrubbing]);
 
   /* ── 6. 悬停与卡片 ─────────────────────────────────────── */
 
@@ -565,7 +610,7 @@ export const MessageRail = memo(function MessageRail({
      * 刚刷新时 `metrics` 还是 `{0,0}`，此时 `ratio` 落在"不可滚动"分支，
      * 拖动会把 band 算成 0（= 最顶），看起来就是"跳上去了"。
      */
-    if (!(liveBandRef.current.height > 0) || !(metricsRef.current.clientHeight > 0)) return;
+    if (!(bandRatioRef.current > 0) || !(metricsRef.current.clientHeight > 0)) return;
     const bandNode = containerRef.current?.querySelector<HTMLElement>(".rail-band");
     const bandRect = bandNode?.getBoundingClientRect();
     const onBand = bandRect !== undefined && bandRect !== null
@@ -580,7 +625,7 @@ export const MessageRail = memo(function MessageRail({
        * 而拖动用的 ratio 是按下那一刻的，两者不互逆。冻结后严格 1:1。
        * 同时也避免"拖动中加载了更早的页 → scrollHeight 变 → 滑块突然变长变位"。
        */
-      ratio: liveBandRef.current.ratio,
+      ratio: bandRatioRef.current,
       // 按在滑块上：直接进入拖动（不看阈值）；按在外面：先按"可能的点击"处理
       moved: onBand,
     };
