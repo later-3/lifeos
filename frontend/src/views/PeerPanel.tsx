@@ -15,12 +15,20 @@ export type PeerTarget = { agentId: string; sessionId: string; agentName: string
 /** 一行 = 一条消息。`id` 是服务端 entry id：思考块的兜底定位要用它（Task 0028 · P8）。 */
 type Row = { id?: string; role: "user" | "assistant"; blocks: Block[]; streaming: boolean };
 
-export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
+export function PeerPanel({ target, liveEvents, loadThinking, onOpen, onClose }: {
   target: PeerTarget;
   /** 该连接收到的全部事件（已按 watching 投递）；面板自己挑属于这条会话的。 */
   liveEvents: { subscribe: (listener: (event: unknown) => void) => () => void };
   /** 取思考正文（与主对话同一个入口：带并发闸与去重）。不传则该面板不提供展开。 */
   loadThinking?: (origin: { entryId: string; blockIndex: number }) => Promise<string>;
+  /**
+   * 打开这条对端会话（切 Agent + 项目 + 打开会话）。
+   *
+   * 为什么必须有：对端会话属于**另一个 Agent**，左侧列表只列当前 Agent 的会话 ——
+   * 所以旧 footer 写的"回到左侧列表点开它"**做不到**（实测：列表里没有这条）。
+   * 用户 2026-11-19 的原话是"我还是没有看到侧边栏的 session"。
+   */
+  onOpen?: () => void;
   onClose: () => void;
 }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -145,6 +153,10 @@ export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
         </span>
         {running && <Spinner size={12} className="text-accent" />}
         <span className="shrink-0 text-micro text-ink-500">{running ? "对方执行中" : "已完成"}</span>
+        {onOpen !== undefined && (
+          <MicroButton tone="accent" data-testid="peer-open-session" onClick={onOpen}
+            className="ring-1 ring-line">打开会话</MicroButton>
+        )}
         <MicroButton onClick={onClose}>关闭</MicroButton>
       </header>
 
@@ -172,7 +184,8 @@ export function PeerPanel({ target, liveEvents, loadThinking, onClose }: {
         理由是服务端已经不再按"会话来源"拒绝发言（02-design L3）。
       */}
       <footer className="border-t border-line px-3 py-2 text-micro text-ink-500">
-        这里只是旁观对端的过程；要继续这条会话，回到左侧列表点开它发消息即可。
+        这里只是旁观对端的过程。要继续这条会话，点上面的「打开会话」——
+        它会切到这个 Agent 并打开这条对话（它不在左侧列表里：左侧只列当前 Agent 的会话）。
       </footer>
     </aside>
   );
