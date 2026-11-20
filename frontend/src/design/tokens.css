@@ -569,29 +569,33 @@
     background: var(--color-ink-900);
   }
   /*
-   * 当前这一条（= 正文视口正在读的那一条）：强调色 + 一圈描边。
+   * 三个状态的分工（用户 2026-11-19 审核确定）：
    *
-   * 为什么要描边（2026-11-19 实测）：中性预设的 accent 是灰阶（浅色 #747474 / 深色 #a8a8a8），
-   * 紧邻的刻度是 ink-300（#aeaaa9 / #7e7b7a），实测对比度只有 **2.03 / 2.14**（< 3:1）。
-   * 只靠"变高"能指认，但一眼看去仍像"稍微厚一点"，不像"当前"。
-   * 加上 ink-900 描边（任何主题下都是最高对比档），"当前"就有了**两个独立通道**。
+   * | 状态 | 宽度 | 厚度 | 颜色 | 描边 |
+   * |---|---|---|---|---|
+   * | 普通 | 内容量 | 3px | ink-300 | 无 |
+   * | **悬停**（鼠标指着） | 内容量 | 6px | **ink-700**（深灰） | 无 |
+   * | **当前**（读到这条） | **内容量** | 6px | **accent** | **ink-900 一圈** |
+   *
+   * 两条纪律：
+   * 1. **宽度只表示内容量**，不承载状态 —— 用户 2026-11-04 定的"长度有定义"，不能被"当前"占用。
+   * 2. **accent 只给"当前"**。早先悬停也用 accent（只少描边），一列里出现两个强调色，
+   *    用户会以为有两条"当前"。
    */
   [data-rail-active="true"] .rail-tick-bar {
-    /* 跨满整列：一眼看出"就是这一条"（第二个通道；第三个通道是下面的描边） */
-    width: calc(100% - 2px);
     height: var(--rail-bar-hover, 6px);
     background: var(--color-accent);
     box-shadow: 0 0 0 1px var(--color-ink-900);
   }
-  /* 当前条再加一层柔光：在密集的一列里，"跨满 + 强调色"仍然可能被相邻的深色条盖住注意力。 */
-  .rail-tick[data-rail-active="true"] {
-    background: var(--color-accent-soft);
-  }
-  /* 悬停的那一条也用强调色（少一圈描边，所以与"当前"仍可区分）。 */
+  /* 悬停条：深灰 + 变厚。不用 accent（那是"当前"独占的）。 */
   [data-rail-hovered="true"] .rail-tick-bar {
-    width: calc(100% - 2px);
     height: var(--rail-bar-hover, 6px);
+    background: var(--color-ink-700);
+  }
+  /* 悬停与当前重合：只显示"当前"（描边 + accent 已经够了，不叠加）。 */
+  [data-rail-active="true"][data-rail-hovered="true"] .rail-tick-bar {
     background: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-ink-900);
   }
   /* 悬停时其余刻度退到背景里，避免一片刻度里找不到鼠标下那条。 */
   .rail-tracking[data-rail-hovering="true"] .rail-tick:not([data-rail-active="true"]) .rail-tick-bar {
@@ -608,9 +612,13 @@
     /* 用 `line` 而不是 `hover`：白底上 `hover`(#f1f1f3) 与底色差不到 2%，实测截图里看不见；
        这条带要能一眼扫到"我在整段对话的哪一截"。 */
     background: var(--color-line);
-    transition:
-      top 200ms cubic-bezier(0.2, 0, 0, 1),
-      height 200ms cubic-bezier(0.2, 0, 0, 1);
+    /*
+     * **不能给 `top` / `height` 加过渡**（2026-11-19 实测，这是好几轮"滑块与高亮不一致"的真凶）：
+     * 拖动时滑块位置每帧都在变，200ms 过渡让它停在动画中间态 —— 读到的 rect 比模型值落后
+     * 6–20px，于是"高亮条跑出滑块""滑块不跟手"全都出现。滚动条拇指必须**瞬时**跟随。
+     * 只保留颜色过渡（换主题时柔和）。
+     */
+    transition: background-color 120ms ease;
   }
   /*
    * 拖动 scrub 期间（光标变 grabbing、列表不可选）：

@@ -56,7 +56,7 @@ import {
   railBandTopOf,
   railCardPlaceOf,
   railCenterTopOf,
-  railGestureOf,
+  railIndexAtBandTop,
   railRowsOf,
   railScrubTargetOf,
   railSlotOf,
@@ -159,7 +159,6 @@ export const MessageRail = memo(function MessageRail({
   const [scrollTop, setScrollTop] = useState(0);
   const [metrics, setMetrics] = useState({ scrollHeight: 0, clientHeight: 0 });
   const [hovered, setHovered] = useState<string | undefined>(undefined);
-  const [active, setActive] = useState<string | undefined>(undefined);
   const [card, setCard] = useState<{ tick: RailTickView; top: number; left: number } | undefined>(undefined);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -181,13 +180,18 @@ export const MessageRail = memo(function MessageRail({
    * 映射基准每帧都变，指针不动正文却在加速跑。
    */
   const scrubRef = useRef<{
-    pointerId: number; startY: number; startScrollTop: number;
-    /** 按下那一刻的滑块比例（拖动中冻结：位置与拖动必须共用同一个） */
-    ratio: number; moved: boolean;
+    pointerId: number;
+    /** 抓在滑块的哪个位置（指针 y − 滑块顶边），拖动中滑块顶边 = 指针 y − 这个值 */
+    grabOffsetY: number;
+    moved: boolean;
   } | undefined>(undefined);
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
   const [scrubbing, setScrubbing] = useState(false);
+  /** 拖动中由滑块反推出的行号（松开后清空，回到锚点反查）。 */
+  const [dragIndex, setDragIndex] = useState<number | undefined>(undefined);
+  /** 每秒变一次的计数，仅用于让"锁定到期"能被重算（见 `resolvedIndex`）。 */
+  const [scrollTick, setScrollTick] = useState(0);
 
   /*
    * 通知调用方"开始/结束拖动"→ App 用它暂停"滚到顶自动加载"。
@@ -298,14 +302,22 @@ export const MessageRail = memo(function MessageRail({
     return { index: tickIndex >= 0 ? tickIndex : fraction, source: picked.source };
   }, [anchors, scrollTop, metrics, ticks]);
 
+  /** 由正文滚动反查出的"视口中线落在第几条"（锚点精确值）。 */
   const anchorIndex = activePick.index;
 
-  useEffect(() => {
-    if (anchorIndex === undefined) return;
-    const tick = ticks[anchorIndex];
-    if (tick === undefined) return;
-    setActive(tick.id);
-  }, [anchorIndex, ticks]);
+  /*
+   * `resolvedIndex` = **唯一的状态**，其余（高亮条、滑块、刻度列滚动、百分比）全部由它派生。
+   *
+   * 三个来源，优先级从高到低：
+   *  1. **拖动中**：由滑块位置反推（滑块主导，见 `railIndexAtBandTop`）；
+   *  2. **刚点击/刚跳转**：锁定值（`RAIL_ACTIVE_LOCK_MS`），避免平滑滚动途中高亮乱跳；
+   *  3. **滚动正文**：由锚点反查（`anchorIndex`）。
+   */
+  const resolvedIndex = useMemo(() => {
+    if (scrubbing && dragIndex !== undefined) return dragIndex;
+    if (railLockActive(lockRef.current, Date.now())) return lockRef.current!.index;
+    return anchorIndex ?? 0;
+  }, [scrubbing, dragIndex, anchorIndex, ticks.length, scrollTick]);
 
   /* ── 4. 列的排布 ───────────────────────────────────────── */
 
@@ -321,7 +333,7 @@ export const MessageRail = memo(function MessageRail({
    * 三者都从一个 `progress` 派生，所以"高亮条落在滑块中间"是代数恒等式，不是调参调出来的。
    */
   const model = useMemo(() => railProgressModelOf({
-    activeIndex: anchorIndex ?? 0,
+    resolvedIndex,
     totalTicks: ticks.length,
     viewHeight: listViewHeight,
     clientHeight: metrics.clientHeight,
@@ -329,19 +341,12 @@ export const MessageRail = memo(function MessageRail({
     listContentHeight: ticks.length * rows.rowHeight,
     /*
      * 列表的可视高必须**实测**（`list.clientHeight`），不能用 `avail × RAIL_MAX_RATIO` 推算：
-     * 可滚时两者不等（实测 508 vs 523），而 `listScrollTop = progress × (content - view)`
-     * 对 `view` 极其敏感 —— 差 15px 会让末端差出几百 px。
+     * 可滚时两者不等（实测 508 vs 523），而 `listScrollTop` 对 `view` 极其敏感。
      */
     listViewHeight,
-    /* 拖动中给连续进度，让滑块逐帧跟手（松手后回到 activeIndex，与高亮条对齐） */
-    ...(scrubbing && metrics.scrollHeight > metrics.clientHeight
-      ? { continuousProgress: scrollTop / (metrics.scrollHeight - metrics.clientHeight) }
-      : {}),
-  }), [anchorIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight, scrubbing, scrollTop]);
+  }), [resolvedIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight]);
 
   const band = { top: model.bandTop, height: model.bandHeight };
-  /** 拖动用的 ratio（与滑块几何同源）。 */
-  const bandRatio = model.ratio;
 
 
   const widths = useMemo(() => railWidthsOf(ticks, barPeak), [ticks, barPeak]);
@@ -399,31 +404,9 @@ export const MessageRail = memo(function MessageRail({
    * 锚点每 150ms 才重量一次 —— 用实时 ratio 会出现"指针走 10px、滑块走 7px"（实测）。
    * 冻结之后严格 1:1，这才是"拖那个块它跟着鼠标走"。
    */
-  /*
-   * 滑块（可视范围带）：**画在列的可视框坐标系里**，所以它永远可见（不会随刻度列滚动而消失）。
-   * 长度 = 一屏占全会话的比例，位置 = 当前刻度在全会话里的比例。见 `railOverviewOf` 头注。
-   */
-  /**
-   * 最新 `bandRatio` 的转发（供 `onRowPointerDown` 读）。
-   *
-   * 为什么用 ref 而不是进依赖表：`onRowPointerDown` 依赖它会让它每帧重建，
-   * 进而让 `RailRows` 的 props 变、560 行白重渲一次。
-   *
-   * 为什么必须有它（实测 2026-11-19）：漏了这一步，`onRowPointerDown` 的闭包捕获的是
-   * **首次渲染时**的 ratio（那时 `metrics` 还是 0 → 落在"不可滚动"分支 = 1），
-   * 于是拖动一开始滑块就跳到末端、之后再也不动。
-   */
-  const bandRatioRef = useRef(bandRatio);
-  bandRatioRef.current = bandRatio;
-  /** `metrics` 的最新值转发（pointerdown 的闭包不能直接读 state）。 */
-  const metricsRef = useRef(metrics);
-  metricsRef.current = metrics;
-
-  /*
-   * 滑块的位置**直接来自 `model`**（与列表滚动、高亮条同一个 progress），不需要手算 ——
-   * 因为 `progress` 由 `activeIndex` 派生，而 `activeIndex` 跟正文滚动同步，
-   * 所以拖动时滑块自然跟手。冻结 `ratio` 只为避免它随测量抖动。
-   */
+  /** `model` 的最新值转发（pointer 回调的闭包要读，不进依赖表 —— 否则每帧重建回调）。 */
+  const modelRef = useRef(model);
+  modelRef.current = model;
 
 
   /* ── 4b. 把"当前/悬停/tabIndex"写进 DOM（不进 React 渲染路径）── */
@@ -446,10 +429,24 @@ export const MessageRail = memo(function MessageRail({
    *
    * 用 `[data-rail-active]` 记录"上一次是谁"，避免全量清（560 次查询换成 1 次）。
    */
-  useEffect(() => {
+  /**
+   * **同一帧写三件事**：高亮条、悬停条、刻度列滚动。
+   *
+   * 为什么必须同一个 effect（2026-11-19 实测）：分成两个 effect 时，
+   * `list.scrollTop` 在 layout 阶段生效、而高亮属性要等下一次渲染的 effect ——
+   * 中间会画一帧，于是"滑块动了、高亮还没动"（差一行 12px）或反过来。
+   *
+   * 三个状态的分工（用户 2026-11-19 审核过）：
+   *  - **高亮条**（`data-rail-active`）：唯一表示"当前读到哪一条"，由 `resolvedIndex` 决定；
+   *  - **悬停条**（`data-rail-hovered`）：只表示"鼠标指着哪一条"，**不动高亮、不动滑块**；
+   *  - **刻度列滚动**：让高亮那一条落在滑块里（`model.listScrollTop`）。
+   */
+  useLayoutEffect(() => {
     const root = containerRef.current;
+    const list = listRef.current;
     if (root === null) return;
-    const paint = (attribute: string, id: string | undefined, extra?: (node: HTMLElement, on: boolean) => void) => {
+
+    const paintOne = (attribute: string, id: string | undefined, extra?: (node: HTMLElement, on: boolean) => void) => {
       for (const node of root.querySelectorAll<HTMLElement>(`[${attribute}]`)) {
         node.removeAttribute(attribute);
         extra?.(node, false);
@@ -460,59 +457,30 @@ export const MessageRail = memo(function MessageRail({
       node.setAttribute(attribute, "true");
       extra?.(node, true);
     };
-    paint("data-rail-active", active, (node, on) => {
+
+    const activeTick = ticks[resolvedIndex];
+    paintOne("data-rail-active", activeTick?.id, (node, on) => {
       if (on) node.setAttribute("aria-current", "true");
       else node.removeAttribute("aria-current");
     });
-    paint("data-rail-hovered", hovered);
+    paintOne("data-rail-hovered", hovered);
+
     /*
      * roving tabindex：只有"当前"那条是 0，其余 -1。
-     * 一列有 560 条时，若每条都 `tabIndex=0`，键盘用户要按 560 次 Tab —— 那不是导航条，是一堵墙。
+     * 一列 560 条时若每条都 `tabIndex=0`，键盘用户要按 560 次 Tab —— 那不是导航条，是一堵墙。
      */
     for (const node of root.querySelectorAll<HTMLElement>("[data-testid=rail-tick]")) node.tabIndex = -1;
-    const focusNode = active === undefined ? null : root.querySelector<HTMLElement>(`[data-rail-id="${CSS.escape(active)}"]`);
+    const focusNode = activeTick === undefined ? null : root.querySelector<HTMLElement>(`[data-rail-id="${CSS.escape(activeTick.id)}"]`);
     const fallback = focusNode ?? root.querySelector<HTMLElement>("[data-testid=rail-tick]");
     if (fallback !== null) fallback.tabIndex = 0;
-  }, [active, hovered, ticks]);
 
-  /* ── 5. 把当前行滚进条的视口（只动条，不动正文）───────── */
-
-  useEffect(() => {
-    const list = listRef.current;
-    /*
-     * **列表跟着当前条滚**（用户 2026-11-19："点击某一个横条，这个横条马上高亮" —
-     * 但如果高亮那一条滚在列的可视区外面，用户根本看不到高亮）。
-     *
-     * 早先这里用 `followRef`（只有正文滚动时才跟随），于是**拖动滑块**时列表不动 ——
-     * 实测"滑块中心 400、高亮在 36"（贴在列顶部的不可见区域）。
-     * 现在：只要 `activeIndex` 变了就让列表跟上（`active` 变化也覆盖"点某条"的情形）。
-     */
-    if (list === null) return;
-    if (!rows.scrollable) return;
-    /*
-     * **居中**而不是"可见就行"：滑块代表"正在读的那一截"，高亮条必须在滑块中间
-     *（用户 2026-11-19 明确要求）。`railEnsureVisible` 只保证可见，高亮会停在距顶 30 多 px，
-     * 而滑块在 200 多 px —— 实测差 200px。
-     */
-    /*
-     * 列表滚到 `model.listScrollTop`（与滑块同一个 progress 派生）——
-     * 不再用"第 index 行 × 行高 − 半屏"各自算一遍，那会与滑块差一个量纲。
-     */
-    const target = Math.max(0, Math.min(
-      Math.max(0, list.scrollHeight - list.clientHeight),
-      model.listScrollTop,
-    ));
-    if (Math.abs(target - list.scrollTop) < 1) return;
-    /*
-     * **一律用 `auto`（不用 smooth）**。
-     *
-     * 为什么：`smooth` 有 ~300ms 动画，而正文滚动是连续的 —— 列表永远在追，
-     * 追的过程中高亮条与滑块**不同步**（实测正文 90% 时差 1187px，因为列表还在动画中间）。
-     * 用户要的是"高亮条始终在滑块中间"，那是**同步**关系，不能有动画滞后。
-     * 拖动时更必须 `auto`（否则列表追不上手）。
-     */
-    list.scrollTop = target;
-  }, [anchorIndex, rows.scrollable, rows.rowHeight, scrubbing]);
+    // 刻度列滚动：让高亮那条落在滑块里
+    if (list !== null && rows.scrollable) {
+      const max = Math.max(0, list.scrollHeight - list.clientHeight);
+      const target = Math.max(0, Math.min(max, model.listScrollTop));
+      if (Math.abs(target - list.scrollTop) >= 1) list.scrollTop = target;
+    }
+  }, [resolvedIndex, hovered, ticks, model.listScrollTop, rows.scrollable]);
 
   /* ── 6. 悬停与卡片 ─────────────────────────────────────── */
 
@@ -589,101 +557,104 @@ export const MessageRail = memo(function MessageRail({
    * 触屏不参与（`pointerType === "touch"`）：触屏上下滑应该是**滚这一列**，与原生行为一致；
    * 把它抢过来做 scrub 会让"想看更多刻度"变成"正文乱跑"。
    */
+  /**
+   * 按下。**按在滑块里 = 拖动；按在别处 = 点击跳转**（与 VSCode 的分工一致）。
+   *
+   * 源码依据：`microsoft/vscode` `minimap.ts:1404-1410` 的 `_sliderPointerDownListener`
+   * 把拖动绑在 **slider 元素**上；`:1365-1396` 的 minimap 本体 pointerdown 走
+   * `revealLineNumber()`（点击 = 跳到那一行）。**它没有任何位移阈值** ——
+   * "按在滑块上就是拖"、"按在别处就是点"，两个命中目标分开。
+   */
   const onRowPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.pointerType === "touch") return;
+    if (event.pointerType === "touch") return;      // 触屏上下滑 = 滚这一列，不抢
     if (event.button !== 0) return;
     const container = scrollContainer.current;
     if (container === null) return;
-    /*
-     * **按在滑块里 = 拖动；按在滑块外 = 点击跳转**（与 VSCode 的分工一致）。
-     *
-     * 源码依据：`microsoft/vscode` `minimap.ts:1459-1484` 把拖动绑在 **slider 元素**上
-     * （`_sliderPointerDownListener`），点 minimap 其他区域走另一条路径 —— 它**没有**"位移超过阈值才算拖"。
-     *
-     * 我们原来只有 4px 阈值，于是"想拖但手没动起来"会被判成点击 → **跳到那一行**。
-     * 用户 2026-11-19 报的"有时突然一下又到顶部了，我都没点顶部的横条"就是这个：
-     * 按在视口上方某一行、手没动够 4px 就松手 → 跳到上面去了。
-     * 现在只要按在滑块范围内，就一定是拖动，绝不会因为"没动够"变成跳转。
-     */
-    /*
-     * **几何没就绪就不当拖动处理**（2026-11-19 修"一刷新、一拖动就跳到最顶"）：
-     * 刚刷新时 `metrics` 还是 `{0,0}`，此时 `ratio` 落在"不可滚动"分支，
-     * 拖动会把 band 算成 0（= 最顶），看起来就是"跳上去了"。
-     */
-    if (!(bandRatioRef.current > 0) || !(metricsRef.current.clientHeight > 0)) return;
+
+    // 几何没就绪就不拖（刚刷新时 metrics 是 0，拖了会算成 0 = 最顶）
+    const m = modelRef.current;
+    if (!(m.bandHeight > 0) || !(m.bandRange > 0)) return;
+
     const bandNode = containerRef.current?.querySelector<HTMLElement>(".rail-band");
     const bandRect = bandNode?.getBoundingClientRect();
     const onBand = bandRect !== undefined && bandRect !== null
       && event.clientY >= bandRect.top && event.clientY <= bandRect.bottom;
+
+    if (!onBand) {
+      /*
+       * 按在滑块外：**点击跳转**。立刻把这一条设为高亮（不等滚动完成）——
+       * 用户 2026-11-19："点击某一个横条，这个横条马上高亮且切到对应的消息"。
+       */
+      const rowNode = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-rail-id]");
+      const id = rowNode?.getAttribute("data-rail-id");
+      const index = id === null || id === undefined ? -1 : ticks.findIndex((tick) => tick.id === id);
+      if (index >= 0) lockRef.current = { index, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
+      return;
+    }
+
+    /*
+     * 按在滑块上：进入拖动。记下"抓在滑块的哪个位置"（grabOffset），
+     * 之后滑块顶边 = 指针 y − grabOffset —— 这样**滑块严格跟手**（不是按位移换算）。
+     */
     scrubRef.current = {
       pointerId: event.pointerId,
-      startY: event.clientY,
-      startScrollTop: container.scrollTop,
-      /*
-       * 冻结 ratio 与滑块条数。为什么必须冻结（实测 2026-11-19）：
-       * 不冻结时"指针走 10px、滑块只走 7px"—— 因为滑块位置用的是每帧重算的 ratio，
-       * 而拖动用的 ratio 是按下那一刻的，两者不互逆。冻结后严格 1:1。
-       * 同时也避免"拖动中加载了更早的页 → scrollHeight 变 → 滑块突然变长变位"。
-       */
-      ratio: bandRatioRef.current,
-      // 按在滑块上：直接进入拖动（不看阈值）；按在外面：先按"可能的点击"处理
-      moved: onBand,
+      grabOffsetY: event.clientY - (bandRect as DOMRect).top,
+      moved: false,
     };
-    if (onBand) {
-      setScrubbing(true);
-      notifyScrubbing(true);
-      // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
-      suppressClickRef.current = true;
-      clearHideTimer();
-      setHovered(undefined);
-      setCard(undefined);
-    }
-    // 捕获指针：拖到列表外面也继续收事件（否则拖快了会"掉线"）
+    setScrubbing(true);
+    notifyScrubbing(true);
+    // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
+    suppressClickRef.current = true;
+    clearHideTimer();
+    setHovered(undefined);
+    setCard(undefined);
+    // 捕获指针：拖到列外面也继续收事件（否则拖快了会"掉线"）
     event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, [scrollContainer]);
+  }, [scrollContainer, ticks, clearHideTimer, notifyScrubbing]);
 
+  /**
+   * 拖动：**滑块跟指针**，再由滑块位置反推行号，最后把正文滚到同一进度。
+   *
+   * 顺序就是因果链（用户 2026-11-19 的要求）：
+   *   指针 → 滑块（逐帧 1:1）→ 行号（`railIndexAtBandTop`）→ 高亮 + 刻度列滚动 + 正文滚动
+   * 因为高亮和滑块都由同一个行号派生，所以"滑块始终包裹高亮条"是恒等式。
+   */
   const onRowPointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     const scrub = scrubRef.current;
     if (scrub === undefined || scrub.pointerId !== event.pointerId) return;
     const container = scrollContainer.current;
-    if (container === null) return;
-    const deltaY = event.clientY - scrub.startY;
+    const rail = containerRef.current;
+    if (container === null || rail === null) return;
+
+    const m = modelRef.current;
+    /*
+     * **必须用"可视框"的顶边，不是轨道的顶边**：滑块是 `absolute` 在可视框里，
+     * 而可视框在轨道里是垂直居中的（`justify-center`）—— 两者顶边差
+     * `(轨道高 − 可视框高) / 2`。用轨道顶边会把这个差值算进拖动位移里，
+     * 表现是"拖了半天滑块不动，然后突然跳一大段"（实测前 160px 完全不动）。
+     */
+    const frame = (containerRef.current?.querySelector<HTMLElement>(".rail-band")?.parentElement) ?? null;
+    if (frame === null) return;
+    const frameRect = frame.getBoundingClientRect();
+    const desiredTop = event.clientY - frameRect.top - scrub.grabOffsetY;
+    const bandTop = Math.max(0, Math.min(m.bandRange, desiredTop));
+    const index = railIndexAtBandTop(bandTop, m.bandRange, ticks.length);
     if (!scrub.moved) {
-      if (railGestureOf(0, deltaY) === "click") return;    // 阈值内：还可能是一次点击
       scrub.moved = true;
-      setScrubbing(true);
-      notifyScrubbing(true);
-      suppressClickRef.current = true;
       // 进入拖动：收起卡片、清掉悬停 —— 拖动途中一路弹卡片会很吵
       clearHideTimer();
       setHovered(undefined);
       setCard(undefined);
     }
-    /*
-     * 直接写 `scrollTop`，**不用** `scrollIntoView({behavior:"smooth"})`：
-     * 拖动要跟手，平滑滚动会把每次位移排队成动画，表现是"手停了它还在滚"。
-     * 与拖动列宽同一条纪律（`frontend/code.md` 2.19：手势期间写 DOM）。
-     */
-    /*
-     * **一次拖动只能在"已渲染的那一段"里移动**（这条限制必须写出来，它是约束不是缺陷）：
-     * 正文是虚拟化渲染的（`visibleCount` 只渲染最近 50 条所在整轮，更早的滚到顶才加载），
-     * 所以 `container.scrollHeight` 只反映**当前已渲染部分**。于是：
-     *  - 在底部往下拖 = 到底了，不动（与滚动条一致）；
-     *  - 往上拖正常跟手；拖到顶时顶部哨兵会加载更早的一页，继续拖就能再往前。
-     *
-     * 为什么不用"整个会话的高度"当基准：那个数前端**不知道**（未加载的页还没量）。
-     * 若按"整列内容高 → 全会话高度"硬映射，用户会拖到一片还没加载的区域，
-     * 表现是"指针在动、画面不动"—— 比现在的"渐进式"更糟。
-     */
-    container.scrollTop = railScrubTargetOf(
-      scrub.startScrollTop,
-      deltaY,
-      scrub.ratio,
-      container.scrollHeight,
-      container.clientHeight,
-    );
+    setDragIndex(index);
 
-  }, [scrollContainer, rows.rowHeight, ticks.length, clearHideTimer]);
+    /*
+     * 正文滚到同一进度。直接写 `scrollTop`（不用 smooth）：拖动要跟手，
+     * 平滑滚动会把每次位移排队成动画，表现是"手停了它还在滚"。
+     */
+    const scrollable = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (scrollable > 0) container.scrollTop = (bandTop / Math.max(1, m.bandRange)) * scrollable;
+  }, [clearHideTimer, ticks.length]);
 
   const endScrub = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     const scrub = scrubRef.current;
@@ -692,6 +663,8 @@ export const MessageRail = memo(function MessageRail({
     scrubRef.current = undefined;
     setScrubbing(false);
     notifyScrubbing(false);
+    // 松手：清掉拖动值，回到"由正文反查"（此时已滚到位，两者一致）
+    setDragIndex(undefined);
   }, [notifyScrubbing]);
 
   /* ── 8. 点击 ───────────────────────────────────────────── */
@@ -700,7 +673,6 @@ export const MessageRail = memo(function MessageRail({
     // 刚拖完的那一下点击要吃掉（松手时浏览器会补一个 click）
     if (suppressClickRef.current) { suppressClickRef.current = false; return; }
     lockRef.current = { index, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
-    setActive(tick.id);
     onJump(tick);
   }, [onJump]);
 
@@ -714,6 +686,9 @@ export const MessageRail = memo(function MessageRail({
       data-testid="message-rail"
       data-rail-scrollable={rows.scrollable ? "true" : "false"}
       data-rail-active-index={anchorIndex ?? "none"}
+      /* 诊断用：解析出的行号与列表目标滚动量（与滑块/高亮同一个来源） */
+      data-rail-resolved={resolvedIndex}
+      data-rail-list-target={Math.round(model.listScrollTop)}
       data-rail-band={`${bandRows.first}-${bandRows.last}`}
       className={`pointer-events-none absolute inset-y-0 left-0 flex flex-col items-center justify-center ${LAYER_CLASS.rail}`}
       style={{ width: slot.width }}
@@ -764,6 +739,21 @@ export const MessageRail = memo(function MessageRail({
           onPointerCancel={endScrub}
         />
         </div>
+
+        {/*
+          百分比：回答"在整段对话的哪里"（用户 2026-11-19 新要求：顶部 0%、中间对应、底部 100%）。
+          贴在**可视框底部**（不在可滚列表里）—— 跟着列滚会看不见，跟着滑块飘会压住刻度。
+          数值来自 `model.percent`，与滑块、高亮**同一个 `resolvedIndex`**。
+        */}
+        {ticks.length > 0 && (
+          <div
+            data-testid="rail-percent"
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 -bottom-5 text-center text-micro tabular-nums text-ink-500"
+          >
+            {model.percent}%
+          </div>
+        )}
       </div>
 
       {card !== undefined && (

@@ -295,76 +295,84 @@ export function railEnsureVisible(
  * 三个派生值都用它 —— 于是**同源**成立，且不受"已下载多少"影响。
  */
 export function railProgressModelOf(input: {
-  activeIndex: number;
+  /** 当前是第几条刻度（**唯一的状态**，其余全部由它派生） */
+  resolvedIndex: number;
   totalTicks: number;
   viewHeight: number;
   clientHeight: number;
   scrollHeight: number;
-  /** 列表（刻度列）的内容高与可视高 —— 高亮条所在的坐标系 */
   listContentHeight: number;
   listViewHeight: number;
-  /** 拖动中传"正文的真实滚动比例"（0–1），让滑块逐帧跟手；静止时不传。 */
-  continuousProgress?: number;
 }): {
-  /** 滑块在可视框里的位置与高度（px） */
+  /** 滑块在可视框里的顶边与高度（px） */
   bandTop: number;
   bandHeight: number;
-  /** 列表应该滚到的 `scrollTop`（让高亮条落在滑块中间） */
+  /** 滑块能移动的范围（`viewHeight - bandHeight`），拖动时用它把指针位置换成进度 */
+  bandRange: number;
+  /** 刻度列应该滚到哪，使**第 resolvedIndex 行落在滑块里** */
   listScrollTop: number;
-  /** 拖动换算：滑块走 1px ↔ 正文滚多少 px */
-  ratio: number;
+  /** 0–1：`resolvedIndex / (totalTicks - 1)`，百分比与滑块位置共用 */
   progress: number;
+  /** 0–100 的整数百分比（顶部 0%、底部 100%） */
+  percent: number;
 } {
-  /** 连续进度（拖动中用）。给了就以它为准 —— 拖动时滑块要跟指针逐帧走，不能等 `activeIndex` 更新。 */
-  const { activeIndex, totalTicks, viewHeight, clientHeight, scrollHeight } = input;
-  const continuous = input.continuousProgress;
+  const { resolvedIndex, totalTicks, viewHeight, clientHeight, scrollHeight } = input;
   const listContentHeight = Math.max(0, input.listContentHeight);
   const listViewHeight = Math.max(0, input.listViewHeight);
-  /*
-   * `progress` 默认由 `activeIndex` 派生（与高亮条同源，保证两者对齐）。
-   * 拖动时传 `continuousProgress`（正文的真实滚动比例）—— 那时滑块要**逐帧跟手**，
-   * 而 `activeIndex` 是离散的、每 150ms 才更新一次，用它会让滑块一顿一顿。
-   * 松手后 `continuousProgress` 撤掉，滑块回到 `activeIndex`，于是又和高亮对齐。
-   */
-  const discreteProgress = totalTicks <= 0 ? 0
-    : Math.max(0, Math.min(1, (Math.max(0, Math.min(activeIndex, totalTicks - 1)) + 0.5) / totalTicks));
-  const progress = continuous === undefined ? discreteProgress
-    : Math.max(0, Math.min(1, continuous));
 
   if (totalTicks <= 0 || !(viewHeight > 0) || !(scrollHeight > 0)) {
-    return { bandTop: 0, bandHeight: 0, listScrollTop: 0, ratio: 1, progress };
+    return { bandTop: 0, bandHeight: 0, bandRange: 0, listScrollTop: 0, progress: 0, percent: 0 };
   }
 
-  // 滑块长度 = 一屏占内容的比例（VSCode scrollbarState.ts:144）
+  const index = Math.max(0, Math.min(resolvedIndex, totalTicks - 1));
+  const progress = totalTicks <= 1 ? 0 : index / (totalTicks - 1);
+  const percent = totalTicks <= 1 ? 100 : Math.round((index / (totalTicks - 1)) * 100);
+
+  // 滑块长度 = 一屏占内容的比例（VSCode scrollbarState.ts:144），有 20px 下限
   const bandHeight = scrollHeight <= clientHeight
     ? viewHeight
     : Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
   const bandRange = Math.max(0, viewHeight - bandHeight);
+  const bandTop = Math.min(bandRange, Math.max(0, progress * bandRange));
+  const bandCenter = bandTop + bandHeight / 2;
+
   /*
-   * 位置：让**滑块中心**落在 `progress × viewHeight` 上（而不是 `progress × bandRange`）。
+   * 刻度列滚动量 = **让第 index 行落在滑块中心**。
    *
-   * 为什么是 `progress × viewHeight`：高亮条居中时，它在列表可视区里的位置就是 `listViewHeight/2`，
-   * 而 `listScrollTop = progress × (listContentHeight - listViewHeight)` 让它恰好居中。
-   * 两者都是"progress 映射到可视区的一段"，所以滑块中心必须走满整个 `viewHeight`，
-   * 走 `bandRange` 就会差一个 `bandHeight` 的比例（实测差 74px）。
+   * 这是"滑块始终包裹高亮条"能成立的唯一写法（用户 2026-11-19 三次指出）。推导：
+   *
+   * ```
+   *   行在可视框里的中心 = index × rowHeight + rowHeight/2 − listScrollTop
+   *   令它等于滑块中心 bandCenter
+   *   → listScrollTop = index × rowHeight + rowHeight/2 − bandCenter
+   * ```
+   *
+   * 早先写的是"让高亮恒定居中"（`index × rowHeight − listViewHeight/2`）——
+   * 那样高亮恒在 254px，而滑块从 0 走到 488px，**两者只在 52% 处偶然重合**
+   *（实测 idx=100 差 167px、idx=450 差 139px）。
+   *
+   * 夹紧到 `[0, listMax]` 之后，首尾两行的行位置会落进滑块的覆盖范围（验算见单测）：
+   * 那是"列表滚到头"的几何必然，不是缺陷。
    */
-  const bandTop = Math.max(0, Math.min(bandRange, progress * viewHeight - bandHeight / 2));
-
+  const rowHeight = totalTicks > 0 ? listContentHeight / totalTicks : 0;
   const listScrollable = Math.max(0, listContentHeight - listViewHeight);
-  /*
-   * 列表滚动 = `progress × 可滚距离`，但**两端要贴死**：
-   * `progress` 量化到"第几条"时，最后一条给 0.9991（不是 1），乘以可滚距离会差 5.5px；
-   * 而高亮条的行中心已经到底（508），于是两者差一个行高（10px）。
-   * 端点是几何事实（没法再滚），所以显式夹到端点，而不是让量化误差决定。
-   */
-  const atStart = activeIndex <= 0;
-  const atEnd = activeIndex >= totalTicks - 1;
-  const listScrollTop = atStart ? 0 : atEnd ? listScrollable : progress * listScrollable;
+  const listScrollTop = rowHeight > 0
+    ? Math.min(listScrollable, Math.max(0, index * rowHeight + rowHeight / 2 - bandCenter))
+    : 0;
 
-  // 拖动：滑块走 1px ↔ 正文滚多少 px（与滑块的位置/高度同源）
-  const scrollable = Math.max(1, scrollHeight - clientHeight);
-  const ratio = bandRange / scrollable;
-  return { bandTop, bandHeight, listScrollTop, ratio: Number.isFinite(ratio) && ratio > 0 ? ratio : 1, progress };
+  return { bandTop, bandHeight, bandRange, listScrollTop, progress, percent };
+}
+
+/**
+ * 反向换算：滑块顶边位置 → 是第几条刻度（拖动时用）。
+ *
+ * 拖动时**滑块主导**：指针拖到哪里，滑块就在哪里，再由滑块位置反推第几条，
+ * 于是高亮条必然被滑块包住（两者同一个 `progress`）。
+ */
+export function railIndexAtBandTop(bandTop: number, bandRange: number, totalTicks: number): number {
+  if (totalTicks <= 1 || !(bandRange > 0)) return 0;
+  const ratio = Math.max(0, Math.min(1, bandTop / bandRange));
+  return Math.max(0, Math.min(totalTicks - 1, Math.round(ratio * (totalTicks - 1))));
 }
 
 /**

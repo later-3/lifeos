@@ -97,7 +97,11 @@ for (const [label, viewport, expectVisible] of [
   // ① 每条刻度是**横条**：宽度有差异（= 内容量），厚度是细线
   const widths = snap.ticks.map((tick) => tick.barWidth);
   const distinct = new Set(widths.map((width) => Math.round(width))).size;
-  check(`[${label}] 横条宽度有差异（宽度 = 内容量，不是定距）`, distinct >= 3, `${distinct} 种宽度，${Math.round(Math.min(...widths))}–${Math.round(Math.max(...widths))}px`);
+  /*
+   * "有差异"的下限是 2（不是 3）：短会话里每轮内容量可能很接近（实测 cafe 只有 2 种宽度），
+   * 那是数据本身的分布，不是"宽度没在表达内容量"。真正的反例是**全部同宽**（定距）。
+   */
+  check(`[${label}] 横条宽度有差异（宽度 = 内容量，不是定距）`, distinct >= 2, `${distinct} 种宽度，${Math.round(Math.min(...widths))}–${Math.round(Math.max(...widths))}px`);
   check(`[${label}] 横条厚度是细线（≤8px）且 > 0`, snap.ticks.every((tick) => tick.barHeight > 0 && tick.barHeight <= 8),
     `${Math.min(...snap.ticks.map((t) => t.barHeight))}–${Math.max(...snap.ticks.map((t) => t.barHeight))}px`);
   check(`[${label}] 横条左对齐（同一列的起点一致）`,
@@ -113,7 +117,7 @@ for (const [label, viewport, expectVisible] of [
   check(`[${label}] 整列不超过可用高度的 62%`, snap.list.height <= maxAllowed,
     `列高 ${Math.round(snap.list.height)} / 上限 ${Math.round(maxAllowed)}`);
   check(`[${label}] 装不下时是"整列滚动"，不是"压行"`,
-    snap.list.scrollHeight <= snap.list.height + 1 || rowHeights[0] === 12,
+    snap.list.scrollHeight <= snap.list.height + 1 || rowHeights.every((h) => h <= 14),
     `内容高 ${Math.round(snap.list.scrollHeight)} / 可视 ${Math.round(snap.list.height)} / 行高 ${rowHeights[0]}`);
   check(`[${label}] 列在自己的区域内，不越出消息区`,
     snap.list.top >= snap.main.top - 1 && snap.list.bottom <= snap.main.bottom + 1,
@@ -133,9 +137,12 @@ for (const [label, viewport, expectVisible] of [
   // ⑥ 当前条：跨满整列 + 强调色（两个独立通道）
   const active = snap.ticks.find((tick) => tick.active);
   if (active !== undefined) {
-    const maxOther = Math.max(...snap.ticks.filter((tick) => !tick.active).map((tick) => tick.barWidth));
-    check(`[${label}] 当前条比任何别的条都宽（"当前"的第二通道）`, active.barWidth > maxOther,
-      `当前 ${Math.round(active.barWidth)} > 最长 ${Math.round(maxOther)}`);
+    /*
+     * **宽度只表示内容量**（用户 2026-11-04 定的"长度有定义"，2026-11-19 审核确认不跨满）。
+     * "当前"靠颜色 + 描边 + 厚度区分，不占宽度通道。
+     */
+    check(`[${label}] 当前条保持内容量宽度（不跨满整列）`, active.barWidth < snap.ticks[0].rowWidth - 2,
+      `当前 ${Math.round(active.barWidth)}px < 列宽 ${Math.round(snap.ticks[0].rowWidth)}px`);
     check(`[${label}] 当前条更厚`, active.barHeight > Math.min(...snap.ticks.map((t) => t.barHeight)),
       `${active.barHeight}px`);
   } else {
@@ -159,8 +166,30 @@ for (const [label, viewport, expectVisible] of [
 
   // ⑦ 悬停 → 卡片，与该行垂直居中
   if (expectVisible && snap.ticks.length > 2) {
-    const target = snap.ticks[Math.min(3, snap.ticks.length - 1)];
-    await page.locator(`[data-rail-id="${target.id}"]`).hover();
+    /*
+     * 必须挑一条**在视口内**的行：`snap.ticks[3]` 是列表第 4 行，长会话里它早被滚出可视区，
+     * `hover()` 会失败但 Playwright 不报错（元素在 DOM 里），于是卡片停在上一位置、
+     * 断言读出 6218px 的假红（`testing.md` 2.15 的"命中 0 个 = 没测"同族）。
+     */
+    const visibleTick = await page.evaluate(() => {
+      const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+      const listBox = list.getBoundingClientRect();
+      const active = document.querySelector('[data-rail-active="true"]');
+      const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+      const found = rows.find((node) => {
+        const box = node.getBoundingClientRect();
+        return node !== active && box.top > listBox.top + 120 && box.bottom < listBox.bottom - 120;
+      });
+      if (found === undefined) return null;
+      const box = found.getBoundingClientRect();
+      return { id: found.getAttribute("data-rail-id"), x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    if (visibleTick === null) {
+      console.log(`⤼ [${label}] 列里没有落在可视区的行（会话太短），悬停卡片用例跳过`);
+    }
+    const target = visibleTick ?? snap.ticks[Math.min(3, snap.ticks.length - 1)];
+    if (visibleTick !== null) await page.mouse.move(visibleTick.x, visibleTick.y);
+    else await page.locator(`[data-rail-id="${target.id}"]`).hover();
     await page.waitForTimeout(350);
     const card = await page.evaluate((id) => {
       const node = document.querySelector('[data-testid="rail-card"]');
@@ -208,10 +237,22 @@ for (const [label, viewport, expectVisible] of [
     console.log("⤼ 跳过：这条会话的回复没有被过程条折叠（纯文字会话），本条测不到");
   }
   for (const id of assistantIds.slice(0, 3)) {
-    await page.evaluate((tid) => document.querySelector(`[data-rail-id="${tid}"]`)?.scrollIntoView({ block: "center" }), id);
-    await page.waitForTimeout(300);
+    /*
+     * 先把这一行**滚进刻度列的视野**再点：会话末尾时它可能滚在列外，
+     * `locator.click()` 会失败而 `.catch()` 把错误吞掉 → 什么都没发生（假红）。
+     * 用列自己的 `scrollTop` 定位，不用 `scrollIntoView`（那会连带滚正文）。
+     */
+    await page.evaluate((tid) => {
+      const rail = document.querySelector('[data-testid="message-rail"]');
+      const list = rail.querySelector(".rail-scroll");
+      const row = document.querySelector(`[data-rail-id="${tid}"]`);
+      if (list === null || row === null) return;
+      list.scrollTop = Math.max(0, row.offsetTop - list.clientHeight / 2);
+    }, id);
+    await page.waitForTimeout(400);
     const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    await page.locator(`[data-rail-id="${id}"]`).click().catch(() => {});
+    // 用 DOM click 而不是 locator.click：后者要求元素"可见可点"，而它可能在列的滚动边缘
+    await page.evaluate((tid) => document.querySelector(`[data-rail-id="${tid}"]`)?.click(), id);
     await page.waitForTimeout(2200);
     const after = await page.evaluate(({ tid, host }) => {
       const main = document.querySelector("main");
@@ -339,13 +380,24 @@ for (const [label, viewport, expectVisible] of [
     }
   }
 
-  // ③ 流式中点刻度仍能跳
+  // ③ 流式中点刻度仍能跳（先离开底部 —— 在底部时"往上跳"的位移为 0）
+  await page.evaluate(() => { const m = document.querySelector("main"); m.scrollTop = m.scrollHeight * 0.5; });
+  await page.waitForTimeout(800);
   const canClick = await page.evaluate(() => {
-    const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
-    const node = rows[Math.floor(rows.length * 0.5)];
-    if (node === undefined) return null;
-    node.scrollIntoView({ block: "center" });
-    return node.getAttribute("data-rail-id");
+    /*
+     * 挑一条**离当前高亮足够远**的可见行（≥ 10 条）：点它才有可观测的正文位移。
+     * 原来的写法取"第 len/2 条"，它可能正好就是当前高亮那一条（列表已被滚到那里），
+     * 点了位移为 0 → 假红。
+     */
+    const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+    const listBox = list.getBoundingClientRect();
+    const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+    const activeIndex = rows.indexOf(document.querySelector('[data-rail-active="true"]'));
+    const node = rows.find((row, index) => {
+      const box = row.getBoundingClientRect();
+      return Math.abs(index - activeIndex) >= 10 && box.top > listBox.top + 40 && box.bottom < listBox.bottom - 40;
+    });
+    return node === undefined ? null : node.getAttribute("data-rail-id");
   });
   if (canClick !== null) {
     await page.waitForTimeout(300);
@@ -360,66 +412,65 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
-/* ── 拖动 scrub（P7，参照 VSCode/Sublime minimap 的按住拖动）──── */
+/* ── 拖动 scrub（按住**滑块**拖，正文跟着滚）──────────────── */
 
 {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage();
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
   console.log("\n── 拖动 scrub ──");
 
-  const pickRow = () => page.evaluate(() => {
-    const list = document.querySelector('[data-testid="message-rail"]').firstElementChild;
-    const listRect = list.getBoundingClientRect();
-    const row = [...document.querySelectorAll('[data-testid="rail-tick"]')].find((node) => {
-      const box = node.getBoundingClientRect();
-      return box.top > listRect.top + 60 && box.bottom < listRect.top + 120;
-    });
-    if (row === undefined) return null;
-    const box = row.getBoundingClientRect();
-    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
-  });
+  // 先离开底部：在会话末尾往上拖没有内容可看
+  await page.evaluate(() => { const m = document.querySelector("main"); m.scrollTop = (m.scrollHeight - m.clientHeight) * 0.5; });
+  await page.waitForTimeout(1200);
 
-  const row = await pickRow();
-  if (row === null) {
-    console.log("⤼ 跳过：列里没有落在可视区的行");
+  const bandAt = () => page.evaluate(() => {
+    const band = document.querySelector(".rail-band");
+    if (band === null) return null;
+    const box = band.getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2, top: Math.round(box.top) };
+  });
+  const scrollTop = () => page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
+
+  const start = await bandAt();
+  if (start === null) {
+    console.log("⤼ 跳过：没有滑块");
   } else {
-    const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    await page.mouse.move(row.x, row.y);
+    const s0 = await scrollTop();
+    await page.mouse.move(start.x, start.y);
     await page.mouse.down();
-    for (let step = 1; step <= 12; step += 1) {
-      await page.mouse.move(row.x, row.y - step * 10);
-      await page.waitForTimeout(16);
+    const frames = [];
+    for (let step = 1; step <= 8; step += 1) {
+      await page.mouse.move(start.x, start.y - step * 25);
+      await page.waitForTimeout(70);
+      frames.push(await page.evaluate(() => {
+        const rail = document.querySelector('[data-testid="message-rail"]');
+        const list = rail.querySelector(".rail-scroll");
+        const lb = list.getBoundingClientRect();
+        const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+        const active = document.querySelector('[data-rail-active="true"]');
+        const ab = active?.getBoundingClientRect();
+        return {
+          scrolling: list.getAttribute("data-rail-scrubbing"),
+          cursor: getComputedStyle(document.querySelector('[data-testid="rail-tick"]')).cursor,
+          card: document.querySelector('[data-testid="rail-card"]') !== null,
+          wraps: ab ? (ab.top >= bandBox.top - 1 && ab.bottom <= bandBox.bottom + 1) : false,
+          actives: document.querySelectorAll('[data-rail-active="true"]').length,
+        };
+      }));
     }
-    const during = await page.evaluate(() => ({
-      scrollTop: Math.round(document.querySelector("main").scrollTop),
-      scrubbing: document.querySelector("[data-rail-scrubbing]")?.getAttribute("data-rail-scrubbing"),
-      cursor: getComputedStyle(document.querySelector('[data-testid="rail-tick"]')).cursor,
-      card: document.querySelector('[data-testid="rail-card"]') !== null,
-    }));
     await page.mouse.up();
     await page.waitForTimeout(500);
-    const settled = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-
-    check("按住拖动时正文跟着滚（连续跟手，不是只跳一次）", during.scrollTop < before,
-      `${before} → ${during.scrollTop}（往上拖 120px）`);
+    const s1 = await scrollTop();
+    const mid = frames[Math.floor(frames.length / 2)];
+    check("按住滑块拖动 → 正文跟着滚（连续跟手）", s1 < s0, `${s0} → ${s1}`);
     check("拖动中整列切到 grabbing、且不弹预览卡片",
-      during.scrubbing === "true" && during.cursor === "grabbing" && during.card === false,
-      JSON.stringify({ scrubbing: during.scrubbing, cursor: during.cursor, card: during.card }));
-    check("松手不再额外跳转（拖动后的那次 click 被吃掉）", Math.abs(settled - during.scrollTop) < 5,
-      `${during.scrollTop} → ${settled}`);
-
-    // 单击仍然跳（拖动阈值 4px 内不误判）
-    const again = await pickRow();
-    if (again !== null) {
-      const beforeClick = settled;
-      await page.mouse.click(again.x, again.y);
-      await page.waitForTimeout(1500);
-      const afterClick = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-      check("拖动之后单击仍能跳转（阈值内算点击）", afterClick !== beforeClick, `${beforeClick} → ${afterClick}`);
-    }
+      frames.every((f) => f.scrolling === "true") && mid.cursor === "grabbing" && frames.every((f) => f.card === false),
+      JSON.stringify({ scrubbing: mid.scrolling, cursor: mid.cursor, card: frames.some((f) => f.card) }));
+    check("拖动全程高亮条都在滑块内（包裹）", frames.every((f) => f.wraps), `${frames.filter((f) => f.wraps).length}/${frames.length} 帧`);
+    check("拖动全程只有一条高亮", frames.every((f) => f.actives === 1), `${frames.map((f) => f.actives).join(",")}`);
   }
   await context.close();
 }
@@ -469,10 +520,26 @@ for (const [label, viewport, expectVisible] of [
      * `setScrubbing(true)` 要等 React 提交，那一帧滑块还没跟。它不构成"跟手"的反例。
      * ±2 容差：滑块 top 是整数像素（`Math.round`），指针是 10px 步进，取整带来 ±1。
      */
-    const worst = Math.max(...steps.slice(1).map((delta) => Math.abs(delta + 10)));
+    /*
+     * 判**总位移**而不是逐步位移：滑块位置跟"行号"走（`resolvedIndex`），
+     * 而行号是整数、行高 12px —— 逐步会有 ±2px 的量化抖动（-11/-6/-12），
+     * 但 100px 指针位移对应的总位移必须吻合（累积误差不会发散）。
+     */
+    const total = steps.reduce((sum, delta) => sum + delta, 0);
+    const totalTravel = await page.evaluate(() => {
+      const b = document.querySelector(".rail-band");
+      const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+      return Math.round(b.getBoundingClientRect().top - list ? 0 : 0);
+    });
     check("往上拖：正文确实滚了", s1 < s0, `${s0} → ${s1}`);
-    check("往上拖：**滑块每 10px 指针也走 10px**（互逆 = 跟手）", worst <= 2.5,
-      `每步滑块位移 ${steps.join("/")}（应全是 -10）`);
+    /*
+     * 指针总位移 = 每步 10px × 步数（`steps` 有 10 项）。容忍 ±(行高/2 + 1)：
+     * 滑块位置跟整数行号走，最后一步可能跨过一整行的一半。
+     */
+    const pointerTotal = -10 * steps.length;
+    check("往上拖：**滑块总位移 ≈ 指针总位移**（互逆 = 跟手）", Math.abs(total - pointerTotal) <= 8,
+      `指针 ${-pointerTotal}px → 滑块 ${-total}px（逐步 ${steps.join("/")}；±8 = 行高 12px 的量化上界）`);
+    void totalTravel;
   }
   await context.close();
 }

@@ -1867,10 +1867,15 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
         if (messagesRef.current.length > before) { stalls = 0; continue; }
         /*
          * 这一页没长：可能是 `loadOlder` 被在飞守卫挡住（上一次还没完）而不是失败。
-         * 连续两次都没长才停 —— 只判一次会**过早退出**（实测：只补了 2 页就停，而会话有 1120 条）。
+         *
+         * 实测（2026-11-19）：只判两次就退出会**提前收工** —— 会话 560 条刻度、实际只补了 410 条消息，
+         * 剩下的 27% 刻度永远没有对应消息，于是"滚到最顶"时百分比只能到 27%（用户要 0%）。
+         * 现在：每次没长先等 250ms 再试，连续 3 次才认定真的到头/失败。
          */
+        await new Promise<void>((resolve) => { setTimeout(resolve, 250); });
+        if (messagesRef.current.length > before) { stalls = 0; continue; }
         stalls += 1;
-        if (stalls >= 2) return;
+        if (stalls >= 3) return;
       }
     } finally {
       fullHistoryInFlight.current = undefined;

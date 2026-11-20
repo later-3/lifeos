@@ -13,8 +13,8 @@ import test from "node:test";
 import {
   BAR_HEIGHT, BAR_HEIGHT_HOVER, BAR_WIDTH_MAX, BAR_WIDTH_MIN, CARD_GAP, CARD_PADDING, RAIL_MAX_RATIO,
   RAIL_WIDTH_MAX, RAIL_WIDTH_MIN, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
-  RAIL_SCRUB_THRESHOLD, RAIL_SLIDER_MIN, railCardPlaceOf, railGestureOf, railProgressModelOf, railRowsOf,
-  railScrubTargetOf, railSlotOf, railWidthsOf, zipWidthOf,
+  RAIL_SLIDER_MIN, railCardPlaceOf, railGestureOf, railIndexAtBandTop, railProgressModelOf, railRowsOf,
+  railSlotOf, railWidthsOf, zipWidthOf,
 } from "../frontend/src/api/rail-geometry.ts";
 
 /* ── 1. sqrt 宽度映射 ───────────────────────────────────── */
@@ -168,128 +168,95 @@ test("卡片上下夹进视口；比视口还高时贴顶", () => {
   assert.equal(huge.top, CARD_PADDING);
 });
 
-/* ── 滑块 / 高亮条 / 列表滚动：**同一个 progress 派生**（用户 2026-11-19 要求）──── */
+/* ── 一个 resolvedIndex 派生全部（用户 2026-11-19 审核确定的模型）──────── */
 
 /**
  * 真实几何（2026-11-19 实测，560 条刻度、补齐历史后）：
  * 列可视框 508px；正文 71153 内容 / 844 可视；列表内容 6720 / 可视 508。
  */
 const VIEW = {
-  viewHeight: 508, clientHeight: 844, scrollHeight: 71153,
-  listContentHeight: 6720, listViewHeight: 508, totalTicks: 560,
+  totalTicks: 560, viewHeight: 508, clientHeight: 844, scrollHeight: 71153,
+  listContentHeight: 6720, listViewHeight: 508,
 };
-const model = (activeIndex) => railProgressModelOf({ activeIndex, totalTicks: VIEW.totalTicks, ...VIEW });
-/** 高亮条在该 activeIndex 下的"内容坐标中心"（一行 12px）。 */
-const rowCenterOf = (activeIndex) => activeIndex * 12 + 6;
+const ROW_H = VIEW.listContentHeight / VIEW.totalTicks;   // 12px
+const model = (resolvedIndex) => railProgressModelOf({ resolvedIndex, ...VIEW });
 
-test("**高亮条落在滑块中间**：三个派生值同源，差为 0（用户在 10%~90% 各点都要求这个）", () => {
-  for (const activeIndex of [50, 153, 195, 276, 357, 437, 520, 559]) {
-    const m = model(activeIndex);
-    const rowInViewport = rowCenterOf(activeIndex) - m.listScrollTop;      // 高亮条在列可视区里的位置
-    const bandCenter = m.bandTop + m.bandHeight / 2;                        // 滑块中心
-    const maxListScroll = VIEW.listContentHeight - VIEW.listViewHeight;
-    const edge = m.listScrollTop <= 0.5 || m.listScrollTop >= maxListScroll - 0.5;
-    if (edge) {
-      /*
-       * 首尾两行**在物理上无法居中**：列表只能滚到 `maxListScroll`，所以最后一行会停在
-       * 距顶 502px（而不是 254px），而滑块已经贴到 498。
-       * 这是几何事实，不是缺陷 —— 判据放宽到"两者都在末端同一区域"。
-       */
-      const nearBottom = rowInViewport > VIEW.viewHeight * 0.8 && bandCenter > VIEW.viewHeight * 0.8;
-      const nearTop = rowInViewport < VIEW.viewHeight * 0.2 && bandCenter < VIEW.viewHeight * 0.2;
-      assert.ok(nearBottom || nearTop, `idx=${activeIndex} 贴边时两者应同在顶部或底部`);
-    } else {
-      assert.ok(Math.abs(rowInViewport - bandCenter) <= 1.5,
-        `idx=${activeIndex}: 高亮在 ${rowInViewport.toFixed(0)}、滑块中心 ${bandCenter.toFixed(0)}，差应 ≤1.5`);
-    }
+test("**滑块始终包裹高亮条**：任何位置（含首尾）行都完整落在滑块矩形内", () => {
+  for (const index of [0, 1, 50, 153, 280, 400, 520, 558, 559]) {
+    const m = model(index);
+    const rowTop = index * ROW_H - m.listScrollTop;
+    const rowBottom = rowTop + ROW_H;
+    assert.ok(rowTop >= m.bandTop - 1, `idx=${index}: 行顶 ${rowTop.toFixed(1)} 早于滑块顶 ${m.bandTop.toFixed(1)}`);
+    assert.ok(rowBottom <= m.bandTop + m.bandHeight + 1,
+      `idx=${index}: 行底 ${rowBottom.toFixed(1)} 超出滑块底 ${(m.bandTop + m.bandHeight).toFixed(1)}`);
   }
 });
 
-test("滑块是滚动条：长度 = 一屏占内容的比例（结构比例），有 20px 下限", () => {
+test("百分比：顶部 0%、底部 100%、按行号线性单调", () => {
+  assert.equal(model(0).percent, 0);
+  assert.equal(model(559).percent, 100);
+  assert.equal(model(280).percent, 50);
+  let previous = -1;
+  for (const index of [0, 100, 200, 300, 400, 500, 559]) {
+    const pct = model(index).percent;
+    assert.ok(pct >= previous, `百分比必须单调：${index} → ${pct}`);
+    previous = pct;
+  }
+});
+
+test("滑块在可视框内，长度有 20px 下限（VSCode MINIMUM_SLIDER_SIZE）", () => {
+  for (const index of [0, 100, 280, 500, 559]) {
+    const m = model(index);
+    assert.ok(m.bandTop >= 0 && m.bandTop + m.bandHeight <= VIEW.viewHeight + 0.5, `idx=${index} 越界`);
+    assert.ok(m.bandHeight >= RAIL_SLIDER_MIN);
+  }
   assert.equal(model(0).bandHeight, RAIL_SLIDER_MIN, "508×844/71153=6px → 抬到 20px");
-  const short = railProgressModelOf({ activeIndex: 0, totalTicks: 10, viewHeight: 508, clientHeight: 844, scrollHeight: 1688, listContentHeight: 240, listViewHeight: 240 });
-  assert.equal(short.bandHeight, Math.round(508 * 844 / 1688), "一屏占一半内容 → 滑块占一半可视框");
 });
 
-test("滑块位置夹在可视框内（任何 activeIndex 都不越界）", () => {
-  for (const activeIndex of [0, 1, 100, 279, 280, 400, 558, 559, 999, -5]) {
-    const m = model(activeIndex);
-    assert.ok(m.bandTop >= 0 && m.bandTop + m.bandHeight <= VIEW.viewHeight + 0.5, `idx=${activeIndex} 越界`);
+test("**拖动是反向换算**：滑块顶边位置 → 行号（拖动时滑块主导）", () => {
+  const range = model(0).bandRange;
+  assert.equal(railIndexAtBandTop(0, range, VIEW.totalTicks), 0);
+  assert.equal(railIndexAtBandTop(range, range, VIEW.totalTicks), VIEW.totalTicks - 1);
+  // 单调
+  let previous = -1;
+  for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
+    const index = railIndexAtBandTop(range * ratio, range, VIEW.totalTicks);
+    assert.ok(index >= previous, "滑块越靠下，行号必须越大");
+    previous = index;
   }
 });
 
-test("**位置与拖动互逆**：指针走 d px → 滑块也走 d px", () => {
-  const start = 30000;
-  const b = model(200);
-  for (const delta of [5, 10, 20, 40]) {
-    const next = railScrubTargetOf(start, delta, b.ratio, VIEW.scrollHeight, VIEW.clientHeight);
-    const movedRatio = (next - start) * b.ratio;                          // 滑块位移 = scrollTop 位移 × ratio
-    assert.ok(Math.abs(movedRatio - delta) <= 1, `指针走 ${delta}px，滑块走了 ${movedRatio.toFixed(2)}px`);
+test("列表滚动夹在 [0, maxScroll]；中间位置精确居中", () => {
+  const max = VIEW.listContentHeight - VIEW.listViewHeight;
+  for (const index of [0, 1, 559]) {
+    const m = model(index);
+    assert.ok(m.listScrollTop >= 0 && m.listScrollTop <= max + 0.5, `idx=${index} 列表滚动越界`);
   }
+  const middle = model(280);
+  const rowCenter = 280 * ROW_H + ROW_H / 2 - middle.listScrollTop;
+  assert.ok(Math.abs(rowCenter - (middle.bandTop + middle.bandHeight / 2)) <= 1, "中间位置应精确居中");
 });
 
-test("列表滚动由 progress 派生：首尾贴边、中间精确", () => {
-  assert.equal(model(0).listScrollTop, 0, "第 0 行 → 贴顶");
-  const last = model(559);
-  assert.ok(last.listScrollTop <= 6720 - 508 + 0.5, "最后一行 → 不超过最大滚动");
-  const mid = model(280);
-  assert.ok(Math.abs(mid.listScrollTop - (280.5 / 560) * (6720 - 508)) < 1, "中间 → 按比例");
-});
-
-test("退化输入不产生 NaN；不可滚动时滑块占满", () => {
-  const zero = railProgressModelOf({ activeIndex: 0, totalTicks: 0, viewHeight: 508, clientHeight: 844, scrollHeight: 71153, listContentHeight: 0, listViewHeight: 0 });
+test("退化输入不产生 NaN；一屏装得下时滑块占满；越界 index 被夹住", () => {
+  const zero = railProgressModelOf({ resolvedIndex: 0, totalTicks: 0, viewHeight: 508, clientHeight: 844, scrollHeight: 71153, listContentHeight: 0, listViewHeight: 0 });
   assert.equal(zero.bandHeight, 0);
-  assert.equal(zero.progress, 0);
-  const full = railProgressModelOf({ activeIndex: 0, totalTicks: 5, viewHeight: 508, clientHeight: 844, scrollHeight: 800, listContentHeight: 60, listViewHeight: 508 });
+  assert.equal(zero.percent, 0);
+  const full = railProgressModelOf({ resolvedIndex: 0, totalTicks: 5, viewHeight: 508, clientHeight: 844, scrollHeight: 800, listContentHeight: 60, listViewHeight: 508 });
   assert.equal(full.bandHeight, 508, "一屏装得下全部 → 滑块占满");
   assert.equal(full.bandTop, 0);
-  assert.equal(full.progress, 0.1, "5 条里的第 0 条 → progress 0.1（(0+0.5)/5）");
-  assert.equal(railScrubTargetOf(500, 100, 0, 9448, 844), 500, "ratio 0 → 原地");
+  assert.equal(model(-5).bandTop, model(0).bandTop, "负下标被夹到 0");
+  assert.equal(model(99999).bandTop, model(559).bandTop, "超界下标被夹到最后一条");
 });
 
+/* ── 7. 手势分工（与 VSCode minimap 一致：按滑块=拖、按别处=点）────── */
 
-/* ── 6. "装不下"在本形态下的真实含义 ─────────────────────── */
-
-test("装不下没有消失：条数超过一屏 → 整列滚动，但每条仍然存在且行高不降到 12 以下", () => {
+test("不再有位移阈值：按在滑块上就是拖，按在别处就是点（两者靠命中目标区分）", () => {
   /*
-   * 用户 2026-11-19 的追问："装不下就整列滚动，那笔账直接消掉？这仍然存在装不下吧？"
-   * 对 —— 它没有消失，只是**换了表现形式**：
-   *   竖条时代装不下 = 刻度被裁掉（看不见、也点不到，实测 548 条里丢 380 条）；
-   *   横条时代装不下 = 一屏看不全，要滚一下这一列，**每一条仍然有 12px 的可点高度**。
-   * 这条断言锁的就是这个差别：滚动 yes、行高 ≥ 12 yes、条数不减少 yes。
+   * 早先用 4px 阈值区分"点击 vs 拖动"，于是"想拖但手没动够"会被判成点击 → 跳到别处。
+   * VSCode 的做法（`minimap.ts:1404-1410`）是把拖动绑在 slider 元素上、点击走另一条路径，
+   * **没有任何阈值**。我们照此：命中目标决定意图，不靠位移猜。
    */
-  const avail = 804;
-  const count = 560;
-  const rows = railRowsOf(count, avail);
-  assert.equal(rows.scrollable, true, "装不下 → 滚动");
-  assert.equal(rows.rowHeight, ROW_HEIGHT_MIN, "行高停在下限，不继续压");
-  assert.ok(rows.rowHeight >= 12, "每条仍有 12px 可点高度");
-  assert.ok(rows.visibleRows < count, `一屏只看到 ${rows.visibleRows} / ${count} 条`);
-  // 关键差别：滚动模式下**没有任何一条被丢弃**（渲染层永远渲染全部 ticks，只是可滚）
-  assert.equal(count * rows.rowHeight, 560 * 12, "内容总高 = 全部行的高度和，一条不少");
-});
-
-test("短会话不产生滚动：一屏看得全，行高用舒适的 24px", () => {
-  const rows = railRowsOf(10, 804);
-  assert.equal(rows.scrollable, false);
-  assert.equal(rows.rowHeight, ROW_HEIGHT_MAX);
-  assert.ok(rows.visibleRows >= 10, "10 条全在可视区内");
-});
-
-test("一屏能看多少条：与可用高度成正比、与条数无关", () => {
-  const short = railRowsOf(10, 804).visibleRows;
-  const long = railRowsOf(560, 804).visibleRows;
-  assert.ok(long > 30 && long < 60, `560 条时一屏约 ${long} 条（12px 行高 / 62% 高度）`);
-  assert.ok(short >= 10);
-});
-
-
-/* ── 7. 拖动 scrub（P7）─────────────────────────────────── */
-
-test("点击 vs 拖动：4px 阈值（手抖不算拖）", () => {
-  assert.equal(RAIL_SCRUB_THRESHOLD, 4);
   assert.equal(railGestureOf(0, 0), "click");
-  assert.equal(railGestureOf(3, 2), "click", "3px 内算点击（手抖）");
-  assert.equal(railGestureOf(0, 5), "scrub");
-  assert.equal(railGestureOf(5, 0), "scrub", "横向超过也算拖（不误触成点击）");
+  assert.equal(railGestureOf(0, 100), "scrub");
+  assert.equal(railGestureOf(100, 0), "scrub");
 });
