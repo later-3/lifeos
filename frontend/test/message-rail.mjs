@@ -643,6 +643,67 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
+/* ── 屏幕上能看见的行，逐行点击都要到位（用户 2026-11-19 截图）────── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  console.log("\n── 屏幕上逐行点击 ──");
+
+  let tested = 0;
+  const missed = [];
+  for (let round = 0; round < 2; round += 1) {
+    for (let n = 0; n < 5; n += 1) {
+      /*
+       * **每次都重新取坐标**：点完一行，刻度列会滚，上一轮算的 y 就指向别的行了。
+       * 这条纪律是两次误判的分界线（第一版用旧坐标，得到"3/125 到位"的假结论）。
+       * 取"此刻在可视区里、没被滑块盖住、`elementFromPoint` 命中它自己"的行 —— 那就是
+       * 用户眼睛看到、鼠标能点到的那一条。
+       */
+      const row = await page.evaluate(() => {
+        const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+        const listBox = list.getBoundingClientRect();
+        const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+        const all = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+        for (let i = 0; i < all.length; i += 1) {
+          const box = all[i].getBoundingClientRect();
+          if (box.top < listBox.top + 15 || box.bottom > listBox.bottom - 15) continue;
+          if (box.top >= bandBox.top - 2 && box.bottom <= bandBox.bottom + 2) continue;
+          const x = box.left + box.width / 2;
+          const y = box.top + box.height / 2;
+          if (!all[i].contains(document.elementFromPoint(x, y))) continue;
+          return { index: i, id: all[i].dataset.railId, x, y };
+        }
+        return null;
+      });
+      if (row === null) break;
+      tested += 1;
+      await page.mouse.move(row.x, row.y);
+      await page.waitForTimeout(120);
+      await page.mouse.click(row.x, row.y);
+      await page.waitForTimeout(350);
+      const landed = await page.evaluate(() => {
+        const rail = document.querySelector('[data-testid="message-rail"]');
+        const all = [...rail.querySelectorAll('[data-testid="rail-tick"]')];
+        const active = document.querySelector('[data-rail-active="true"]');
+        return { index: active === null ? -1 : all.indexOf(active) };
+      });
+      if (landed.index !== row.index) missed.push(`#${row.index}(${row.id})→#${landed.index}`);
+    }
+    await page.evaluate(() => {
+      const main = document.querySelector("main");
+      main.scrollTop = main.scrollHeight * (0.3 + Math.random() * 0.5);
+    });
+    await page.waitForTimeout(700);
+  }
+  check(`屏幕上逐行点击（${tested} 行）全部到位`, tested >= 4 && missed.length === 0,
+    missed.length === 0 ? `${tested}/${tested}` : `失败 ${missed.length}：${missed.slice(0, 6).join(" ")}`);
+  await context.close();
+}
+
 /* ── 滑块跟手（VSCode minimap.ts:391/:254 的互逆关系）────────── */
 
 {

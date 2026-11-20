@@ -190,8 +190,6 @@ export const MessageRail = memo(function MessageRail({
     /** 抓在滑块的哪个位置（指针 y − 滑块顶边），拖动中滑块顶边 = 指针 y − 这个值 */
     grabOffsetY: number;
     moved: boolean;
-    /** 按下时正好按在一条横条上 → 松手时若没拖动，就跳到这一条 */
-    pendingJump?: { tick: RailTickView; index: number };
     /** 按下时的指针位置（只用于区分"手抖"与"真的在拖"） */
     startX: number;
     startY: number;
@@ -639,11 +637,6 @@ export const MessageRail = memo(function MessageRail({
      * 现在的划分：**按在横条上 → 单击跳转 / 按住移动才拖动**；
      * 按在滑块空白处 → 直接拖动（保持原来的手感）。
      */
-    const rowNode = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-rail-id]");
-    const rowId = rowNode?.getAttribute("data-rail-id") ?? undefined;
-    const rowIndex = rowId === undefined ? -1 : ticks.findIndex((tick) => tick.id === rowId);
-    const pressedTick = rowIndex >= 0 ? ticks[rowIndex] : undefined;
-
     /*
      * 按在滑块上：进入拖动。记下"抓在滑块的哪个位置"（grabOffset），
      * 之后滑块顶边 = 指针 y − grabOffset —— 这样**滑块严格跟手**（不是按位移换算）。
@@ -652,7 +645,6 @@ export const MessageRail = memo(function MessageRail({
       pointerId: event.pointerId,
       grabOffsetY: event.clientY - (bandRect as DOMRect).top,
       moved: false,
-      pendingJump: pressedTick === undefined ? undefined : { tick: pressedTick, index: rowIndex },
       startX: event.clientX,
       startY: event.clientY,
       startScrollTop: container.scrollTop,
@@ -660,15 +652,48 @@ export const MessageRail = memo(function MessageRail({
     };
     setScrubbing(true);
     notifyScrubbing(true);
-    lockRef.current = undefined;      // 用户开始拖了：上一轮的跳转锁作废
-    // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
-    suppressClickRef.current = true;
+    /*
+     * 这里**不**吞掉 click、也**不**清跳转锁 —— 一切的判定留给"有没有真的移动"。
+     *
+     * 为什么（2026-11-19 用户截图："我点击了一个横条，但高亮和滑块都没有跟上"）：
+     * 上一版在 pointerdown 就把 `suppressClickRef` 置真，然后**指望 `pointerup`** 来跳转。
+     * 一旦 `pointerup` 没落到竖条上（松手前指针移开、行在滚动中重挂、指针捕获丢失），
+     * 那次点击就被"抑制"吃掉，跳转一次也不会发生 —— 而且 `scrubbing` 卡在真。
+     * 现在改成：**跳转走原生 `click`**（浏览器保证一定会到），拖动才置抑制。
+     */
+    suppressClickRef.current = false;
     clearHideTimer();
     setHovered(undefined);
     setCard(undefined);
     // 捕获指针：拖到列外面也继续收事件（否则拖快了会"掉线"）
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }, [scrollContainer, ticks, clearHideTimer, notifyScrubbing]);
+
+  /*
+   * 松手兜底：`pointerup` 只在竖条自己收到时才会调 `endScrub`。
+   * 指针在竖条外松手、或指针被系统取消（切窗口、按 Esc）时收不到 —— 那样 `scrubbing`
+   * 会永久为真，之后所有点击都被当成"还在拖"。所以窗口级再补一次。
+   */
+  useEffect(() => {
+    if (!scrubbing) return;
+    const finish = () => {
+      const scrub = scrubRef.current;
+      if (scrub === undefined) return;
+      scrubRef.current = undefined;
+      setScrubbing(false);
+      notifyScrubbing(false);
+      const lastIndex = dragIndexRef.current;
+      if (lastIndex !== undefined) {
+        lockRef.current = { index: lastIndex, until: Date.now() + RAIL_ACTIVE_LOCK_MS, reason: "drag", armedAt: Date.now() };
+      }
+    };
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [scrubbing, notifyScrubbing]);
 
   /*
    * **用户滚动 = 跳转锁作废**（见 `resolvedIndex` 的"跳转锁由用户滚动解除"）。
@@ -730,9 +755,12 @@ export const MessageRail = memo(function MessageRail({
      * 一旦超过 3px，后续位移一次性全部生效（`grabOffsetY` 记的是按下时的偏移，所以不会丢）。
      */
     if (!scrub.moved) {
-      const drift = Math.abs(event.clientY - scrub.startY) + Math.abs(event.clientX - scrub.startX);
+      const drift = Math.hypot(event.clientY - scrub.startY, event.clientX - scrub.startX);
       if (drift <= 3) return;
       scrub.moved = true;
+      // 真的在拖了：松手时浏览器补的 click 要吃掉，上一轮的跳转锁也作废
+      suppressClickRef.current = true;
+      lockRef.current = undefined;
       // 进入拖动：收起卡片、清掉悬停 —— 拖动途中一路弹卡片会很吵
       clearHideTimer();
       setHovered(undefined);
@@ -779,26 +807,17 @@ export const MessageRail = memo(function MessageRail({
      * 所以松手后**保持拖动值**，并用 `lockRef` 把它锁住；等正文滚动事件重新算出可信的锚点
      * （`scrollTick` 到期）后自然接管。这正是 `RAIL_ACTIVE_LOCK_MS` 的用途。
      */
-    /*
-     * 没拖动就松手 = **单击了一条横条** → 跳到它（用户 2026-11-19 的核心要求）。
-     * 这一步必须在 `scrubRef` 清空之前取值。
-     */
-    if (!scrub.moved && scrub.pendingJump !== undefined) {
-      const { tick, index } = scrub.pendingJump;
-      lockRef.current = { index, until: Date.now() + RAIL_JUMP_LOCK_MAX_MS, reason: "jump", armedAt: Date.now() };
-      (rootRef.current as HTMLElement | null)?.setAttribute("data-rail-last-click", `${tick.id}@${index}`);
-      suppressClickRef.current = true;   // 浏览器补的 click 别再来一次
-      onJump(tick);
-      return;
-    }
+    // 没拖动就是一次普通点击：交给 `click` 事件（`handleJump`），这里什么都不做。
 
     const lastIndex = dragIndexRef.current;
     if (lastIndex !== undefined) {
       lockRef.current = { index: lastIndex, until: Date.now() + RAIL_ACTIVE_LOCK_MS, reason: "drag", armedAt: Date.now() };
     }
-  }, [notifyScrubbing, onJump]);
+  }, [notifyScrubbing]);
 
   /* ── 8. 点击 ───────────────────────────────────────────── */
+
+
 
   const handleJump = useCallback((tick: RailTickView, index: number) => {
     // 刚拖完的那一下点击要吃掉（松手时浏览器会补一个 click）
@@ -806,6 +825,32 @@ export const MessageRail = memo(function MessageRail({
     lockRef.current = { index, until: Date.now() + RAIL_JUMP_LOCK_MAX_MS, reason: "jump", armedAt: Date.now() };
     onJump(tick);
   }, [onJump]);
+
+  /**
+   * 列上的**唯一**点击入口。
+   *
+   * 为什么不用"每行自己的 onClick"（2026-11-19 用户截图："我点击了一个横条，但高亮和滑块
+   * 都没有跟上"）：行只有 12px 高、条只有 6–32px 宽，**点和条的命中区都不是像素级精确**——
+   * 点歪 1px 就落到行与行之间的缝里（目标是列表容器），那一行自己的 onClick 根本不会触发，
+   * 于是"点了、什么都没发生"。现在只要点在列里，就按 y 算出最近的一条，**点哪儿都算数**。
+   */
+  const onRailClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    // 刚拖完的那一下点击要吃掉（拖动结束时浏览器会补一个 click）
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+    const rowNode = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-rail-id]");
+    const rowId = rowNode?.getAttribute("data-rail-id") ?? undefined;
+    let index = rowId === undefined ? -1 : ticks.findIndex((tick) => tick.id === rowId);
+    if (index < 0) {
+      const list = event.currentTarget;
+      const box = list.getBoundingClientRect();
+      const y = event.clientY - box.top + list.scrollTop;
+      index = Math.min(ticks.length - 1, Math.max(0, Math.floor(y / Math.max(1, rows.rowHeight))));
+    }
+    const tick = ticks[index];
+    if (tick === undefined) return;
+    (rootRef.current as HTMLElement | null)?.setAttribute("data-rail-last-click", `${tick.id}@${index}`);
+    handleJump(tick, index);
+  }, [ticks, rows.rowHeight, handleJump]);
 
   if (!slot.visible || ticks.length === 0) return null;
 
@@ -854,6 +899,7 @@ export const MessageRail = memo(function MessageRail({
           role="toolbar"
           aria-orientation="vertical"
           aria-label="消息导航"
+          onClick={onRailClick}
           style={{ width: slot.width, maxHeight: avail > 0 ? Math.max(0, avail * RAIL_MAX_RATIO) : undefined }}
         >
         <RailRows
@@ -991,7 +1037,6 @@ const RailRows = memo(function RailRows({
             onMouseLeave={onLeave}
             onFocus={(event) => onEnter(tick, event.currentTarget)}
             onBlur={onLeave}
-            onClick={() => onJump(tick, index)}
             onKeyDown={(event) => onKeyDown(event, index)}
           >
             {/*
