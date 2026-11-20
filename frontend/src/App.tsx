@@ -987,6 +987,9 @@ export default function App() {
    * 切会话时清掉（作用域归属，`frontend/code.md` 2.12）。
    */
   const [railTicks, setRailTicks] = useState<RailTickView[]>([]);
+  /** `railTicks` 的最新值转发（`openSession` 里要读，不能进依赖表）。 */
+  const railTicksRef = useRef<RailTickView[]>([]);
+  railTicksRef.current = railTicks;
   /** 刻度请求的在飞标记（同一会话同一时刻只发一次，见 `loadRailTicks`）。 */
   const railInFlight = useRef<string | undefined>(undefined);
   /** 内容列（`max-w-reading` 那一层）：竖条要量它的左缘才知道"能用多宽"。 */
@@ -1718,6 +1721,12 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     }
     const items = result.value.items;
     setRailTicks(Array.isArray(items) ? items : []);
+    /*
+     * 长会话：刻度到手后触发后台补齐历史（见 `ensureFullHistory`）。
+     * 判据"刻度数 > 40"：装得下的会话不需要滚动，也就不需要补，
+     * 否则每次打开会话都多拉几页纯属浪费。
+     */
+    if ((items?.length ?? 0) > 40 && hasOlderRef.current) ensureFullHistoryRef.current(id, sid);
     } finally {
       if (railInFlight.current === key) railInFlight.current = undefined;
     }
@@ -1820,6 +1829,60 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     }
     toast(railJumpFailureText("page_limit"), "error");
   }, [loadOlder, toast]);
+
+  /**
+   * 后台补齐**整个会话**的历史（Task 0020 · P7，2026-11-19）。
+   *
+   * ## 为什么必须补
+   *
+   * 导航条的滑块是**滚动条的 thumb**：它的行程代表**整个会话**。而首屏只下 200 条、更早的靠游标分页，
+   * 于是正文的 `scrollHeight` 只覆盖会话的一小截 —— 用户拖滑块 90px 就走完整个"已加载段"，
+   * 滑块却只移动了行程的 7%。**位置与拖动无法互逆，看起来就是"一拖就飞到底、滑块不怎么动"**。
+   *
+   * 我在交互层试过三种补丁（冻结 ratio、按已加载段折算、估算全会话高度），
+   * 它们都只能在"不互逆"和"滑块只在底下一小段动"之间二选一 —— 因为**矛盾在数据层，不在交互层**。
+   *
+   * 所以补在数据层：打开会话后后台把历史补到会话开头。这样"刻度总数 ↔ 正文总高"同源，
+   * 滑块的位置、高度、拖动三者天然自洽。
+   *
+   * ## 代价与边界
+   *
+   * - 只对**需要导航条的长会话**做（刻度数 > 一屏的两倍），短会话一次都不补；
+   * - 后台串行、不阻塞界面；切走会话即停（`current.current !== sid`）；
+   * - 最多补 `RAIL_JUMP_MAX_PAGES` 页（20 页 ≈ 4000 条，实测最长会话 2290 条 → 12 页）；
+   * - 失败即停（不重试），下一次打开会话再补。
+   */
+  const ensureFullHistory = useCallback(async (id: string, sid: string): Promise<void> => {
+    if (fullHistoryInFlight.current === `${id}/${sid}`) return;   // 已经在补了
+    fullHistoryInFlight.current = `${id}/${sid}`;
+    try {
+      let stalls = 0;
+      for (let page = 0; page < RAIL_JUMP_MAX_PAGES; page += 1) {
+        if (current.current !== sid) return;               // 切走了
+        if (!hasOlderRef.current) return;                  // 已经到会话开头
+        const before = messagesRef.current.length;
+        await loadOlder(id, sid);
+        // 等 React 提交（`loadOlder` 是 setMessages，ref 要下一帧才更新）
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => requestAnimationFrame(() => { setTimeout(resolve, 0); })); });
+        if (messagesRef.current.length > before) { stalls = 0; continue; }
+        /*
+         * 这一页没长：可能是 `loadOlder` 被在飞守卫挡住（上一次还没完）而不是失败。
+         * 连续两次都没长才停 —— 只判一次会**过早退出**（实测：只补了 2 页就停，而会话有 1120 条）。
+         */
+        stalls += 1;
+        if (stalls >= 2) return;
+      }
+    } finally {
+      fullHistoryInFlight.current = undefined;
+    }
+  }, [loadOlder]);
+
+  /** 补齐历史是否在飞（避免 `loadRailTicks` 每次成功都重复启动一轮）。 */
+  const fullHistoryInFlight = useRef<string | undefined>(undefined);
+
+  /** `ensureFullHistory` 的转发（`loadRailTicks` 定义在它之前，直接引用会形成依赖环）。 */
+  const ensureFullHistoryRef = useRef<(id: string, sid: string) => void>(() => {});
+  ensureFullHistoryRef.current = (id, sid) => { void ensureFullHistory(id, sid); };
 
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
   async function refreshMeta(id: string, sid: string) {

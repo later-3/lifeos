@@ -13,8 +13,8 @@ import test from "node:test";
 import {
   BAR_HEIGHT, BAR_HEIGHT_HOVER, BAR_WIDTH_MAX, BAR_WIDTH_MIN, CARD_GAP, CARD_PADDING, RAIL_MAX_RATIO,
   RAIL_WIDTH_MAX, RAIL_WIDTH_MIN, ROW_HEIGHT_MAX, ROW_HEIGHT_MIN,
-  RAIL_SCRUB_THRESHOLD, RAIL_SLIDER_MIN, railBandOfViewport, railBandTopOf, railCardPlaceOf, railEnsureVisible, railGestureOf, railRowsOf,
-  railScrubTargetOf, railSlotOf, railWidthsOf, zipWidthOf,
+  RAIL_SCRUB_THRESHOLD, RAIL_SLIDER_MIN, railCardPlaceOf, railEnsureVisible, railGestureOf, railRowsOf,
+  railOverviewOf, railScrubTargetOf, railSlotOf, railWidthsOf, zipWidthOf,
 } from "../frontend/src/api/rail-geometry.ts";
 
 /* ── 1. sqrt 宽度映射 ───────────────────────────────────── */
@@ -168,67 +168,78 @@ test("卡片上下夹进视口；比视口还高时贴顶", () => {
   assert.equal(huge.top, CARD_PADDING);
 });
 
-/* ── 带状指示（滑块）：照 VSCode scrollbarState.ts 的标准滚动条公式 ───── */
+/* ── 滑块：滚动条语义（画在可视框坐标系里，永远可见）────────── */
 
 /**
- * 真实几何（2026-11-19 实测，560 条刻度的会话）：
- * 刻度列 560 条 × 12px = 6720px；正文已渲染 9448 / 可视 844；已下载段从第 450 条起。
+ * 真实几何（2026-11-19 实测，560 条刻度）：列的可视框 508px；正文可视 844；
+ * 一屏能看到 8 条刻度。
  */
-const GEO = { scrollHeight: 9448, clientHeight: 844, totalTicks: 560, loadedFrom: 450, rowHeight: 12 };
-const band = (scrollTop, loadedFrom = GEO.loadedFrom) => railBandOfViewport(
-  scrollTop, GEO.scrollHeight, GEO.clientHeight, GEO.totalTicks, loadedFrom, GEO.rowHeight);
+/** 补齐历史后的真实几何（560 条刻度 / 71153px 正文 / 844px 视口 / 508px 可视框）。 */
+const VIEW = { viewHeight: 508, clientHeight: 844, scrollHeight: 71153 };
+const MAX_SCROLL = VIEW.scrollHeight - VIEW.clientHeight;
+/** 按"滚到内容的百分之几"取滑块几何。 */
+const bandAt = (fraction) => railOverviewOf({ scrollTop: fraction * MAX_SCROLL, ...VIEW });
 
-test("滑块高度按比例算（VSCode scrollbarState.ts:144）并有 20px 下限", () => {
-  const b = band(0);
-  // segmentHeight = (560-450)×12 = 1320；1320 × 844/9448 ≈ 118
-  // VSCode 的写法：Math.round(Math.max(MIN, Math.floor(size * representable / scroll)))
-  const expected = Math.round(Math.max(RAIL_SLIDER_MIN, Math.floor(1320 * GEO.clientHeight / GEO.scrollHeight)));
-  assert.equal(b.height, expected, `应为 ${expected}px`);
-  assert.ok(b.height >= RAIL_SLIDER_MIN, "再长的会话也不会细到点不住");
-  // 比例算出 < 20 → 取下限（已下载段只有 90 条、但正文很长时）
-  const tiny = railBandOfViewport(0, 500000, 844, 560, 470, 12);
-  assert.equal(tiny.height, RAIL_SLIDER_MIN, "按比例只有 2px → 抬到 20px 下限");
+test("滑块是**滚动条**：长度 = 一屏占内容的比例，有 20px 下限", () => {
+  assert.equal(bandAt(0).height, RAIL_SLIDER_MIN, "508×844/71153=6px → 抬到 20px 下限");
+  const short = railOverviewOf({ scrollTop: 0, viewHeight: 508, clientHeight: 844, scrollHeight: 1688 });
+  assert.equal(short.height, Math.round(508 * 844 / 1688), "一屏占一半内容 → 滑块占一半可视框");
 });
 
-test("位置 = 段起点 + scrollTop × ratio；滚到顶贴段起点、滚到底贴段末端", () => {
-  const atTop = band(0);
-  assert.equal(atTop.top, 450 * 12, "滚到顶 → 已下载段的起点（不是整列 0）");
-  const atBottom = band(8604);
-  assert.equal(atBottom.top, atTop.base + atTop.maxTop, "滚到底 → 段末端");
-  assert.ok(atBottom.top + atBottom.height <= 560 * 12 + 0.5, "不越出整列");
+test("位置 = scrollTop × ratio，**始终落在可视框内**", () => {
+  assert.equal(bandAt(0).top, 0, "滚到顶 → 滑块在顶");
+  const last = bandAt(1);
+  assert.equal(last.top, VIEW.viewHeight - last.height, "滚到底 → 滑块在底（不越界）");
+  const mid = bandAt(0.5);
+  assert.ok(mid.top > 0 && mid.top < VIEW.viewHeight - mid.height);
+  // 任何 scrollTop 都不越界 —— 这是"滑块永远在可视区内"的形式化
+  for (const fraction of [0, 0.01, 0.25, 0.5, 0.75, 0.99, 1, 1.5, -0.5]) {
+    const b = bandAt(fraction);
+    assert.ok(b.top >= 0 && b.top + b.height <= VIEW.viewHeight + 0.5, `fraction=${fraction} 越界`);
+  }
 });
 
-test("**拖动与滑块互逆**：指针走 100px → 滑块正好走 100px（「跟手」的充分条件）", () => {
-  const b = band(4000);
-  const nextScroll = railScrubTargetOf(4000, 100, b.ratio, GEO.scrollHeight, GEO.clientHeight);
-  const moved = railBandOfViewport(nextScroll, GEO.scrollHeight, GEO.clientHeight, GEO.totalTicks, GEO.loadedFrom, GEO.rowHeight);
-  assert.ok(Math.abs((moved.top - b.top) - 100) <= 1,
-    `指针走 100，滑块走了 ${(moved.top - b.top).toFixed(2)}（应 ≈100）`);
+test("**位置与拖动互逆**：指针走 d px → 滑块也走 d px（「跟手」的充分条件）", () => {
+  const start = 30000;
+  const b = railOverviewOf({ scrollTop: start, ...VIEW });
+  for (const delta of [5, 10, 20, 40]) {
+    const next = railScrubTargetOf(start, delta, b.ratio, VIEW.scrollHeight, VIEW.clientHeight);
+    const moved = railOverviewOf({ scrollTop: next, ...VIEW });
+    assert.ok(Math.abs((moved.top - b.top) - delta) <= 1,
+      `指针走 ${delta}px，滑块走了 ${(moved.top - b.top).toFixed(2)}px`);
+  }
 });
 
-test("整段都下载完（loadedFrom=0）→ 滑块走满整列", () => {
-  const atTop = band(0, 0);
-  assert.equal(atTop.top, 0);
-  const atBottom = band(8604, 0);
-  assert.equal(atBottom.top, 560 * 12 - atBottom.height, "末端 = 整列高 - 滑块高");
+test("**必须先补齐历史**：未补齐时正文只能滚一小段，滑块永远走不满行程", () => {
+  /*
+   * 滑块位置 = scrollTop × ratio，而 scrollTop 的上限是"已加载内容的高度"。
+   * 未补齐时正文只有 9448px（可滚 8604），而滑块行程代表整个会话 ——
+   * 于是滑块最多走到行程的 8604/70309 ≈ 12%（实测就是这样：滑块在底部一小段里晃）。
+   * 这不是交互层能补的，必须由 `ensureFullHistory` 把数据补全。
+   */
+  const partial = railOverviewOf({ scrollTop: 8604, scrollHeight: 9448, clientHeight: 844, viewHeight: 508 });
+  const full = railOverviewOf({ scrollTop: 8604, scrollHeight: 71153, clientHeight: 844, viewHeight: 508 });
+  const partialReach = (partial.top - 0) / (508 - partial.height);
+  const fullReach = (full.top) / (508 - full.height);
+  assert.ok(partialReach > 0.9, "同一 scrollTop 在未补齐时已接近行程末端（所以滑块看起来只在底部）");
+  assert.ok(fullReach < 0.2, "补齐后同一个 scrollTop 只走到行程的 12% —— 滑块能继续往下走");
 });
 
 test("拖动夹紧：拖出边界不产生负数，也不越过可滚距离", () => {
-  const b = band(0);
-  assert.equal(railScrubTargetOf(100, -99999, b.ratio, GEO.scrollHeight, GEO.clientHeight), 0);
-  assert.equal(railScrubTargetOf(100, 99999, b.ratio, GEO.scrollHeight, GEO.clientHeight), 8604);
+  const b = bandAt(0);
+  assert.equal(railScrubTargetOf(100, -99999, b.ratio, VIEW.scrollHeight, VIEW.clientHeight), 0);
+  assert.equal(railScrubTargetOf(100, 99999, b.ratio, VIEW.scrollHeight, VIEW.clientHeight), MAX_SCROLL);
 });
 
-test("退化输入：几何未就绪时 `ready: false`（调用方据此拒绝进入拖动）", () => {
-  // 刚刷新时 metrics 是 0 —— 若此时允许拖动，band 会算成 0 = 最顶（用户报的"一拖就跳顶"）
-  assert.equal(railBandOfViewport(0, 0, 0, 560, 0, 12).ready, false);
-  assert.equal(railBandOfViewport(0, 9448, 844, 0, 0, 12).ready, false);
-  assert.equal(railBandOfViewport(0, 9448, 844, 560, 0, 0).ready, false);
-  // 内容比视口短：ready（不需要滑块，也不该拖）
-  const short = railBandOfViewport(0, 700, 844, 560, 0, 12);
-  assert.equal(short.ready, true);
-  assert.equal(short.maxTop, 0);
-  // ratio 非法 → 不 ready
+test("退化输入不产生 NaN；**不可滚动时 ratio=1 且滑块占满**", () => {
+  assert.deepEqual(railOverviewOf({ scrollTop: 0, scrollHeight: 1000, clientHeight: 844, viewHeight: 0 }),
+    { top: 0, height: 0, ratio: 1 }, "没量到可视高 → 不画");
+  assert.deepEqual(railOverviewOf({ scrollTop: 0, scrollHeight: 0, clientHeight: 844, viewHeight: 508 }),
+    { top: 0, height: 0, ratio: 1 }, "没量到内容高 → 不画");
+  const full = railOverviewOf({ scrollTop: 0, scrollHeight: 800, clientHeight: 844, viewHeight: 508 });
+  assert.equal(full.height, 508, "一屏装得下全部 → 滑块占满可视框");
+  assert.equal(full.top, 0);
+  assert.equal(full.ratio, 1);
   assert.equal(railScrubTargetOf(500, 100, 0, 9448, 844), 500, "ratio 0 → 原地");
   assert.equal(railScrubTargetOf(500, Number.NaN, 0.5, 9448, 844), 500);
 });

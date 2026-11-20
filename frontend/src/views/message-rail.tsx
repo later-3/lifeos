@@ -52,7 +52,7 @@ import {
   BAR_HEIGHT_HOVER,
   BAR_WIDTH_MIN,
   RAIL_MAX_RATIO,
-  railBandOfViewport,
+  railOverviewOf,
   railBandTopOf,
   railCardPlaceOf,
   railEnsureVisible,
@@ -99,6 +99,7 @@ export type MessageRailProps = {
    * 否则拖到顶会加载并弹回，看起来是"拖不到最顶"（实测 2026-11-19）。
    */
   onScrubbingChange?: (scrubbing: boolean) => void;
+
 };
 
 /**
@@ -151,6 +152,8 @@ export const MessageRail = memo(function MessageRail({
   const [slot, setSlot] = useState<{ visible: boolean; width: number; gutter: number }>({ visible: false, width: 0, gutter: 0 });
   /** 可用高度（= 对话区高度）。 */
   const [avail, setAvail] = useState(0);
+  /** 列的可视框高度（滑块坐标系的高度；也是 `maxHeight` 落到的那个值）。 */
+  const [listViewHeight, setListViewHeight] = useState(0);
   /** 精确锚点（量 DOM）；空时用比例兜底。 */
   const [anchors, setAnchors] = useState<Array<{ id: string; top: number }>>([]);
   const [scrollTop, setScrollTop] = useState(0);
@@ -181,17 +184,23 @@ export const MessageRail = memo(function MessageRail({
    */
   const scrubRef = useRef<{
     pointerId: number; startY: number; startScrollTop: number;
-    /** 按下那一刻的滑块几何（px），拖动中冻结，见 `onRowPointerDown` */
-    ratio: number; bandRows: number; bandBase: number; bandMaxTop: number; moved: boolean;
+    /** 按下那一刻的滑块比例（拖动中冻结：位置与拖动必须共用同一个） */
+    ratio: number; moved: boolean;
   } | undefined>(undefined);
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
   const [scrubbing, setScrubbing] = useState(false);
 
-  /** 拖动状态变化时通知调用方（App 用它暂停"滚到顶自动加载"，见 prop 注释）。 */
-  useEffect(() => {
-    onScrubbingChange?.(scrubbing);
-  }, [scrubbing, onScrubbingChange]);
+  /*
+   * 通知调用方"开始/结束拖动"→ App 用它暂停"滚到顶自动加载"。
+   *
+   * **必须同步调**（不能用 useEffect 跟着 state 走）：`setScrubbing` 是异步的，
+   * 而拖动时 `container.scrollTop = 0` 是同步的 —— 哨兵会在 effect 之前就触发加载，
+   * 于是"拖到顶 → 加载 → 位置被弹回 → 看起来拖不动"（2026-11-19 实测）。
+   */
+  const notifyScrubbing = useCallback((active: boolean) => {
+    onScrubbingChange?.(active);
+  }, [onScrubbingChange]);
 
   /* ── 1. 量容器 ─────────────────────────────────────────── */
 
@@ -213,6 +222,9 @@ export const MessageRail = memo(function MessageRail({
        */
       const railHeight = rail instanceof HTMLElement ? rail.clientHeight : containerRect.height;
       setAvail(Math.max(0, railHeight - 2 * RAIL_VERTICAL_PADDING));
+      // 可视框高 = 整列的可视高度（滑块在这个坐标系里定位）
+      const listEl = listRef.current;
+      if (listEl !== null) setListViewHeight(Math.round(listEl.clientHeight));
       setMetrics({ scrollHeight: container.scrollHeight, clientHeight: container.clientHeight });
       setScrollTop(container.scrollTop);
       setAnchors(measureAnchors(container, ticks));
@@ -362,10 +374,16 @@ export const MessageRail = memo(function MessageRail({
    * 锚点每 150ms 才重量一次 —— 用实时 ratio 会出现"指针走 10px、滑块走 7px"（实测）。
    * 冻结之后严格 1:1，这才是"拖那个块它跟着鼠标走"。
    */
-  const liveBand = useMemo(() => railBandOfViewport(
-    scrollTop, metrics.scrollHeight, metrics.clientHeight,
-    ticks.length, loadedFromRef.current, rows.rowHeight,
-  ), [scrollTop, metrics, ticks.length, rows.rowHeight]);
+  /*
+   * 滑块（可视范围带）：**画在列的可视框坐标系里**，所以它永远可见（不会随刻度列滚动而消失）。
+   * 长度 = 一屏占全会话的比例，位置 = 当前刻度在全会话里的比例。见 `railOverviewOf` 头注。
+   */
+  const liveBand = useMemo(() => railOverviewOf({
+    scrollTop,
+    scrollHeight: metrics.scrollHeight,
+    clientHeight: metrics.clientHeight,
+    viewHeight: listViewHeight,
+  }), [scrollTop, metrics.scrollHeight, metrics.clientHeight, listViewHeight]);
 
   /**
    * 最新 `liveBand` 的转发（供 `onRowPointerDown` 读）。
@@ -379,16 +397,17 @@ export const MessageRail = memo(function MessageRail({
    */
   const liveBandRef = useRef(liveBand);
   liveBandRef.current = liveBand;
+  /** `metrics` 的最新值转发（pointerdown 的闭包不能直接读 state）。 */
+  const metricsRef = useRef(metrics);
+  metricsRef.current = metrics;
 
-  const bandRatio = scrubbing && scrubRef.current !== undefined ? scrubRef.current.ratio : liveBand.ratio;
-  const bandRowsCount = scrubbing && scrubRef.current !== undefined ? scrubRef.current.bandRows : liveBand.height;
   /*
-   * 拖动中用**冻结的** `ratio` 算位置（否则"指针 10px、滑块 7px"，实测）。
-   * 单位全部是 px（与 VSCode 一致，也避免了"行/px × px"的单位混用）。
+   * 滑块的位置**直接来自 `liveBand`**（跟 `activeIndex` 走），不需要手算 ——
+   * 因为 `activeIndex` 本身就跟正文滚动同步变化，所以拖动时滑块自然跟手。
+   * 拖动中只冻结 `ratio`（位置与滚动的换算系数），避免它随测量抖动。
    */
-  const band = scrubbing && scrubRef.current !== undefined
-    ? { top: scrubRef.current.bandBase + railBandTopOf(scrollTop, bandRatio, scrubRef.current.bandMaxTop), height: bandRowsCount }
-    : { top: liveBand.top, height: liveBand.height };
+  const band = liveBand;
+  void scrubbing;
 
   /* ── 4b. 把"当前/悬停/tabIndex"写进 DOM（不进 React 渲染路径）── */
 
@@ -546,7 +565,7 @@ export const MessageRail = memo(function MessageRail({
      * 刚刷新时 `metrics` 还是 `{0,0}`，此时 `ratio` 落在"不可滚动"分支，
      * 拖动会把 band 算成 0（= 最顶），看起来就是"跳上去了"。
      */
-    if (!liveBandRef.current.ready) return;
+    if (!(liveBandRef.current.height > 0) || !(metricsRef.current.clientHeight > 0)) return;
     const bandNode = containerRef.current?.querySelector<HTMLElement>(".rail-band");
     const bandRect = bandNode?.getBoundingClientRect();
     const onBand = bandRect !== undefined && bandRect !== null
@@ -562,14 +581,12 @@ export const MessageRail = memo(function MessageRail({
        * 同时也避免"拖动中加载了更早的页 → scrollHeight 变 → 滑块突然变长变位"。
        */
       ratio: liveBandRef.current.ratio,
-      bandRows: Math.max(1, liveBandRef.current.height),
-      bandBase: liveBandRef.current.base,
-      bandMaxTop: liveBandRef.current.maxTop,
       // 按在滑块上：直接进入拖动（不看阈值）；按在外面：先按"可能的点击"处理
       moved: onBand,
     };
     if (onBand) {
       setScrubbing(true);
+      notifyScrubbing(true);
       // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
       suppressClickRef.current = true;
       clearHideTimer();
@@ -590,6 +607,7 @@ export const MessageRail = memo(function MessageRail({
       if (railGestureOf(0, deltaY) === "click") return;    // 阈值内：还可能是一次点击
       scrub.moved = true;
       setScrubbing(true);
+      notifyScrubbing(true);
       suppressClickRef.current = true;
       // 进入拖动：收起卡片、清掉悬停 —— 拖动途中一路弹卡片会很吵
       clearHideTimer();
@@ -619,6 +637,7 @@ export const MessageRail = memo(function MessageRail({
       container.scrollHeight,
       container.clientHeight,
     );
+
   }, [scrollContainer, rows.rowHeight, ticks.length, clearHideTimer]);
 
   const endScrub = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
@@ -627,7 +646,8 @@ export const MessageRail = memo(function MessageRail({
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     scrubRef.current = undefined;
     setScrubbing(false);
-  }, []);
+    notifyScrubbing(false);
+  }, [notifyScrubbing]);
 
   /* ── 8. 点击 ───────────────────────────────────────────── */
 
@@ -653,32 +673,38 @@ export const MessageRail = memo(function MessageRail({
       className={`pointer-events-none absolute inset-y-0 left-0 flex flex-col items-center justify-center ${LAYER_CLASS.rail}`}
       style={{ width: slot.width }}
     >
-      {/* 整列最多占 RAIL_MAX_RATIO 的可用高度；超了就内部滚动 */}
+      {/*
+        可视框：**不滚动**，滑块（band）相对它定位 —— 这样滑块永远在可视范围内，
+        不会像早先那样被"刻度列自己滚动"带走（用户 2026-11-19："我滚动了上面那个条，
+        或者点击了靠上的一些横条之后，你那个滚动条见都不见了"）。
+      */}
       <div
-        ref={listRef}
-        className="rail-scroll rail-tracking pointer-events-auto relative overflow-y-auto overscroll-y-contain"
-        data-rail-hovering={hovering ? "true" : "false"}
-        /* 拖动中：CSS 用这个属性把整列的光标切成 grabbing（挂在 `.rail-tracking` 上才是选择器基准） */
-        data-rail-scrubbing={scrubbing ? "true" : "false"}
-        role="toolbar"
-        aria-orientation="vertical"
-        aria-label="消息导航"
+        className="relative"
         style={{ width: slot.width, maxHeight: avail > 0 ? Math.max(0, avail * RAIL_MAX_RATIO) : undefined }}
       >
         {/*
-          「当前可视范围」带：绝对定位在行之上、不参与布局。
-
-          **可滚时也要画**（第一版只在 `!rows.scrollable` 时画，于是长会话里"我在哪一段"完全没有指示，
-          只剩一个不起眼的小点 —— 实测截图如此）。可滚时它跟着内容一起滚，语义仍然正确：
-          它标的是"内容里的哪一段"，不是"视口里的哪个位置"。
+          「当前读到哪一截」的滑块：画在**可视框坐标系**里（`liveBand` 的 top/height 都相对它）。
+          放在可滚列表**外面**是必须的 —— 早先放在里面（内容坐标系）时，列表一滚它就滚出视口。
+          `z-0` + `pointer-events-none`：它只是背景指示，点击命中仍在行上。
         */}
-        {rows.height > 0 && (
+        {rows.height > 0 && band.height > 0 && (
           <div
             aria-hidden
             className="rail-band pointer-events-none absolute left-0 right-0"
             style={{ top: band.top, height: Math.max(2, band.height) }}
           />
         )}
+        <div
+          ref={listRef}
+          className="rail-scroll rail-tracking pointer-events-auto relative overflow-y-auto overscroll-y-contain"
+          data-rail-hovering={hovering ? "true" : "false"}
+          /* 拖动中：CSS 用这个属性把整列的光标切成 grabbing（挂在 `.rail-tracking` 上才是选择器基准） */
+          data-rail-scrubbing={scrubbing ? "true" : "false"}
+          role="toolbar"
+          aria-orientation="vertical"
+          aria-label="消息导航"
+          style={{ width: slot.width, maxHeight: avail > 0 ? Math.max(0, avail * RAIL_MAX_RATIO) : undefined }}
+        >
         <RailRows
           ticks={ticks}
           widths={widths}
@@ -692,6 +718,7 @@ export const MessageRail = memo(function MessageRail({
           onPointerUp={endScrub}
           onPointerCancel={endScrub}
         />
+        </div>
       </div>
 
       {card !== undefined && (

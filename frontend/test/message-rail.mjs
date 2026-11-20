@@ -520,7 +520,13 @@ for (const [label, viewport, expectVisible] of [
     check("按在滑块上**第一次就能拖**（不需要先点一条刻度）", b1 < b0, `${b0} → ${b1}`);
   }
 
-  // ③ 刷新后立刻拖：不能因为"几何还没量出来"跳到顶部
+  /*
+   * ③ 刷新后立刻**往上**拖：不能因为"几何还没量出来"跳到顶部。
+   *
+   * 判据是"没跳到**顶**"而不是"位移 < 20px"：刷新后后台在补齐历史（`ensureFullHistory`），
+   * 内容会**变长**，`scrollTop` 的绝对值随之增大 —— 那是加载造成的，不是拖动造成的。
+   * 真缺陷的形态是"一拖就跳到 0"（顶端），所以断言顶端。
+   */
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
   const early = await page.evaluate(() => {
@@ -537,7 +543,7 @@ for (const [label, viewport, expectVisible] of [
     await page.mouse.up();
     await page.waitForTimeout(500);
     const c1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    check("刷新后立刻拖 → 不会自己跳到最顶", c1 <= c0 + 20, `${c0} → ${c1}`);
+    check("刷新后立刻往上拖 → 不会自己跳到最顶", c1 > 0, `${c0} → ${c1}（>0 = 没跳到顶）`);
   }
 
   check("滑块几何用例无页面错误", pageErrors.length === 0, pageErrors.join(" | "));

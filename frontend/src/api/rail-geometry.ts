@@ -216,82 +216,68 @@ export function railEnsureVisible(
 }
 
 /**
- * 可视范围带（滑块）的几何 —— **直接照 VSCode 的滚动条标准实现**。
+ * 可视范围带（滑块）—— **它是滚动条的 thumb，不是"内容里的一截"**。
  *
- * 源码：`microsoft/vscode` `src/vs/base/browser/ui/scrollbar/scrollbarState.ts:126-156`（2026-11-19 `main`）：
+ * ## 坐标系（这是本文件最容易搞错的一处，2026-11-19 用户指出后重写）
  *
- * ```ts
- * const computedSliderSize = Math.round(Math.max(MINIMUM_SLIDER_SIZE,
- *   Math.floor(visibleSize * computedRepresentableSize / scrollSize)));   // 按比例，有 20px 下限
- * const computedSliderRatio = (computedRepresentableSize - computedSliderSize) / (scrollSize - visibleSize);
- * const computedSliderPosition = (scrollPosition * computedSliderRatio);
- * ```
- * 拖动（同文件 `:234-241`）：
- * ```ts
- * getDesiredScrollPositionFromDelta(delta) {
- *   const desiredSliderPosition = this._computedSliderPosition + delta;
- *   return Math.round(desiredSliderPosition / this._computedSliderRatio);
- * }
- * ```
+ * 滑块必须画在**列的可视框**坐标系里（`viewHeight`），**不是**可滚内容的坐标系。
+ * 早先版本把它画在内容坐标系（`absolute` 在 6720px 的可滚列表里），后果是：
+ *  - **拖动刻度列 / 跳到靠上的消息后，滑块滚出视口 → 整个消失**；
+ *  - 它的高度按"已下载段"折算，结果 214px —— 一条很长的带子，不像滚动条。
  *
- * ## 为什么必须照抄它的"按比例"
+ * 滚动条的正确语义（VSCode `scrollbarState.ts:126-156`）：
+ *  - **长度** = 视口占内容的比例；
+ *  - **位置** = 当前位置占可滚动范围的比例；
+ *  - 两者都在**同一个可视坐标系**里，所以滑块**永远可见**。
  *
- * 我第一版用"实测一屏有几条刻度"当 `sliderSize`。那个量**每 150ms 才重量一次、会抖**，
- * 于是 `ratio` 每帧都在变，而拖动用的是按下那一刻的 `ratio` —— 两者不互逆，
- * 表现就是"**正文在滑、滑块不跟手**"（用户 2026-11-19 报的正是这个）。
- * 按比例算出来的 `sliderSize` 在同一段内容里是**常量**，`ratio` 稳定，滑块才严格跟手。
+ * ## 我们的两处折算
  *
- * ## 我们与 VSCode 的唯一差异：轨道与正文不是同一段内容
+ * 1. **长度**：一屏能看到 `visibleTicks` 条刻度，全会话 `totalTicks` 条 →
+ *    滑块占 `visibleTicks / totalTicks`。这样长会话的滑块很短（像滚动条），短会话占满。
+ * 2. **位置**：用 `activeIndex / totalTicks`（当前读到第几条刻度 ÷ 总数）。
+ *    `activeIndex` 有比例兜底（`railActivePick`），覆盖整个会话，不依赖"已渲染的那一段"。
  *
- * VSCode 的滚动条里，`track`（滚动条长度）与 `scrollSize`（内容高）是同一段内容。
- * 我们的刻度列画的是**整个会话**（560 条 × 12px），而正文的 `scrollHeight` 只含
- * **已下载的那一段**（实测 ≈90 条刻度）。直接套公式会得到 600px 的滑块（≈50 条刻度），
- * 而实际一屏只有 8 条 —— 差 6 倍。
+ * ## 与拖动必须互逆
  *
- * 所以先把"已下载段"折算成滑块自己的坐标系：
+ * 拖动要改的是正文 `scrollTop`，而滑块位置跟的是 `activeIndex`。两者由"每屏多少刻度"换算：
  *
  * ```
- *   segmentTop    = loadedFrom × rowHeight            // 这段在整列里的起点（px）
- *   segmentHeight = (totalTicks - loadedFrom) × rowHeight   // 这段的总高（px）
- *   sliderSize    = max(MIN, segmentHeight × clientHeight / scrollHeight)   // ← 按比例
- *   ratio         = (segmentHeight - sliderSize) / (scrollHeight - clientHeight)
- *   position      = segmentTop + scrollTop × ratio
+ *   每条刻度 ≈ clientHeight / visibleTicks 像素正文
+ *   全会话正文高 ≈ totalTicks × (clientHeight / visibleTicks)
  * ```
  *
- * 这样 `segmentHeight` 与 `scrollHeight` 是**同一段内容**（这正是 VSCode 公式成立的前提），
- * 而 `segmentTop` 只是把结果平移回整列坐标系。
+ * `ratio` 就是"滑块走 1px 对应正文滚多少 px"，位置与拖动共用它 —— 这样指针走 `d` px，
+ * 滑块也走 `d` px。**估算的绝对量可以不准，互逆性必须准**（这是"跟手"的唯一要求）。
  *
- * @param loadedFrom 已下载段对应的最小刻度下标（0 = 整个会话都下载了）
- * @param rowHeight  刻度行高（px）
- * @returns `top/height` 单位 px；`ratio` 单位 px/px（拖动必须用同一个）
+ * @param viewHeight   列的可视框高度（px）
+ * @param clientHeight 正文可视高（px）
+ * @param visibleTicks 一屏能看到几条刻度（实测，只用于估算每屏多少）
  */
-export function railBandOfViewport(
-  scrollTop: number,
-  scrollHeight: number,
-  clientHeight: number,
-  totalTicks: number,
-  loadedFrom: number,
-  rowHeight: number,
-): { top: number; height: number; ratio: number; maxTop: number; base: number; ready: boolean } {
-  const notReady = { top: 0, height: 0, ratio: 1, maxTop: 0, base: 0, ready: false };
-  if (totalTicks <= 0 || !(clientHeight > 0) || !(rowHeight > 0) || !(scrollHeight > 0)) return notReady;
+export function railOverviewOf(input: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  viewHeight: number;
+}): { top: number; height: number; ratio: number } {
+  const { scrollTop, scrollHeight, clientHeight, viewHeight } = input;
+  if (!(viewHeight > 0) || !(scrollHeight > 0)) return { top: 0, height: 0, ratio: 1 };
+  if (scrollHeight <= clientHeight) return { top: 0, height: viewHeight, ratio: 1 };   // 不可滚 → 占满
 
-  const from = Math.max(0, Math.min(loadedFrom, totalTicks - 1));
-  const base = from * rowHeight;
-  const segmentHeight = Math.max(rowHeight, (totalTicks - from) * rowHeight);
+  // 长度 = 一屏占内容的比例（VSCode `scrollbarState.ts:144` 同一条）
+  const height = Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
+  const maxTop = Math.max(0, viewHeight - height);
+  if (maxTop <= 0) return { top: 0, height: viewHeight, ratio: 1 };
 
-  // 不可滚动（内容比视口短）：滑块占满整段，也不需要拖动
-  if (scrollHeight <= clientHeight) {
-    return { top: base, height: segmentHeight, ratio: 1, maxTop: 0, base, ready: true };
-  }
-
-  const height = Math.round(Math.max(RAIL_SLIDER_MIN, Math.floor(segmentHeight * clientHeight / scrollHeight)));
-  const maxTop = Math.max(0, segmentHeight - height);
+  /*
+   * 位置 = `scrollTop × ratio`（VSCode `minimap.ts:391` **逐字**同一条）。
+   *
+   * 早先版本用"当前读第几条刻度（activeIndex）"反推位置，那是**多余的绕路**：
+   * activeIndex 是离散的、还经过锚点估算，而滚动是连续的 —— 两者不可能 1:1，
+   * 表现就是"指针走 10px、滑块走 6px"（实测）。`scrollTop` 是唯一连续且精确的来源。
+   */
   const ratio = maxTop / (scrollHeight - clientHeight);
-  if (!Number.isFinite(ratio) || ratio <= 0) {
-    return { top: base, height, ratio: 1, maxTop: 0, base, ready: false };
-  }
-  return { top: base + railBandTopOf(scrollTop, ratio, maxTop), height, ratio, maxTop, base, ready: true };
+  if (!Number.isFinite(ratio) || ratio <= 0) return { top: 0, height, ratio: 1 };
+  return { top: railBandTopOf(scrollTop, ratio, maxTop), height, ratio };
 }
 
 /**
