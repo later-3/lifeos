@@ -203,7 +203,8 @@ export function globalSnapshot(): {
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
 // 8 个内置 + 10 个 Life OS 自有工具（agent、task、project、memory；见 src/agent-tools.ts）。
 // 注意：createAgentSession 的 tools 是**白名单**（只允许列出的工具启用），新工具必须写进来。
-const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...LIFEOS_TOOL_NAMES];
+/** 全部工具名（allowlist）。**导出**：写入守卫的 wiring 测试要盯住它（`test/write-guard-wiring.test.mjs` W4）。 */
+export const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...LIFEOS_TOOL_NAMES];
 
 type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type ThinkingOption = NonNullable<CreateOptions["thinkingLevel"]>;

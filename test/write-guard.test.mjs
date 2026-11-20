@@ -66,9 +66,32 @@ test("G1 写当前 Task 的工作区文档 → 允许", async () => {
 
 test("G1b 写当前 Task 的 repo/ → 允许（项目代码工作区不裁剪）", async () => {
   const home = await gitHome();
-  const task = await taskWithWorktrees(home);
-  const target = join(task.path, REPO_DIR, "src", "x.ts");
-  assert.deepEqual(await decide(home, task.id, target), { allow: true });
+  const created = await createTask(ctx, { title: "带代码仓", type: "general", category: "G" });
+  assert.ok(!("code" in created), JSON.stringify(created));
+  const task = created.task;
+
+  // `workspace` 项目没有 path → 本来就不会建 repo/。这里**造一个真的 repo 工作区**
+  // （真 `.git` + 真 marker）：判据对"没建成工作区的 repo/ 目录"是拒的（fake-worktree 前置），
+  // 所以夹具必须是真的，否则测的是另一件事。
+  const repoPath = join(task.path, REPO_DIR);
+  await mkdir(repoPath, { recursive: true });
+  await git(repoPath, ["init", "-q", "-b", "main"]);
+  await writeFile(join(repoPath, ".lifeos-worktree.json"), JSON.stringify({ kind: "project", taskId: task.id }), "utf8");
+  resetWriteGuardCaches();
+
+  assert.deepEqual(await decide(home, task.id, join(repoPath, "src", "x.ts")), { allow: true });
+  // 反向：同项目里**没建成工作区**的 repo/ 目录（把 marker 与 .git 都摘掉）必须拒
+  const bare = join((await createTask(ctx, { title: "空壳", type: "general", category: "G" })).task.path, REPO_DIR);
+  await mkdir(bare, { recursive: true });
+  const bareTask = (await import("../src/tasks.ts")).listTasks;
+  void bareTask;
+  const bareCreated = await createTask(ctx, { title: "空壳2", type: "general", category: "G" });
+  assert.ok(!("code" in bareCreated), JSON.stringify(bareCreated));
+  const bareRepo = join(bareCreated.task.path, REPO_DIR);
+  await mkdir(bareRepo, { recursive: true });
+  resetWriteGuardCaches();
+  assert.equal((await decide(home, bareCreated.task.id, join(bareRepo, "src", "x.ts"))).allow, false,
+    "没建成工作区的 repo/ 目录（无 .git / marker）不许写");
 });
 
 test("G1c 写工作区里的共享层（projects/<pid>/runbook/x.md）→ 允许（共享层走 Task）", async () => {
@@ -367,7 +390,11 @@ test("G8 判据 4 的副作用：写**别的 Task 的工作区**也放行（因�
   // 因为 `.lifeos/.gitignore:30-31` 忽略了 `**/tasks/*/home/` 与 `**/tasks/*/repo/`。
   // 锁住它：将来若改成"只许写当前 Task 的工作区"，这条会红，逼人回来重新裁决。
   assert.deepEqual(await decide(home, current.id, join(other.docPath, "x.md")), { allow: true });
-  assert.deepEqual(await decide(home, current.id, join(other.path, REPO_DIR, "src", "a.ts")), { allow: true });
+  // 同一条工作区里的另一个位置（`workspace` 项目没有 repo/，所以用 home 工作区内的共享层）
+  assert.deepEqual(
+    await decide(home, current.id, join(other.path, HOME_DIR, "projects", "workspace", "runbook", "x.md")),
+    { allow: true },
+  );
 
   // 但主区里那个 Task 的**文档**（它不是 git 看不见的）必须拒
   assert.equal((await decide(home, current.id, join(other.path, "log.md"))).allow, false);
@@ -405,4 +432,125 @@ test("G10 内存 tracked Set 是**性能层**：命中它时不 spawn git check-
   const second = writeGuardStats.checkIgnoreCalls;
   await decide(home, task.id, join(home, "reference", "clone", "a.ts"));
   assert.equal(writeGuardStats.checkIgnoreCalls, second + 1, "未命中的路径必须问 git");
+});
+
+// ── reviewer 核出的两处漏（2026-11-19 第四轮补）────────────────────────────
+//
+// 阻塞级：判据 ④「git 看不见」会因为 `.lifeos/.gitignore:16` 忽略 `**/tasks/*/home/`
+// 而放行"伪造一个工作区"——Pi 的 write 会 mkdir -p 父目录，于是主区真出现
+// `<B>/home/agents/.../task.md`，随后 `taskDocRootOf`（只看文件存在，`task-doc-path.ts:27-31`）
+// 就把 B 的装配读根静默切过去；那份假树没有分支、没有检视源。
+//
+// 误放：`.gitignore:10` 忽略 `**/projects/*/sessions/`、`:11-14` 忽略 `**/memory/**/{data,daemon,skills,logs}/`
+// → 判据 ④ 允许，于是 Agent 能造假的会话 JSONL、能写记忆库二进制。
+
+/** 造一个"已合并、工作区已摘除"的 Task（只留主区目录 + 它的骨架）。 */
+async function mergedTask(home, title) {
+  const created = await createTask(ctx, { title, type: "general", category: "G" });
+  assert.ok(!("code" in created), JSON.stringify(created));
+  const task = created.task;
+  // 摘除两个工作区（等价于用户合并后 `git worktree remove`）
+  const { removeWorktree } = await import("../src/task-worktree.ts");
+  await removeWorktree(home, join(task.path, HOME_DIR));
+  const repoPath = join(task.path, REPO_DIR);
+  await removeWorktree(home, repoPath).catch(() => undefined);
+  resetWriteGuardCaches();
+  return task;
+}
+
+test("N1 写已合并 Task 的 <B>/home/.../task.md → 拒（不许伪造工作区）", async () => {
+  const home = await gitHome();
+  const current = await taskWithWorktrees(home, "当前任务");
+  const merged = await mergedTask(home, "已合并任务");
+
+  const fake = join(merged.path, HOME_DIR, "agents", ctx.agentId, "projects", ctx.projectId, "tasks", merged.dirName, "task.md");
+  const verdict = await decide(home, current.id, fake);
+  assert.equal(verdict.allow, false, `不许在主区伪造工作区：${JSON.stringify(verdict)}`);
+  assert.match(verdict.reason, /注册过的工作区|缺 \.git|marker/);
+});
+
+test("N2 写当前 Task 自己的 <taskDir>/home/...（工作区已摘除）→ 拒", async () => {
+  const home = await gitHome();
+  const task = await mergedTask(home, "自己也已合并");
+
+  const fake = join(task.path, HOME_DIR, "agents", ctx.agentId, "projects", ctx.projectId, "tasks", task.dirName, "01-background.md");
+  const verdict = await decide(home, task.id, fake);
+  assert.equal(verdict.allow, false, `自己的假树也要拒：${JSON.stringify(verdict)}`);
+});
+
+test("N3 写 agents/*/projects/*/sessions/xxx.jsonl → 拒（会污染会话原始记录）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  for (const target of [
+    join(home, "agents", ctx.agentId, "projects", ctx.projectId, "sessions", "2026-11-20T00-00-00_x.jsonl"),
+    join(home, "agents", ctx.agentId, "projects", ctx.projectId, "sessions", "sub", "a.jsonl"),
+  ]) {
+    const verdict = await decide(home, task.id, target);
+    assert.equal(verdict.allow, false, `会话记录不许写：${target}`);
+  }
+});
+
+test("N4 写记忆库（memory/**/data/memos.db）→ 拒", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  for (const target of [
+    join(home, "agents", ctx.agentId, "memory", "data", "memos.db"),
+    join(home, "agents", ctx.agentId, "projects", ctx.projectId, "memory", "data", "memos.db"),
+    join(home, "projects", "workspace", "memory", "data", "memos.db"),
+    join(home, "agents", ctx.agentId, "memory", "daemon", "x.log"),
+    join(home, "agents", ctx.agentId, "memory", "skills", "s.md"),
+  ]) {
+    const verdict = await decide(home, task.id, target);
+    assert.equal(verdict.allow, false, `记忆库不许写：${target}`);
+  }
+});
+
+test("N5 真 worktree 的 other.docPath / other.repo → 仍放行（G8 不回归）", async () => {
+  const home = await gitHome();
+  const current = await taskWithWorktrees(home, "当前任务");
+  const other = await taskWithWorktrees(home, "别的真工作区");
+  assert.deepEqual(await decide(home, current.id, join(other.docPath, "x.md")), { allow: true });
+  assert.deepEqual(
+    await decide(home, current.id, join(other.path, HOME_DIR, "projects", "workspace", "runbook", "x.md")),
+    { allow: true },
+    "真 worktree 里的共享层子路径也要放行",
+  );
+});
+
+test("M1 合并后缓存必须失效（否则 30 秒内把刚被跟踪的文件仍当 invisible 放行）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+
+  // ① 一个**未 tracked 且 ignored** 的路径：判据 ④ 放行
+  const candidate = join(home, "reference", "clone", "a.ts");
+  assert.deepEqual(await decide(home, task.id, candidate), { allow: true });
+
+  // ② 模拟"它被合并进主区、被跟踪了"
+  await mkdir(join(home, "reference", "clone"), { recursive: true });
+  await writeFile(candidate, "export {}\n", "utf8");
+  await git(home, ["add", "-f", "reference/clone/a.ts"]);
+  await git(home, ["commit", "-q", "-m", "track it"]);
+
+  // ③ **不清缓存**时它还在 30 秒 TTL 里 → 仍按旧集合放行（这就是那个陈旧窗口）
+  assert.deepEqual(await decide(home, task.id, candidate), { allow: true },
+    "前提：TTL 内确实还在用旧的 tracked 集合（所以必须有外部触发来清）");
+
+  // ④ 清缓存后立刻按新集合判 → 拒
+  resetWriteGuardCaches();
+  assert.equal((await decide(home, task.id, candidate)).allow, false, "清缓存后必须立刻按新 tracked 集合判");
+});
+
+test("M2 mergeTask 结束时清缓存（否则合并完 30 秒内守卫用旧集合）", async () => {
+  const home = await gitHome();
+  await taskWithWorktrees(home, "待合并");
+
+  const { mergeTask } = await import("../src/task-merge.ts");
+  const before = writeGuardStats.cacheResets;
+  // 任意一个 Task 目录都能跑 mergeTask（没有工作区的会全部 skipped，但收尾动作一样）
+  const tasksRoot = join(home, "agents", ctx.agentId, "projects", ctx.projectId, "tasks");
+  const first = (await (await import("node:fs/promises")).readdir(tasksRoot)).sort()[0];
+  await mergeTask(join(tasksRoot, first));
+
+  assert.ok(writeGuardStats.cacheResets > before,
+    `mergeTask 收尾必须 resetWriteGuardCaches()（写语义改变了 tracked 集合）；实际 cacheResets: ${before} → ${writeGuardStats.cacheResets}`);
 });

@@ -16,14 +16,58 @@ import { promisify } from "node:util";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { resolveHome } from "./home.ts";
 import { taskDocRootOf } from "./task-doc-path.ts";
-import { HOME_DIR, REPO_DIR } from "./task-worktree.ts";
+import { HOME_DIR, isRegisteredWorktree, REPO_DIR } from "./task-worktree.ts";
+import { worktreeMountOf } from "./worktree-mount.ts";
 import { resolveTaskDir } from "./tasks.ts";
 
 const run = promisify(execFile);
 
 export type GuardScope = { agentId: string; projectId: string };
 
+/**
+ * 程序专属目录：**只有程序写**，Agent 一律拒（判据 ③，在「git 看不见就放行」之前）。
+ *
+ * 这份清单**逐条对着 `.lifeos/.gitignore` 抄**，不自己发明（reviewer 2026-11-19 要求）：
+ *
+ * | .gitignore 行 | 条目 | 为什么必须拒 |
+ * |---|---|---|
+ * | 5  | `config/` | `models.json` 有 9 个 provider 的明文 apiKey；写坏 = 全部 Agent 无法调模型 |
+ * | 10 | `** /projects/<pid>/sessions/` | Agent 若写这个，能造假的会话 JSONL，**污染会话原始记录** |
+ * | 11 | `** /memory/(…)/data/` | 记忆库二进制（sqlite 同族），写坏 = 记忆丢失 |
+ * | 12 | `** /memory/daemon/` | 记忆守护进程的运行时目录 |
+ * | 13 | `** /memory/skills/` | 同上 |
+ * | 14 | `** /memory/logs/` | 同上 |
+ *
+ * 不在这份清单里的 ignored 目录（`logs/` `state/` `tmp/` `attachments/` `reference/`
+ * `tasks/<NNNN>/evidence/` …）走判据 ④ 放行——那些是程序/工具写的结果，Agent 写它们不算绕过检视。
+ */
+const PROGRAM_ONLY: Array<{ pattern: RegExp; why: string }> = [
+  { pattern: /^config(\/|$)/, why: "config/ 只由程序写：models.json 含明文 apiKey，写坏会让所有 Agent 无法调模型（配模型走 PUT /api/agents/<id>/config）" },
+  { pattern: /projects\/[^/]+\/sessions(\/|$)/, why: "sessions/ 是会话原始记录（JSONL），Agent 写它会污染对话正文" },
+  { pattern: /memory\/(data|daemon|skills|logs)(\/|$)/, why: "memory 的 data/daemon/skills/logs 是记忆库的运行时存储，写坏 = 记忆丢失" },
+];
+
+/** 命中程序专属目录？返回原因，否则 undefined。`relative` 是相对家目录仓根的路径（POSIX 分隔符）。 */
+function programOnlyOf(relative: string | undefined): string | undefined {
+  if (relative === undefined) return undefined;
+  for (const entry of PROGRAM_ONLY) if (entry.pattern.test(relative)) return entry.why;
+  return undefined;
+}
+
 export type WriteVerdict = { allow: true } | { allow: false; reason: string };
+
+/**
+ * 目标落在某个工作区挂载点之下时，那个挂载点必须**真的是**注册过的工作区。
+ *
+ * 三个放行点（①docRoot ②repo ④git 看不见）都要过这一道，所以只写一份
+ * （`specs/code/api/api.md` 2.7：一个事实一处实现）。命中"假挂载点"返回拒绝理由。
+ */
+async function fakeWorktreeOf(home: string, scope: GuardScope, taskId: string | undefined, target: string): Promise<string | undefined> {
+  const mount = worktreeMountOf(target);
+  if (mount === undefined) return undefined;                 // 不在任何挂载点下：与本案无关
+  if (await isRegisteredWorktree(mount.path)) return undefined;
+  return fakeWorktreeReason(home, scope, taskId, target, mount.path);
+}
 
 /** `parent` 是不是 `child` 的祖先（含相等）；按路径分隔符判，避免 `/a/bc` 误判 `/a/b`。 */
 export function isUnder(parent: string, child: string): boolean {
@@ -65,13 +109,14 @@ const trackedCache = new Map<string, Cache>();
 const ignoreCache = new Map<string, Cache>();
 
 /** 真正 spawn 过 `git check-ignore` 的次数（诊断/测试用：证明"内存 Set 先短路"这层确实生效）。 */
-export const writeGuardStats = { checkIgnoreCalls: 0 };
+export const writeGuardStats = { checkIgnoreCalls: 0, cacheResets: 0 };
 
 /** 清空缓存（测试用；也用于合并后立刻失效）。 */
 export function resetWriteGuardCaches(): void {
   trackedCache.clear();
   ignoreCache.clear();
   writeGuardStats.checkIgnoreCalls = 0;
+  writeGuardStats.cacheResets += 1;
 }
 
 const git = async (home: string, args: string[]): Promise<string> =>
@@ -87,10 +132,13 @@ export async function trackedFilesOf(home: string): Promise<Set<string>> {
   return set;
 }
 
-/** 相对于家目录仓根的路径（不在仓内返回 undefined）。 */
-function repoRelative(home: string, target: string): string | undefined {
+/**
+ * 相对于家目录仓根的路径（不在仓内返回 undefined）；统一成 POSIX 分隔符，
+ * 因为程序专属目录的匹配是按 `.gitignore` 的写法（`/`）写的。
+ */
+export function repoRelative(home: string, target: string): string | undefined {
   if (!isUnder(home, target)) return undefined;
-  return target.slice(home.length).replace(/^[\\/]/, "");
+  return target.slice(home.length).replace(/^[\\/]/, "").split(sep).join("/");
 }
 
 /**
@@ -149,33 +197,70 @@ export async function decideWrite(input: {
   if (taskId !== undefined) {
     const context = await taskDocContextOf(home, scope, taskId);
     if (context !== undefined) {
-      if (isUnder(context.docRoot, target)) return { allow: true };
+      if (isUnder(context.docRoot, target)) {
+        // **docRoot 是主区时，`<taskDir>/home|repo|worktree/…` 也在它之下**——
+        // 而工作区已被摘除的 Task 主区里不该有这些挂载点。放行它们等于允许"自己给自己造一份假树"
+        // （reviewer 2026-11-19 的 N2）。所以命中挂载点就要求它真是注册过的工作区。
+        const fake = await fakeWorktreeOf(home, scope, taskId, target);
+        if (fake !== undefined) return { allow: false, reason: fake };
+        return { allow: true };
+      }
       // ② 当前 Task 的项目代码工作区（不收窄、完整检出）
-      if (isUnder(join(context.taskDir, REPO_DIR), target)) return { allow: true };
+      if (isUnder(join(context.taskDir, REPO_DIR), target)) {
+        // 同一条前置：`repo/` 目录存在但没建成工作区（非 git 项目）时不许往里写。
+        const fake = await fakeWorktreeOf(home, scope, taskId, target);
+        if (fake !== undefined) return { allow: false, reason: fake };
+        return { allow: true };
+      }
     }
   }
 
-  // ③ 唯一显式排除：`config/` 只由程序写。
-  //
-  // 依据（实测）：`config/models.json` 含 9 个 provider 的明文 apiKey；现有唯一保护是**读时**脱敏
-  // （`server.ts` 的 `stripSecrets`），不防写；写坏 → 全部 Agent 无法调模型 → 系统级故障。
-  // 也没有"Agent 需要写 config/"的合法场景（配模型走 `PUT /api/agents/:id/config`）。
-  if (isUnder(join(home, "config"), target)) {
+  // ③ 程序专属目录：`config/`、`sessions/`、`memory/{data,daemon,skills,logs}/` —— 一律拒。
+  //    清单逐条对着 `.lifeos/.gitignore` 抄（见 `PROGRAM_ONLY`），**必须先于**判据 ④：
+  //    这些坑全在 `.gitignore` 里，靠 ④ 拦不住（`G9`/`N3`/`N4` 锁住这个顺序）。
+  const relative = repoRelative(home, target);
+  const programOnly = programOnlyOf(relative);
+  if (programOnly !== undefined) {
+    const isConfig = /^config(\/|$)/.test(relative ?? "");
     return {
       allow: false,
-      reason: `拒绝写入 ${target}\n原因：config/ 只由程序写（models.json 里有明文密钥，写坏会让所有 Agent 无法调模型）。\n配模型请用 PUT /api/agents/<id>/config。`,
+      reason: `拒绝写入 ${target}\n原因：${programOnly}。`
+        + (isConfig ? "\n配模型请用 PUT /api/agents/<id>/config。" : ""),
     };
   }
 
   // ④ git 完全看不见（ignored 且未 tracked）→ 允许：外部克隆与运行数据。
   //    例：`reference/<clone>/src/x.ts` 允许；`reference/AGENTS.md`（add -f 跟踪了）拒绝。
-  if (await gitInvisible(home, target)) return { allow: true };
+  //
+  //    **但有一个前置**（reviewer 2026-11-19 核出的阻塞级缺陷）：`.lifeos/.gitignore:16-17`
+  //    忽略 `** /tasks/<NNNN>/home/` 与 `** /tasks/<NNNN>/repo/`，所以这里会把**伪造的工作区**也放行——
+  //    Pi 的 `write` 会 `mkdir -p` 父目录（`tools/write.ts:63-66`），主区里真会长出一份假树；
+  //    随后 `taskDocRootOf`（只看 `task.md` 在不在，`task-doc-path.ts:27-31`）就把装配读根切过去，
+  //    而那份假树没有分支、没有检视源 → 该 Task 从此"看起来在工作区形态"，改动绕过一切检视。
+  //    所以：目标落在某个 `<taskDir>/home|repo|worktree` 之下时，那个挂载点必须是**真的**
+  //    （`.lifeos-worktree.json` marker 或 `.git`，与 `home-check.ts` 的判定同一件事，
+  //    实现复用 `task-worktree.ts` 的 `isRegisteredWorktree`）。
+  if (await gitInvisible(home, target)) {
+    const fake = await fakeWorktreeOf(home, scope, taskId, target);
+    if (fake !== undefined) return { allow: false, reason: fake };
+    return { allow: true };
+  }
 
   // ⑤ 其余一律拒：主区 Task 文档、主区共享层、项目主区…
   return {
     allow: false,
     reason: await denyReason(home, scope, taskId, target),
   };
+}
+
+/** 假工作区的拒绝文案：说清"缺什么"，并给出本 Task 的 docPath（完成标准 7：错误可行动）。 */
+async function fakeWorktreeReason(home: string, scope: GuardScope, taskId: string | undefined, target: string, mount: string): Promise<string> {
+  const hint = taskId === undefined ? undefined : await taskDocContextOf(home, scope, taskId);
+  return `拒绝写入 ${target}\n`
+    + `原因：${mount} 不是一个注册过的工作区（缺 .lifeos-worktree.json 或 .git）。\n`
+    + `在工作区路径下写文件会造出一份"假工作区"——没有分支、没有检视源，\n`
+    + `而装配器只判 task.md 在不在，会静默把读根切过去，从此这个 Task 的改动绕过检视。\n`
+    + (hint === undefined ? "当前会话没有 Task 指针。" : `本 Task 的文档请写在：${hint.docRoot}`);
 }
 
 async function denyReason(home: string, scope: GuardScope, taskId: string | undefined, target: string): Promise<string> {
@@ -405,7 +490,11 @@ export async function decideBash(input: {
 /** 与其它内联扩展用同一个类型（`assembly.ts` 同款导入）：不自定义形状，Pi 改接口时一处报错。 */
 type RawExtension = InlineExtension;
 
-const WRITE_TOOLS = new Set(["write", "edit"]);
+/** 按路径写文件的工具（判据直接作用在 `input.path` 上）。**导出**：wiring 测试要盯住它（W4）。 */
+export const WRITE_TOOLS: ReadonlySet<string> = new Set(["write", "edit"]);
+
+/** 能间接写文件的命令执行工具（走 `decideBash`）。 */
+export const BASH_TOOLS: ReadonlySet<string> = new Set(["bash", "powershell"]);
 
 /**
  * 挂到会话上的写入守卫。`getTaskId` 每次调用现读（会话中途可切 Task，创建时取一次会永久滞后）。
@@ -433,7 +522,7 @@ export function createLifeOsWriteGuardExtension(input: {
           return;
         }
 
-        if (toolName === "bash" || toolName === "powershell") {
+        if (BASH_TOOLS.has(toolName)) {
           const command = typed.input?.command;
           if (typeof command !== "string" || command.trim() === "") return;
           const verdict = await decideBash({ home, scope, taskId, command, cwd: ctx.cwd });

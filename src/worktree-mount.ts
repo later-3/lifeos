@@ -58,6 +58,30 @@ export function worktreeMountKindOf(path: string): WorktreeMountKind | undefined
 }
 
 /**
+ * 从**任意深层路径**反推它所属的工作区挂载点（`<taskDir>/home` / `<taskDir>/repo` / `<taskDir>/worktree`）。
+ *
+ * 与 `worktreeMountKindOf` 的区别：那个只判"路径本身就是挂载点"，这个往上走找祖先。
+ * 用途：写入守卫要问"这个目标落在哪个工作区里"，再验那个工作区**是不是真的**（见 `write-guard.ts`）。
+ *
+ * 也是纯路径判定（不读盘）：**"是不是真的"由调用方去问文件系统**。
+ * 返回最靠近 target 的那一个挂载点（嵌套时取内层，与"外层 `home/` 不递归"的遍历口径一致）。
+ */
+export function worktreeMountOf(target: string): { path: string; kind: WorktreeMountKind } | undefined {
+  let current = target;
+  for (;;) {
+    const parent = dirname(current);
+    if (parent === current) return undefined;          // 到了根
+    if (worktreeMountKindOf(parent) !== undefined) {
+      const kind = worktreeMountKindOf(parent);
+      // `kind` 上面刚判过非 undefined；这里重取一次让类型收窄，不额外读盘。
+      if (kind !== undefined) return { path: parent, kind };
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+/**
  * 这个路径本身是 Task 的工作区挂载点吗（`home` / `repo` / 历史 `worktree`）。
  *
  * **只判定"路径本身就是挂载点"，不判定"路径在挂载点里面"**——后者是真阳性，

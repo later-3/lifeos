@@ -139,3 +139,35 @@ test("W3 getTaskId 每次现读：切 Task 后守卫立刻按新 Task 判", asyn
   }
   assert.equal(blocked, undefined, `切到新 Task 后，它的工作区必须可写：${JSON.stringify(blocked)}`);
 });
+
+// ── 3-1：新写工具必须进守卫（reviewer 2026-11-19）────────────────────────
+//
+// 现状 `ALL_TOOL_NAMES` 里没有 MCP，所以**当前覆盖完整**；但将来注册一个有写语义的工具会静默绕过。
+// 这条把约定钉进测试：守卫覆盖的名字集合 == 所有有写语义的工具名。新增写工具而不加守卫 → 红。
+
+test("W4 写语义工具名单 == 守卫覆盖的名单（新增写工具必须同时进守卫）", async () => {
+  const { ALL_TOOL_NAMES } = await import("../src/agent-host.ts");
+  const { WRITE_TOOLS, BASH_TOOLS } = await import("../src/write-guard.ts");
+
+  // 「有写语义的工具」= 能落盘的内置工具。这里显式列出来（不是从 ALL_TOOL_NAMES 推），
+  // 因为它的作用是**反向检查**：Pi 升级新增一个写工具时，这张表要人来看一眼。
+  const WRITE_CAPABLE = ["write", "edit", "bash", "powershell"];
+  // 断言 ①：每个有写语义的工具都在守卫名单里
+  for (const name of WRITE_CAPABLE) {
+    assert.ok(
+      WRITE_TOOLS.has(name) || BASH_TOOLS.has(name),
+      `${name} 有写语义但没进守卫（WRITE_TOOLS ∪ BASH_TOOLS）——新增写工具必须同时加守卫`,
+    );
+  }
+  // 断言 ②：反过来，守卫名单里不该有已经不在 allowlist 里的名字（改名/删除后要同步）
+  for (const name of [...WRITE_TOOLS, ...BASH_TOOLS]) {
+    assert.ok(ALL_TOOL_NAMES.includes(name), `守卫覆盖的 ${name} 已不在 ALL_TOOL_NAMES 里（工具改名或删除了？）`);
+  }
+  // 断言 ③：Life OS 自有工具里没有写文件语义的（有的话必须显式判定并加进上面那张表）
+  const LIFEOS_WRITE_CAPABLE = ["lifeos_media_avatar_set"];   // 只写自己的 avatar/，不碰 Task 文档
+  const { LIFEOS_TOOL_NAMES } = await import("../src/tool-names.ts");
+  for (const name of LIFEOS_TOOL_NAMES) {
+    if (LIFEOS_WRITE_CAPABLE.includes(name)) continue;
+    assert.ok(!/write|edit|save|create_file/i.test(name), `Life OS 工具 ${name} 名字像写工具：请判定它是否需要进守卫`);
+  }
+});

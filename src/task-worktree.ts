@@ -14,7 +14,7 @@
 //
 // 失败必须可回滚：先建 home 再建 repo，任何一步失败就把已建的摘掉，不留半个 Task。
 import { execFile } from "node:child_process";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { resolveHome } from "./home.ts";
@@ -64,6 +64,26 @@ async function git(cwd: string, args: string[], maxBuffer = 16 * 1024 * 1024): P
   });
   return stdout;
 }
+
+/**
+ * 这个目录是不是一个**注册过的工作区**（`<taskDir>/home` / `repo` / 历史 `worktree`）。
+ *
+ * 判据与 `home-check.ts` 的「从别处来的检出」**同一件事**，所以实现只在这里一份：
+ * 有机器可读 marker（`.lifeos-worktree.json`）**或**有 `.git`（worktree 的 `.git` 是文件）。
+ *
+ * 为什么写入守卫需要它（Task 0004 · P4 修补）：`.lifeos/.gitignore:16-17` 忽略了
+ * `** /tasks/<NNNN>/home/` 与 `** /tasks/<NNNN>/repo/`，所以"git 看不见"会把**伪造的工作区**也放行——
+ * 而 Pi 的 `write` 会 `mkdir -p` 父目录（`tools/write.ts:63-66`），主区里真会长出一份假树；
+ * 随后 `taskDocRootOf`（只看 `task.md` 在不在，`task-doc-path.ts:27-31`）就把装配读根切过去，
+ * 而那份假树没有分支、没有检视源。
+ */
+export async function isRegisteredWorktree(dir: string): Promise<boolean> {
+  const marker = await stat(join(dir, MARKER_FILE)).then((info) => info.isFile(), () => false);
+  if (marker) return true;
+  return exists(join(dir, ".git"));
+}
+
+const exists = (path: string): Promise<boolean> => stat(path).then(() => true, () => false);
 
 /** 一个目录是不是 git 仓（`.git` 目录或文件都算——worktree 的 `.git` 是文件）。 */
 export async function isGitRepo(path: string): Promise<boolean> {
