@@ -507,6 +507,10 @@ for (const [label, viewport, expectVisible] of [
     const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
     return {
       bandTop: Math.round(bandBox.top - listBox.top),
+      bandHeight: Math.round(bandBox.height),
+      bandRange: Math.round(listBox.height - bandBox.height),
+      rowTop: activeBox === undefined ? 0 : Math.round(activeBox.top - listBox.top),
+      rowHeight: rows.length > 1 ? Math.round(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top) : 12,
       index: active ? rows.indexOf(active) : -1,
       wraps: activeBox === undefined ? false : (activeBox.top >= bandBox.top - 1 && activeBox.bottom <= bandBox.bottom + 1),
       scrollTop: Math.round(document.querySelector("main").scrollTop),
@@ -573,8 +577,20 @@ for (const [label, viewport, expectVisible] of [
     const at1800 = await snapshot();
     check(`点第 ${target.index} 条 → **300ms 内**高亮已切到它（不是"慢慢爬"）`,
       at300.index === target.index, `点前 #${before.index} → 300ms #${at300.index}（期望 ${target.index}）`);
+    /*
+     * 滑块要"到位"：**包住点中的那一行**，而且滑块中心与那一行的中心相差不超过半个行高。
+     *
+     * 为什么不判"bandTop 必须变"：短会话里滑块很高（cafe 实测 335px = 可视框 66%），
+     * 它被夹在可视框边上时贴边不动是几何必然；而用户真正看的是"高亮条在不在滑块里"。
+     */
+    const centered = (() => {
+      const bandCenter = at300.bandTop + at300.bandHeight / 2;
+      const rowCenter = at300.rowTop + at300.rowHeight / 2;
+      return Math.abs(bandCenter - rowCenter) <= at300.rowHeight / 2 + 1;
+    })();
     check("点完之后滑块立刻包裹它、位置也切过去",
-      at300.wraps && at300.bandTop !== before.bandTop, `${before.bandTop} → ${at300.bandTop}`);
+      at300.wraps && (centered || at300.bandTop === 0 || at300.bandTop === at300.bandRange),
+      `${before.bandTop} → ${at300.bandTop}（滑块高 ${at300.bandHeight}，行 ${at300.rowTop}）`);
     check("点完之后不再自己变化（1.8s 后与 300ms 一致）",
       at1800.index === at300.index && at1800.bandTop === at300.bandTop,
       `300ms ${at300.bandTop}/#${at300.index} → 1.8s ${at1800.bandTop}/#${at1800.index}`);
@@ -701,6 +717,81 @@ for (const [label, viewport, expectVisible] of [
   }
   check(`屏幕上逐行点击（${tested} 行）全部到位`, tested >= 4 && missed.length === 0,
     missed.length === 0 ? `${tested}/${tested}` : `失败 ${missed.length}：${missed.slice(0, 6).join(" ")}`);
+  await context.close();
+}
+
+/* ── 点哪条，滑块就去哪条（用户 2026-11-19："只上移了一点点"）──── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3500);
+  console.log("\n── 点哪条，滑块去哪条 ──");
+
+  // 从"滑块在底部"（= 用户描述的开场状态）出发，点可视区上半部的一条
+  await page.evaluate(() => { const m = document.querySelector("main"); m.scrollTop = m.scrollHeight; });
+  await page.waitForTimeout(900);
+
+  const beforeClick = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+    const listBox = list.getBoundingClientRect();
+    const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+    return { bandTop: Math.round(bandBox.top - listBox.top), listScroll: Math.round(list.scrollTop) };
+  });
+  const target = await page.evaluate(() => {
+    const list = document.querySelector('[data-testid="message-rail"] .rail-scroll');
+    const listBox = list.getBoundingClientRect();
+    const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+    const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+    for (let i = 0; i < rows.length; i += 1) {
+      const box = rows[i].getBoundingClientRect();
+      if (box.top < listBox.top + listBox.height * 0.2) continue;
+      if (box.bottom > listBox.top + listBox.height * 0.35) break;
+      if (box.top >= bandBox.top - 2 && box.bottom <= bandBox.bottom + 2) continue;
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      if (!rows[i].contains(document.elementFromPoint(x, y))) continue;
+      return { index: i, y, x };
+    }
+    return null;
+  });
+  if (target === null) {
+    console.log("⤼ 跳过：没有可点的行");
+  } else {
+    await page.mouse.click(target.x, target.y);
+    await page.waitForTimeout(700);
+    const after = await page.evaluate(() => {
+      const rail = document.querySelector('[data-testid="message-rail"]');
+      const list = rail.querySelector(".rail-scroll");
+      const listBox = list.getBoundingClientRect();
+      const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+      const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+      const active = document.querySelector('[data-rail-active="true"]');
+      const activeBox = active?.getBoundingClientRect();
+      return {
+        index: active ? rows.indexOf(active) : -1,
+        bandTop: Math.round(bandBox.top - listBox.top),
+        bandHeight: Math.round(bandBox.height),
+        rowTop: activeBox === undefined ? 0 : Math.round(activeBox.top - listBox.top),
+        rowHeight: rows.length > 1 ? Math.round(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top) : 12,
+        listScroll: Math.round(list.scrollTop),
+      };
+    });
+    const moved = Math.abs(after.bandTop - beforeClick.bandTop);
+    check("点中间那条 → 滑块**移到它的位置**（不是只挪一点点）",
+      after.index === target.index && moved >= 40,
+      `滑块 ${beforeClick.bandTop} → ${after.bandTop}（移动 ${moved}px）`);
+    check("点中间那条 → 刻度列**没有**自己滚动（行留在原地）",
+      after.listScroll === beforeClick.listScroll,
+      `${beforeClick.listScroll} → ${after.listScroll}`);
+    const bandCenter = after.bandTop + after.bandHeight / 2;
+    const rowCenter = after.rowTop + after.rowHeight / 2;
+    check("滑块中心 ≈ 那一条的中心（包裹是几何结果，不是调出来的）",
+      Math.abs(bandCenter - rowCenter) <= after.rowHeight / 2 + 1,
+      `滑块中心 ${bandCenter} vs 行中心 ${rowCenter}`);
+  }
   await context.close();
 }
 

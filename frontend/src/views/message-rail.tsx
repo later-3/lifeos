@@ -165,6 +165,8 @@ export const MessageRail = memo(function MessageRail({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+
   const cardRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const measureTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -193,9 +195,8 @@ export const MessageRail = memo(function MessageRail({
     /** 按下时的指针位置（只用于区分"手抖"与"真的在拖"） */
     startX: number;
     startY: number;
-    /** 按下时的正文位置与滑块顶边：拖动按增量换算，避免绝对比例跳段 */
+    /** 按下时的正文位置：拖动按增量换算，避免绝对比例跳段 */
     startScrollTop: number;
-    startBandTop: number;
   } | undefined>(undefined);
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
@@ -206,6 +207,11 @@ export const MessageRail = memo(function MessageRail({
   dragIndexRef.current = dragIndex;
   /** 每秒变一次的计数，仅用于让"锁定到期"能被重算（见 `resolvedIndex`）。 */
   const [scrollTick, setScrollTick] = useState(0);
+  /*
+   * 刻度列**此刻**的滚动量。滑块按"行的实际位置"画，所以这个值必须进模型；
+   * 每帧最多提交一次（`frontend/code.md` 2.19：滚动回调里不做与数据量成正比的工作）。
+   */
+  const [listScroll, setListScroll] = useState(0);
 
   /*
    * 通知调用方"开始/结束拖动"→ App 用它暂停"滚到顶自动加载"。
@@ -368,6 +374,27 @@ export const MessageRail = memo(function MessageRail({
   /* ── 4. 列的排布 ───────────────────────────────────────── */
 
   const rows = useMemo(() => railRowsOf(ticks.length, avail), [ticks.length, avail]);
+
+  /* 刻度列自己的滚动 → 进模型（滑块要按"行此刻在哪"画，见 `railProgressModelOf`） */
+  useEffect(() => {
+    const list = listRef.current;
+    if (list === null) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf !== 0) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        setListScroll(list.scrollTop);
+      });
+    };
+    list.addEventListener("scroll", onScroll, { passive: true });
+    setListScroll(list.scrollTop);      // 挂载/列表高度变化时先把真实值喂进去
+    return () => {
+      list.removeEventListener("scroll", onScroll);
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
+  }, [rows.scrollable]);
+
   /*
    * 常规条的上限 **比"当前条"少 6px**（`slot.width - 10` vs `slot.width - 4`）。
    * 为什么：轨道只有 36px 宽，若常规条也能到 32px，"当前条跨满 32px"就与最长的一条同宽 ——
@@ -390,9 +417,8 @@ export const MessageRail = memo(function MessageRail({
      * 可滚时两者不等（实测 508 vs 523），而 `listScrollTop` 对 `view` 极其敏感。
      */
     listViewHeight,
-    /* 拖动中滑块位置由指针决定，不走"列表不可滚 → 按行位置算"那条分支 */
-    dragging: scrubbing,
-  }), [resolvedIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight, scrubbing]);
+    listScrollTop: listScroll,
+  }), [resolvedIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight, listScroll]);
 
   const band = { top: model.bandTop, height: model.bandHeight };
 
@@ -522,13 +548,26 @@ export const MessageRail = memo(function MessageRail({
     const fallback = focusNode ?? root.querySelector<HTMLElement>("[data-testid=rail-tick]");
     if (fallback !== null) fallback.tabIndex = 0;
 
-    // 刻度列滚动：让高亮那条落在滑块里
-    if (list !== null && rows.scrollable) {
-      const max = Math.max(0, list.scrollHeight - list.clientHeight);
-      const target = Math.max(0, Math.min(max, model.listScrollTop));
-      if (Math.abs(target - list.scrollTop) >= 1) list.scrollTop = target;
+    /*
+     * 刻度列**只做最小滚动**：高亮那条还在可视区里就一动不动。
+     *
+     * 为什么不能用模型给的 `listScrollTop` 直接写（2026-11-19 实测）：模型算的是"让行落进滑块"，
+     * 而滑块又跟着行走 —— 写成环之后，用户点一条就已经在屏幕上的行，列表也照样滚动，
+     * 把那条从光标下面搬走（实测 3812 → 3344，滑块留在底部不动）。
+     * 这里读 DOM 的实时 `scrollTop`，只处理"行真出去了"这一种情况。
+     */
+    if (list !== null && rows.scrollable && rows.rowHeight > 0) {
+      const live = list.scrollTop;
+      const rowTop = resolvedIndex * rows.rowHeight;
+      const viewHeight = list.clientHeight;
+      const max = Math.max(0, list.scrollHeight - viewHeight);
+      let target = live;
+      if (rowTop < live) target = rowTop;
+      else if (rowTop + rows.rowHeight > live + viewHeight) target = rowTop + rows.rowHeight - viewHeight;
+      target = Math.max(0, Math.min(max, target));
+      if (Math.abs(target - live) >= 1) list.scrollTop = target;
     }
-  }, [resolvedIndex, hovered, ticks, model.listScrollTop, rows.scrollable]);
+  }, [resolvedIndex, hovered, ticks, model.listScrollTop, rows.scrollable, rows.rowHeight]);
 
   /* ── 6. 悬停与卡片 ─────────────────────────────────────── */
 
@@ -648,7 +687,6 @@ export const MessageRail = memo(function MessageRail({
       startX: event.clientX,
       startY: event.clientY,
       startScrollTop: container.scrollTop,
-      startBandTop: (bandRect as DOMRect).top - (containerRef.current?.querySelector<HTMLElement>(".rail-band")?.parentElement?.getBoundingClientRect().top ?? 0),
     };
     setScrubbing(true);
     notifyScrubbing(true);
@@ -746,7 +784,15 @@ export const MessageRail = memo(function MessageRail({
     const frameRect = frame.getBoundingClientRect();
     const desiredTop = event.clientY - frameRect.top - scrub.grabOffsetY;
     const bandTop = Math.max(0, Math.min(m.bandRange, desiredTop));
-    const index = railIndexAtBandTop(bandTop, m.bandRange, ticks.length);
+    /*
+     * 行号按**指针落点所在的行**反推，不用被夹过的 `bandTop`。
+     *
+     * 为什么（2026-11-19 实测）：高亮行恰好停在刻度列可视区顶端时，滑块被夹在 0，
+     * 再往上拖 `bandTop` 永远是 0 → 行号不变 → 正文一动不动（beef 会话：拖满 200px 零位移）。
+     * 按指针算就没有这个问题：指针在行坐标系里往下数，走到哪行就是哪行。
+     */
+    const pointerRowY = event.clientY - frameRect.top + (listRef.current?.scrollTop ?? 0);
+    const index = Math.max(0, Math.min(ticks.length - 1, Math.round((pointerRowY - rows.rowHeight / 2) / Math.max(1, rows.rowHeight))));
     /*
      * **3px 内不算拖动**：这是"单击横条跳转"与"按住拖滑块"的分界。
      *
@@ -783,7 +829,13 @@ export const MessageRail = memo(function MessageRail({
      */
     const scrollable = Math.max(0, container.scrollHeight - container.clientHeight);
     if (scrollable > 0) {
-      const ratio = (bandTop - scrub.startBandTop) / Math.max(1, m.bandRange);
+      /*
+       * 正文增量按**指针跨过的行数**换算（不是按滑块位置）。
+       * 滑块位置会在两端被夹住（`bandTop` ∈ [0, bandRange]），夹住之后就不再反映手的移动；
+       * 指针不会 —— 用户往上拖 300px 就该往上看 300px 对应的内容，哪怕滑块已经贴边。
+       */
+      const rowsMoved = (event.clientY - scrub.startY) / Math.max(1, rows.rowHeight);
+      const ratio = rowsMoved / Math.max(1, ticks.length);
       container.scrollTop = Math.max(0, Math.min(scrollable, scrub.startScrollTop + ratio * scrollable));
     }
     void changed;
@@ -982,6 +1034,7 @@ const RailRows = memo(function RailRows({
   onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
+
 
   /** ↑/↓/Home/End 在条内移动焦点，并保持"只有一条 tabIndex=0"。 */
   const onKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {

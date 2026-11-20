@@ -179,11 +179,24 @@ const VIEW = {
   listContentHeight: 6720, listViewHeight: 508,
 };
 const ROW_H = VIEW.listContentHeight / VIEW.totalTicks;   // 12px
-const model = (resolvedIndex) => railProgressModelOf({ resolvedIndex, ...VIEW });
+/**
+ * 模型的输入包含"刻度列此刻的滚动量"，所以调用要**按顺序迭代**：
+ * 上一步算出的 `listScrollTop` 就是下一步的起点（正是真实交互的顺序 —— 用户一条条点过去）。
+ */
+const model = (resolvedIndex, listScrollTop = 0) => railProgressModelOf({ resolvedIndex, listScrollTop, ...VIEW });
+const walk = (indices) => {
+  let scroll = 0;
+  const out = [];
+  for (const index of indices) {
+    const m = model(index, scroll);
+    scroll = m.listScrollTop;
+    out.push({ index, ...m });
+  }
+  return out;
+};
 
 test("**滑块始终包裹高亮条**：任何位置（含首尾）行都完整落在滑块矩形内", () => {
-  for (const index of [0, 1, 50, 153, 280, 400, 520, 558, 559]) {
-    const m = model(index);
+  for (const { index, ...m } of walk([0, 1, 50, 153, 280, 400, 520, 558, 559, 0, 280, 559])) {
     const rowTop = index * ROW_H - m.listScrollTop;
     const rowBottom = rowTop + ROW_H;
     assert.ok(rowTop >= m.bandTop - 1, `idx=${index}: 行顶 ${rowTop.toFixed(1)} 早于滑块顶 ${m.bandTop.toFixed(1)}`);
@@ -226,22 +239,47 @@ test("**拖动是反向换算**：滑块顶边位置 → 行号（拖动时滑�
   }
 });
 
-test("列表滚动夹在 [0, maxScroll]；中间位置精确居中", () => {
+test("滑块画在**高亮行所在的 y**（用户 2026-11-19：点哪条，滑块就去哪条）", () => {
+  // 起点：列表滚到底（= 用户一开始"滑块在底部"）
   const max = VIEW.listContentHeight - VIEW.listViewHeight;
-  for (const index of [0, 1, 559]) {
-    const m = model(index);
-    assert.ok(m.listScrollTop >= 0 && m.listScrollTop <= max + 0.5, `idx=${index} 列表滚动越界`);
+  const from = model(559, max);
+  // 在可视区中间点一条：滑块必须落在**那一行**的位置，而不是"按比例算出的位置"
+  for (const index of [300, 280, 200, 120]) {
+    const m = model(index, from.listScrollTop);
+    const rowTop = index * ROW_H - m.listScrollTop;
+    const rowCenter = rowTop + ROW_H / 2;
+    const bandCenter = m.bandTop + m.bandHeight / 2;
+    const clamped = m.bandTop <= 0.5 || m.bandTop >= m.bandRange - 0.5;
+    if (clamped) {
+      // 首尾：滑块被夹在可视框边上，不可能居中；此时只要求**行完整落在滑块里**
+      assert.ok(rowTop >= m.bandTop - 0.5 && rowTop + ROW_H <= m.bandTop + m.bandHeight + 0.5,
+        `idx=${index}: 行 ${rowTop.toFixed(1)} 应落在滑块 [${m.bandTop.toFixed(1)}, ${(m.bandTop + m.bandHeight).toFixed(1)}] 内`);
+    } else {
+      assert.ok(Math.abs(rowCenter - bandCenter) <= 0.5,
+        `idx=${index}: 行中心 ${rowCenter.toFixed(1)} 应等于滑块中心 ${bandCenter.toFixed(1)}`);
+    }
   }
-  const middle = model(280);
-  const rowCenter = 280 * ROW_H + ROW_H / 2 - middle.listScrollTop;
-  assert.ok(Math.abs(rowCenter - (middle.bandTop + middle.bandHeight / 2)) <= 1, "中间位置应精确居中");
+});
+
+test("列表只做**最小滚动**：行还在可视区里就一动不动", () => {
+  const start = 100 * ROW_H;                       // 列表已滚到第 100 行顶部
+  // 第 110 行仍在可视区内（508px ≈ 42 行）→ 列表不许动
+  assert.equal(model(110, start).listScrollTop, start);
+  assert.equal(model(120, start).listScrollTop, start);
+  // 第 30 行在可视区上方 → 滚到刚好露头
+  assert.equal(model(30, start).listScrollTop, 30 * ROW_H);
+  // 第 200 行在下方 → 滚到刚好露尾
+  assert.equal(model(200, start).listScrollTop, 200 * ROW_H + ROW_H - VIEW.listViewHeight);
+  // 两头夹紧
+  assert.ok(model(0, start).listScrollTop >= 0);
+  assert.ok(model(559, start).listScrollTop <= VIEW.listContentHeight - VIEW.listViewHeight);
 });
 
 test("退化输入不产生 NaN；一屏装得下时滑块占满；越界 index 被夹住", () => {
-  const zero = railProgressModelOf({ resolvedIndex: 0, totalTicks: 0, viewHeight: 508, clientHeight: 844, scrollHeight: 71153, listContentHeight: 0, listViewHeight: 0 });
+  const zero = railProgressModelOf({ resolvedIndex: 0, totalTicks: 0, viewHeight: 508, clientHeight: 844, scrollHeight: 71153, listContentHeight: 0, listViewHeight: 0, listScrollTop: 0 });
   assert.equal(zero.bandHeight, 0);
   assert.equal(zero.percent, 0);
-  const full = railProgressModelOf({ resolvedIndex: 0, totalTicks: 5, viewHeight: 508, clientHeight: 844, scrollHeight: 800, listContentHeight: 60, listViewHeight: 508 });
+  const full = railProgressModelOf({ resolvedIndex: 0, totalTicks: 5, viewHeight: 508, clientHeight: 844, scrollHeight: 800, listContentHeight: 60, listViewHeight: 508, listScrollTop: 0 });
   assert.equal(full.bandHeight, 508, "一屏装得下全部 → 滑块占满");
   assert.equal(full.bandTop, 0);
   assert.equal(model(-5).bandTop, model(0).bandTop, "负下标被夹到 0");

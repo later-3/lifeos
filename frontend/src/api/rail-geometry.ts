@@ -303,6 +303,8 @@ export function railProgressModelOf(input: {
   scrollHeight: number;
   listContentHeight: number;
   listViewHeight: number;
+  /** 刻度列**当前**的滚动量（px）。滑块要按"行此刻在哪"画，所以必须知道它。 */
+  listScrollTop: number;
   /**
    * 拖动中：滑块位置**必须**由指针直接决定（`progress × bandRange`），
    * 不能走"列表不可滚 → 按行位置算"那条分支 —— 否则拖动时滑块会被行位置拽回去，
@@ -343,40 +345,45 @@ export function railProgressModelOf(input: {
   const listScrollable = Math.max(0, listContentHeight - listViewHeight);
 
   /*
-   * 滑块位置。两种情况**方向相反**，必须分开：
+   * **滑块画在"高亮行此刻所在的位置"，列表不做**居中**滚动。**
    *
-   * 1. **列表可滚**（长会话）：滑块按进度走（`progress × bandRange`），
-   *    再由它反算"列表要滚多少"，使高亮行落进滑块 —— 这是主路径。
-   * 2. **列表不可滚**（短会话，全部行都在可视区里）：行**动不了**，
-   *    所以滑块必须反过来跟着**行的实际位置**走，否则点哪条都只是滑块动、行不动，
-   *    看起来就是"高亮没切过去"（实测 cafe：40 行全在 508px 内，列表 `scrollable=false`）。
-   */
-  const bandTop = listScrollable <= 0 && rowHeight > 0 && dragging !== true
-    ? Math.min(bandRange, Math.max(0, index * rowHeight + rowHeight / 2 - bandHeight / 2))
-    : Math.min(bandRange, Math.max(0, progress * bandRange));
-  const bandCenter = bandTop + bandHeight / 2;
-
-  /*
-   * 刻度列滚动量 = **让第 index 行落在滑块中心**。
-   *
-   * 这是"滑块始终包裹高亮条"能成立的唯一写法（用户 2026-11-19 三次指出）。推导：
+   * 2026-11-19 用户的原话："我在中间任意位置点一个横条，预期滑块和高亮条切到我鼠标点的位置，
+   * 但视觉上只是上移了一点点。"实测数据（beef，点第 335 条）：
    *
    * ```
-   *   行在可视框里的中心 = index × rowHeight + rowHeight/2 − listScrollTop
-   *   令它等于滑块中心 bandCenter
-   *   → listScrollTop = index × rowHeight + rowHeight/2 − bandCenter
+   * 点之前   滑块 313px，高亮行 317px
+   * 点之后   滑块 292px（只走 21px），高亮行被**列表滚动**挪到 296px
+   *           列表 scrollTop 3991 → 3724（自己滚了 267px）
    * ```
    *
-   * 早先写的是"让高亮恒定居中"（`index × rowHeight − listViewHeight/2`）——
-   * 那样高亮恒在 254px，而滑块从 0 走到 488px，**两者只在 52% 处偶然重合**
-   *（实测 idx=100 差 167px、idx=450 差 139px）。
+   * 病根是两套坐标：滑块按 `index/(总数-1) × 行程`（**比例空间**），而刻度列是**按行堆叠**的
+   * （12px 一行）。为了让"高亮落在滑块里"，早先让**列表去滚动**把行搬进滑块 ——
+   * 于是用户点的那条从光标下面被搬走了（267px），滑块却几乎没动。
    *
-   * 夹紧到 `[0, listMax]` 之后，首尾两行的行位置会落进滑块的覆盖范围（验算见单测）：
-   * 那是"列表滚到头"的几何必然，不是缺陷。
+   * 现在反过来，只保留一套坐标（行的坐标）：
+   *   1. 列表**只做最小滚动**：行在可视区内就一动不动，出去了才滚到刚好露出来；
+   *   2. 滑块 = 行在可视区里的位置（居中于那一行，再夹进可视框）。
+   * 于是"点哪条 → 滑块就去哪条"，而高亮天然在滑块里（同一行算出来的）。
    */
+  const rowTop = rowHeight > 0 ? index * rowHeight : 0;
+  const currentListScrollTop = Math.max(0, Math.min(listScrollable, input.listScrollTop));
   const listScrollTop = rowHeight > 0
-    ? Math.min(listScrollable, Math.max(0, index * rowHeight + rowHeight / 2 - bandCenter))
-    : 0;
+    ? Math.min(
+      listScrollable,
+      Math.max(
+        currentListScrollTop > rowTop
+          ? rowTop                                    // 行在可视区上方 → 滚到刚好露头
+          : currentListScrollTop + listViewHeight < rowTop + rowHeight
+            ? rowTop + rowHeight - listViewHeight     // 行在下方 → 滚到刚好露尾
+            : currentListScrollTop,                   // 已经在可视区里 → **不动**
+        0,
+      ),
+    )
+    : currentListScrollTop;
+  const rowInView = rowTop - listScrollTop + rowHeight / 2;
+  const bandTop = Math.min(bandRange, Math.max(0, rowInView - bandHeight / 2));
+  const bandCenter = bandTop + bandHeight / 2;
+  void bandCenter;
 
   return { bandTop, bandHeight, bandRange, listScrollTop, progress, percent };
 }
@@ -387,8 +394,22 @@ export function railProgressModelOf(input: {
  * 拖动时**滑块主导**：指针拖到哪里，滑块就在哪里，再由滑块位置反推第几条，
  * 于是高亮条必然被滑块包住（两者同一个 `progress`）。
  */
-export function railIndexAtBandTop(bandTop: number, bandRange: number, totalTicks: number): number {
+export function railIndexAtBandTop(
+  bandTop: number,
+  bandRange: number,
+  totalTicks: number,
+  geom?: { bandHeight: number; rowHeight: number; listScrollTop: number },
+): number {
   if (totalTicks <= 1 || !(bandRange > 0)) return 0;
+  /*
+   * 有几何时按**行**反解（与 `railProgressModelOf` 互逆：滑块居中于行）。
+   * 这是拖动"跟手"的前提：滑块中心 → 行中心 → 行号，三步一一对应。
+   * 没有几何时退回按比例（老调用点与单测仍可用）。
+   */
+  if (geom !== undefined && geom.rowHeight > 0) {
+    const center = bandTop + geom.bandHeight / 2 - geom.rowHeight / 2 + geom.listScrollTop;
+    return Math.max(0, Math.min(totalTicks - 1, Math.round(center / geom.rowHeight)));
+  }
   const ratio = Math.max(0, Math.min(1, bandTop / bandRange));
   return Math.max(0, Math.min(totalTicks - 1, Math.round(ratio * (totalTicks - 1))));
 }
