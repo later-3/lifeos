@@ -45,6 +45,11 @@ const PROGRAM_ONLY: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /^config(\/|$)/, why: "config/ 只由程序写：models.json 含明文 apiKey，写坏会让所有 Agent 无法调模型（配模型走 PUT /api/agents/<id>/config）" },
   { pattern: /projects\/[^/]+\/sessions(\/|$)/, why: "sessions/ 是会话原始记录（JSONL），Agent 写它会污染对话正文" },
   { pattern: /memory\/(data|daemon|skills|logs)(\/|$)/, why: "memory 的 data/daemon/skills/logs 是记忆库的运行时存储，写坏 = 记忆丢失" },
+  // `.gitignore:43` 根级 `.lifeos-worktree.json`：工作区的**注册标记**，只由建工作区的动作写。
+  // 它本身不构成 mount（`worktreeMountOf` 只看目录名），所以"不加固也无害"；
+  // 但它正好是"伪造工作区"那条路的**第一步**——守卫在工具执行前跑，拒掉这一次就等于
+  // 让"先造 marker 再写假树"永远走不通（鸡生不出蛋）。
+  { pattern: /^\.lifeos-worktree\.json$/, why: "工作区注册标记，只由建工作区的动作写" },
 ];
 
 /** 命中程序专属目录？返回原因，否则 undefined。`relative` 是相对家目录仓根的路径（POSIX 分隔符）。 */

@@ -554,3 +554,123 @@ test("M2 mergeTask 结束时清缓存（否则合并完 30 秒内守卫用旧集
   assert.ok(writeGuardStats.cacheResets > before,
     `mergeTask 收尾必须 resetWriteGuardCaches()（写语义改变了 tracked 集合）；实际 cacheResets: ${before} → ${writeGuardStats.cacheResets}`);
 });
+
+test("N6 写根级 .lifeos-worktree.json（工作区注册标记）→ 拒", async () => {
+  // 依据：`.lifeos/.gitignore:43` 是根级 `.lifeos-worktree.json`，它是工作区的**注册标记**。
+  // 不加固"无害"（root marker 不构成 mount），但语义上就是程序专属：只有建工作区的动作能写它。
+  // 加固它的额外价值：守住"先伪造 marker 再写假树"这条路的第一步（守卫在工具执行前跑，
+  // 所以伪造 marker 的那一次调用本身就被拒 → 鸡生不出蛋）。
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  const target = join(home, ".lifeos-worktree.json");
+  const verdict = await decide(home, task.id, target);
+  assert.equal(verdict.allow, false, `根级 marker 不许写：${JSON.stringify(verdict)}`);
+  assert.match(verdict.reason, /注册标记|只由建工作区/);
+});
+
+// ── P5 存量共存（Task 0004 · P5）────────────────────────────────────────
+//
+// 协议 §11「历史不改写」：存量工作区不迁移、不重设 sparse，所以两种形态长期共存，
+// 守卫与扫描都得同时处理。这里验的是**守卫不把旧形态判死**。
+//
+// 实测依据（2026-11-19，49 个存量挂载点）：
+//   marker + .git 都有  45 个
+//   只有 .git（无 marker）4 个 —— agent-3909/chengdu-outdoors/0002 的 home+repo、
+//                                 reviewer/lifeos/0003 的 worktree、coder/lifeos/0010 的 evidence/worktree
+//   两个都没有           0 个
+// 所以 `isRegisteredWorktree`（marker **或** .git）对存量全覆盖——这是它认 `.git` 的理由。
+
+/**
+ * 造一个**旧形态**的 home 工作区：有 `.git`、**没有 marker**（与那 4 个存量一致）。
+ *
+ * 注意 `createTask` 已经建过收窄态工作区（带 marker），所以这里要先摘掉它——
+ * 否则测的是"新形态"，与 P5 要验的东西不是一件事（第一版就是这么假红的）。
+ */
+async function legacyHomeWorktree(home, task) {
+  const wt = join(task.path, HOME_DIR);
+  const { rm } = await import("node:fs/promises");
+  const { removeWorktree } = await import("../src/task-worktree.ts");
+  await removeWorktree(home, wt).catch(() => undefined);
+  await rm(wt, { force: true, recursive: true }).catch(() => undefined);
+  await mkdir(wt, { recursive: true });
+  await git(wt, ["init", "-q", "-b", "main"]);
+  const doc = join(wt, "agents", ctx.agentId, "projects", ctx.projectId, "tasks", task.dirName);
+  await mkdir(doc, { recursive: true });
+  // 旧形态的文档就在工作区里（收窄前整个 agents/<自己>/ 都检出）
+  for (const file of ["task.md", "AGENTS.md", "concept-space.md", "flywheel.md", "01-background.md"]) {
+    await writeFile(join(doc, file), `# ${file}\n`, "utf8");
+  }
+  // 主区里那份是"上次合并的版本"或不存在
+  await import("node:fs/promises").then(({ rm }) => rm(join(task.path, "01-background.md"), { force: true }));
+  resetWriteGuardCaches();
+  return doc;
+}
+
+test("P5-1 旧形态（有 .git、无 marker）：写工作区文档 → 放行", async () => {
+  const home = await gitHome();
+  const created = await createTask(ctx, { title: "旧形态", type: "general", category: "G" });
+  assert.ok(!("code" in created), JSON.stringify(created));
+  const task = created.task;
+  const doc = await legacyHomeWorktree(home, task);
+
+  // 前提：这个工作区确实**没有** marker（否则测的不是"旧形态"）
+  const hasMarker = await (await import("node:fs/promises")).stat(join(task.path, HOME_DIR, ".lifeos-worktree.json")).then(() => true, () => false);
+  assert.equal(hasMarker, false, "前提：旧形态没有 marker");
+
+  assert.deepEqual(await decide(home, task.id, join(doc, "01-background.md")), { allow: true },
+    "旧形态（只有 .git）必须能写——存量 4 个就是这种");
+});
+
+test("P5-2 旧形态：taskDocRootOf 返回工作区（不是主区）", async () => {
+  const home = await gitHome();
+  const created = await createTask(ctx, { title: "旧形态定位", type: "general", category: "G" });
+  const task = created.task;
+  const doc = await legacyHomeWorktree(home, task);
+
+  const { taskDocRootOf } = await import("../src/task-doc-path.ts");
+  const root = await taskDocRootOf(task.path, ctx, task.dirName);
+  assert.equal(root, doc, `必须命中工作区那份：${root}`);
+  assert.notEqual(root, task.path, "不等于主区");
+});
+
+test("P5-3 已合并（工作区摘除）：taskDocRootOf 返回主区", async () => {
+  const home = await gitHome();
+  const task = await mergedTask(home, "已合并");
+  const { taskDocRootOf } = await import("../src/task-doc-path.ts");
+  const root = await taskDocRootOf(task.path, ctx, task.dirName);
+  assert.equal(root, task.path, "工作区摘除后必须回落主区");
+  // 不断言主区有 task.md：这个夹具只做了 `worktree remove`，**没有真合并**（纪律 4），
+  // 所以主区此刻确实可能没有文档——那是"已合并但未检出"的中间态，不是产品缺陷。
+  // 真要断言"合并后有文档"，必须真跑 mergeTask，那会违反"不真合并任何 Task"。
+});
+
+test("P5-V3 旧形态的合并前置判据仍生效：主区脏 → status=dirty（不真合并）", async () => {
+  // 纪律 4：**不真合并任何 Task**。这里只验合并的**前置判据**——主区不干净时
+  // `mergeWorktree` 必须返回 `dirty` 并且**不动工作区**（不提交、不删除）。
+  const home = await gitHome();
+  const created = await createTask(ctx, { title: "合并前置", type: "general", category: "G" });
+  assert.ok(!("code" in created), JSON.stringify(created));
+  const task = created.task;
+  const wt = join(task.path, HOME_DIR);
+
+  // 前提：工作区是活的 git 检出
+  assert.equal(await (await import("node:fs/promises")).stat(join(wt, ".git")).then(() => true, () => false), true);
+
+  // 把主区弄脏（这就是"主区必须干净才合并"要拦的状态）。
+  // 注意 `users/` 在安装骨架里不一定存在——先建目录，否则是 ENOENT 而不是"主区脏"。
+  await (await import("node:fs/promises")).mkdir(join(home, "users"), { recursive: true });
+  await writeFile(join(home, "users", "dirty-probe.md"), "# 未提交\n", "utf8");
+
+  const { mergeWorktree } = await import("../src/task-merge.ts");
+  const step = await mergeWorktree("home", wt);
+  assert.equal(step.status, "dirty", `主区脏时必须返回 dirty，实际：${step.status} / ${step.message}`);
+
+  // 关键：**工作区没被删除**（dirty 是"什么都不做"，不是"合到一半"）
+  assert.equal(await (await import("node:fs/promises")).stat(wt).then((s) => s.isDirectory(), () => false), true,
+    "dirty 时不该删除工作区");
+  // 主区仍然是脏的（没被"顺手提交"）。
+  // `-uall` 不能省：`users/` 整目录未跟踪时默认只显示 `?? users/`，
+  // 断言文件名会恒假（同一族坑：这是第四次，前三次是空集断言 / quotePath / 弱子串断言）。
+  const status = await git(home, ["status", "--porcelain", "-uall"]);
+  assert.match(status, /dirty-probe\.md/, `主区必须保持原样（不该被自动提交）：\n${status}`);
+});
