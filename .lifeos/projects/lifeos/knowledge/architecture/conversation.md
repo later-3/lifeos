@@ -358,6 +358,20 @@ useLayoutEffect(() => {
 - **为什么补丁要合并而不是排队**：一条补丁 260B，一次全量刷新 5,999B + 60ms；实测一个完整回合只产生
   **2 条** row 事件（开始 + 终态）。
 
+## 13c 消息导航条投影 `GET …/rail`（2026-11-19，Task 0020）
+
+- 端点：`GET /api/agents/:id/sessions/:sid/rail` → `{items:[{id, role, chars, preview, host?}]}`（与列表接口同一包裹，api 2.1）；
+- **一轮两条**（user / assistant 各一条），顺序即时间顺序；`chars` 按消息正文的 UTF-16 单元计，
+  `preview` 服务端截断（前端不解析正文）；
+- `host` = **回落锚点**：轮末回复被过程条折叠时，界面上唯一存在的锚点是这一轮第一条回复，
+  由服务端给出。前端不按渲染规则自己推 —— 渲染规则会变，投影是事实
+  （反例：`session <id>` 改成 `session: <id>` 让前端正则静默失效 16 天，见 api 2.37 / C310）；
+- 投影实现 `src/rail-ticks.ts`（纯函数 `railTicksOf`），接口与几何的单测：
+  `test/rail-ticks.test.mjs`、`test/rail-endpoint.test.mjs`、`test/rail-geometry.test.mjs`；
+- 前端消费：`frontend/src/views/message-rail.tsx`，几何/锚点/跳转分别是
+  `api/rail-geometry.ts`、`api/rail-anchor.ts`、`api/rail-jump.ts`（全部纯函数）；
+  特性说明见 `knowledge/design/message-rail.md`。
+
 ## 14 事件通道投递语义与损失恢复
 
 ### 14.1 传输是 WebSocket（2026-11-18 · Task 0028 起）

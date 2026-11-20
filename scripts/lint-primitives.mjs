@@ -28,6 +28,7 @@ const ALLOW = new Map([
   ["views/groups-panel.tsx", "分组头承载 role=button + 折叠 aria-expanded 的树语义"],
   ["views/response-bar.tsx", "回合状态条的可点区域是「这一轮」的锚点，非按钮"],
   ["views/PeerPanel.tsx", "对端面板关闭钮在窄容器里需要 shrink-0 的固定宽度"],
+  ["views/message-rail.tsx", "竖条刻度是导航轨道上的刻度本身：高度由内容量算出（非控件尺寸档），宽度随悬停在两档间过渡，整条轨道几十个同类节点，MicroButton 的尺寸档装不下可变高的空竖线"],
   ["views/ReviewPanel.tsx", "diff 行内的批注锚点/已看开关是行内定位元素（absolute + 行高约束）"],
   ["App.tsx", "提示条关闭钮 / 行内非法嵌套说明处"],
   ["views/display-prefs-panel.tsx", "Esc 提示旁的关闭钮是弹层约定的一部分"],

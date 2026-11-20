@@ -26,6 +26,7 @@ import {
 import { browse, listTree, readContent, readRoots, registerRoot } from "./fs.ts";
 import { loadAttachmentForServe } from "./attachment-serve.ts";
 import { referencedImagePaths } from "./attachment-references.ts";
+import { railTicksOf } from "./rail-ticks.ts";
 import { bindProject, listAgentProjects, projectOverview, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
 import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import {
@@ -589,6 +590,30 @@ app.use(async (c, next) => {
       meta: { ...sessionMeta(agent.id, state), payload: await payloadMetaOf(state) },
       ...(integrity !== undefined ? { integrity } : {}),
     });
+  });
+
+  /*
+   * 导航竖条的刻度投影（Task 0020 · P1）。
+   *
+   * 为什么不给前端算：前端只持有窗口内的消息（`?tail=200` + `?before=` 游标），
+   * 实测最长会话 2290 条 entry / 548 条刻度，大部分不在首屏那一页里。
+   * 这里与会话详情用**同一个 `messagesOf()`**，所以刻度只能展开成 `messagesOf` 的同一套 id
+   *（`specs/code/api/api.md` 2.7「一个形状一处实现」）。
+   *
+   * 为什么要 `deferThinking`：思考正文在 200 条消息的窗口里占 68% 字节（见上面详情的注释），
+   * 而刻度只用 `text`（`messagesOf` 的 `text` 只由 text 块拼成，与思考无关）。
+   * 不开它也能算对，但会把几百 KB 无用的 thinking 读进内存。
+   *
+   * 为什么不带缓存：`no-store` 的理由同会话详情——会话随时在长，
+   * 任何一层缓存都会让竖条比正文短一截（而用户看到的正是对不上的那一下）。
+   */
+  app.get("/api/agents/:id/sessions/:sessionId/rail", async (c) => {
+    const agent = await readAgent(c.req.param("id"));
+    if (agent === undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
+    const sessionId = c.req.param("sessionId");
+    const state = await getSession(agent.id, sessionId, await cwdOfSession(agent, sessionId));
+    if (state === undefined) { const error = problem("session_not_found", "找不到这个会话", 404); return c.json(error.body, error.status); }
+    return c.json({ items: railTicksOf(messagesOf(state, { deferThinking: true })) });
   });
   /*
    * 单段思考正文（P8 / B2）：会话详情用 `?deferThinking=1` 时不发思考正文，

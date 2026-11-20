@@ -38,6 +38,8 @@ import { cachedBadgePrefs } from "./api/ui-prefs-client";
 import { hasProcess, statsOf, type ProcessStats } from "./api/process-stats";
 import { processOpenOf } from "./api/response-fold";
 import { SessionBar, type SessionBarTurn } from "./views/session-bar";
+import { MessageRail, type RailTickView } from "./views/message-rail";
+import { RAIL_JUMP_MAX_PAGES, railAnchorCandidates, railJumpFailureText, railJumpOf, type RailJumpFailure } from "./api/rail-jump";
 import { sessionTotalsOf } from "./api/session-totals";
 import { groupIntoSpans } from "./api/turn-group";
 import {
@@ -978,9 +980,59 @@ export default function App() {
    * 为什么需要：`visibleCount` 只放大**客户端**渲染窗口，而首屏只下载了最后 200 条 ——
    * 用户滚到第 200 条时窗口还能再涨，但**数据到头了**，界面就卡在那个哨兵上。
    */
+  /**
+   * 会话的刻度列表（Task 0020）：`/rail` 端点返回的投影，**整会话**一份（不随渲染窗口变）。
+   *
+   * 为什么按会话存一份而不是随消息派生：前端只有窗口内的消息（首屏 200 条），
+   * 长会话的早期轮次根本不在内存里（实测最长会话 2290 条 entry / 548 条刻度）。
+   * 切会话时清掉（作用域归属，`frontend/code.md` 2.12）。
+   */
+  const [railTicks, setRailTicks] = useState<RailTickView[]>([]);
+  /** `railTicks` 的最新值转发（`openSession` 里要读，不能进依赖表）。 */
+  const railTicksRef = useRef<RailTickView[]>([]);
+  railTicksRef.current = railTicks;
+  /** 刻度请求的在飞标记（同一会话同一时刻只发一次，见 `loadRailTicks`）。 */
+  const railInFlight = useRef<string | undefined>(undefined);
+  /** 内容列（`max-w-reading` 那一层）：竖条要量它的左缘才知道"能用多宽"。 */
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  /*
+   * 最新值转发（Task 0020）：`jumpToTick` 是一个跨 `await` 的循环，每轮都要读到**最新的**
+   * 消息列表 / 渲染窗口起点 / 是否还有更早。把它们塞进 useCallback 依赖会让每次渲染都换一个
+   * 新函数（竖条的 onJump 跟着变，memo 失效）；所以用 ref 转发最新值，依赖表保持稳定。
+   */
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = messages;
+  /** 等锚点出现的上限（ms）。放大渲染窗口要提交一帧，长会话展开十几轮需要几步；400ms 是安全余量。 */
+  const RAIL_ANCHOR_WAIT_MS = 400;
+
+  /** 已下载消息的 id 顺序（竖条用来判"已下载到哪一条"，见 `MessageRail` 的 `loadedIds`）。 */
+  const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
+
+  /**
+   * 等一次 React 提交（状态更新 + 布局效果跑完）。
+   *
+   * 为什么需要：`loadOlder` 是"发请求 → `setMessages(prev => ...)`"，而跳转循环紧接着要读
+   * `messagesRef.current`（下一次渲染才更新）。不等就判"没长"，第一次点击会误报"到头了"（实测）。
+   */
+  const nextCommit = (): Promise<void> => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => { setTimeout(resolve, 0); }));
+  });
+  const visibleStartRef = useRef(0);
+  const hasOlderRef = useRef(false);
+
   const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  hasOlderRef.current = hasOlderMessages;
   const olderCursorRef = useRef<string | undefined>(undefined);
   const loadingOlderRef = useRef(false);
+  /**
+   * 导航条正在拖动（Task 0020 · P7）。
+   *
+   * 拖动中**暂停"滚到顶自动加载更早一页"**：否则拖到顶 → 前置一页 → "距底距离"锚点把
+   * `scrollTop` 弹回新的最大值 → 滑块跳回中间。用户看到的是"我拖到最顶，它自己弹回来"。
+   * 松手后再允许加载（那时用户已经看到"到顶了"，弹跳可接受）。
+   */
+  const railScrubbingRef = useRef(false);
+
   /** 顶部哨兵：滚到这里就再加载一页（IntersectionObserver，root = 消息区）。 */
   const loadEarlierRef = useRef<HTMLDivElement>(null);
   /** 前置内容后要恢复的"距底部距离"；`undefined` = 没有待恢复的锚点。 */
@@ -1669,6 +1721,223 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     finally { loadingOlderRef.current = false; }
   }
 
+  /**
+   * 取本会话的刻度（Task 0020 · P1）。
+   *
+   * 独立端点而不是从会话详情里取：详情已经 0.15 MB（`?tail=200`），
+   * 而刻度最长的一份实测 ≈37 KB（548 条 × 每条约 225 B 含 100 字预览）；而且它**整会话**都要，
+   * 与详情的"只给最后一页"是两种取数范围，混在一起会让详情被迫拉全量。
+   *
+   * 失败不阻塞会话：只记一条 warn，竖条不出现（`frontend/code.md` 2.33 的"失败要有出口"，
+   * 这里的出口是"这条辅助功能隐身"，而不是把整页报错）。
+   */
+  const loadRailTicks = useCallback(async (id: string, sid: string): Promise<void> => {
+    /*
+     * 同一个会话的刻度请求**同一时刻只发一次**（Task 0020 · P7）。
+     *
+     * 实测（2026-11-19）：打开会话时 `/rail` 连发了 **2 次**（相隔 2ms）——
+     * 开发模式下 StrictMode 会把挂载期的 effect 跑两遍，于是 `openSession` → `loadRailTicks` 也跑两遍。
+     * 生产不会双跑，但"同一份数据连发两次请求"是不该有的行为（37KB × 2，且以后加节流会更乱）。
+     */
+    const key = `${id}/${sid}`;
+    if (railInFlight.current === key) return;
+    railInFlight.current = key;
+    try {
+    const result = await fetchJsonWithTimeout<{ items?: RailTickView[] }>(
+      `/api/agents/${id}/sessions/${sid}/rail`,
+      RECONCILE_TIMEOUT_MS,
+      "rail",
+    );
+    // 期间切走了：不要把上一个会话的刻度写给新会话（归属守卫，`frontend/code.md` 2.12）
+    if (current.current !== sid) return;
+    if (!result.ok) {
+      logger.warn("load", "刻度列表取不到（竖条不出现）", failureLogOf(result.failure));
+      setRailTicks([]);
+      return;
+    }
+    const items = result.value.items;
+    setRailTicks(Array.isArray(items) ? items : []);
+    /*
+     * 长会话：刻度到手后触发后台补齐历史（见 `ensureFullHistory`）。
+     * 判据"刻度数 > 40"：装得下的会话不需要滚动，也就不需要补，
+     * 否则每次打开会话都多拉几页纯属浪费。
+     */
+    if ((items?.length ?? 0) > 40 && hasOlderRef.current) ensureFullHistoryRef.current(id, sid);
+    } finally {
+      if (railInFlight.current === key) railInFlight.current = undefined;
+    }
+  }, []);
+
+  /**
+   * 点一条刻度 → 跳到那条消息（Task 0020 · P4）。
+   *
+   * 三条分支（判定在 `api/rail-jump.ts` 的纯函数里）：
+   *  - visible   ：已渲染，直接滚；
+   *  - inWindow  ：已下载但在渲染窗口外，先放大窗口，等一帧再滚；
+   *  - notLoaded ：还没下载，循环补取（有页数上限），取到再滚；取不到给出口。
+   *
+   * 为什么不复用批注定位：那条路径只用 `scrollIntoView`，预设目标已经渲染。
+   * 这里的目标可能**根本没下载**（实测最长会话 2290 条 entry），所以要先补数据。
+   */
+  const jumpToTick = useCallback(async (tick: RailTickView): Promise<void> => {
+    /*
+     * 锚点候选（顺序有意义）：先试这条消息自己，不行再试 `host`。
+     *
+     * 为什么需要回落（2026-11-19 用户实测"点答没有跳转"）：轮末回复常被**过程条折叠**
+     *（`folded.add(i)`，条挂在这一轮第一条回复上），它的 `data-message-id` 从没进 DOM，
+     * `querySelector` 找不到锚点就静默不动。`host` 由服务端给出（`src/rail-ticks.ts`），
+     * 不让前端按渲染规则再推一遍 —— 渲染规则会变，投影是事实。
+     */
+    const tickId = tick.id;
+    const id = agentIdRef.current;
+    const sid = current.current;
+    if (id === undefined || sid === undefined) return;
+    const candidates = railAnchorCandidates(tickId, tick.host);
+    /**
+     * 等锚点出现（最多 `RAIL_ANCHOR_WAIT_MS`），找到就滚过去。
+     *
+     * 为什么必须**等**而不是查一次：放大渲染窗口（`expandWindow`）是 React 状态更新，
+     * 提交之后目标那一整轮才会被渲染出来。第一版只等了两个 `requestAnimationFrame`，
+     * 19 轮一起展开时远远不够 —— 实测点 `a21` 时两个候选都还没渲染，于是静默不滚（"点了没反应"）。
+     */
+    const scrollWhenReady = async (): Promise<string | undefined> => {
+      const started = performance.now();
+      while (performance.now() - started < RAIL_ANCHOR_WAIT_MS) {
+        for (const candidate of candidates) {
+          const node = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(candidate)}"]`);
+          if (node === null) continue;
+          // 用户主动离开底部了：不要让随后的流式 delta 把他拽回来
+          followTail.current = false;
+          setAtBottom(false);
+          /*
+           * **长距离跳转不用 smooth**（用户 2026-11-19："用户都点击了横条，你肯定要把当前所有
+           * 指向性的东西都切到对应的地方去啊，你现在只是往上跳了一格？"）。
+           *
+           * 实测：从会话末尾点第 525 条，`scrollIntoView({behavior:"smooth"})` 在 200ms 时
+           * 只滚了 377px（目标要 6000+px），看起来就是"只跳了一格，然后慢慢爬"。
+           * 短距离（同一屏内）用 smooth 是舒服的，长距离只会让人觉得"没反应"。
+           */
+          const container = scrollRef.current;
+          const mainRect = container?.getBoundingClientRect();
+          const nodeRect = node.getBoundingClientRect();
+          const distance = mainRect === undefined ? 0 : Math.abs(nodeRect.top - mainRect.top);
+          const near = distance <= (mainRect?.height ?? 0) * 1.5;
+          node.scrollIntoView({ block: "center", behavior: near ? "smooth" : "auto" });
+          return candidate;
+        }
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
+      }
+      return undefined;
+    };
+    /** 放大渲染窗口直到覆盖目标；返回是否覆盖到了。 */
+    const expandWindow = (index: number): void => {
+      setVisibleCount((count) => Math.max(count, messagesRef.current.length - index + VISIBLE_PAGE_SIZE));
+    };
+
+    const order = messagesRef.current.map((message) => message.id);
+    const verdict = railJumpOf(tickId, order, visibleStartRef.current);
+    if (verdict.kind === "visible") {
+      void scrollWhenReady();
+      return;
+    }
+    if (verdict.kind === "inWindow") {
+      expandWindow(verdict.index);
+      void scrollWhenReady();
+      return;
+    }
+
+    // notLoaded：一页页往前取
+    for (let page = 0; page < RAIL_JUMP_MAX_PAGES; page += 1) {
+      if (current.current !== sid) return;                 // 期间切走了
+      const before = messagesRef.current.length;
+      await loadOlder(id, sid);
+      /*
+       * `loadOlder` 里是 `setMessages(prev => [...older, ...prev])`，**要等 React 提交**之后
+       * `messagesRef.current` 才是新的。不等就判"没长"→ 第一次点击会误报"到头了"（实测）。
+       */
+      await nextCommit();
+      if (current.current !== sid) return;
+      const grew = messagesRef.current.length > before;
+      const found = messagesRef.current.some((message) => message.id === tickId);
+      if (found) {
+        const index = messagesRef.current.findIndex((message) => message.id === tickId);
+        expandWindow(index);
+        void scrollWhenReady();
+        return;
+      }
+      if (!grew) {
+        /*
+         * 这一页没带来新消息：可能是"真的到头了"，也可能是**请求失败**（`loadOlder` 失败时不抛错、
+         * 只记 warn 并保留哨兵）。两者对用户的含义完全不同（一个要去看完整历史、一个该重试），
+         * 所以按 `hasOlder` 分：还有更早的却取不到 = 网络/服务问题。
+         */
+        const reason: RailJumpFailure = hasOlderRef.current ? "network" : "no_more";
+        toast(railJumpFailureText(reason), "error");
+        return;
+      }
+    }
+    toast(railJumpFailureText("page_limit"), "error");
+  }, [loadOlder, toast]);
+
+  /**
+   * 后台补齐**整个会话**的历史（Task 0020 · P7，2026-11-19）。
+   *
+   * ## 为什么必须补
+   *
+   * 导航条的滑块是**滚动条的 thumb**：它的行程代表**整个会话**。而首屏只下 200 条、更早的靠游标分页，
+   * 于是正文的 `scrollHeight` 只覆盖会话的一小截 —— 用户拖滑块 90px 就走完整个"已加载段"，
+   * 滑块却只移动了行程的 7%。**位置与拖动无法互逆，看起来就是"一拖就飞到底、滑块不怎么动"**。
+   *
+   * 我在交互层试过三种补丁（冻结 ratio、按已加载段折算、估算全会话高度），
+   * 它们都只能在"不互逆"和"滑块只在底下一小段动"之间二选一 —— 因为**矛盾在数据层，不在交互层**。
+   *
+   * 所以补在数据层：打开会话后后台把历史补到会话开头。这样"刻度总数 ↔ 正文总高"同源，
+   * 滑块的位置、高度、拖动三者天然自洽。
+   *
+   * ## 代价与边界
+   *
+   * - 只对**需要导航条的长会话**做（刻度数 > 一屏的两倍），短会话一次都不补；
+   * - 后台串行、不阻塞界面；切走会话即停（`current.current !== sid`）；
+   * - 最多补 `RAIL_JUMP_MAX_PAGES` 页（20 页 ≈ 4000 条，实测最长会话 2290 条 → 12 页）；
+   * - 失败即停（不重试），下一次打开会话再补。
+   */
+  const ensureFullHistory = useCallback(async (id: string, sid: string): Promise<void> => {
+    if (fullHistoryInFlight.current === `${id}/${sid}`) return;   // 已经在补了
+    fullHistoryInFlight.current = `${id}/${sid}`;
+    try {
+      let stalls = 0;
+      for (let page = 0; page < RAIL_JUMP_MAX_PAGES; page += 1) {
+        if (current.current !== sid) return;               // 切走了
+        if (!hasOlderRef.current) return;                  // 已经到会话开头
+        const before = messagesRef.current.length;
+        await loadOlder(id, sid);
+        // 等 React 提交（`loadOlder` 是 setMessages，ref 要下一帧才更新）
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => requestAnimationFrame(() => { setTimeout(resolve, 0); })); });
+        if (messagesRef.current.length > before) { stalls = 0; continue; }
+        /*
+         * 这一页没长：可能是 `loadOlder` 被在飞守卫挡住（上一次还没完）而不是失败。
+         *
+         * 实测（2026-11-19）：只判两次就退出会**提前收工** —— 会话 560 条刻度、实际只补了 410 条消息，
+         * 剩下的 27% 刻度永远没有对应消息，于是"滚到最顶"时百分比只能到 27%（用户要 0%）。
+         * 现在：每次没长先等 250ms 再试，连续 3 次才认定真的到头/失败。
+         */
+        await new Promise<void>((resolve) => { setTimeout(resolve, 250); });
+        if (messagesRef.current.length > before) { stalls = 0; continue; }
+        stalls += 1;
+        if (stalls >= 3) return;
+      }
+    } finally {
+      fullHistoryInFlight.current = undefined;
+    }
+  }, [loadOlder]);
+
+  /** 补齐历史是否在飞（避免 `loadRailTicks` 每次成功都重复启动一轮）。 */
+  const fullHistoryInFlight = useRef<string | undefined>(undefined);
+
+  /** `ensureFullHistory` 的转发（`loadRailTicks` 定义在它之前，直接引用会形成依赖环）。 */
+  const ensureFullHistoryRef = useRef<(id: string, sid: string) => void>(() => {});
+  ensureFullHistoryRef.current = (id, sid) => { void ensureFullHistory(id, sid); };
+
   /** 只刷新头部 meta（模型/思考级别/是否在跑）：不重载消息，避免打断正在流的那一轮。 */
   async function refreshMeta(id: string, sid: string) {
     const result = await fetchJsonWithTimeout<{ meta?: SessionMeta }>(
@@ -1715,6 +1984,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     if (sentinel === null || container === null) return;
     const observer = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting !== true) return;
+      // 拖动中不加载（见 `railScrubbingRef` 的注释）
+      if (railScrubbingRef.current) return;
       pendingScrollAnchor.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
       /*
        * 哨兵只在"客户端窗口已贴到已下载的边界"时才需要问后端（B3）：
@@ -1818,6 +2089,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     setMessagesLoading(false);           // 上一份"消息在路上"的结论对新会话不成立（Task 0019）
     setCommentRefs([]);                  // 评论引用来自旧会话的检视上下文，切走即清（Task 0019）
     commentRefsRef.current = [];
+    setRailTicks([]);                    // 刻度按会话存（Task 0020）：切走即清，不让上一条会话的竖条留一帧
     setPalette(undefined);               // 命令面板的可用性按旧会话算，残留会误导（Task 0019）
   }
 
@@ -1844,6 +2116,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       // 只在仍然停在这个会话时才关：切走后新会话自己有它的加载周期（C120 同款守卫）
       if (current.current === sid) setMessagesLoading(false);
     }
+    // 刻度列表（Task 0020）：整会话一份，与会话详情并行取；失败只是竖条不出现，不阻塞会话
+    if (current.current === sid) void loadRailTicks(a.id, sid);
     // 切回来时这一轮可能还在跑：必须恢复生成态，否则下一条会被当成"新回合"（C120）
     if (current.current === sid && data?.meta?.running === true) {
       busyRef.current = true;
@@ -2457,6 +2731,18 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     if (!tailIsStreaming) {
       streamRef.current = createStreamState();   // 前一条不是本轮的占位消息 → 从空状态起
       streamSeed.current = undefined;
+      /*
+       * 本轮的第一个流式事件 = "这一轮真的开始了"。
+       *
+       * 在这里重取一次刻度（Task 0020 · P7）：此刻用户发的那条消息**已经进服务端投影**
+       *（模型都在生成了），所以条上会立刻多出一条"问"刻度；"答"刻度仍等轮末（`finishFocused`）。
+       *
+       * 为什么不在"受理成功（202）"时取：实测那一刻投影里还没有这条消息，取回来是旧的
+       *（受理后 2 秒查 `/rail` 仍是 80 条）。这一条是**实测出来的时序事实**，不是猜的。
+       */
+      const railAgent = agentIdRef.current;
+      const railSession = current.current;
+      if (railAgent !== undefined && railSession !== undefined) void loadRailTicks(railAgent, railSession);
     } else if (streamRef.current.segments.length === 0 && streamSeed.current !== undefined) {
       /*
        * 种子播种：服务端已经给出这一轮的前半段，客户端流式状态机还是空的。
@@ -2515,7 +2801,11 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     setRetry(undefined);
     const elapsed = Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
     setTurnStatus({ text: `4/4 · ${outcome === "done" ? "完成" : "失败"} · ${elapsed}s` });
-    if (current.current !== undefined && ctx.current.agentId !== undefined) void loadMessages(ctx.current.agentId, current.current);
+    if (current.current !== undefined && ctx.current.agentId !== undefined) {
+      void loadMessages(ctx.current.agentId, current.current);
+      // 轮次结束：这一轮的"轮末回复"刚刚成为事实，重取刻度（Task 0020）
+      void loadRailTicks(ctx.current.agentId, current.current);
+    }
   }
 
   /** 从完成提示切过去：切 Agent（如需）→ 项目 → 会话。 */
@@ -2968,6 +3258,11 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
         fail(`[出错] ${error.error?.message ?? "请求失败"}`);
       } else {
         setTurnStep(2);   // 2/4：后端受理（202）
+        /*
+         * 这里**不**重取刻度。实测（2026-11-19）：202 只代表"已受理"，那一刻
+         * `messagesOf()` 的投影里**还没有**这条用户消息 —— 受理后 2 秒再查 `/rail`，
+         * 仍是旧的 80 条。刻度的重取点在"本轮第一个流式事件"，见 `onStreamEvent`。
+         */
         // 评论引用已被这次发送消费 → 清空（失败路径不动它，用户还能重发）
         setCommentRefs([]); commentRefsRef.current = [];
         window.setTimeout(() => { if (busyRef.current) setTurnStep(3); }, 250);   // 3/4：模型处理（含等待/思考/工具/输出）
@@ -4134,7 +4429,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
             /* overscroll-y-contain（Task 0016 · P2-S2）：滚到头不把浏览器手势带出来
                （Android 下拉刷新 / 边缘返回）。根上的 none 管"页面本身不滚"，这里管"嵌套滚动区不链出"。 */
             className="h-full w-full overflow-y-auto overscroll-y-contain px-4 py-4 sm:px-6 sm:py-5">
-            <div className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
+            <div ref={contentRef} className="mx-auto flex w-full max-w-reading flex-col gap-4" data-shot-mask="chat-body">
               {/*
                 * 聊天区的四种表面（Task 0019）由 `chatSurfaceOf` 判定，互斥：
                 *   loading（首屏恢复中 / 消息在路上）→ 消息骨架，**不写任何结论**；
@@ -4197,6 +4492,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                   return index;
                 });
                 const windowStart = visibleStartOf(messages.length, visibleCount, turnStartOf);
+                // 供 `jumpToTick` 读最新值（上面那条 ref 的注释）：渲染期同步，不进依赖表
+                visibleStartRef.current = windowStart.startIndex;
                 // 反查：任意一条消息（包括没有 user 的孤儿段）→ 它属于哪一轮
                 const spanByIndex = new Map<number, (typeof spans)[number]>();
                 for (const span of spans) {
@@ -4475,6 +4772,21 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
               })()}
             </div>
           </main>}
+          {/*
+            * 消息导航竖条（Task 0020）：贴对话区左缘、垂直居中、一条消息一条刻度。
+            * 它是 `main` 的**兄弟**而不是子节点 —— `main` 是滚动容器，放进去会跟着内容滚走。
+            * 轨道自身 `pointer-events: none`（只有刻度节点可点），所以不吞正文的拖选与链接。
+            */}
+          {!settingsOpen && (
+            <MessageRail
+              ticks={railTicks}
+              scrollContainer={scrollRef}
+              contentRef={contentRef}
+              onJump={(tick) => { void jumpToTick(tick); }}
+              loadedIds={messageIds}
+              onScrubbingChange={(active) => { railScrubbingRef.current = active; }}
+            />
+          )}
           {!settingsOpen && !atBottom && (
             <div className={`pointer-events-none absolute inset-x-0 bottom-3 ${LAYER_CLASS.rail} flex justify-center`}>
               <IconButton label="回到底部" size="lg" data-testid="jump-to-latest"

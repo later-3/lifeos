@@ -522,3 +522,148 @@
     scrollbar-color: var(--color-ink-300) transparent;
   }
 }
+
+/*
+ * 消息导航条（Task 0020）——只放**样式**，不放数值。
+ *
+ * 位置仍在对话区左缘（竖向区域），但每条刻度是**横条**（宽度 = 内容量）。
+ * 宽度、行高、可见性这些**算出来的**数值在 `frontend/src/api/rail-geometry.ts`
+ * （与 `design/layout.ts` 管列宽同一个分工：几何数字归 TS 纯函数、可穷举单测；颜色/过渡归这里）。
+ *
+ * 形制参考（都是音频播放器 / 缩略图，与本产品业务无关）：
+ * - **lobe-chat** `src/features/ChatMiniMap/styles.ts:110-128`：indicator 是 `height: 12px` 的
+ *   横条容器 + 内部 `border-radius: 2px` 的填充块，`background: colorFillSecondary`，
+ *   当前项 `colorPrimary`；
+ * - **lobe-chat** `src/features/AudioPlayer/index.tsx:20-38`：波形条 `border-radius: 4px`、
+ *   `transition: background 120ms ease`，播放过的段用 `colorText`、未播的 `colorTextQuaternary`。
+ */
+@layer components {
+  /*
+   * 真条（`span.rail-tick-bar`）：一条圆角横线，**宽度由内联 style 给**（算出来的内容量）。
+   * 过渡只给厚度与颜色：宽度代表内容量，不该动画（一伸缩就像在跳舞）。
+   * 按钮本身只承载命中区（整行全宽可点），所以"视觉的条"必须是它内部的一个子元素。
+   */
+  /*
+   * 宽度/厚度来自行上写的 CSS 变量（`--rail-bar-w` / `--rail-bar-h`），**不是内联 width/height**。
+   *
+   * 这样"当前/悬停 → 跨满整列 + 变厚"可以完全由 CSS 完成（下面两条规则覆盖变量），
+   * React 不必为了高亮变化重渲染任何一行（560 行 × 高频变化）。
+   * 注：这不是为了消掉某个已测到的长任务 —— 实测那些长任务来自流式渲染本身（存量）。
+   */
+  .rail-tick-bar {
+    display: block;
+    width: var(--rail-bar-w, 6px);
+    height: var(--rail-bar-h, 3px);
+    border-radius: var(--radius-full);
+    background: var(--color-ink-300);
+    /* 120ms ease：与 lobe-chat 波形同一档（`AudioPlayer/index.tsx:29`）——
+       比 200ms 快，扫过一串时不拖影。 */
+    transition:
+      height 120ms ease,
+      background-color 120ms ease,
+      opacity 120ms ease;
+  }
+  /* 用户消息的刻度更深（"我问的"与"它答的"一眼分得开）。
+     用 ink-900 而不是自造色：它在深浅两套主题下都由引擎派生为"正文色"。 */
+  [data-rail-role="user"] .rail-tick-bar {
+    background: var(--color-ink-900);
+  }
+  /*
+   * 三个状态的分工（用户 2026-11-19 审核确定）：
+   *
+   * | 状态 | 宽度 | 厚度 | 颜色 | 描边 |
+   * |---|---|---|---|---|
+   * | 普通 | 内容量 | 3px | ink-300 | 无 |
+   * | **悬停**（鼠标指着） | 内容量 | 6px | **ink-700**（深灰） | 无 |
+   * | **当前**（读到这条） | **内容量** | 6px | **accent** | **ink-900 一圈** |
+   *
+   * 两条纪律：
+   * 1. **宽度只表示内容量**，不承载状态 —— 用户 2026-11-04 定的"长度有定义"，不能被"当前"占用。
+   * 2. **accent 只给"当前"**。早先悬停也用 accent（只少描边），一列里出现两个强调色，
+   *    用户会以为有两条"当前"。
+   */
+  [data-rail-active="true"] .rail-tick-bar {
+    height: var(--rail-bar-hover, 6px);
+    background: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-ink-900);
+  }
+  /* 悬停条：深灰 + 变厚。不用 accent（那是"当前"独占的）。 */
+  [data-rail-hovered="true"] .rail-tick-bar {
+    height: var(--rail-bar-hover, 6px);
+    background: var(--color-ink-700);
+  }
+  /* 悬停与当前重合：只显示"当前"（描边 + accent 已经够了，不叠加）。 */
+  [data-rail-active="true"][data-rail-hovered="true"] .rail-tick-bar {
+    background: var(--color-accent);
+    box-shadow: 0 0 0 1px var(--color-ink-900);
+  }
+  /* 悬停时其余刻度退到背景里，避免一片刻度里找不到鼠标下那条。 */
+  .rail-tracking[data-rail-hovering="true"] .rail-tick:not([data-rail-active="true"]) .rail-tick-bar {
+    opacity: 0.4;
+  }
+  /*
+   * 「当前可视范围」的半透明带（minimap 类控件的通用元素）：它回答"现在读的是整段对话的哪一部分"。
+   *
+   * 带状比逐条高亮更能表达"一段"，而且在长会话滚动时它是**连续移动**的 ——
+   * 这就是用户要的"不死板"：一份静态刻度 + 一个会滑的窗口，比整列刻度一起变色耐看得多。
+   * 参考 lobe-chat `AudioPlayer` 的 `progressValue`：`transition: width 160ms ease`。
+   */
+  .rail-band {
+    /* 用 `line` 而不是 `hover`：白底上 `hover`(#f1f1f3) 与底色差不到 2%，实测截图里看不见；
+       这条带要能一眼扫到"我在整段对话的哪一截"。 */
+    background: var(--color-line);
+    /*
+     * **不能给 `top` / `height` 加过渡**（2026-11-19 实测，这是好几轮"滑块与高亮不一致"的真凶）：
+     * 拖动时滑块位置每帧都在变，200ms 过渡让它停在动画中间态 —— 读到的 rect 比模型值落后
+     * 6–20px，于是"高亮条跑出滑块""滑块不跟手"全都出现。滚动条拇指必须**瞬时**跟随。
+     * 只保留颜色过渡（换主题时柔和）。
+     */
+    transition: background-color 120ms ease;
+  }
+  /*
+   * 拖动 scrub 期间（光标变 grabbing、列表不可选）：
+   * 拖动时若允许选中文字，鼠标划过会顺带拉起选区，松手后正文里留一片高亮 —— 很吵。
+   * 参考 VSCode / Sublime 的 minimap：按住拖动时整块是"抓取"语义。
+   */
+  .rail-tick {
+    cursor: grab;
+  }
+  /* 拖动中：整列的文字不可选（否则划过会拉起选区，松手后正文里留一片高亮）。
+     用 CSS 而不是给每一行传 props —— 那会让 560 行重渲染一次（实测 67ms 长任务）。 */
+  .rail-scroll[data-rail-scrubbing="true"] {
+    user-select: none;
+  }
+  /*
+   * 拖动中：整个轨道都是 grabbing（不只是指针下那一条 —— 拖到别的行上光标不该变回抓手）。
+   * 用 `!important` 不值得，靠"轨道级属性 + 选择器优先级"就够了：两段类名 > 一段类名。
+   */
+  .rail-tracking[data-rail-scrubbing="true"] .rail-tick,
+  .rail-tracking[data-rail-scrubbing="true"] .rail-tick:active {
+    cursor: grabbing;
+  }
+  /*
+   * 长会话的可滚区域：隐藏滚动条（整列就是"缩略图"，一条滚动条会显得很吵）。
+     滚轮/触摸仍可用 —— 只是不画那条灰杠。
+   */
+  .rail-scroll {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .rail-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  /* 预览卡片入场：从轨道方向轻微放大，像从刻度里"长出来"。
+     参考 lobe-chat `ChatMiniMap/styles.ts:46-66` 的 `transform-origin: 100% 50%` + `scale(0.96)`。 */
+  .rail-card {
+    transform-origin: 0% 50%;
+    animation: rail-card-in 160ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  @keyframes rail-card-in {
+    from { opacity: 0; transform: translateX(-4px) scale(0.97); }
+    to { opacity: 1; transform: translateX(0) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rail-tick-bar, .rail-band { transition: none; }
+    .rail-card { animation: none; }
+  }
+}
