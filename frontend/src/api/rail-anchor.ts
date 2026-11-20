@@ -15,8 +15,17 @@
  *   不锁的话高亮会在动画里连环跳，落地后才定住——看起来像"抖"。pi-web 同值。
  */
 
-/** 跳转后高亮锁定的时长（ms）。平滑滚动途中不让中线重新选中。 */
+/** 拖动结束后高亮锁定的时长（ms）。让锚点有时间追上松手那一刻的位置。 */
 export const RAIL_ACTIVE_LOCK_MS = 1600;
+
+/**
+ * 点击跳转时高亮锁定的**上限**（ms）。
+ *
+ * 跳转锁的正常释放条件是"锚点追上目标"（见组件里的 `resolvedIndex`），
+ * 这个上限只是防止"目标永远到不了"（例如消息被折叠、锚点量不到）时锁死。
+ * 依据：长距离跳转 + 后台补页可能超过 1.6s（实测从会话末尾点最前面一条要补多页）。
+ */
+export const RAIL_JUMP_LOCK_MAX_MS = 8000;
 
 /**
  * 焦点线在视口中的比例位置（0.5 = 正中）。
@@ -106,9 +115,9 @@ export function railActivePick(
  * @param lock 上一次跳转的锁定记录（`undefined` = 没锁过）
  */
 export function railLockActive(
-  lock: { index: number; until: number } | undefined,
+  lock: { index: number; until: number; /** 锁定原因：拖动 / 点击跳转 */ reason?: "drag" | "jump" } | undefined,
   now: number,
-): lock is { index: number; until: number } {
+): lock is { index: number; until: number; reason?: "drag" | "jump" } {
   return lock !== undefined && now < lock.until;
 }
 

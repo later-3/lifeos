@@ -303,6 +303,12 @@ export function railProgressModelOf(input: {
   scrollHeight: number;
   listContentHeight: number;
   listViewHeight: number;
+  /**
+   * 拖动中：滑块位置**必须**由指针直接决定（`progress × bandRange`），
+   * 不能走"列表不可滚 → 按行位置算"那条分支 —— 否则拖动时滑块会被行位置拽回去，
+   * 与 `dragIndex` 形成回路（实测 cafe：往上拖 72px，正文反而 +800）。
+   */
+  dragging?: boolean;
 }): {
   /** 滑块在可视框里的顶边与高度（px） */
   bandTop: number;
@@ -316,7 +322,7 @@ export function railProgressModelOf(input: {
   /** 0–100 的整数百分比（顶部 0%、底部 100%） */
   percent: number;
 } {
-  const { resolvedIndex, totalTicks, viewHeight, clientHeight, scrollHeight } = input;
+  const { resolvedIndex, totalTicks, viewHeight, clientHeight, scrollHeight, dragging } = input;
   const listContentHeight = Math.max(0, input.listContentHeight);
   const listViewHeight = Math.max(0, input.listViewHeight);
 
@@ -333,7 +339,21 @@ export function railProgressModelOf(input: {
     ? viewHeight
     : Math.min(viewHeight, Math.max(RAIL_SLIDER_MIN, Math.round(viewHeight * clientHeight / scrollHeight)));
   const bandRange = Math.max(0, viewHeight - bandHeight);
-  const bandTop = Math.min(bandRange, Math.max(0, progress * bandRange));
+  const rowHeight = totalTicks > 0 ? listContentHeight / totalTicks : 0;
+  const listScrollable = Math.max(0, listContentHeight - listViewHeight);
+
+  /*
+   * 滑块位置。两种情况**方向相反**，必须分开：
+   *
+   * 1. **列表可滚**（长会话）：滑块按进度走（`progress × bandRange`），
+   *    再由它反算"列表要滚多少"，使高亮行落进滑块 —— 这是主路径。
+   * 2. **列表不可滚**（短会话，全部行都在可视区里）：行**动不了**，
+   *    所以滑块必须反过来跟着**行的实际位置**走，否则点哪条都只是滑块动、行不动，
+   *    看起来就是"高亮没切过去"（实测 cafe：40 行全在 508px 内，列表 `scrollable=false`）。
+   */
+  const bandTop = listScrollable <= 0 && rowHeight > 0 && dragging !== true
+    ? Math.min(bandRange, Math.max(0, index * rowHeight + rowHeight / 2 - bandHeight / 2))
+    : Math.min(bandRange, Math.max(0, progress * bandRange));
   const bandCenter = bandTop + bandHeight / 2;
 
   /*
@@ -354,8 +374,6 @@ export function railProgressModelOf(input: {
    * 夹紧到 `[0, listMax]` 之后，首尾两行的行位置会落进滑块的覆盖范围（验算见单测）：
    * 那是"列表滚到头"的几何必然，不是缺陷。
    */
-  const rowHeight = totalTicks > 0 ? listContentHeight / totalTicks : 0;
-  const listScrollable = Math.max(0, listContentHeight - listViewHeight);
   const listScrollTop = rowHeight > 0
     ? Math.min(listScrollable, Math.max(0, index * rowHeight + rowHeight / 2 - bandCenter))
     : 0;

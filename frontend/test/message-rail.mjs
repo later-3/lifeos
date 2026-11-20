@@ -361,22 +361,34 @@ for (const [label, viewport, expectVisible] of [
       `${afterScrub} → ${afterDelta}（差 ${afterDelta - afterScrub}px）`);
   }
 
-  // ②b 按在滑块上不动就松手 → **不该跳**（否则"想拖但没动够"会突然跳到别处）
+  /*
+   * ②b 按在滑块内的一条横条上、不动就松手 → **要跳**
+   * （用户 2026-11-19："我点击任意一个横条，都应该跳转到那个横条"）。
+   * 短会话里滑块很大、横条几乎都在滑块内，以前这批横条一条都点不动。
+   */
   {
-    const bandBox = await page.evaluate(() => {
+    const pressed = await page.evaluate(() => {
       const node = document.querySelector(".rail-band");
       if (node === null) return null;
       const box = node.getBoundingClientRect();
-      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      const row = hit?.closest?.("[data-rail-id]") ?? null;
+      const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
+      return row === null ? null : { x, y, index: rows.indexOf(row) };
     });
-    if (bandBox !== null) {
-      const before = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-      await page.mouse.move(bandBox.x, bandBox.y);
+    if (pressed !== null) {
+      await page.mouse.move(pressed.x, pressed.y);
       await page.mouse.down();
       await page.mouse.up();
       await page.waitForTimeout(700);
-      const after = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-      check("按在滑块上不动就松手 → 不跳转（不误判成点击）", Math.abs(after - before) < 60, `${before} → ${after}`);
+      const active = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
+        const node = document.querySelector('[data-rail-active="true"]');
+        return node === null ? -1 : rows.indexOf(node);
+      });
+      check("按在滑块内的横条上单击（不动）→ 跳到那一条", active === pressed.index, `按 #${pressed.index} → 高亮 #${active}`);
     }
   }
 
@@ -570,6 +582,67 @@ for (const [label, viewport, expectVisible] of [
   await context.close();
 }
 
+/* ── 连续点击：每一轮都要"点哪到哪"（用户 2026-11-19："我点击任意一个横条…"）── */
+
+{
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-testid="rail-tick"]', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  console.log("\n── 连续点击 8 轮 ──");
+
+  const failures = [];
+  let rounds = 0;
+  for (let round = 0; round < 8; round += 1) {
+    /*
+     * 每轮都**重新取坐标**。这是这条用例的关键：第一次点击会让刻度列滚动，
+     * 上一轮算出的 (x, y) 就指向别的行了（实测：用旧坐标点，`elementFromPoint` 返回 null，
+     * 根本没发生点击，于是"没到"是测试的错，不是产品的错）。
+     */
+    const target = await page.evaluate(() => {
+      const rail = document.querySelector('[data-testid="message-rail"]');
+      const list = rail.querySelector(".rail-scroll");
+      const listBox = list.getBoundingClientRect();
+      const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+      const activeIndex = rows.indexOf(document.querySelector('[data-rail-active="true"]'));
+      const found = rows.map((row, index) => ({ row, index })).find(({ row, index }) => {
+        const box = row.getBoundingClientRect();
+        if (Math.abs(index - activeIndex) < 5) return false;
+        if (!(box.top > listBox.top + 20 && box.bottom < listBox.bottom - 20)) return false;
+        // 必须命中这一行本身（不被滑块或其他层挡住）
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return hit !== null && row.contains(hit);
+      });
+      if (found === undefined) return null;
+      const box = found.row.getBoundingClientRect();
+      return { index: found.index, x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    if (target === null) break;
+    rounds += 1;
+    await page.mouse.click(target.x, target.y);
+    await page.waitForTimeout(700);
+    const landed = await page.evaluate((wanted) => {
+      const rail = document.querySelector('[data-testid="message-rail"]');
+      const list = rail.querySelector(".rail-scroll");
+      const rows = [...list.querySelectorAll('[data-testid="rail-tick"]')];
+      const active = document.querySelector('[data-rail-active="true"]');
+      const listBox = list.getBoundingClientRect();
+      const bandBox = document.querySelector(".rail-band").getBoundingClientRect();
+      const activeBox = active?.getBoundingClientRect();
+      return {
+        index: active ? rows.indexOf(active) : -1,
+        wraps: activeBox === undefined ? false : (activeBox.top >= bandBox.top - 1 && activeBox.bottom <= bandBox.bottom + 1),
+      };
+    }, target.index);
+    if (landed.index !== target.index || !landed.wraps) failures.push(`#${target.index}→#${landed.index}${landed.wraps ? "" : "(未包裹)"}`);
+  }
+  check(`连续点 ${rounds} 轮，每轮都"点哪到哪"且滑块包裹`,
+    rounds >= 3 && failures.length === 0,
+    failures.length === 0 ? `${rounds}/${rounds} 全部到位` : `失败：${failures.join(" ")}`);
+  await context.close();
+}
+
 /* ── 滑块跟手（VSCode minimap.ts:391/:254 的互逆关系）────────── */
 
 {
@@ -667,20 +740,41 @@ for (const [label, viewport, expectVisible] of [
   } else {
     check("滑块有高度、且能点住（≥20px，VSCode MINIMUM_SLIDER_SIZE）", geom.height >= 20, `${geom.height}px`);
 
-    // ① 按在滑块上**不动**就松手 → 不跳转
-    const a0 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    await page.mouse.move(geom.x, geom.y);
-    await page.mouse.down();
-    await page.mouse.up();
-    await page.waitForTimeout(600);
-    const a1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    check("按在滑块上不动就松手 → 不跳转", Math.abs(a1 - a0) < 60, `${a0} → ${a1}`);
+    /*
+     * ① 单击滑块（不动）→ 跳到指针下那一条（用户 2026-11-19 的要求）。
+     * 以前的断言是"不跳"，它把"按在滑块内 = 一律拖动"写成了契约 —— 正是那条契约
+     * 让滑块覆盖区域里的横条全部点不动（cafe 实测滑块占 66% 高度）。
+     */
+    const pressedRow = await page.evaluate((p) => {
+      const hit = document.elementFromPoint(p.x, p.y);
+      const row = hit?.closest?.("[data-rail-id]") ?? null;
+      const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
+      return row === null ? null : { index: rows.indexOf(row) };
+    }, geom);
+    if (pressedRow !== null) {
+      await page.mouse.move(geom.x, geom.y);
+      await page.mouse.down();
+      await page.mouse.up();
+      await page.waitForTimeout(600);
+      const landed = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('[data-testid="rail-tick"]')];
+        const node = document.querySelector('[data-rail-active="true"]');
+        return node === null ? -1 : rows.indexOf(node);
+      });
+      check("单击滑块内的横条 → 跳到那一条（不误判成拖动）",
+        landed === pressedRow.index, `按 #${pressedRow.index} → 高亮 #${landed}`);
+    }
 
     // ② 按在滑块上**立刻**就能拖（不需要先点一下别处）
+    //    滑块会被上一步的跳转挪走，所以**重新取**它此刻的中心（用旧坐标按会按到滑块外面）
+    const bandNow = await page.evaluate(() => {
+      const box = document.querySelector(".rail-band").getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
     const b0 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));
-    await page.mouse.move(geom.x, geom.y);
+    await page.mouse.move(bandNow.x, bandNow.y);
     await page.mouse.down();
-    for (let step = 1; step <= 6; step += 1) { await page.mouse.move(geom.x, geom.y - step * 12); await page.waitForTimeout(20); }
+    for (let step = 1; step <= 6; step += 1) { await page.mouse.move(bandNow.x, bandNow.y - step * 12); await page.waitForTimeout(20); }
     await page.mouse.up();
     await page.waitForTimeout(400);
     const b1 = await page.evaluate(() => Math.round(document.querySelector("main").scrollTop));

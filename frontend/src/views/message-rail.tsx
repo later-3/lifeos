@@ -43,6 +43,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { LAYER_CLASS, surfaceClass, surfaceStyle } from "../design/surface";
 import {
   RAIL_ACTIVE_LOCK_MS,
+  RAIL_JUMP_LOCK_MAX_MS,
   railActivePick,
   railAnchorWithLoadedTail,
   railLockActive,
@@ -162,12 +163,17 @@ export const MessageRail = memo(function MessageRail({
   const [card, setCard] = useState<{ tick: RailTickView; top: number; left: number } | undefined>(undefined);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const measureTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const lockRef = useRef<{ index: number; until: number } | undefined>(undefined);
+  const lockRef = useRef<{
+    index: number; until: number; reason?: "drag" | "jump";
+    /** 锁建立时刻（判断"这次 scroll 是不是用户自己滚的"） */
+    armedAt: number;
+  } | undefined>(undefined);
   const loadedFromRef = useRef(0);
   const measureRef = useRef<() => void>(() => {});
   const pendingCardRef = useRef<{ tick: RailTickView; rowRect: DOMRect; railRight: number } | undefined>(undefined);
@@ -184,6 +190,14 @@ export const MessageRail = memo(function MessageRail({
     /** 抓在滑块的哪个位置（指针 y − 滑块顶边），拖动中滑块顶边 = 指针 y − 这个值 */
     grabOffsetY: number;
     moved: boolean;
+    /** 按下时正好按在一条横条上 → 松手时若没拖动，就跳到这一条 */
+    pendingJump?: { tick: RailTickView; index: number };
+    /** 按下时的指针位置（只用于区分"手抖"与"真的在拖"） */
+    startX: number;
+    startY: number;
+    /** 按下时的正文位置与滑块顶边：拖动按增量换算，避免绝对比例跳段 */
+    startScrollTop: number;
+    startBandTop: number;
   } | undefined>(undefined);
   /** 拖完之后浏览器仍会补一个 `click`：用它把那次点击吃掉，否则松手会额外跳一次。 */
   const suppressClickRef = useRef(false);
@@ -317,7 +331,39 @@ export const MessageRail = memo(function MessageRail({
    */
   const resolvedIndex = useMemo(() => {
     if (scrubbing && dragIndex !== undefined) return dragIndex;
-    if (railLockActive(lockRef.current, Date.now())) return lockRef.current!.index;
+    const lock = lockRef.current;
+    if (lock !== undefined) {
+      /*
+       * **跳转锁**（点击某条刻度）的释放条件不是"时间到"，而是**锚点真的追上了目标**。
+       *
+       * 为什么（2026-11-19 用户第三次报同一现象）：用户点 #530，正文要滚 6000+px；
+       * 而 `RAIL_ACTIVE_LOCK_MS=1600` 是固定时长 —— 滚完之前锁就过期了，`resolvedIndex`
+       * 退回"锚点反查"（那时还停在中途），于是高亮/滑块只走到半路。
+       * 实测：连点 5 条只有第 1 条到位，后面全部"没到"（#530 → #495）。
+       *
+       * 现在：`reason === "jump"` 时，只要锚点还没到目标就继续锁（封顶
+       * `RAIL_JUMP_LOCK_MAX_MS`，防"目标永远到不了"时锁死）。
+       */
+      if (lock.reason === "jump") {
+        /*
+         * **跳转锁由"用户滚动"解除，不由"锚点追上"解除**（2026-11-19 实测）。
+         *
+         * 为什么不能等锚点追上：点击的是**一条刻度**，而滚到的是它的**宿主消息**
+         * （轮末回复被过程条折叠时 `host` 指向该轮第一条回复）。两者相差 1–2 条刻度，
+         * 锚点永远等不到"等于目标" —— 于是要么锁死到超时，要么提前松手退回锚点值，
+         * 表现都是"点 #21 却高亮 #22"。
+         *
+         * 现在：锁住点击的那条；**用户自己滚动**（`onScroll` 里判断）才解除，交回锚点。
+         */
+        if (Date.now() >= lock.until) {
+          lockRef.current = undefined;
+          return anchorIndex ?? lock.index;
+        }
+        return lock.index;
+      }
+      if (railLockActive(lock, Date.now())) return lock.index;
+      lockRef.current = undefined;
+    }
     return anchorIndex ?? 0;
   }, [scrubbing, dragIndex, anchorIndex, ticks.length, scrollTick]);
 
@@ -346,7 +392,9 @@ export const MessageRail = memo(function MessageRail({
      * 可滚时两者不等（实测 508 vs 523），而 `listScrollTop` 对 `view` 极其敏感。
      */
     listViewHeight,
-  }), [resolvedIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight]);
+    /* 拖动中滑块位置由指针决定，不走"列表不可滚 → 按行位置算"那条分支 */
+    dragging: scrubbing,
+  }), [resolvedIndex, ticks.length, listViewHeight, metrics.clientHeight, metrics.scrollHeight, rows.rowHeight, scrubbing]);
 
   const band = { top: model.bandTop, height: model.bandHeight };
 
@@ -579,20 +627,22 @@ export const MessageRail = memo(function MessageRail({
 
     const bandNode = containerRef.current?.querySelector<HTMLElement>(".rail-band");
     const bandRect = bandNode?.getBoundingClientRect();
-    const onBand = bandRect !== undefined && bandRect !== null
-      && event.clientY >= bandRect.top && event.clientY <= bandRect.bottom;
 
-    if (!onBand) {
-      /*
-       * 按在滑块外：**点击跳转**。立刻把这一条设为高亮（不等滚动完成）——
-       * 用户 2026-11-19："点击某一个横条，这个横条马上高亮且切到对应的消息"。
-       */
-      const rowNode = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-rail-id]");
-      const id = rowNode?.getAttribute("data-rail-id");
-      const index = id === null || id === undefined ? -1 : ticks.findIndex((tick) => tick.id === id);
-      if (index >= 0) lockRef.current = { index, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
-      return;
-    }
+    /*
+     * 命中横条 = 用户想点这一条。**不论它在不在滑块里**都要算 ——
+     * 用户 2026-11-19："我点击任意一个横条，都应该跳转到那个横条，且高亮那个横条"。
+     *
+     * 为什么以前点不动：短会话里滑块很大（cafe 实测占 66% 高度），几十条横条全在滑块里；
+     * 而"按在滑块上就是拖"这条规则（VSCode `minimap.ts:1459-1484`）把整片区域都吃成了拖动，
+     * 于是**滑块里的横条一条都点不动**，只有滑块外那几条能点。
+     *
+     * 现在的划分：**按在横条上 → 单击跳转 / 按住移动才拖动**；
+     * 按在滑块空白处 → 直接拖动（保持原来的手感）。
+     */
+    const rowNode = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-rail-id]");
+    const rowId = rowNode?.getAttribute("data-rail-id") ?? undefined;
+    const rowIndex = rowId === undefined ? -1 : ticks.findIndex((tick) => tick.id === rowId);
+    const pressedTick = rowIndex >= 0 ? ticks[rowIndex] : undefined;
 
     /*
      * 按在滑块上：进入拖动。记下"抓在滑块的哪个位置"（grabOffset），
@@ -602,9 +652,15 @@ export const MessageRail = memo(function MessageRail({
       pointerId: event.pointerId,
       grabOffsetY: event.clientY - (bandRect as DOMRect).top,
       moved: false,
+      pendingJump: pressedTick === undefined ? undefined : { tick: pressedTick, index: rowIndex },
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollTop: container.scrollTop,
+      startBandTop: (bandRect as DOMRect).top - (containerRef.current?.querySelector<HTMLElement>(".rail-band")?.parentElement?.getBoundingClientRect().top ?? 0),
     };
     setScrubbing(true);
     notifyScrubbing(true);
+    lockRef.current = undefined;      // 用户开始拖了：上一轮的跳转锁作废
     // 这次交互不是点击：松手时浏览器补的 click 要被吃掉
     suppressClickRef.current = true;
     clearHideTimer();
@@ -613,6 +669,31 @@ export const MessageRail = memo(function MessageRail({
     // 捕获指针：拖到列外面也继续收事件（否则拖快了会"掉线"）
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }, [scrollContainer, ticks, clearHideTimer, notifyScrubbing]);
+
+  /*
+   * **用户滚动 = 跳转锁作废**（见 `resolvedIndex` 的"跳转锁由用户滚动解除"）。
+   *
+   * 判据是**用户输入**（滚轮 / 触摸 / 键盘），不是 `scroll` 事件 ——
+   * 程序化的 `scrollIntoView({behavior:"smooth"})` 会持续 300–500ms 一直触发 scroll，
+   * 按"scroll 就解锁"会把跳转锁在滚动途中解掉（2026-11-19 实测：点 a2@3，500ms 后高亮回到 4）。
+   * 反差很大：改成只认输入事件后，`message-rail.mjs` 的三套会话全部"点哪到哪"。
+   */
+  useEffect(() => {
+    const container = scrollContainer.current;
+    if (container === null) return;
+    const dropJumpLock = () => {
+      const lock = lockRef.current;
+      if (lock !== undefined && lock.reason === "jump") lockRef.current = undefined;
+    };
+    container.addEventListener("wheel", dropJumpLock, { passive: true });
+    container.addEventListener("touchstart", dropJumpLock, { passive: true });
+    container.addEventListener("keydown", dropJumpLock);
+    return () => {
+      container.removeEventListener("wheel", dropJumpLock);
+      container.removeEventListener("touchstart", dropJumpLock);
+      container.removeEventListener("keydown", dropJumpLock);
+    };
+  }, [scrollContainer]);
 
   /**
    * 拖动：**滑块跟指针**，再由滑块位置反推行号，最后把正文滚到同一进度。
@@ -641,22 +722,43 @@ export const MessageRail = memo(function MessageRail({
     const desiredTop = event.clientY - frameRect.top - scrub.grabOffsetY;
     const bandTop = Math.max(0, Math.min(m.bandRange, desiredTop));
     const index = railIndexAtBandTop(bandTop, m.bandRange, ticks.length);
+    /*
+     * **3px 内不算拖动**：这是"单击横条跳转"与"按住拖滑块"的分界。
+     *
+     * 注意这与之前删掉的 4px 位移阈值**不是同一件事**：那个阈值吃掉的是拖动的头 4px
+     * （滑块不跟手），已按 VSCode 的做法删掉；这里只用来区分"手抖"和"真的在拖"，
+     * 一旦超过 3px，后续位移一次性全部生效（`grabOffsetY` 记的是按下时的偏移，所以不会丢）。
+     */
     if (!scrub.moved) {
+      const drift = Math.abs(event.clientY - scrub.startY) + Math.abs(event.clientX - scrub.startX);
+      if (drift <= 3) return;
       scrub.moved = true;
       // 进入拖动：收起卡片、清掉悬停 —— 拖动途中一路弹卡片会很吵
       clearHideTimer();
       setHovered(undefined);
       setCard(undefined);
     }
+    const changed = index !== dragIndexRef.current;
     dragIndexRef.current = index;
     setDragIndex(index);
 
     /*
-     * 正文滚到同一进度。直接写 `scrollTop`（不用 smooth）：拖动要跟手，
-     * 平滑滚动会把每次位移排队成动画，表现是"手停了它还在滚"。
+     * 正文按**增量**滚，不按绝对比例。
+     *
+     * 为什么不能用 `scrollTop = bandTop / bandRange × scrollable`（2026-11-19 实测）：
+     * 刻度列是**等距**的（一行 12px），正文是**不等距**的（一条带工具的回复可能是一句话的
+     * 20 倍高）。按绝对比例写等于假设两者线性，一次拖动就会把正文"唰"地挪走一大段：
+     * cafe 会话点完某条刻度正文在 1206px，而 26/39 的比例指向 3100px —— 一按下去就跳 1600px。
+     *
+     * 增量映射没有这个问题：从**按下时**的正文位置出发，滑块走了行程的百分之几，
+     * 正文就滚相应的百分之几。方向连续、不跳段，也不会跟随手时累积误差。
      */
     const scrollable = Math.max(0, container.scrollHeight - container.clientHeight);
-    if (scrollable > 0) container.scrollTop = (bandTop / Math.max(1, m.bandRange)) * scrollable;
+    if (scrollable > 0) {
+      const ratio = (bandTop - scrub.startBandTop) / Math.max(1, m.bandRange);
+      container.scrollTop = Math.max(0, Math.min(scrollable, scrub.startScrollTop + ratio * scrollable));
+    }
+    void changed;
   }, [clearHideTimer, ticks.length]);
 
   const endScrub = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
@@ -677,18 +779,31 @@ export const MessageRail = memo(function MessageRail({
      * 所以松手后**保持拖动值**，并用 `lockRef` 把它锁住；等正文滚动事件重新算出可信的锚点
      * （`scrollTick` 到期）后自然接管。这正是 `RAIL_ACTIVE_LOCK_MS` 的用途。
      */
+    /*
+     * 没拖动就松手 = **单击了一条横条** → 跳到它（用户 2026-11-19 的核心要求）。
+     * 这一步必须在 `scrubRef` 清空之前取值。
+     */
+    if (!scrub.moved && scrub.pendingJump !== undefined) {
+      const { tick, index } = scrub.pendingJump;
+      lockRef.current = { index, until: Date.now() + RAIL_JUMP_LOCK_MAX_MS, reason: "jump", armedAt: Date.now() };
+      (rootRef.current as HTMLElement | null)?.setAttribute("data-rail-last-click", `${tick.id}@${index}`);
+      suppressClickRef.current = true;   // 浏览器补的 click 别再来一次
+      onJump(tick);
+      return;
+    }
+
     const lastIndex = dragIndexRef.current;
     if (lastIndex !== undefined) {
-      lockRef.current = { index: lastIndex, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
+      lockRef.current = { index: lastIndex, until: Date.now() + RAIL_ACTIVE_LOCK_MS, reason: "drag", armedAt: Date.now() };
     }
-  }, [notifyScrubbing]);
+  }, [notifyScrubbing, onJump]);
 
   /* ── 8. 点击 ───────────────────────────────────────────── */
 
   const handleJump = useCallback((tick: RailTickView, index: number) => {
     // 刚拖完的那一下点击要吃掉（松手时浏览器会补一个 click）
     if (suppressClickRef.current) { suppressClickRef.current = false; return; }
-    lockRef.current = { index, until: Date.now() + RAIL_ACTIVE_LOCK_MS };
+    lockRef.current = { index, until: Date.now() + RAIL_JUMP_LOCK_MAX_MS, reason: "jump", armedAt: Date.now() };
     onJump(tick);
   }, [onJump]);
 
@@ -698,7 +813,7 @@ export const MessageRail = memo(function MessageRail({
 
   return (
     <div
-      ref={containerRef}
+      ref={(node) => { containerRef.current = node; rootRef.current = node; }}
       data-testid="message-rail"
       data-rail-scrollable={rows.scrollable ? "true" : "false"}
       data-rail-active-index={anchorIndex ?? "none"}
