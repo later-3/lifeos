@@ -278,6 +278,16 @@ export const MessageRail = memo(function MessageRail({
     observer.observe(container);
     observer.observe(content);
     if (rail !== null) observer.observe(rail);
+    /*
+     * **必须也观察刻度列自己**（2026-11-19 用户："滑块怎么不见了"）。
+     *
+     * `listViewHeight` 决定滑块高度（`scrollHeight <= clientHeight` 的判据也要它）；而它只在
+     * `measure()` 里读一次。列表是"有刻度才渲染"的 —— 首测那一刻它可能还没进 DOM 或高度为 0，
+     * 于是 `viewHeight = 0` → 模型早退返回 `bandHeight = 0` → 渲染条件 `band.height > 0` 把它
+     * **静默过滤掉**：刻度都在，滑块消失，且之后没有任何东西再触发测量（容器没变尺寸）。
+     */
+    const listEl = listRef.current;
+    if (listEl !== null) observer.observe(listEl);
     return () => observer.disconnect();
   }, [scrollContainer, contentRef, ticks, loadedIds]);
 
