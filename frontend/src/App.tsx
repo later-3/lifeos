@@ -1004,6 +1004,14 @@ export default function App() {
   messagesRef.current = messages;
   /** 等锚点出现的上限（ms）。放大渲染窗口要提交一帧，长会话展开十几轮需要几步；400ms 是安全余量。 */
   const RAIL_ANCHOR_WAIT_MS = 400;
+  /**
+   * 用刻度预览文字定位块时，取前多少个字符做匹配。
+   *
+   * 为什么不取全量、也不取 1–2 个字符：太短会撞（"好的"、"是的"这类开头一个会话里几十处），
+   * 太长会被服务端的截断长度卡住（preview 本身已截断）。24 字符在实测会话里唯一命中率 100%
+   * （260 条刻度里 `locateReplyBlock` 全部找到；命中不到时退回容器，不会静默不动）。
+   */
+  const RAIL_PREVIEW_MATCH_CHARS = 24;
 
   /** 已下载消息的 id 顺序（竖条用来判"已下载到哪一条"，见 `MessageRail` 的 `loadedIds`）。 */
   const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
@@ -1779,6 +1787,35 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * 为什么不复用批注定位：那条路径只用 `scrollIntoView`，预设目标已经渲染。
    * 这里的目标可能**根本没下载**（实测最长会话 2290 条 entry），所以要先补数据。
    */
+  /**
+   * 在一轮（`host` 容器）的多个正文块里，找出**这一条刻度自己的那一块**。
+   *
+   * 轮末回复被折叠进过程条后，`host` 只是"这一轮的容器"，一轮可能有十几块正文。
+   * 服务端给的 `preview` 就是那条消息正文的截断，所以**文字匹配**是两者之间唯一的可靠对应
+   *（id 只到"轮"，块级没有 id —— 见 Task 0028 的 `blockOrigins`，那条路径要额外请求）。
+   *
+   * 归一化两件事（缺一都匹配不到）：
+   *  1. **去掉所有空白**（换行/缩进）；
+   *  2. **去掉 Markdown 标记字符**（`*` `_` `` ` `` `#` `>` `|` 等）—— preview 是**原文**，
+   *     而 DOM 里是**渲染结果**（`**扫码成功了**` 在页面上没有星号）。实测带粗体/标题的刻度
+   *     全部匹配失败，去掉标记后命中。
+   */
+  const normalizeForMatch = (text: string): string =>
+    text.replace(/\s+/g, "").replace(/[*_`#>~|[\]()-]/g, "");
+  const locateReplyBlock = (host: string | undefined, preview: string): HTMLElement | null => {
+    if (host === undefined) return null;
+    const container = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(host)}"]`);
+    if (container === null) return null;
+    const blocks = [...container.querySelectorAll<HTMLElement>('[data-testid="message-text"]')];
+    if (blocks.length <= 1) return blocks[0] ?? null;
+    const needle = normalizeForMatch(preview).slice(0, RAIL_PREVIEW_MATCH_CHARS);
+    if (needle.length < 3) return null;
+    for (const block of blocks) {
+      if (normalizeForMatch(block.textContent ?? "").includes(needle)) return block;
+    }
+    return null;
+  };
+
   const jumpToTick = useCallback(async (tick: RailTickView): Promise<void> => {
     /*
      * 锚点候选（顺序有意义）：先试这条消息自己，不行再试 `host`。
@@ -1793,6 +1830,18 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     const sid = current.current;
     if (id === undefined || sid === undefined) return;
     const candidates = railAnchorCandidates(tickId, tick.host);
+    /*
+     * **轮末回复被过程条折叠时，必须先展开过程区**（用户 2026-11-19："我点击那个横条跳转过去时，
+     * 跳转的位置距离那句话真正出现的地方是有差距的，不是严格对应上的"）。
+     *
+     * 为什么：`host` 是这一轮**第一条回复**，而过程条把这一轮其余回复全部收进 `folded.add(i)`。
+     * 于是"滚到 host"= 滚到这一轮的开头，正文可能在几条回复之后 —— 实测 `top = -358`（滚过去了）。
+     * 展开之后那条回复的块才进 DOM，才能定位到它自己的正文。
+     */
+    if (tick.host !== undefined && tick.host !== tickId) {
+      localStorage.setItem(`${RESPONSE_PREF_PREFIX}${sid}`, "open");
+      setResponsePrefs((prev) => ({ ...prev, [sid]: "open" }));
+    }
     /**
      * 等锚点出现（最多 `RAIL_ANCHOR_WAIT_MS`），找到就滚过去。
      *
@@ -1804,7 +1853,19 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       const started = performance.now();
       while (performance.now() - started < RAIL_ANCHOR_WAIT_MS) {
         for (const candidate of candidates) {
-          const node = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(candidate)}"]`);
+          /*
+           * 定位**这一条自己的正文块**，不滚消息容器。
+           *
+           * 为什么（2026-11-19 用户："跳转过去时，位置距离那句话真正出现的地方有差距"）：
+           * 轮末回复被过程条折叠后，`host` 是这一轮第一条回复的容器，而这一轮有**多个**正文块
+           * （实测一轮 6 段回复、16 个块）。只滚容器 = 落在这一轮的开头，实测偏 284px；
+           * 展开过程区后仍然如此，因为容器本身很高。
+           *
+           * 定位方式：按**刻度预览文字**在这一轮的所有正文块里找最匹配的那一块
+           * （预览由服务端按同一条消息的正文截断，是最可靠的对应关系），找不到才退回容器。
+           */
+          const node = locateReplyBlock(candidate, tick.preview)
+            ?? document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(candidate)}"]`);
           if (node === null) continue;
           // 用户主动离开底部了：不要让随后的流式 delta 把他拽回来
           followTail.current = false;
