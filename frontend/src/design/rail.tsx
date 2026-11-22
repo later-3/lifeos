@@ -41,7 +41,13 @@ export type RailTab = {
   badge?: number;
 };
 
-export type RailGroup = { id: string; items: RailTab[] };
+export type RailGroup = { id: string; items: RailTab[];
+  /**
+   * 组后加分隔线（Task 0023 · S1 工作台）：rail 顶部「我」与业务列之间的一条 20px 细线
+   * （demo 已验证的形态，14-final-design §2.1 的 ┄）。为什么要显式 prop 而不是看位置猜：
+   * 分隔是**语义**（身份区 ≠ 业务区），不是装饰——由调用方声明，不靠 NavRail 猜第几组。
+   */
+  sep?: boolean; };
 
 export function NavRail({ groups, bottom }: {
   groups: RailGroup[];
@@ -94,6 +100,7 @@ export function NavRail({ groups, bottom }: {
       {groups.map((group) => (
         <div key={group.id} className="flex flex-col items-center gap-1">
           {group.items.map(item)}
+          {group.sep === true && <span aria-hidden className="my-0.5 h-px w-5 bg-nav-line" />}
         </div>
       ))}
       {bottom !== undefined && bottom.length > 0 && (

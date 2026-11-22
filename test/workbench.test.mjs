@@ -103,3 +103,85 @@ test("S1-W10 R3：桩条目必须带 _stub: true（界面显式标「示例」�
     assert.equal(f._stub, true, `桩卡 ${f.id} 应带 _stub 标记`);
   }
 });
+
+/* ════════════════ 前端纯函数（第 2 块：页面骨架的行为层）════════════════ */
+
+import {
+  calendarCellsOf, dayLevelOf, groupFeedByDay, filterFeedOf,
+  stateColumnsOf, taskCountsByProject, dayLabelOf, monthRangeOf, todayLocal,
+} from "../frontend/src/api/workbench.ts";
+
+test("S1-W11 本地日期口径与后端同一条（src/tasks.ts:123 localDate：本地时区切日）", () => {
+  // 东八区 2026-11-23 01:00 本地 = 2026-11-22T17:00Z：UTC 切日会说成 22，本地必须是 23
+  const fakeNow = new Date("2026-11-22T17:00:00.000Z");
+  const local = new Date(fakeNow.getTime() + 8 * 3600_000);
+  assert.equal(todayLocal(local), "2026-11-23");
+});
+
+test("S1-W12 monthRange：含两端、本地月的第一天到最后一天", () => {
+  assert.deepEqual(monthRangeOf(2026, 10), { from: "2026-11-01", to: "2026-11-30" });
+  assert.deepEqual(monthRangeOf(2024, 1), { from: "2024-02-01", to: "2024-02-29" });  // 闰年
+});
+
+test("S1-W13 热力四档 = Memos 相对阈值（count/max 的 .25/.5/.75）", () => {
+  assert.equal(dayLevelOf(0, 10), 0);
+  assert.equal(dayLevelOf(2, 10), 1);    // 0.2 ≤ 0.25
+  assert.equal(dayLevelOf(3, 10), 2);    // 0.3 ∈ (0.25, 0.5]
+  assert.equal(dayLevelOf(6, 10), 3);    // 0.6 ∈ (0.5, 0.75]
+  assert.equal(dayLevelOf(8, 10), 4);    // 0.8 > 0.75
+  assert.equal(dayLevelOf(10, 10), 4);
+  assert.equal(dayLevelOf(5, 0), 0);     // max=0（全空月）不炸
+});
+
+test("S1-W14 月历网格：周一开头、补位到整行、格子数 = 当月天数 + 前导", () => {
+  // 2026-11-01 是周日 → 周一开头的前导 = 6；30 天 → 6+30=36 → 6 行 = 42 格
+  const cells = calendarCellsOf(2026, 10, STUB_DAYS, "2026-11-22");
+  assert.equal(cells.length, 42);
+  assert.equal(cells[0].date, null);
+  assert.equal(cells[6].date, "2026-11-01");
+  // 归日只认 Day.date：STUB_DAYS 的 11-22 有 3 条 → 该格 count=3
+  const d22 = cells.find((c) => c.date === "2026-11-22");
+  assert.equal(d22?.count, 3);
+  assert.equal(d22?.isToday, true);
+});
+
+test("S1-W15 feed 分组：保持输入顺序、相邻同日合并（不做当天内折叠——边界 #9）", () => {
+  const groups = groupFeedByDay(STUB_FEED);
+  assert.deepEqual(groups.map((g) => g.day), ["2026-11-22", "2026-11-21"]);
+  assert.equal(groups[0].items.length, 3);
+});
+
+test("S1-W16 feed 筛选：动态=全部（kind 缺失也是动态，渲染层 fallback）/待办 S1 恒空 × 作者（me 按 kind=user）", () => {
+  assert.equal(filterFeedOf(STUB_FEED, "all", undefined).length, STUB_FEED.length);
+  // kind 缺失的卡（stub-4）也是「动态/笔记」（只是渲染降级），不得落到待办
+  assert.equal(filterFeedOf(STUB_FEED, "post", undefined).length, STUB_FEED.length);
+  assert.equal(filterFeedOf(STUB_FEED, "todo", undefined).length, 0);
+  // 我 = author.kind === "user"（不是 id 字符串猜）
+  assert.equal(filterFeedOf(STUB_FEED, "all", "me").every((f) => f.author.kind === "user"), true);
+  assert.equal(filterFeedOf(STUB_FEED, "all", "me").length, STUB_FEED.filter((f) => f.author.kind === "user").length);
+  // 具体作者
+  assert.equal(filterFeedOf(STUB_FEED, "all", "coder").every((f) => f.author.id === "coder"), true);
+});
+
+test("S1-W17 看板四列：排除 daily 只判 type；四列相加 = 非 daily 条数（R3 关系）", () => {
+  const columns = stateColumnsOf(STUB_TASKS);
+  const sum = columns.run.length + columns.done.length + columns.moved.length + columns.other.length;
+  const nonDaily = STUB_TASKS.filter((t) => t.type !== "daily").length;
+  assert.equal(sum, nonDaily);
+  assert.equal(columns.other.length, 1);          // 桩里唯一「其他」= 0005 已作废
+  assert.equal(columns.other[0].status.includes("已作废"), true);  // 原文保留（R4）
+});
+
+test("S1-W18 项目计数：running 只数进行中、total 只数非 daily（与看板同口径）", () => {
+  const counts = taskCountsByProject(STUB_TASKS);
+  const lifeos = counts.get("lifeos");
+  assert.equal(lifeos?.total, STUB_TASKS.filter((t) => t.projectId === "lifeos" && t.type !== "daily").length);
+  assert.equal(lifeos?.running, STUB_TASKS.filter((t) => t.projectId === "lifeos" && t.type !== "daily" && t.state === "进行中").length);
+});
+
+test("S1-W19 日期分隔文案：今天/昨天/M月D日（跨年补年份）", () => {
+  assert.equal(dayLabelOf("2026-11-22", "2026-11-22"), "今天");
+  assert.equal(dayLabelOf("2026-11-21", "2026-11-22"), "昨天");
+  assert.equal(dayLabelOf("2026-11-01", "2026-11-22"), "11月1日");
+  assert.equal(dayLabelOf("2025-12-31", "2026-11-22"), "2025年12月31日");
+});

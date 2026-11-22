@@ -10,6 +10,7 @@
 import type { GlobalTask, GlobalProject, Day, FeedItem, ActivityRef } from "./workbench";
 
 /* ── 内容流桩（S2 接真）────────────────────────────────────────── */
+// STUB: 等 GET /api/feed（S2）；替换时只改 api/workbench.ts 的 fetchFeed 函数体
 
 export type StubFeedItem = FeedItem & { _stub: true };
 
@@ -111,7 +112,8 @@ export const STUB_FEED: StubFeedItem[] = [
   },
 ];
 
-/* ── 全局任务桩（coder 的 /api/tasks 已交付但未合并；形状照契约，等合并后换真）──────── */
+/* ── 全局任务夹具（coder 的 /api/tasks 已交付；接真后本表只作为 UI 测试的 route mock 夹具）──────── */
+// STUB: 等 /api/tasks 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
 
 export const STUB_TASKS: GlobalTask[] = [
   {
@@ -167,7 +169,8 @@ export const STUB_TASKS: GlobalTask[] = [
   },
 ];
 
-/* ── 全局项目桩 ────────────────────────────────────────────────── */
+/* ── 全局项目夹具 ──────────────────────────────────────────── */
+// STUB: 等 /api/projects 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
 
 export const STUB_PROJECTS: GlobalProject[] = [
   { id: "lifeos", name: "lifeos", path: "/Users/xulater/Code/lifeos", icon: "🛠",
@@ -182,7 +185,8 @@ export const STUB_PROJECTS: GlobalProject[] = [
     agentIds: ["agent-3909"] },
 ];
 
-/* ── 日期索引桩（S1 只有 activity）──────────────────────────────── */
+/* ── 日期索引夹具（S1 只有 activity）──────────────────────────────── */
+// STUB: 等 /api/days 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
 
 function logAt(isoDate: string): string {
   // R1：log 的 at = 本地零点的 UTC（…T16:00:00.000Z 形态），不是 T00:00:00

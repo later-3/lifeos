@@ -29,6 +29,8 @@ import type { SelectionPrefs } from "./api/selection-prefs";
 import { quoteDraftOf } from "./api/selection-quote";
 import { SelectionToolbar } from "./views/selection-toolbar";
 import { SettingsSurface } from "./views/settings-surface";
+import { WorkbenchSurface } from "./views/workbench";
+import { WorkbenchCompose } from "./views/workbench-compose";
 import { calculatePalette, hex, saveTheme, type ThemeState } from "./design/theme";
 import {
   avatarSizeOf, fontVars, parsePrefs, widthVar, type DisplayPrefs,
@@ -834,6 +836,7 @@ export default function App() {
     history, setHistory, addingProject, setAddingProject,
     configAgent, setConfigAgent, mobileNav, setMobileNav,
     mobileNavLevel, setMobileNavLevel, peerTarget, setPeerTarget, renaming, setRenaming,
+    workbenchOpen, setWorkbenchOpen, composeOpen, setComposeOpen,
   } = overlays;
   const isMobile = useIsMobile();
   /**
@@ -866,11 +869,18 @@ export default function App() {
     reviewCandidatesLoading, setReviewCandidatesLoading,
   } = review;
   const { box, beginDrag, viewport, widths } = useColumnWidth({
-    folded: { nav: !showNav, groups: !showGroups },
-    panelOpen,
-    historyOpen: history !== undefined,
-    reviewOpen,
+    /*
+     * 工作台（Task 0023 · S1）：打开时左两列不参与预算（NO_LEFT），右栏才参与；
+     * 关闭时逐位回到旧公式（S1-R1 的零回归闸锁住这个等价性）。
+     * 面板/历史/检视是**对话工作台**的右侧物件，工作台页面没有它们 —— 同步置 false，
+     * 否则右栏会跟它们抢预算，把中栏压到 MIN_CHAT 以下。
+     */
+    folded: workbenchOpen ? { nav: true, groups: true } : { nav: !showNav, groups: !showGroups },
+    panelOpen: !workbenchOpen && panelOpen,
+    historyOpen: !workbenchOpen && history !== undefined,
+    reviewOpen: !workbenchOpen && reviewOpen,
     reviewRatio,
+    rightOpen: workbenchOpen,
   });
 
   const current = useRef<string | undefined>(undefined);
@@ -1166,9 +1176,10 @@ export default function App() {
     window.history.replaceState(window.history.state, "", `?${params.toString()}`);
   }, [agent?.id, selectedProjectId, sessionId]);
 
-  // 手机表面统一进浏览器 history：nav/history/file 至少各有一个可退的 sentinel。
+  // 手机表面统一进浏览器 history：nav/workbench/history/file 至少各有一个可退的 sentinel。
   // 内部层级变化复用同一个 sentinel；系统返回时退一层，再补一个 sentinel，直到根级关闭。
-  const mobileSurface = mobileNav ? "nav" : history !== undefined ? "history" : panelOpen ? "file" : undefined;
+  // 工作台（Task 0023）排在 nav 之后：它从抽屉里打开，打开时抽屉已关。
+  const mobileSurface = mobileNav ? "nav" : workbenchOpen ? "workbench" : history !== undefined ? "history" : panelOpen ? "file" : undefined;
   useEffect(() => {
     if (!isMobile) return;
     if (mobileSurface === undefined) { mobileHistoryPushed.current = false; return; }
@@ -1196,12 +1207,13 @@ export default function App() {
         }
         return;
       }
+      if (workbenchOpen) { setWorkbenchOpen(false); mobileHistoryPushed.current = false; return; }
       if (history !== undefined) { setHistory(undefined); mobileHistoryPushed.current = false; return; }
       if (panelOpen) { setPanelOpen(false); mobileHistoryPushed.current = false; }
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [isMobile, mobileNav, mobileNavLevel, history, panelOpen, setPanelOpen]);
+  }, [isMobile, mobileNav, mobileNavLevel, workbenchOpen, history, panelOpen, setPanelOpen]);
 
   /** 关闭手机表面：先把状态关掉，再消费 sentinel，避免把应用本身退出。 */
   function dismissMobile(close: () => void) {
@@ -1234,6 +1246,16 @@ export default function App() {
     setMobileNavLevel(level);
     setMobileNav(true);
   }
+
+  // 工作台（Task 0023 · S1）：桌面 Esc 退出（compose 模态打开时让位——它的焦点陷阱会拦 Esc）。
+  useEffect(() => {
+    if (!workbenchOpen || isMobile) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !composeOpen) setWorkbenchOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [workbenchOpen, isMobile, composeOpen]);
 
   /** 文件面板关闭入口：手机需要消费 history sentinel。 */
   function closeFilePanel() {
@@ -3773,9 +3795,10 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   // 图标轨常驻（VS Code Activity Bar 范式）：高亮 = 该列展开；点当前图标 = 收起；点未展开的 = 展开。
   // 展开前若右侧（完整历史/文件面板）开着，先关掉它——宽度预算同一套，避免挤爆聊天区。
   function toggleRail(key: "nav" | "groups") {
-    // 设置页开着时，点任何 rail 项都**先退出设置**（用户 2026-11-09：不要"只能再点设置才能退出"）。
+    // 设置/工作台开着时，点任何 rail 项都**先退出它**（用户 2026-11-09：不要"只能再点设置才能退出"）。
     // 退出后按原逻辑处理该列，用户视线直接落到他点的那一列上。
     if (settingsOpen) setSettingsOpen(false);
+    if (workbenchOpen) setWorkbenchOpen(false);
     const open = key === "nav" ? showNav : showGroups;
     const set = key === "nav" ? setShowNav : setShowGroups;
     if (open) { set(false); return; }
@@ -3784,11 +3807,15 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     set(true);
   }
   /**
-   * rail 内容（Task 0009 · 布局模型 L1；2026-11-09 用户二次裁决后定稿）。
+   * rail 内容（Task 0009 · 布局模型 L1；2026-11-09 用户二次裁决后定稿；Task 0023 · S1 加工作台）。
    *
-   * **两个列开关 + 一个功能页**：
+   * **顶部身份 + 两个列开关 + 一个功能页 + 一个动作**：
+   * - `我`（顶部头像）：**当前页 = 用户工作台**（aria-current）；点击 = 进/出工作台。
+   *   与设置互斥：打开一方时先关另一方（两张全页表面不能叠）。
    * - `助手`（toggle，showNav）：高亮 = 助手列展开，点击 = 开关该列（与改动前完全一致）；
-   * - `对话`（toggle，showGroups）：高亮 = 会话列展开，点击 = 开关该列（与改动前完全一致）；
+   *   工作台开着时不高亮（那两列不在场），点击 = 退出工作台并展开该列。
+   * - `对话`（toggle，showGroups）：同上。
+   * - `⊞ 写一条`（action）：弹「写一条」模态（S2 发布工具的界面先形）；点击后弹模态并返回。
    * - `设置`（tab，settingsOpen）：高亮 = 当前在设置页，点击 = 进/出设置（rail 底部）。
    *
    * 为什么不把两个列合并成一个「对话」tab（上一版试过）：Agent × Project × Session 三级里，
@@ -3798,17 +3825,33 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    */
   const railGroups = [
     {
+      id: "me",
+      sep: true,
+      items: [
+        {
+          key: "workbench", label: "我的工作台", active: workbenchOpen,
+          icon: profile === undefined
+            ? <span className="h-6.5 w-6.5 animate-pulse rounded-full bg-hover" aria-hidden="true" />
+            : <UserAvatar profile={profile} size={26} />,
+          onClick: () => {
+            if (settingsOpen) setSettingsOpen(false);
+            setWorkbenchOpen((open) => !open);
+          },
+        },
+      ],
+    },
+    {
       id: "columns",
       items: [
         {
-          key: "nav", label: "助手", mode: "toggle" as const, active: showNav,
+          key: "nav", label: "助手", mode: "toggle" as const, active: !workbenchOpen && showNav,
           icon: agent === undefined
             ? <AppIcon name="message-circle" size={18} />
             : <AgentAvatar id={agent.id} name={agent.name} avatar={agent.avatar} size={20} />,
           onClick: () => toggleRail("nav"),
         },
         {
-          key: "groups", label: "对话", mode: "toggle" as const, active: showGroups,
+          key: "groups", label: "对话", mode: "toggle" as const, active: !workbenchOpen && showGroups,
           icon: <AppIcon name="message-circle" size={18} />,
           onClick: () => toggleRail("groups"),
         },
@@ -3817,9 +3860,23 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   ];
   const railBottom = [
     {
-      key: "settings", label: "设置", mode: "tab" as const, active: settingsOpen,
+      // mode:"action"（底座 ③）：点击弹模态后返回，rail 上没有“当前在某页”的事实，不驻留
+      key: "compose", label: "写一条", mode: "action" as const, active: false,
+      icon: (
+        <span aria-hidden className="flex h-7 w-7 items-center justify-center rounded-full bg-accent-solid text-white">
+          <AppIcon name="plus" size={16} />
+        </span>
+      ),
+      onClick: () => setComposeOpen(true),
+    },
+    {
+      key: "settings", label: "设置", mode: "tab" as const, active: settingsOpen && !workbenchOpen,
       icon: <AppIcon name="settings" size={18} />,
-      onClick: () => setSettingsOpen((open) => !open),
+      onClick: () => {
+        // 两张全页表面互斥：进设置先出工作台（反之在工作台那个入口判）
+        if (workbenchOpen) setWorkbenchOpen(false);
+        setSettingsOpen((open) => !open);
+      },
     },
   ];
 
@@ -5193,6 +5250,25 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
         </div>
       )}
 
+      {/* 用户工作台（Task 0023 · S1）：与设置同一模式——覆盖除图标轨外的区域，对话区不卸载。
+          rail 上「我」是入口；工作台开着时右栏（月历）参与预算（layout() 的 rightOpen）。 */}
+      {workbenchOpen && !isMobile && (
+        <div className={`absolute inset-y-0 right-0 left-11 ${LAYER_CLASS.drawer}`}>
+          <WorkbenchSurface agents={agents} profile={profile} isMobile={false}
+            right={{ width: box.right, mode: box.rightMode, budget: box.rightBudget }}
+            onRightResizeStart={(event) => beginDrag("right", event)}
+            onClose={() => setWorkbenchOpen(false)} />
+        </div>
+      )}
+      {workbenchOpen && isMobile && (
+        <div className={`fixed inset-0 ${LAYER_CLASS.drawer} bg-surface`} style={{ height: "var(--app-height, 100dvh)" }}>
+          <WorkbenchSurface agents={agents} profile={profile} isMobile
+            right={{ width: 0, mode: "overlay", budget: 0 }}
+            onRightResizeStart={() => {}}
+            onClose={() => dismissMobile(() => setWorkbenchOpen(false))} />
+        </div>
+      )}
+
       {/* 检视面板（Task 0010）：与文件面板并存不互斥（D10）；手机上走全屏表面（mobile 模型，D17a 本期不做手机——这段只在桌面渲染） */}
       {/*
         检视面板（P7-S6）：手机会话**不再是"永不渲染"**，而是全屏表面（mobile.md §2）。
@@ -5254,6 +5330,11 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
           onClose={() => setConfigAgent(undefined)} />
       )}
 
+      {/* 「写一条」（rail ⊞，Task 0023 · S1 骨架）：发布 S2 接 Agent 工具；字段与交互现在定形 */}
+      {composeOpen && (
+        <WorkbenchCompose onClose={() => setComposeOpen(false)} />
+      )}
+
       {addingProject && (
         <DirectoryPicker onCancel={() => setAddingProject(false)} onSelect={registerProject} />
       )}
@@ -5306,6 +5387,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
         onNewSession={() => { dismissMobile(() => setMobileNav(false)); void newSession(); }}
         onAddProject={() => { dismissMobile(() => setMobileNav(false)); setAddingProject(true); }}
         onConfigAgent={() => { dismissMobile(() => setMobileNav(false)); if (agent !== undefined) setConfigAgent(agent); }}
+        /* 我的工作台（Task 0023 · 底座 ④的入口行）：关抽屉再开全屏表面（同一层 sentinel，不叠栈） */
+        onOpenWorkbench={() => { dismissMobile(() => setMobileNav(false)); setWorkbenchOpen(true); }}
         /* 会话动作（P7-S1）：关抽屉后复用桌面同一套实现 —— 重命名进 `renaming` 状态、
            删除进 `confirm` 对话框。不复制写逻辑，也不在这里直接调 API。 */
         onRenameSession={(sid, currentTitle) => {

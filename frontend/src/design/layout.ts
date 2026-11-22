@@ -325,15 +325,26 @@ export function layout(input: LayoutInput): Layout {
  * 把手语义的唯一来源：把手在列的**右缘** → 右拉变大（+1）；把手在列的**左缘**（右侧停靠面板）→ 右拉变小（-1）。
  * 以前是"if (key === 'c4')"写死的，新加 c5 就漏了 —— 方向必须由把手位置决定，不能由 key 名字决定。
  */
-export const HANDLE_SIGN: Record<keyof Widths, 1 | -1> = { c1: 1, c2: 1, c3: 1, c4: -1, c4t: 1, c5: -1 };
+/**
+ * 把手语义的唯一来源（Task 0023 · S1 扩到右栏）：把手在列的**右缘** → 右拉变大（+1）；
+ * 把手在列的**左缘**（右侧停靠面板）→ 右拉变小（-1）。
+ *
+ * `right` 与 c4/c5 同侧（都在视口右侧、把手在左缘）：往右拖 = 中栏变宽 = 右栏变小（-1）。
+ * 用 `keyof WidthsExt` 而不是 `keyof Widths`：right 现在是**合法宽度键**（ResizeKey 已含它），
+ * 类型上不承认它，调用点就只能在组件里写第二套拖动逻辑 —— 正是 2026-11-09 那次
+ * 「五处可拖只有两处跟手」的成因，不重演。
+ */
+export const HANDLE_SIGN: Record<keyof WidthsExt, 1 | -1> = { c1: 1, c2: 1, c3: 1, c4: -1, c4t: 1, c5: -1, right: -1 };
 
 /** 拖拽夹紧（纯函数，供 useColumnWidth 调用）。`limit` 为调用方从视口算出的上限（默认走常量表）。 */
-export function dragWidth(key: keyof Widths, startWidth: number, deltaX: number, limit?: number): number {
+export function dragWidth(key: keyof WidthsExt, startWidth: number, deltaX: number, limit?: number): number {
   return clampWidth(key, startWidth + HANDLE_SIGN[key] * deltaX, limit);
 }
 
-export function clampWidth(key: keyof Widths, value: number, limit?: number): number {
-  const [min, max] = WIDTH_LIMITS[key];
+export function clampWidth(key: keyof WidthsExt, value: number, limit?: number): number {
+  // right 用自己的常量区间（RIGHT_LIMITS）：它与六列的限制表同构但不同源
+  // （月历的几何下限 220 与聊天列无关），不硬塞进 WIDTH_LIMITS。
+  const [min, max] = key === "right" ? RIGHT_LIMITS : WIDTH_LIMITS[key];
   const ceiling = limit === undefined ? max : Math.min(max, limit);
   return Math.min(ceiling, Math.max(min, Math.round(value)));
 }
@@ -448,12 +459,15 @@ export function maxWidthOf(key: keyof WidthsExt, viewport: number, widths: Width
  * 方向由 `HANDLE_SIGN` 决定，见 `dragWidth`）。
  */
 export function dragCascade(
-  key: keyof Widths,
-  start: Widths,
+  key: keyof WidthsExt,
+  /* start 是 WidthsExt：右栏（right）拖动要读 start.right —— 六列的调用点传 Widths 也兼容
+     （Widths 可赋给 WidthsExt 吗？不 —— right 缺失会让 TS 报错，调用方必须给全）。
+     所以调用方（useColumnWidth）的 widths 状态本身就是 WidthsExt。 */
+  start: WidthsExt,
   deltaX: number,
   viewport: number,
   folded: Folded,
-): Partial<Widths> {
+): Partial<WidthsExt> {
   /*
    * **拖动的唯一语义：拖哪条边，哪条边跟手**（2026-11-10 重写）。
    *
@@ -466,8 +480,12 @@ export function dragCascade(
    * 现在：树变宽 = 查看器变窄（面板总宽、左缘、左列一概不动），跟手到
    * 「面板 − MIN_VIEWER」为止；想让面板整体更宽，拖**外层**（c4）的把手。
    */
+  if (key === "right") {
+    // 右栏（工作台月历列）：与 c1/c2/c5 同一档——普通单列拖动，没有嵌套关系。
+    return { right: dragWidth("right", start.right, deltaX, maxWidthOf("right", viewport, start, folded)) };
+  }
   if (RESIZE_PARENT[key] === undefined) {
-    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
+    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<WidthsExt>;
   }
   // 嵌套列：以**渲染宽**为基准（存储值可能被 layout 钳小过，拿它当基准会"拖了先不动"）。
   // 每帧都从「基准 + 累计位移」重算 → 同一鼠标位置永远同一结果（幂等，无累计漂移）。
