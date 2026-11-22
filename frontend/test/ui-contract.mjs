@@ -389,11 +389,14 @@ const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
 // Task 0009（2026-11-09 用户二次裁决）：rail 有**两类**开关，都不能少：
 //   ① 列开关（toggle）：助手 / 对话 —— 高亮 = 该列展开（aria-pressed），点击 = 开关该列；
 //   ② 功能页（tab）：设置（底部）—— 高亮 = 当前所在页（aria-current=page）。
+// Task 0023（2026-11-23 · S1，14-final-design §2.1 已批准）：再两类——
+//   ③ 顶部「我」（tab）：当前页 = 用户工作台（aria-current），工作台页面的入口；
+//   ④ 推底「写一条」（mode:action）：点击弹模态并返回，不驻留（rail.tsx 的第三类语义）。
 // 为什么两个列开关不合并：Agent × Project × Session 三级里两列可各自收起，是本产品与 LobeHub 的差异点
 // （用户原话：「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的」）。
-check("rail 两个列开关 + 底部设置 = 3 个按钮", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
-check("按钮顺序固定：助手 → 对话 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,设置");
+check("rail 5 位：我 + 助手 + 对话 + 写一条 + 设置", await railButtons.count() === 5, `实际 ${await railButtons.count()} 个`);
+check("按钮顺序固定：我 → 助手 → 对话 → 写一条 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "我的工作台,助手,对话,写一条,设置");
 check("列开关用 aria-pressed 表达展开态（两个都为 true）", await page.evaluate(() => {
   const toggles = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
     .filter((b) => b.hasAttribute("aria-pressed"));
@@ -694,8 +697,8 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     const hover = await overlayOf();
     results.push({ label, rest, hover, changed: rest === "0" && hover === "1" });
   }
-  check("rail 三个按钮 hover 都有反馈（含已激活的列开关）",
-    results.length === 3 && results.every((r) => r.changed === true),
+  check("rail 全部按钮 hover 都有反馈（含已激活的列开关；Task 0023 起 5 位）",
+    results.length === 5 && results.every((r) => r.changed === true),
     results.map((r) => `${r.label}:${r.changed ? "✓" : "✗"}`).join(" "));
   await railPage.close();
 }
@@ -2990,7 +2993,7 @@ const REQUIRED = [
   "empty.png", "picker.png", "modal.png",
   "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块",
   "显示设置：滑块真生效",
-  "rail 三个按钮 hover 都有反馈",
+  "rail 全部按钮 hover 都有反馈",
   "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致",
   "头部快捷显示设置：入口存在（桌面）",
   "头部快捷显示设置：贴锚点下方 6px 且不越出视口",

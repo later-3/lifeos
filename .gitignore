@@ -28,3 +28,4 @@ Snipaste_*.png
 # node_modules/ 只匹配目录；worktree 里是 symlink，需要不带斜杠的模式（0018 实测：软链进了检视 diff）。
 .lifeos-worktree.json
 node_modules
+.workbench-shots/

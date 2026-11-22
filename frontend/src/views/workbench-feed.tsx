@@ -137,6 +137,17 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
 }) {
   const toast = useToast();
   const placeholderAction = () => toast("这条是示例——点赞 / 评论在 S4 接真数据", "success");
+  const filterName0 = agentFilter === undefined
+    ? undefined
+    : agentFilter === "me" ? "我" : (agents.find((agent) => agent.id === agentFilter)?.name ?? agentFilter);
+  /** 筛选 chip：骨架与空态**都要**可见（否则筛出一个空结果时没有出口，用户被困住）。 */
+  const clearChip = filterName0 !== undefined ? (
+    <span className="mb-2.5 inline-flex">
+      <MicroButton tone="accent" onClick={onClearFilter} data-testid="workbench-clear-filter">
+        只看 {filterName0} ×
+      </MicroButton>
+    </span>
+  ) : undefined;
   if (loading) {
     return <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3"><Skeleton rows={5} /></div>;
   }
@@ -146,7 +157,8 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
       ? undefined
       : agentFilter === "me" ? "我" : (agents.find((agent) => agent.id === agentFilter)?.name ?? agentFilter);
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3">
+        {clearChip}
         <EmptyState
           title={tab === "todo" ? "待办还没有数据（S3 接入）" : who !== undefined ? `${who} 还没有任何内容` : "还没有内容"}
           hint={tab === "todo" ? "用户待办是 S3 的范围；现在的待办都在各 Agent 的 todo/ 里。" : undefined} />
@@ -154,18 +166,9 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
     );
   }
   const groups = groupFeedByDay(items);
-  const filterName = agentFilter === undefined
-    ? undefined
-    : agentFilter === "me" ? "我" : (agents.find((agent) => agent.id === agentFilter)?.name ?? agentFilter);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3" data-testid="workbench-feed">
-      {filterName !== undefined && (
-        <span className="mb-2.5 inline-flex">
-          <MicroButton tone="accent" onClick={onClearFilter} data-testid="workbench-clear-filter">
-            只看 {filterName} ×
-          </MicroButton>
-        </span>
-      )}
+      {clearChip}
       {groups.map((group) => (
         <section key={group.day} className="mb-5">
           {/* 日期分隔（Misskey 同构）：左右细线 + 日期 */}

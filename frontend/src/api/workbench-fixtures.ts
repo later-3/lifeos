@@ -2,7 +2,7 @@
  * 工作台**假数据**的唯一居所（Task 0023 · S1 任务书 §3）。
  *
  * 规则：
- * - 除此之外任何文件不得出现桩数据（`grep -rn "STUB:" frontend/src/ | wc -l` 是剩余量，S4 归零）；
+ * - 除此之外任何文件不得出现桩数据（grep 全 src 计 STUB 记号是剩余量，S4 归零）；
  * - 数字是 2026-11-22 快照，**仅造数用；断言不依赖具体数值（S1-contract §6-R3）**；
  * - 桩条目带 `_stub: true`，渲染层据此显式标「示例」——假数据不能让人误以为是真的；
  * - 形状比真数据**更宽容**：`kind` 缺失是合法输入（architect S1 回应③），渲染层 fallback 纯文本卡。
@@ -112,8 +112,7 @@ export const STUB_FEED: StubFeedItem[] = [
   },
 ];
 
-/* ── 全局任务夹具（coder 的 /api/tasks 已交付；接真后本表只作为 UI 测试的 route mock 夹具）──────── */
-// STUB: 等 /api/tasks 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
+/* ── 全局任务夹具（第 3 块已接真：/api/tasks 由数据层消费；本表降级为纯测试夹具，只喂 node 测试）──── */
 
 export const STUB_TASKS: GlobalTask[] = [
   {
@@ -169,8 +168,7 @@ export const STUB_TASKS: GlobalTask[] = [
   },
 ];
 
-/* ── 全局项目夹具 ──────────────────────────────────────────── */
-// STUB: 等 /api/projects 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
+/* ── 全局项目夹具（第 3 块已接真，同上）──────────────────────────────────────────── */
 
 export const STUB_PROJECTS: GlobalProject[] = [
   { id: "lifeos", name: "lifeos", path: "/Users/xulater/Code/lifeos", icon: "🛠",
@@ -185,8 +183,7 @@ export const STUB_PROJECTS: GlobalProject[] = [
     agentIds: ["agent-3909"] },
 ];
 
-/* ── 日期索引夹具（S1 只有 activity）──────────────────────────────── */
-// STUB: 等 /api/days 接真（第 3 块）；接真后降级为纯测试夹具，标记删除
+/* ── 日期索引夹具（第 3 块已接真，同上；S1 只有 activity）──────────────────────── */
 
 function logAt(isoDate: string): string {
   // R1：log 的 at = 本地零点的 UTC（…T16:00:00.000Z 形态），不是 T00:00:00
