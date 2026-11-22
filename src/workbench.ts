@@ -14,8 +14,9 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { listAgents } from "./agents.ts";
 import { resolveHome } from "./home.ts";
+import { log } from "./logging.ts";
 import { scanProjectDirs } from "./projects.ts";
-import { readGlobalProject } from "./project-registry.ts";
+import { manifestPath as manifestPathOf, readGlobalProject } from "./project-registry.ts";
 import { scanProject } from "./session-rows.ts";
 import { displayTitleOf } from "./row-activity.ts";
 import { listTasks, localDate, type TaskSummary } from "./tasks.ts";
@@ -33,6 +34,9 @@ export type GlobalTask = TaskSummary & {
   projectId: string;
   state: TaskState;
 };
+// 注意：TaskSummary 的 `path` / `docPath` 是**服务器内部定位的绝对路径**，会随本对象到前端——
+// 前端**不得显示、不得当 id 用**（id/dirName 才是稳定标识；工作区形态下同一 Task 两次请求的
+// path 不同）。S2/S3 若确无消费则裁剪这两个字段（reviewer S1 检视 Q4，2026-11-22）。
 
 /** 可见的绑定：该 Agent 有目录（结构即事实）且没被"从列表移除"。 */
 async function visibleProjectsOf(agent: { id: string; hiddenProjectIds?: string[] }): Promise<string[]> {
@@ -106,13 +110,29 @@ export async function globalProjects(): Promise<GlobalProject[]> {
     }
   }
   const home = resolveHome();
-  const dirs = (await readdir(join(home, "projects"), { withFileTypes: true }).catch(() => []))
+  const dirs = (await readdir(join(home, "projects"), { withFileTypes: true }).catch((err: unknown) => {
+    // ENOENT = 还没有 projects/（家目录没 init 全）是正常分支；其他读失败按 backend 2.9 留痕。
+    // 留痕后按空表继续——聚合接口不因单条读失败变 500（宁可少不猜）。
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      void log.debug("workbench", "globalProjects", "读 projects 目录失败，按无全局项目处理", {
+        details: { path: join(home, "projects"), message: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    return [];
+  }))
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => entry.name);
 
   const items: GlobalProject[] = [];
   for (const id of dirs) {
-    const manifest = await readGlobalProject(id).catch(() => undefined);
+    // 读失败的留痕在 `project-registry.ts` 的 readGlobalProject 内部（病根一处修，
+    // ENOENT=无 project.json 是正常分支）；这里的 catch 只兜底意外抛出。
+    const manifest = await readGlobalProject(id).catch((err: unknown) => {
+      void log.debug("workbench", "globalProjects", "readGlobalProject 意外失败，该目录不计", {
+        details: { pid: id, path: manifestPathOf(id), message: err instanceof Error ? err.message : String(err) },
+      });
+      return undefined;
+    });
     if (manifest === undefined) continue;   // 没有 project.json：不是全局项目（longagentshare）
     // 名字：project.json 的 name 为准；空则 basename(path) 兜底；再空则 id（不编名字）。
     const fallback = (manifest.path ?? "").split(/[\\/]/).filter((part) => part !== "").at(-1) ?? manifest.id;
@@ -250,7 +270,18 @@ export async function dayIndex(from: string, to: string): Promise<Day[]> {
       }
     }
     for (const task of await listTasks({ agentId, projectId })) {
-      const raw = await readFile(join(task.docPath, "log.md"), "utf8").catch(() => undefined);
+      const raw = await readFile(join(task.docPath, "log.md"), "utf8").catch((err: unknown) => {
+        // 没有 log.md（daily 类、未写日志的 task）是常态，不算失败；
+        // 其他失败（权限/IO）按 backend 2.9 留痕，不当"没有 log"。
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          void log.debug("workbench", "dayIndex", "读 log.md 失败，该 task 的 log 段不参与归日", {
+            agentId, projectId,
+            // path 进 details 只为定位（不是文件正文；2.10 正文零出现）。
+            details: { task: task.id, path: join(task.docPath, "log.md"), message: err instanceof Error ? err.message : String(err) },
+          });
+        }
+        return undefined;
+      });
       if (raw === undefined) continue;
       for (const { date, heading } of dateHeadingsOf(raw)) {
         push(date, { kind: "log", agentId, projectId, taskId: task.id, taskTitle: task.title, heading, at: localMidnightIsoOf(date) });

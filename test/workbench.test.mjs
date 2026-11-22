@@ -9,11 +9,12 @@
 // 真实数字写在任务 `log.md` 的实测记录里。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startOn } from "./server-harness.mjs";
 import { installHome } from "../src/home.ts";
+import { flushLogs, initLogs } from "../src/logging.ts";
 import { createAgent } from "../src/agents.ts";
 import { registerProject } from "../src/projects.ts";
 import { createTask } from "../src/tasks.ts";
@@ -399,4 +400,120 @@ test("S1-18 dateHeadingOf / isDateString 的边界：不认假日期、不认非
   assert.equal(isDateString("2026-11-5"), false);
   assert.equal(isDateString("2026-1-05"), false);
   assert.equal(isDateString(""), false);
+});
+
+// —— backend 2.9（错误必须可见）：非 ENOENT 的读失败必须留痕，且接口不因它变坏 ——
+
+/** 与 src/logging.ts 同口径的本地日期（backend-<date>.jsonl 文件名）。 */
+const logDay = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** 读（或等）本 TEMP 家目录今天的 backend 日志，返回解析后的行。
+ *  `until` 可以是"最少几行"（number）**或**谓词（函数）——
+ *  写是 fire-and-forget（void log.debug），必须**按内容等**：按行数等会在"目标行还没落盘"
+ *  时提前返回，后续行在 cleanup(rm) 之后才写 → ENOENT（S1-19 的 1/2 假红就是这么来的）。 */
+async function readLogRows(home, until) {
+  const file = join(home, "logs", `backend-${logDay()}.jsonl`);
+  const predicate = typeof until === "function" ? until : (rows) => rows.length >= until;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    // **并发全量下必须每轮把 env 设回来**：node --test 默认并发跑多个文件，
+    // 其他文件的用例会把 LIFEOS_HOME 切走；log.debug 的落盘路径是 resolveHome()（每次读 env），
+    // env 被切走时这一行会写进**别家**的 logs → 本家永远等不到（第二次竞态的根因）。
+    process.env.LIFEOS_HOME = home;
+    const raw = await readFile(file, "utf8").catch(() => "");
+    const rows = raw.trim() === "" ? [] : raw.trim().split("\n").map((line) => JSON.parse(line));
+    if (predicate(rows)) return rows;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  process.env.LIFEOS_HOME = home;
+  return [];
+}
+
+// 造 EISDIR 的方式：把一个 Task 的 `log.md` **换成目录**（readFile 对目录返回 EISDIR）。
+// 这比改权限稳：chmod 在部分 CI 环境不生效（root 忽略权限位）。
+test("S1-19 backend 2.9：读 log.md 的非 ENOENT 失败（EISDIR）必须留痕，接口仍 200 且其余条目不少", async () => {
+  process.env.LIFEOS_LOG_DEBUG = "1";   // 留痕用 debug 级；测试里显式打开（logging 的默认静默不变）
+  const home = await freshHome();
+  await initLogs();
+  clearSessionScanCache();
+
+  // 两个 Task：一个把 log.md 换成目录（造 EISDIR），一个正常写日志 —— 用它证明"其余条目一条不少"。
+  const bad = await createTask(ctx("lifeosagent", "workspace"), { title: "EISDIR 探针", type: "development", category: "C" });
+  const good = await createTask(ctx("lifeosagent", "workspace"), { title: "正常日志", type: "development", category: "C" });
+  assert.ok(!("code" in bad) && !("code" in good));
+  const badLog = join(bad.task.docPath, "log.md");
+  await rm(badLog);
+  await mkdir(badLog);   // 目录！readFile → EISDIR
+  await writeFile(join(good.task.docPath, "log.md"), "# 日志\n\n## 2026-11-12 · 正常任务的日志\n", "utf8");
+
+  const { server, base } = await startOn(home);
+  try {
+    // 服务进程读的也是 env：fetch 触发的扫描在 createApp 的闭包里用 resolveHome()。
+    // 并发文件会在 fetch 期间切 env，所以 fetch 前**再设一次**（本行是"扫描窗口"的护栏）。
+    process.env.LIFEOS_HOME = home;
+    const response = await fetch(`${base}/api/days?from=2026-11-12&to=2026-11-12`);
+    // ① 接口仍 200，且正常 Task 的 log 条目一条不少
+    assert.equal(response.status, 200, "一条读失败不得把整个索引变 500/空");
+    const day = (await response.json()).items.find((entry) => entry.date === "2026-11-12");
+    assert.ok(day !== undefined);
+    const logs = day.activity.filter((entry) => entry.kind === "log");
+    assert.equal(logs.length, 1, "正常 Task 的 log 条目仍然在（失败的那条缺席，但它不拖垮别人）");
+    assert.equal(logs[0].taskId, good.task.id);
+
+    // ② 失败必须留痕（非 ENOENT 才记；这里是 EISDIR）
+    // 等"含 EISDIR 的行"——不按行数等：行数到位不等于**那一行**到位
+    //（测试侧竞态修法；产品侧 catch 是同步判 code，没有这个窗口）。
+    const rows = await readLogRows(home, (parsed) =>
+      parsed.some((row) => row.module === "workbench" && row.fn === "dayIndex"
+        && typeof row.details?.message === "string" && row.details.message.includes("EISDIR")));
+    const marks = rows.filter((row) => row.module === "workbench" && row.fn === "dayIndex"
+      && typeof row.details?.message === "string" && row.details.message.includes("EISDIR"));
+    if (marks.length < 1) {
+      // 即时诊断：把"本家用例"的日志文件现状、LIFEOS_HOME 当前值打出来（找到根因后移除）
+      const { readdir } = await import("node:fs/promises");
+      let filesHere = [];
+      try { filesHere = await readdir(join(home, "logs")); } catch { filesHere = ["(logs 目录不存在)"]; }
+      const debugLines = (await readFile(join(home, "logs", `backend-${logDay()}.jsonl`), "utf8").catch(() => ""))
+        .split("\n").filter((line) => line.includes("workbench")).slice(0, 5);
+      console.error("S1-19 诊断：", JSON.stringify({
+        envHome: process.env.LIFEOS_HOME,
+        caseHome: home,
+        sameHome: process.env.LIFEOS_HOME === home,
+        filesHere, debugLines,
+      }, null, 2));
+    }
+    assert.ok(marks.length >= 1, `必须有一条留痕（module=workbench fn=dayIndex message 含 EISDIR），实际 ${JSON.stringify(rows)}`);
+    // details 里只有 ID 与路径，没有正文（backend 2.10）
+    assert.equal((marks[0].details.message ?? "").length < 200, true);
+  } finally {
+    server.close();
+    await cleanup(home);
+    delete process.env.LIFEOS_LOG_DEBUG;
+  }
+});
+
+// ENOENT（无 log.md / 无 project.json）是**正常分支**，不产生任何留痕 ——
+// 否则一次冷扫 ~66 次"这个 Task 没有 log.md"会把日志刷成噪音（architect 裁决 2026-11-22）。
+test("S1-20 backend 2.9：ENOENT 是正常分支，不留痕（日志里 0 条 workbench 记录）", async () => {
+  process.env.LIFEOS_LOG_DEBUG = "1";
+  const home = await freshHome();
+  await initLogs();
+  clearSessionScanCache();
+  // 不给任何 Task 写 log.md（development 类创建时不带 log）→ 全是 ENOENT
+  const created = await createTask(ctx("lifeosagent", "workspace"), { title: "无日志", type: "development", category: "C" });
+  assert.ok(!("code" in created));
+
+  const { server, base } = await startOn(home);
+  try {
+    const response = await fetch(`${base}/api/days?from=2026-11-01&to=2026-11-30`);
+    assert.equal(response.status, 200);
+    await readLogRows(home, (rows) => rows.length >= 1).catch(() => []);   // 给写盘一点时间（fire-and-forget）
+    const rows = await readLogRows(home, 0);
+    const wb = rows.filter((row) => row.module === "workbench");
+    assert.deepEqual(wb, [], `ENOENT 不得留痕，实际 ${JSON.stringify(wb)}`);
+  } finally {
+    server.close();
+    await cleanup(home);
+    delete process.env.LIFEOS_LOG_DEBUG;
+  }
 });

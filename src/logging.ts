@@ -4,7 +4,7 @@
 // - 正文/凭据零出现：用户消息正文在会话 JSONL，details 里的 key/token/password/cookie/auth 字段一律丢弃；
 // - debug 默认静默（info 起可读），环境变量 LIFEOS_LOG_DEBUG=1 打开 debug。
 import { appendFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveHome } from "./home.ts";
 
 export type LogLevel = "error" | "warn" | "info" | "debug";
@@ -65,8 +65,13 @@ let chain: Promise<unknown> = Promise.resolve();
 let logsDirReady = false;
 async function appendLine(file: string, row: Record<string, unknown>): Promise<void> {
   const previous = chain;
+  // file 与它的目录都在【调用时】求值：`resolveHome()` 是进程级可变状态（测试/多 home 切换），
+  // 若在【执行时】再求，链排到这条写时 home 已被切换，mkdir 与 appendFile 会各写各的目录
+  // ——实测（0032 · S1-19 全量首跑）：前家用例的 cleanup 与下一个用例的写赛跑，
+  // 出现「mkdir 建在新家、appendFile 开旧家的文件」→ ENOENT/EINVAL，行静默丢。
+  const dir = dirname(file);
   const work = previous.then(async () => {
-    try { await mkdir(logsDir(), { recursive: true, mode: 0o700 }); } catch { return; }
+    try { await mkdir(dir, { recursive: true, mode: 0o700 }); } catch { return; }
     await appendFile(file, JSON.stringify(row) + "\n", { encoding: "utf8", flag: "a" });
   });
   chain = work;
@@ -93,6 +98,18 @@ async function write(level: LogLevel, module: string, fn: string | undefined, ms
   };
   await ensureLogsDir();
   await appendLine(backendFile(), row);
+}
+
+/**
+ * 等待排队的写全部落盘（测试与排障用）。
+ *
+ * 为什么必须导出：`log.*` 是 fire-and-forget（`void log.debug(...)`），写操作排在**模块级**
+ * `chain` 上。测试切了 `LIFEOS_HOME` 后，旧家目录的写仍可能排在链尾 —— 断言"日志里有没有
+ * 某条"前必须先排空，否则读到的是上一家的文件、或自己的还没写（S1-19 全量首跑就是这么假红的：
+ * 单文件 14/14、全量 1745/1746，前家用例的 cleanup 与本家断言赛跑）。
+ */
+export async function flushLogs(): Promise<void> {
+  await chain.catch(() => undefined);
 }
 
 /** 便捷入口：log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId }) */
