@@ -510,8 +510,11 @@ test("S1-20 backend 2.9：ENOENT 是正常分支，不留痕（日志里 0 条 w
     // 所以它出现时那几行必然已落盘 —— 与 S1-19 等 EISDIR 行同一形状。
     const rows = await readLogRows(home, (parsed) => parsed.some((row) =>
       row.module === "http" && typeof row.details?.path === "string" && row.details.path.includes("/api/days")));
-    // **正向控制已内建在栅栏里**（等的就是 http 行 = 管道对这个 home 通了），
-    // 再断言 0 条 workbench —— 否则"文件根本没写"与"写了但没有 ENOENT 留痕"无法区分。
+    // **正向控制必须是独立断言，不能寄生在"等待"里**（architect 2026-11-23 复核裁决）：
+    // readLogRows 等不到会**超时返回 []**，而 `deepEqual([], [])` **恒真** ——
+    // 若只靠"栅栏自证"，日志管道断掉时这条用例照样绿（实测注入 backendFile() 断管 → 绿 3.2s = 60×50ms 全超时）。
+    // 显式证明"栅栏真的等到了"，之后"空集里没有 workbench"才有意义。
+    assert.ok(rows.length > 0, `栅栏没等到 http 请求行（日志管道对该 home 不通？），实际 ${JSON.stringify(rows)}`);
     const wb = rows.filter((row) => row.module === "workbench");
     assert.deepEqual(wb, [], `ENOENT 不得留痕，实际 ${JSON.stringify(wb)}`);
   } finally {
