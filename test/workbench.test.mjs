@@ -456,17 +456,6 @@ test("S1-19 backend 2.9：读 log.md 的非 ENOENT 失败（EISDIR）必须留�
 
   const { server, base } = await startOn(home);
   try {
-    // 诊断：fetch 前先确认 bad 的 log.md 此刻在**本家**且确实是目录（找到根因后移除）
-    {
-      const { stat } = await import("node:fs/promises");
-      const st = await stat(badLog).catch((err) => `缺失(${err.code})`);
-      console.error("S1-19 探针C（fetch 前）：", JSON.stringify({
-        badLog: badLog.replace(home, "~"),
-        isDir: st instanceof Object && "isDirectory" in st ? st.isDirectory() : st,
-        envHome: process.env.LIFEOS_HOME,
-        sameHome: process.env.LIFEOS_HOME === home,
-      }));
-    }
     // 服务进程读的也是 env：fetch 触发的扫描在 createApp 的闭包里用 resolveHome()。
     // 并发文件会在 fetch 期间切 env，所以 fetch 前**再设一次**（本行是"扫描窗口"的护栏）。
     process.env.LIFEOS_HOME = home;
