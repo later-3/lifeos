@@ -78,7 +78,7 @@ async function appendLine(file: string, row: Record<string, unknown>): Promise<v
   // **整机日志从这一刻起永久静默**，且每条都报同一个旧错（2026-11-23 architect 实测：
   // 把 backend jsonl 做成目录造 EISDIR，第二条也报 EISDIR 且文件不存在）。
   // "日志最先坏掉时恰恰最需要日志" —— 所以失败只允许报一次，不允许毒化后续。
-  chain = work.catch(() => undefined);
+  chain = work;
   return work.catch((err) => { console.error("[logs] 写失败：", err instanceof Error ? err.message : String(err)); });
 }
 
