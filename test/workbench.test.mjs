@@ -9,12 +9,12 @@
 // 真实数字写在任务 `log.md` 的实测记录里。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, rmdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startOn } from "./server-harness.mjs";
 import { installHome } from "../src/home.ts";
-import { flushLogs, initLogs } from "../src/logging.ts";
+import { flushLogs, initLogs, log } from "../src/logging.ts";
 import { createAgent } from "../src/agents.ts";
 import { registerProject } from "../src/projects.ts";
 import { createTask } from "../src/tasks.ts";
@@ -525,6 +525,40 @@ test("S1-20 backend 2.9：ENOENT 是正常分支，不留痕（日志里 0 条 w
     assert.deepEqual(wb, [], `ENOENT 不得留痕，实际 ${JSON.stringify(wb)}`);
   } finally {
     server.close();
+    await cleanup(home);
+    delete process.env.LIFEOS_LOG_DEBUG;
+  }
+});
+
+// —— 一次写失败不得毒死日志链（architect 2026-11-23 实测的存量缺陷）——
+// `chain = work` 存的是未处理的 promise：第一次 appendFile 失败后 chain 变 rejected，
+// 下一次 `previous.then(cb)` 在 rejected 上直接跳过 cb —— 之后每一条都写不进去，
+// 且只打印同一个旧错，看起来像"一直在同一个地方失败"。生产上一次瞬时失败
+// （磁盘满/权限/路径被占）= 整机日志永久静默，"错误必须可见"的支柱一次性失效。
+test("S1-21 一次写失败不得毒死日志链：EISDIR 之后日志继续写、且第二条内容正确", async () => {
+  process.env.LIFEOS_LOG_DEBUG = "1";
+  const home = await freshHome();
+  await initLogs();
+  try {
+    // ① 造一次失败：把今天的 backend 文件做成目录 → log.info 必失败（EISDIR）
+    const today = join(home, "logs", `backend-${logDay()}.jsonl`);
+    await mkdir(today);
+    log.info("probe", "poison", "第一条（必失败）");
+    await flushLogs();
+    // ② 解除障碍：rmdir 后第二条必须真的落盘
+    await rmdir(today);
+    log.info("probe", "after", "第二条（必须成功）");
+    await flushLogs();
+    const raw = await readFile(today, "utf8");
+    const rows = raw.trim().split("\n").map((line) => JSON.parse(line));
+    const second = rows.find((row) => row.msg === "第二条（必须成功）");
+    assert.ok(second !== undefined, `第二条必须真的落盘，实际 ${JSON.stringify(rows)}`);
+    assert.equal(second.module, "probe");
+    assert.equal(second.fn, "after");
+    // ③ 失败的那条不在文件里（它写的是目录），且没有以任何形式重试混进来
+    assert.equal(rows.filter((row) => row.msg === "第一条（必失败）").length, 0,
+      "失败的行不该出现在文件里（它写的是目录）");
+  } finally {
     await cleanup(home);
     delete process.env.LIFEOS_LOG_DEBUG;
   }

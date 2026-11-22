@@ -73,7 +73,12 @@ async function appendLine(file: string, row: Record<string, unknown>): Promise<v
     try { await mkdir(dir, { recursive: true, mode: 0o700 }); } catch { return; }
     await appendFile(file, JSON.stringify(row) + "\n", { encoding: "utf8", flag: "a" });
   });
-  chain = work;
+  // chain 存的是**已处理**的 promise：一次写失败（磁盘满 / 权限 / 路径被占）
+  // 若把 rejected 留在链上，下一次 `previous.then(cb)` 会在 rejected 上直接跳过 cb ——
+  // **整机日志从这一刻起永久静默**，且每条都报同一个旧错（2026-11-23 architect 实测：
+  // 把 backend jsonl 做成目录造 EISDIR，第二条也报 EISDIR 且文件不存在）。
+  // "日志最先坏掉时恰恰最需要日志" —— 所以失败只允许报一次，不允许毒化后续。
+  chain = work.catch(() => undefined);
   return work.catch((err) => { console.error("[logs] 写失败：", err instanceof Error ? err.message : String(err)); });
 }
 
