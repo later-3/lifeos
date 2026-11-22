@@ -369,7 +369,12 @@ export const RESIZE_PARENT: Partial<Record<keyof Widths, keyof Widths>> = {
  * 该函数是 `layout()` 的逆运算：拿掉目标列自身的宽度，算剩下的空间最多能给它多少
  * —— 且不突破 `overlayLeft` 阈值（否则用户拖宽反而丢列）。
  */
-export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, folded: Folded): number {
+export function maxWidthOf(key: keyof WidthsExt, viewport: number, widths: Widths, folded: Folded): number {
+  /*
+   * 参数是 `keyof WidthsExt`（= keyof Widths + "right"）：右栏是**合法宽度键**，
+   * 这件事在类型上成立，函数体里不需要 `as string` cast。
+   * 传入 Widths（不含 right）调用的既有代码不受影响 —— keyof Widths 是 keyof WidthsExt 的子集。
+   */
   const rail = RAIL;
   // 左侧两列：只有展开的列占宽
   const c1 = folded.nav ? 0 : widths.c1;
@@ -397,10 +402,10 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
    * 视口 − 图标轨 − 聊天保底。不写常量上限（520 是 c2 那个自创 440 的同款病）。
    * 注意不减 c1/c2：右栏只在**工作台**页面出现，那个页面没有左列。
    *
-   * 参数类型是 `keyof Widths`（不含 "right"，WidthsExt 才有）——但调用方（useColumnWidth）
-   * 与测试都会传 "right"，所以这里用 `as string` 拓宽比较，TS2367 不再误报。
+   * 参数类型是 `keyof WidthsExt`（含 "right"）。将来 `Widths` 扩容（如再加一个键）
+   * 要同步扩 `WidthsExt`，否则新键过不了这里的类型检查 —— 这是刻意的闸，不是负担。
    */
-  if ((key as string) === "right") {
+  if (key === "right") {
     return Math.max(RIGHT_LIMITS[0], viewport - rail - MIN_CHAT);
   }
   if (key === "c4t") {

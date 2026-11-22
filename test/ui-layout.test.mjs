@@ -434,7 +434,16 @@ const NO_LEFT = { nav: true, groups: true };   // 工作台没有左列（两列
 const WORKBENCH = { viewport: 1280, widths: DEFAULT_WIDTHS, requested: NO_LEFT, panelOpen: false, rightOpen: true };
 const wbLayout = (v) => layout({ ...WORKBENCH, viewport: v });
 
-test("S1-R1 不传 rightOpen 时，layout() 的全部既有字段与 S1 之前逐位相同（对话工作台零回归）", () => {
+test("S1-R1 不传 rightOpen 时，chat 等于 S1 前的旧公式（对话工作台零回归）", () => {
+  /*
+   * 这条是"零回归"的**真闸**：用 S1 前那一行 chat 公式**手算一份期望值**逐位比。
+   *
+   * 活性验证记录（2026-11-22，architect 实测注入后验完删除）：
+   * 在 layout() 的 chat 公式末尾注入 `- 1`（模拟对话工作台被悄悄压窄 1px），
+   * 注入前本条 **绿**（抓不到）→ 按下述重写后注入 **必须红**。
+   * 旧版失败模式：算了 5 个变量一个都没断言，唯一 chat 断言是
+   * "同一份入参调 layout() 两次再比" —— 恒真，等于没测。
+   */
   for (const viewport of [1920, 1280, 1024, 800]) {
     for (const requested of FOLD_COMBOS) {
       const input = { viewport, widths: DEFAULT_WIDTHS, requested, panelOpen: false };
@@ -442,20 +451,16 @@ test("S1-R1 不传 rightOpen 时，layout() 的全部既有字段与 S1 之前�
       assert.equal(box.right, 0, `right 应为 0（${viewport}）`);
       assert.equal(box.rightMode, "overlay", `rightMode 应为 overlay（${viewport}）`);
       assert.equal(box.rightBudget, 0, `rightBudget 应为 0（${viewport}）`);
-      // chat 与 S1 前一致：rightCost=0（rightOpen 未传），公式逐位同旧
+      // S1 前的 chat 公式（panelOpen=false：panel/review/history 全 0，无任何扣减项）：
+      //   chat = 视口 − leftCost，leftCost = overlayLeft ? RAIL : (RAIL + c1 + c2)
       const leftDocked = RAIL + (requested.nav ? 0 : DEFAULT_WIDTHS.c1) + (requested.groups ? 0 : DEFAULT_WIDTHS.c2);
       const overlayLeft = leftDocked + MIN_CHAT > viewport;
       const leftCost = overlayLeft ? RAIL : leftDocked;
-      const historyMax = Math.max(0, viewport - leftCost - HANDLE - MIN_CHAT);
-      const expectedChat = viewport - leftCost - (input.panelOpen && historyMax >= MIN_PANEL ? 0 : 0) - 0;
-      // 直接用"右栏关闭 = chat 公式里 rightCost 项为 0"验证：与手工推导一致即可
-      const manualChat = viewport - leftCost - MIN_CHAT * 0 - 0;   // 粗查：只对 panelOpen=false 场景
-      // 精确断言：与"把 rightOpen 去掉后的 chat"一致（同一调用两次，唯一变量是 rightOpen）
+      const expectedChat = viewport - leftCost;
+      assert.equal(box.chat, expectedChat, `不传 rightOpen 时 chat 必须等于 S1 前公式（${viewport}，expected=${expectedChat}）`);
+      // 反向夹断：rightOpen=true 时右栏必须真的占宽（否则这条闸两边都是摆设）
       const withRight = layout({ ...input, rightOpen: true });
-      const withoutRight = layout({ ...input, rightOpen: undefined });
-      // rightOpen=true 会改 chat（右栏占宽）；这里只断言"不传"与"undefined"等价
-      assert.equal(box.chat, layout({ ...input }).chat, `chat 稳定（${viewport}）`);
-      assert.ok(box.chat > 0);
+      assert.ok(withRight.chat < box.chat, `传 rightOpen 时 chat 必须变小（${viewport}：${withRight.chat} < ${box.chat}）`);
     }
   }
 });
