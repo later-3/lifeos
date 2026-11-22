@@ -154,7 +154,24 @@ async function serve(ws: WebSocket, options: { pingMs: number; highWaterBytes: n
    * 之后每次广播都往它 offer（它永远不成功，直到积压超限才被动摘除）。
    * 顺序改成"先挂监听，再写快照"，最坏情况只是 finished 早于 ready，`finally` 照样收尾。
    */
-  ws.on("close", () => finished());
+  /*
+   * 断开也要留一行（Task 0033 · P3）：以前只有"已连接"，于是 2026-11-21 全天 45 次连接、
+   * **0 条断开记录** —— 无法区分"客户端关了""代理掐了""我们自己超载摘了"。
+   * `code` 是 WebSocket 关闭码（1000 正常 / 1006 异常断开 / 1013 过载），
+   * 存活时长用来判断"是不是一接上就断"（那种通常是服务端写失败或客户端立刻离开）。
+   */
+  const openedAt = Date.now();
+  ws.on("close", (code: number, reason: Buffer) => {
+    log.info("event-socket", undefined, "ws 事件通道已断开", {
+      details: {
+        connectionId,
+        code,
+        ...(reason.length > 0 ? { reason: reason.toString().slice(0, 120) } : {}),
+        livedMs: Date.now() - openedAt,
+      },
+    });
+    finished();
+  });
   ws.on("error", () => finished());
   // 客户端主动发的帧当前没有语义；读掉它们以免 TCP 缓冲堆积（未来可承载 ack）
   ws.on("message", () => undefined);

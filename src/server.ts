@@ -188,9 +188,20 @@ app.use(async (c, next) => {
   }
   const requestId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
+  const path = new URL(c.req.url).pathname;
+  /*
+   * **开始行必须写在 `await next()` 之前**（Task 0033 · P3）。
+   *
+   * 为什么：以前只写结束行，于是"请求进来了但永远没返回"这一类事故在日志里**一行都没有**
+   * （2026-11-21 实测：界面永久骨架，后端日志全是 200，因为卡住的请求根本没留下痕迹）。
+   * 开始行与结束行共用同一个 `requestId`，两条一配对就能看出"进了没出"。
+   *
+   * 代价：http 日志翻倍（约 9.6k → 19k 行/天），仍在日志滚动策略内。
+   * 这类事故当前**完全不可见**，翻倍的代价值得。
+   */
+  void log.info("http", undefined, "request-start", { details: { method: c.req.method, path, requestId } });
   await next();
   const status = c.res.status;
-  const path = new URL(c.req.url).pathname;
   void log.info("http", undefined, "request", { details: { method: c.req.method, path, status, millis: Date.now() - startedAt, requestId } });
 });
 
