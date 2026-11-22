@@ -16,7 +16,7 @@ import { listAgents } from "./agents.ts";
 import { resolveHome } from "./home.ts";
 import { log } from "./logging.ts";
 import { scanProjectDirs } from "./projects.ts";
-import { manifestPath as manifestPathOf, readGlobalProject } from "./project-registry.ts";
+import { readGlobalProject } from "./project-registry.ts";
 import { scanProject } from "./session-rows.ts";
 import { displayTitleOf } from "./row-activity.ts";
 import { listTasks, localDate, type TaskSummary } from "./tasks.ts";
@@ -125,14 +125,9 @@ export async function globalProjects(): Promise<GlobalProject[]> {
 
   const items: GlobalProject[] = [];
   for (const id of dirs) {
-    // 读失败的留痕在 `project-registry.ts` 的 readGlobalProject 内部（病根一处修，
-    // ENOENT=无 project.json 是正常分支）；这里的 catch 只兜底意外抛出。
-    const manifest = await readGlobalProject(id).catch((err: unknown) => {
-      void log.debug("workbench", "globalProjects", "readGlobalProject 意外失败，该目录不计", {
-        details: { pid: id, path: manifestPathOf(id), message: err instanceof Error ? err.message : String(err) },
-      });
-      return undefined;
-    });
+    // 读失败（含非 ENOENT）的留痕在 `project-registry.ts` 的 readGlobalProject 内部（病根一处修，
+    // ENOENT=无 project.json 是正常分支）；它永不抛（parse 全程 try/catch），这里直接用返回值。
+    const manifest = await readGlobalProject(id);
     if (manifest === undefined) continue;   // 没有 project.json：不是全局项目（longagentshare）
     // 名字：project.json 的 name 为准；空则 basename(path) 兜底；再空则 id（不编名字）。
     const fallback = (manifest.path ?? "").split(/[\\/]/).filter((part) => part !== "").at(-1) ?? manifest.id;

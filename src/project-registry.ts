@@ -40,9 +40,7 @@ function opaqueProjectId(canonicalPath: string): string {
   const digest = createHash("sha1").update(canonicalPath).digest("hex").slice(0, 6);
   return `project-${digest}`;
 }
-/** 共享 project 的 manifest 绝对路径。
- *  导出：诊断留痕要能报出"读的是哪个文件"（workbench.ts 的 readGlobalProject 兜底，2.10）。 */
-export const manifestPath = (id: string) => join(registryRoot(), id, "project.json");
+const manifestPath = (id: string) => join(registryRoot(), id, "project.json");
 
 const parse = (raw: string): GlobalProject | undefined => {
   try {
