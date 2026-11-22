@@ -674,3 +674,121 @@ test("P5-V3 旧形态的合并前置判据仍生效：主区脏 → status=dirty
   const status = await git(home, ["status", "--porcelain", "-uall"]);
   assert.match(status, /dirty-probe\.md/, `主区必须保持原样（不该被自动提交）：\n${status}`);
 });
+
+// ── R3 轮：e2e 抓出的两条真缺陷（P0 / P1）────────────────────────────────
+//
+// 缺陷 1（P0）：能写"别的 Task 的文档"与"别的 Agent 的文件"。
+// 根因：`fakeWorktreeOf` 只判"目标落在某个挂载点下、那个挂载点是否注册过"——
+// 找到的挂载点是 `<A>/home`（确实注册过），于是判"不是假工作区"。
+// **"挂载点是真的" ≠ "路径在该挂载点允许的范围内"**。
+// 后果链（e2e 实测）：写入成功 → S 标记降级成 H → `git status` 显示 `??` →
+// 检视 diff 看不见（sparse 定义）→ `git add -A` 拒绝（paths outside your sparse-checkout）
+// → merge 后 main 还是旧值 → 用户以为写进去了，其实丢了。
+
+/** 当前 Task 的 home 工作区里的相对路径 → 绝对路径（模拟"A 的 fork 里造东西"）。 */
+const insideOwnHome = (task, rel) => join(task.path, HOME_DIR, ...rel.split("/"));
+
+test("R1 <A>/home/…/tasks/<B>/01-background.md → 拒（A 的 fork 里造 B 的主区文档）", async () => {
+  const home = await gitHome();
+  const current = await taskWithWorktrees(home, "当前任务");
+  const other = await taskWithWorktrees(home, "别的任务");
+
+  const fake = insideOwnHome(current, `agents/${ctx.agentId}/projects/${ctx.projectId}/tasks/${other.dirName}/01-background.md`);
+  const verdict = await decide(home, current.id, fake);
+  assert.equal(verdict.allow, false, `A 的 fork 里不许造 B 的文档（不进任何检视源 + add -A 会拒 = 静默丢失）：${JSON.stringify(verdict)}`);
+  assert.match(verdict.reason, /其他 Task|别的 Task|不含/);
+});
+
+test("R2 <A>/home/agents/<别的 Agent>/agent.json → 拒（别的 Agent 身份文件不在本工作区）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  const verdict = await decide(home, task.id, insideOwnHome(task, "agents/reviewer/agent.json"));
+  assert.equal(verdict.allow, false, JSON.stringify(verdict));
+});
+
+test("R2b <A>/home/agents/<别的 Agent>/…/tasks/0001-default/task.md → 拒", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  const verdict = await decide(home, task.id, insideOwnHome(task, "agents/reviewer/projects/lifeos/tasks/0001-default/task.md"));
+  assert.equal(verdict.allow, false, JSON.stringify(verdict));
+});
+
+test("R3 别的 Task 目录下的 specs/<新文件> → 拒（同上：在 A 的 fork 里给 B 造文件）", async () => {
+  const home = await gitHome();
+  const current = await taskWithWorktrees(home, "当前任务");
+  const other = await taskWithWorktrees(home, "别的任务");
+  const fake = insideOwnHome(current, `agents/${ctx.agentId}/projects/${ctx.projectId}/tasks/${other.dirName}/specs/新规范.md`);
+  const verdict = await decide(home, current.id, fake);
+  assert.equal(verdict.allow, false, JSON.stringify(verdict));
+});
+
+test("R3b 自己的 Agent×project 层（agents/<自己>/projects/<pid>/specs/）→ 放行（02-design §2.2 的白名单）", async () => {
+  // 这一条与 R3 的区别就是 architect 要的那个区分：
+  //   `agents/<自己>/projects/<pid>/specs/x.md`   → 自己那一层，实测会改（e776 的 4 个文件），**放行**
+  //   `.../tasks/<别的 Task>/specs/x.md`          → 给别的 Task 造文件，**拒**（R3）
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  const own = insideOwnHome(task, `agents/${ctx.agentId}/projects/${ctx.projectId}/specs/新规范.md`);
+  assert.deepEqual(await decide(home, task.id, own), { allow: true },
+    "自己 Agent×project 层的 specs 必须能写（P2-2 的白名单 + e776 实测）");
+});
+
+// 缺陷 2（P1）：`memory/user/default/data/` 没被匹配 —— 正则要求 memory 与 data **紧邻**，
+// 而 `.gitignore` 是 `**/memory/**/data/`（中间可有任意层），真实布局是 `memory/user/default/data/`。
+
+test("R5 memory/user/default/data/memos.db-wal → 拒（真实布局，中间有目录层）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  for (const rel of [
+    "memory/user/default/data/memos.db-wal",
+    `agents/${ctx.agentId}/memory/user/default/data/memos.db`,
+  ]) {
+    const verdict = await decide(home, task.id, join(home, ...rel.split("/")));
+    assert.equal(verdict.allow, false, `${rel} 必须拒（.gitignore 是 **/memory/**/data/）`);
+  }
+});
+
+test("R6 memory/user/default/daemon/x → 拒（**且必须是 PROGRAM_ONLY 拒的，不是判据⑤兜底**）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  for (const rel of ["memory/user/default/daemon/x", `agents/${ctx.agentId}/memory/user/default/skills/s.md`]) {
+    const verdict = await decide(home, task.id, join(home, ...rel.split("/")));
+    assert.equal(verdict.allow, false, `${rel} 必须拒`);
+    // 说清这条为什么要断言**理由**：实测 `memory/user/default/daemon/x` 在 `.gitignore` 里
+    // **没有**对应条目（`**/memory/daemon/` 要求 daemon 紧邻 memory，`git check-ignore` 返回 not ignored），
+    // 所以修好之前它也是"被拒"的——但拒它的是**判据⑤兜底**（落主区一律拒），不是程序专属目录那条。
+    // 绿得对、理由不对 = 换一个"在 .gitignore 里"的路径就会漏。断言理由把它钉在 PROGRAM_ONLY 上。
+    //
+    // 而真实布局确实是 `memory/user/default/daemon`（`~/.lifeos` 实测存在，见
+    // `evidence/p5-coexist-probe.md`），所以放宽正则让四条都允许中间层：与真实布局一致，
+    // 且比 `.gitignore` 严一档（少漏比多漏好）。
+    // 活性：去掉正则的中间层 → 这条红；去掉整条 memory 规则 → 这条也红。
+    assert.match(verdict.reason, /记忆库/, `必须是 PROGRAM_ONLY 拒的（理由要提记忆库），实际：${verdict.reason}`);
+  }
+});
+
+test("R4 真 worktree 的 other.docPath / other 工作区内路径 → 仍放行（①.5 不回归 G8）", async () => {
+  // 这是 architect 要的那个区分：
+  //   `<B>/home/…/tasks/<B>/x.md`（B 的真工作区）→ **放行**（改动进 B 的分支，B 的检视看得见）
+  //   `<A>/home/…/tasks/<B>/x.md`（A 的 fork 里造）→ **拒**（R1）
+  const home = await gitHome();
+  const current = await taskWithWorktrees(home, "当前任务");
+  const other = await taskWithWorktrees(home, "别的真工作区");
+
+  assert.deepEqual(await decide(home, current.id, join(other.docPath, "x.md")), { allow: true },
+    "别的 Task 的**真工作区**必须仍放行（G8 不回归）");
+  assert.deepEqual(
+    await decide(home, current.id, join(other.path, HOME_DIR, "projects", "workspace", "runbook", "x.md")),
+    { allow: true },
+    "真工作区里的共享层也要放行",
+  );
+});
+
+test("R7 agents/<a>/memory/data/x.db → 拒（无中间层，旧正则能过，不能回归）", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  for (const rel of [`agents/${ctx.agentId}/memory/data/x.db`, "memory/data/x.db", "memory/daemon/x", "memory/logs/x.log"]) {
+    const verdict = await decide(home, task.id, join(home, ...rel.split("/")));
+    assert.equal(verdict.allow, false, `${rel} 必须拒`);
+  }
+});

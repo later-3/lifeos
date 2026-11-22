@@ -44,7 +44,10 @@ export type GuardScope = { agentId: string; projectId: string };
 const PROGRAM_ONLY: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /^config(\/|$)/, why: "config/ 只由程序写：models.json 含明文 apiKey，写坏会让所有 Agent 无法调模型（配模型走 PUT /api/agents/<id>/config）" },
   { pattern: /projects\/[^/]+\/sessions(\/|$)/, why: "sessions/ 是会话原始记录（JSONL），Agent 写它会污染对话正文" },
-  { pattern: /memory\/(data|daemon|skills|logs)(\/|$)/, why: "memory 的 data/daemon/skills/logs 是记忆库的运行时存储，写坏 = 记忆丢失" },
+  // **中间层必须允许**（e2e 2026-11-19 抓出）：`.gitignore:23` 是 `**/memory/**/data/` 形态，
+  // 真实布局是 `memory/user/default/data/memos.db-wal`——写成 `memory/(data|daemon|...)` 只匹配紧邻层，
+  // 会把真实布局漏掉（第一版就是这么错的）。四个名字统一放宽，与 .gitignore 的 `**` 语义对齐。
+  { pattern: /memory\/(.*\/)?(data|daemon|skills|logs)(\/|$)/, why: "memory 的 data/daemon/skills/logs 是记忆库的运行时存储，写坏 = 记忆丢失" },
   // `.gitignore:43` 根级 `.lifeos-worktree.json`：工作区的**注册标记**，只由建工作区的动作写。
   // 它本身不构成 mount（`worktreeMountOf` 只看目录名），所以"不加固也无害"；
   // 但它正好是"伪造工作区"那条路的**第一步**——守卫在工具执行前跑，拒掉这一次就等于
@@ -52,8 +55,9 @@ const PROGRAM_ONLY: Array<{ pattern: RegExp; why: string }> = [
   { pattern: /^\.lifeos-worktree\.json$/, why: "工作区注册标记，只由建工作区的动作写" },
 ];
 
-/** 命中程序专属目录？返回原因，否则 undefined。`relative` 是相对家目录仓根的路径（POSIX 分隔符）。 */
-function programOnlyOf(relative: string | undefined): string | undefined {
+/** 命中程序专属目录？返回原因，否则 undefined。`relative` 是相对家目录仓根的路径（POSIX 分隔符）。
+ *  导出给测试与探针用：要能断言"这条路径命中的是 PROGRAM_ONLY，不是判据⑤兜底"（`R6`）。 */
+export function programOnlyOf(relative: string | undefined): string | undefined {
   if (relative === undefined) return undefined;
   for (const entry of PROGRAM_ONLY) if (entry.pattern.test(relative)) return entry.why;
   return undefined;
@@ -72,6 +76,82 @@ async function fakeWorktreeOf(home: string, scope: GuardScope, taskId: string | 
   if (mount === undefined) return undefined;                 // 不在任何挂载点下：与本案无关
   if (await isRegisteredWorktree(mount.path)) return undefined;
   return fakeWorktreeReason(home, scope, taskId, target, mount.path);
+}
+
+/**
+ * 工作区**内部的范围**：一个 Task 的 home 工作区里，哪些路径是它该有的。
+ *
+ * 为什么要这一条（e2e 2026-11-19 抓出的 P0）：`fakeWorktreeOf` 只判"目标落在某个挂载点下、
+ * 那个挂载点是否注册过"——但 **"挂载点是真的" ≠ "路径在该挂载点允许的范围内"**。
+ * `…/tasks/<A>/home/agents/…/tasks/<B>/01-background.md` 找到的挂载点是 `<A>/home`（确实注册过），
+ * 于是被判"不是假工作区"而放行。可它在 A 的 fork 里给 B 造主区文档：
+ * 不进任何检视源，`git add -A` 还会因 sparse 拒绝 → **用户以为写进去了，其实丢了**。
+ *
+ * 判据（只看 home 工作区；`repo/` 与历史 `worktree/` 是完整检出，内部不做范围限制）：
+ * 目标在 `<taskDir>/home` 之下时，把相对段与**这个工作区自己的 Task 镜像**比：
+ *
+ * | 相对路径 | 允许？ | 为什么 |
+ * |---|---|---|
+ * | `agents/<owner>/…`（身份/工具/记忆、Agent×project 层） | ✅ | 收窄白名单里的层，实测会被改 |
+ * | `agents/<owner>/projects/<ownerPid>/tasks/<ownerDir>/…` | ✅ | 本 Task 自己的镜像 |
+ * | `agents/<owner>/projects/<ownerPid>/tasks/<别的 dir>/…` | ❌ | 给别的 Task 造文件（本 Task 的工作区不含它） |
+ * | `agents/<别的 agent>/…` | ❌ | 别的 Agent 的身份/任务不在本工作区 |
+ * | `projects/<共享>/…`、`interaction-harness/…`、`users/…` | ✅ | 共享层与根上的协议/用户层 |
+ *
+ * owner 从**挂载点路径本身**反推（`<taskDir>/home` 的 taskDir 就是 `agents/<a>/projects/<p>/tasks/<dir>`），
+ * 不读 marker、不查仓：这样对 4 个只有 `.git` 的存量工作区同样成立。
+ */
+export function worktreeScopeOf(target: string): { mount: string; reason?: string } | { mount: undefined } {
+  const mount = worktreeMountOf(target);
+  if (mount === undefined) return { mount: undefined };
+  if (mount.kind !== HOME_DIR) return { mount: mount.path };       // repo/ 与历史 worktree/ 是完整检出
+
+  const owner = ownerOfHomeMount(mount.path);
+  if (owner === undefined) return { mount: mount.path };            // 路径形状不认识：不额外限制
+
+  const rel = target.slice(mount.path.length).split(sep).filter((part) => part !== "");
+  if (rel.length === 0) return { mount: mount.path };
+
+  if (rel[0] === "agents") {
+    const agent = rel[1];
+    if (agent === undefined) return { mount: mount.path };
+    if (agent !== owner.agentId) {
+      return { mount: mount.path, reason: `这里是「${owner.agentId}」的工作区，不含 Agent「${agent}」的文件` };
+    }
+    // agents/<owner>/projects/<pid>/tasks/<dir>/…
+    const tasksAt = rel.indexOf("tasks");
+    if (rel[2] === "projects" && tasksAt !== -1) {
+      const pid = rel[3];
+      const dir = rel[tasksAt + 1];
+      if (pid !== undefined && pid !== owner.projectId) {
+        return { mount: mount.path, reason: `这里只检出「${owner.projectId}」的 Task，不含其它 project` };
+      }
+      if (dir !== undefined && dir !== owner.dirName) {
+        return { mount: mount.path, reason: `本 Task 的工作区不含其他 Task（「${dir}」）；要改它请在该 Task 里做` };
+      }
+    }
+  }
+  return { mount: mount.path };
+}
+
+/** ①.5 的拒绝文案：说清"哪个工作区、不含什么"，并给出该往哪写。 */
+function scopeReasonOf(target: string, reason: string): string {
+  return `拒绝写入 ${target}\n原因：${reason}。\n`
+    + `在这种位置写文件不会进任何检视源（工作区是 sparse 检出，git add -A 也会拒绝），\n`
+    + `看起来写成功了，合并后却是旧值。要改别的 Task，请在那个 Task 里做。`;
+}
+
+/** 从 `<taskDir>/home` 反推 owner（`agents/<a>/projects/<p>/tasks/<dir>`）。形状不认识 → undefined。 */
+function ownerOfHomeMount(mount: string): { agentId: string; projectId: string; dirName: string } | undefined {
+  const parts = dirname(mount).split(sep);
+  const n = parts.length;
+  if (n < 5) return undefined;
+  if (parts[n - 2] !== "tasks" || parts[n - 4] !== "projects") return undefined;
+  const dirName = parts[n - 1];
+  const projectId = parts[n - 3];
+  const agentId = parts[n - 5];
+  if (dirName === undefined || projectId === undefined || agentId === undefined) return undefined;
+  return { agentId, projectId, dirName };
 }
 
 /** `parent` 是不是 `child` 的祖先（含相等）；按路径分隔符判，避免 `/a/bc` 误判 `/a/b`。 */
@@ -248,6 +328,15 @@ export async function decideWrite(input: {
   if (await gitInvisible(home, target)) {
     const fake = await fakeWorktreeOf(home, scope, taskId, target);
     if (fake !== undefined) return { allow: false, reason: fake };
+    // **①.5 范围判定**（e2e 2026-11-19 抓出的 P0）：挂载点是真的还不够，
+    // 目标必须落在该挂载点**允许的范围**内。区分两种"写别的 Task"：
+    //   ① `<B>/home/…/tasks/<B>/x.md`（B 的真工作区）→ 放行：改动进 B 的分支，B 的检视看得见（G8）；
+    //   ② `<A>/home/…/tasks/<B>/x.md`（A 的 fork 里给 B 造主区文档）→ 拒：不进任何检视源，
+    //      且 `git add -A` 会因 sparse 拒绝 → 用户以为写进去了，其实丢了。
+    const scoped = worktreeScopeOf(target);
+    if (scoped.mount !== undefined && scoped.reason !== undefined) {
+      return { allow: false, reason: `${scopeReasonOf(target, scoped.reason)}` };
+    }
     return { allow: true };
   }
 
