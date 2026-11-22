@@ -38,7 +38,9 @@ pnpm install --prefer-offline          # 装依赖（约 616MB）
 LIFEOS_HOME="$HOME/.lifeos-dev/$T" node --experimental-strip-types src/install.ts
 
 # 4) claim 端口，按输出起两个进程
-node scripts/dev-port.mjs claim --task $T --worktree "$W"
+#    登记键 = <agent>/<project>/<NNNN>（协议 §3.7：Task ID 只在 Agent×Project 内唯一，
+#    两个 Agent 的同号 Task 必须是两组不同的端口）。最省事的说法是只给 worktree：
+node scripts/dev-port.mjs claim --worktree "$W"
 LIFEOS_HOME="$HOME/.lifeos-dev/$T" LIFEOS_SUPERVISOR_LOG="/tmp/lifeos-$T.log" \
   node scripts/dev-supervisor.mjs --port=<backend>
 VITE_DEV_API=http://127.0.0.1:<backend> pnpm --dir frontend exec vite --port <web>
@@ -53,29 +55,36 @@ VITE_DEV_API=http://127.0.0.1:<backend> pnpm --dir frontend exec vite --port <we
 ## 用法
 
 ```bash
-# 1) 分配（输出 backend / web，并写进登记表）
-node scripts/dev-port.mjs claim --task 0016 --worktree "<本 Task 的 evidence/worktree 绝对路径>"
+# 1) 分配（输出 key / backend / web，并写进登记表）。三种说法等价，选一种：
+node scripts/dev-port.mjs claim --worktree "<Task 工作区绝对路径>"          # 自动反推归属（推荐）
+node scripts/dev-port.mjs claim --agent coder --project lifeos --task 0032
+node scripts/dev-port.mjs claim --key coder/lifeos/0032
 
 # 2) 按输出启动（示例里的号是占位，实际用 claim 给你的）
-LIFEOS_HOME=~/.lifeos-dev/0016 \
-LIFEOS_SUPERVISOR_LOG=/tmp/lifeos-0016.log \
+LIFEOS_HOME=~/.lifeos-dev/0032 \
+LIFEOS_SUPERVISOR_LOG=/tmp/lifeos-0032.log \
 node scripts/dev-supervisor.mjs --port=<backend>
 
 VITE_DEV_API=http://127.0.0.1:<backend> pnpm --dir frontend exec vite --port <web>
 
 # 3) 看现状 / 收工
 node scripts/dev-port.mjs list [--prune]
-node scripts/dev-port.mjs release --task 0016
+node scripts/dev-port.mjs release --key coder/lifeos/0032
+node scripts/dev-port.mjs release --task 0032      # 登记表里唯一匹配时才释放；多条匹配会报错列候选
 ```
+
+**只给 `--task` 会被拒绝**（分配时）：Task ID 只在 Agent × Project 内唯一，两个 Agent 的 `0003` 是两件事。
+要释放时只给 `--task` 可以，但要求登记表里恰好一条匹配 —— 两个同号 Task 同时存在时报错并列出候选，不替你挑。
 
 ## 输入输出与副作用
 
 | 项 | 内容 |
 |---|---|
-| 输入 | `--task NNNN`（必填）、`--worktree <path>`（建议填，`list` 时能看到） |
-| 输出 | `claim`：`{backend, web, worktree}`；`list`：Task / 后端 / 前端 / 活动 / worktree 表格 |
+| 输入 | `claim`：`--worktree <path>` 或 `--agent`+`--project`+`--task`，或 `--key <agent>/<project>/<NNNN>`（三者选一，缺项报错不猜） |
+| 登记键 | `<agent>/<project>/<NNNN>`（与协议 §3.7 的分支名同构）；存量裸编号键在读取时按 `worktree` 反推迁移，推不出的丢弃 |
+| 输出 | `claim`：`{key, agentId, projectId, taskId, backend, web, worktree}`；`list`：Task / Agent / 项目 / 后端 / 前端 / 活动 / worktree 表格 |
 | 号段 | 后端 `43130–43199`、前端 `5174–5199`；保留号 `43120` / `5173` **永不分配** |
-| 写 | `~/.lifeos/state/dev-ports.json`（原子写：临时文件 + rename） |
+| 写 | `~/.lifeos/state/dev-ports.json`（原子写：临时文件 + rename；`schemaVersion: 2`） |
 | 不写 | 不杀进程、不改代码、不碰主实例数据 |
 
 ## 规则要点（与规范一致）

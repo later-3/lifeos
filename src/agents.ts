@@ -86,6 +86,17 @@ async function allAgents(): Promise<Array<{ id: string; record: AgentRecord }>> 
   return out;
 }
 
+/**
+ * 未归档的 Agent（`GET /api/agents` 与全局工作台共用**这一份**口径）。
+ *
+ * 为什么提成导出：`/api/tasks` 与 `/api/projects` 也需要列举 Agent，而
+ * `specs/code/api/api.md` 2.7 要求同一个对象只有一处实现——各自 `readdir(agents/)` 再各自判
+ * `archivedAt` 就是两份口径，第三个入口（工作台）一定会与列表漂移。
+ */
+export async function listAgents(): Promise<AgentDefinition[]> {
+  return (await allAgents()).filter((entry) => entry.record.archivedAt === undefined).map((entry) => entry.record);
+}
+
 export type CreateAgentInput = { name: string; description?: string };
 
 // 与模板 identity.md 同构（标题结构照搬；正文留给用户/Agent 填，不复制 Life Agent 的个人内容）
