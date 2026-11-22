@@ -11,7 +11,8 @@
 //    让 check 报了 195 条假错误，而挂载点自身仍被要求说明文件（再 24 条）。
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { HOME_DIR, MARKER_FILE, REPO_DIR } from "./task-worktree.ts";
+import { MARKER_FILE } from "./task-worktree.ts";
+import { isWorktreeMount } from "./worktree-mount.ts";
 import { taskDocRootOf, type TaskScope } from "./task-doc-path.ts";
 
 export type HomeCheckReport = { errors: string[]; warnings: string[]; checked: number };
@@ -21,8 +22,6 @@ const LEGACY_HARNESS = ["flywheel.md", "memory.md", "concept-space.md", "concept
 const DATE_FILE = /^\d{4}-\d{2}-\d{2}\.md$/;
 const TASK_DIR = /^(\d{4})-.+$/;
 
-/** 工作区挂载点与历史形态的目录名（协议 §3.7）：工作区还没建全（没有 `.git`）时也不当协作层。 */
-const WORKTREE_DIR_NAMES = new Set([HOME_DIR, REPO_DIR, "worktree"]);
 /** 过程资料：自身要说明文件（协议 §5.2），内部不递归（里面是外部克隆、截图、原始输出、探针脚本）。 */
 const MATERIAL_DIR_NAMES = new Set(["evidence", "refs", "shots", "probe"]);
 /** 依赖与生成物：不是协作层，逐目录要求说明文件只会把别人的构件树翻一遍（与遍历类工具的默认忽略一致）。 */
@@ -76,7 +75,9 @@ async function requireNotes(
     const dir = join(root, name);
     if (owned.has(dir)) continue;
     if (GENERATED_DIR_NAMES.has(name)) continue;
-    if (WORKTREE_DIR_NAMES.has(name) || await isForeignCheckout(dir)) continue;
+    // 挂载点判定只有一处（`worktree-mount.ts`，Task 0004 · P1）：只认"路径本身是挂载点"，
+    // **不认"在挂载点里面"**——后者会把整棵子树跳过，真阳性静默消失。
+    if (isWorktreeMount(dir) || await isForeignCheckout(dir)) continue;
     counter.n += 1;
     const note = join(dir, "AGENTS.md");
     if (!await isFile(note)) errors.push(`缺少说明文件 AGENTS.md：${relative(home, dir)}/`);

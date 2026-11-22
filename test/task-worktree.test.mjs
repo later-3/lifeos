@@ -20,7 +20,9 @@ import { createTask, listTasks } from "../src/tasks.ts";
 const run = promisify(execFile);
 
 async function git(cwd, args) {
-  return (await run("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { timeout: 60_000 })).stdout;
+  // `core.quotePath=false`：否则中文路径在输出里是 `"\346\234\254..."`，
+  // 任何基于路径内容（含中文）的断言都会永远为假——本文件 P2 段就有这种断言。
+  return (await run("git", ["-C", cwd, "-c", "core.quotePath=false", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { timeout: 60_000 })).stdout;
 }
 
 /** 装一个临时家目录并把它 init 成 git 仓（协议前提：家目录是 git 仓才有工作区）。 */
@@ -101,4 +103,87 @@ test("T4 项目有 path 且是 git 仓：同时建出 repo/", async () => {
   assert.equal(await exists(join(task.path, "repo", "README.md")), true, "repo/ 应是项目检出");
   assert.equal(await exists(join(task.path, "home", "projects", "demo")), true, "新绑定的 project 应出现在裁剪结果里");
   assert.equal((await git(home, ["status", "--porcelain"])).trim(), "", "主区仍应干净");
+});
+
+// ── P2（Task 0004）：真 git 上验证收窄 ──────────────────────────────────────────
+// 纯函数层面（`worktree-profile-narrow.test.mjs`）只能断言"模式序列与顺序"；
+// git 的实际匹配语义必须真跑一次（architect 01-background §7 U1/U3 要求贴命令与输出）。
+
+test("P2-U1 收窄态真 worktree：只有本 Task + 身份 + 共享层；read-tree 不报错；status 干净", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+
+  // **活性前置（不能省）**："别的 Task 不在"这类断言，如果那个 Task 根本不在 HEAD 里，
+  // 它在未收窄形态下也不会被检出 —— 断言就恒真了。所以先把两个"别的"夹具 commit 进 main：
+  //   ① 同 Agent 同 pid 的另一个 Task（未收窄时会被整目录拖进来）
+  //   ② 另一个 Agent（未收窄时若写到 /agents/* 也会被拖进来）
+  const otherDir = join(home, "agents", "lifeosagent", "projects", "workspace", "tasks", "0000-别的任务");
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(join(otherDir, "task.md"), "# 别的任务\n", "utf8");
+  const otherAgent = join(home, "agents", "reviewer", "projects", "lifeos");
+  await mkdir(otherAgent, { recursive: true });
+  await writeFile(join(home, "agents", "reviewer", "agent.json"), '{"id":"reviewer"}\n', "utf8");
+  await writeFile(join(otherAgent, "AGENTS.md"), "# reviewer\n", "utf8");
+  await git(home, ["add", "-A"]);
+  await git(home, ["commit", "-q", "-m", "夹具：别的 Task 与别的 Agent"]);
+
+  // 夹具确实在 HEAD 里（再确认一次活性，不然后面的"不在"仍是空集断言）
+  const headFiles = (await git(home, ["ls-tree", "-r", "--name-only", "HEAD"])).split("\n");
+  assert.ok(headFiles.some((path) => path.includes("0000-别的任务")), "夹具①必须在 HEAD 里");
+  assert.ok(headFiles.some((path) => path.includes("agents/reviewer/")), "夹具②必须在 HEAD 里");
+
+  const created = await createTask(ctx, { title: "本任务：中文＋全角冒号＋加号+测", category: "G", type: "general" });
+  assert.ok(!("code" in created), `createTask 失败：${JSON.stringify(created)}`);
+  const task = created.task;
+  const wt = join(task.path, "home");
+
+  // U1：工作区形态存在，且没有因为收窄而缺件（缺件时 read-tree 会报错，createTask 会抛）
+  assert.equal(await exists(join(wt, "agents", "lifeosagent", "agent.json")), true, "自己的身份文件应在");
+  assert.equal(await exists(join(wt, "agents", "lifeosagent", "projects", "workspace", "specs", "index.json")), true,
+    "Agent×project 层（specs/）应在——reviewer 补的那一行");
+  assert.equal(await exists(join(wt, "projects", "workspace", "project.json")), true, "共享 workspace 应在");
+  assert.equal(await exists(join(wt, "interaction-harness", "protocol.md")), true, "协议目录应在");
+
+  // 本 Task 在（含中文/全角冒号/加号的目录名 —— U3）
+  assert.equal(await exists(join(wt, "agents", "lifeosagent", "projects", "workspace", "tasks", task.dirName, "task.md")), true,
+    `本 Task 必须被检出（目录名含中文与符号）：${task.dirName}`);
+
+  // 别的 Task 不在（HEAD 里确实有它，见上方夹具前置）
+  assert.equal(await exists(join(wt, "agents", "lifeosagent", "projects", "workspace", "tasks", "0000-别的任务")), false,
+    "别的 Task 不该被检出（它在 HEAD 里，所以这条不是空集断言）");
+
+  // 别的 Agent 不在（同上）
+  assert.equal(await exists(join(wt, "agents", "reviewer")), false, "别的 Agent 不该在（它在 HEAD 里）");
+
+  // U1 的正面证据：read-tree 能再跑一次而不报错（稀疏态已收敛）
+  const readTree = await run("git", ["-C", wt, "read-tree", "-mu", "HEAD"], { timeout: 60_000 }).catch((error) => error);
+  assert.equal(readTree.stderr ?? "", "", `read-tree 不该有 stderr：${readTree.stderr}`);
+
+  // 完成标准 3 的真实意图（architect 01-background §5 括号里写明的）：
+  // **收窄没有把已跟踪文件变成"删除"**。新建 Task 的文档此刻还是未跟踪的（还没提交），
+  // 所以断言不能写成"status 必须完全为空"——那会逼实现去把 `??` 也算失败。
+  const status = (await git(wt, ["status", "--porcelain"])).trim();
+  const trackedChanges = status.split("\n").filter((line) => line !== "" && !line.startsWith("??"));
+  assert.deepEqual(trackedChanges, [], `已跟踪文件不该被收窄变成删除/修改：\n${trackedChanges.join("\n")}`);
+});
+
+test("P2-fallback taskDocRootOf 必须命中工作区（不是静默回落主区）", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const created = await createTask(ctx, { title: "定位校验", category: "G", type: "general" });
+  assert.ok(!("code" in created), JSON.stringify(created));
+  const task = created.task;
+
+  // 关键断言（architect P2 收口要求）：读根必须指到工作区里那份，而不是主区。
+  // 收窄若把本 Task 排掉，这个函数会**静默**返回主区路径 —— 装配器不报错，
+  // 所有文档改动悄悄落回主区，恰好是"归拢"要消灭的行为。
+  const { taskDocRootOf } = await import("../src/task-doc-path.ts");
+  const docRoot = await taskDocRootOf(task.path, ctx, task.dirName);
+  assert.ok(docRoot.startsWith(join(task.path, "home")), `taskDocRootOf 必须命中工作区，实际：${docRoot}`);
+  assert.notEqual(docRoot, task.path, "绝不能等于主区 Task 目录（那就是静默回落）");
+  assert.equal(await exists(join(docRoot, "task.md")), true, "工作区里那份 task.md 必须真的存在（否则它其实回落了）");
+  // 用结果反证：主区那份确实不存在（不是"两处都有"）
+  assert.equal(await exists(join(task.path, "task.md")), false, "主区不该有 task.md：有它就意味着回落路径也可能为真");
 });

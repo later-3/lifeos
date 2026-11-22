@@ -16,6 +16,7 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { HOME_DIR, REPO_DIR, removeWorktree } from "./task-worktree.ts";
+import { resetWriteGuardCaches } from "./write-guard.ts";
 
 const run = promisify(execFile);
 
@@ -121,5 +122,9 @@ export async function mergeTask(taskDir: string): Promise<MergeResult> {
   else steps.push({ kind: "home", status: "skipped", message: "这个 Task 没有家目录工作区（home/）" });
 
   const ok = steps.every((step) => step.status === "merged" || step.status === "skipped");
+  // 合并会改 tracked 集合（工作区里的提交进了 main）→ 写入守卫的缓存必须当场失效，
+  // 否则 30 秒 TTL 内判据 ④ 用旧集合，可能把"刚被跟踪的文件"仍当 invisible 放行
+  // （reviewer 2026-11-19 · 3-2）。失败路径也要清：合并失败也可能已经动过索引。
+  resetWriteGuardCaches();
   return { ok, steps };
 }

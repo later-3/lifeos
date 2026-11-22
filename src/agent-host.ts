@@ -15,6 +15,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { join, sep } from "node:path";
 import { resolveHome } from "./home.ts";
 import { createAgentTools } from "./agent-tools.ts";
+import { createLifeOsWriteGuardExtension } from "./write-guard.ts";
 import { LIFEOS_TOOL_NAMES } from "./tool-names.ts";
 import { toolResultImages, toStreamEvent, type StreamEvent } from "./stream-events.ts";
 import { phaseOfStreamEvent, rowPatches } from "./row-patch.ts";
@@ -202,7 +203,8 @@ export function globalSnapshot(): {
 // 装配常量（2026-10-18/19 用户拍板）：工具**显式钉死**，不依赖 Pi 的隐式默认——
 // 8 个内置 + 10 个 Life OS 自有工具（agent、task、project、memory；见 src/agent-tools.ts）。
 // 注意：createAgentSession 的 tools 是**白名单**（只允许列出的工具启用），新工具必须写进来。
-const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...LIFEOS_TOOL_NAMES];
+/** 全部工具名（allowlist）。**导出**：写入守卫的 wiring 测试要盯住它（`test/write-guard-wiring.test.mjs` W4）。 */
+export const ALL_TOOL_NAMES = [...["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"] as const, ...LIFEOS_TOOL_NAMES];
 
 type CreateOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 type ThinkingOption = NonNullable<CreateOptions["thinkingLevel"]>;
@@ -219,6 +221,8 @@ export async function createHostedResourceLoader(input: {
   cwd: string; configDir: string; settingsManager: SettingsManager; parts: Awaited<ReturnType<typeof buildPromptParts>>;
   /** 每次 run 重新装配（用于会话中途切换 Task）；不传则用固定 parts。 */
   getParts?: () => Promise<Awaited<ReturnType<typeof buildPromptParts>>>;
+  /** 写入守卫的作用域与「当前 Task」来源（Task 0004 · P4）；不传则不挂守卫（离线测试用）。 */
+  writeGuard?: { agentId: string; projectId: string; getTaskId: () => string | undefined };
 }): Promise<DefaultResourceLoader> {
   const loader = new DefaultResourceLoader({
     cwd: input.cwd,
@@ -229,6 +233,9 @@ export async function createHostedResourceLoader(input: {
       createLifeOsPromptExtension(input.getParts ?? input.parts),
       createLifeOsImageBudgetExtension(),
       createLifeOsReadPathExtension(),
+      // 写入守卫（Task 0004 · P4 · L2）：Agent 的 write/edit/bash 只能落在**当前 Task 的工作区**里。
+      // 挂在这里而不是文件系统层：`git merge` 不经过工具层 → "合并写入主区"自动合法，条文才落得下去。
+      ...(input.writeGuard !== undefined ? [createLifeOsWriteGuardExtension(input.writeGuard)] : []),
     ],
   });
   await loader.reload();
@@ -267,7 +274,15 @@ async function createHostedSession(
     const origin = currentOriginOf(sessionManager);
     return origin === undefined ? base : { ...base, speakerSection: speakerSection(origin) };
   };
-  const resourceLoader = await createHostedResourceLoader({ cwd, configDir, settingsManager, parts, getParts });
+  const resourceLoader = await createHostedResourceLoader({
+    cwd, configDir, settingsManager, parts, getParts,
+    // 当前 Task 必须**实时读**：会话可以中途切 Task；创建时取一次会永久滞后（与 customTools 同一口径）。
+    writeGuard: {
+      agentId, projectId,
+      getTaskId: () => stateOf(agentId).sessions.get(sessionManager.getSessionId())?.taskId
+        ?? activeTaskOf(sessionManager),
+    },
+  });
 
   const resolution = await resolveModelChoice(agentId);
   let model: ModelOption | undefined;
