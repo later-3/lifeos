@@ -30,8 +30,9 @@ Snipaste_*.png
 node_modules
 # pi/ 的演练软链（同 node_modules 的道理： submodule 被软链替代时 git 把它当成
 # "deleted submodule + new symlink"，0032 实测 T 标记进了检视 diff）。
+# 锚定仓根（R2）：裸 `pi` 会静默忽略任意层级的同名文件，那是最难查的一类。
 # 注：.gitignore 对**已跟踪**路径无效（0032 实测 check-ignore 返 1）；
 # 软链形态下用 worktree 级 assume-unchanged（见 0032 案例 C006），这行兜底新 worktree。
-pi
+/pi
 # Task 的实测脚本与运行产物（过程工具，不是交付物；输出已复制进任务 evidence/）
 .probe/

@@ -145,7 +145,7 @@ export type TodoRef = Record<string, never>;
 export type ActivityRef =
   /** 那天用户在这个会话里说过话。`at` = 那天**第一条**用户消息的时间戳（真实时刻）。 */
   | { kind: "session"; agentId: string; projectId: string; sessionId: string; title: string; at: string }
-  /** 那天某个 Task 的 `log.md` 有这么一条日期标题。`at` = 那天 `T00:00:00`（日志没有时刻，不编）。 */
+  /** 那天某个 Task 的 `log.md` 有这么一条日期标题。`at` = 该日**本地零点**换算到与时区确定的同一基准（契约 R1：日志没有时刻，不编时刻，但必须与时区同钟）。 */
   | { kind: "log"; agentId: string; projectId: string; taskId: string; taskTitle: string; heading: string; at: string };
 
 export type Day = {
@@ -201,6 +201,22 @@ export function isDateString(value: string): boolean {
 }
 
 /**
+ * 该日**本地零点**的 ISO 表示（时区确定的时刻，契约 R1）。
+ *
+ * 为什么不是 `` `<date>T00:00:00` `` 字面量：那是**本地字面、无时区**，与会话 `at`
+ * （UTC ISO）同字段不同钟 —— 「按 `at` 升序」就不再等于时间升序
+ * （实测 2026-11-18：6 条本地 07:xx 的会话，时间戳是 `T23:xxZ`，排到了“零点 log”前面）。
+ *
+ * 两种实现在东八区等价（`new Date(2026,10,22).toISOString()` = `2026-11-21T16:00:00.000Z`），
+ * 但**只有**这一种是时区确定的：换个时区跑，两者的换算都从同一个 `Date` 出发，永远同钟。
+ * （`date` 已被 `isDateString` 验过是真日期，`new Date(y, m-1, d)` 不会溢出。）
+ */
+export function localMidnightIsoOf(date: string): string {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return new Date(y, m - 1, d).toISOString();
+}
+
+/**
  * 日期索引（契约 §3）：稀疏——只含"那天有事"的日期。
  *
  * 口径（三条，都是实测结论，见 `01-background.md` §2.4）：
@@ -237,7 +253,7 @@ export async function dayIndex(from: string, to: string): Promise<Day[]> {
       const raw = await readFile(join(task.docPath, "log.md"), "utf8").catch(() => undefined);
       if (raw === undefined) continue;
       for (const { date, heading } of dateHeadingsOf(raw)) {
-        push(date, { kind: "log", agentId, projectId, taskId: task.id, taskTitle: task.title, heading, at: `${date}T00:00:00` });
+        push(date, { kind: "log", agentId, projectId, taskId: task.id, taskTitle: task.title, heading, at: localMidnightIsoOf(date) });
       }
     }
   }

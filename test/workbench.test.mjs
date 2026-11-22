@@ -311,11 +311,51 @@ test("S1-16 /api/days：log 按 `## YYYY-MM-DD` 标题归日，模板占位词�
     assert.deepEqual(logsOf("2026-11-08"), [], "括号里带日期的自由标题这一版不解析（宁可少，不猜）");
     assert.deepEqual(logsOf("2026-11-09").map((entry) => entry.heading), ["2026-11-09"], "去完为空时 heading 回落到日期");
     const first = logsOf("2026-11-05")[0];
-    assert.equal(first.at, "2026-11-05T00:00:00", "log 的 at = 那天 T00:00:00（日志没有时刻，不编）");
+    assert.equal(first.at, new Date(2026, 10, 5).toISOString(),
+      "log 的 at = 该日本地零点换算成 ISO（时区确定的同一基准，契约 R1）");
     assert.equal(first.taskId, created.task.id);
     assert.equal(first.taskTitle, created.task.title);
     assert.equal(first.agentId, "lifeosagent");
     assert.equal("documents" in items[0], true);
+  } finally { server.close(); await cleanup(home); }
+});
+
+// R1（契约补充冻结 §6-R1）：`at` 必须是**同一个时钟基准**——时区确定的时刻。
+// 旧实现 log 写 `<date>T00:00:00`（本地字面、无时区）、session 写 UTC ISO，
+// 于是「按 at 升序」不等于时间升序：architect 实测 2026-11-18 有 6 条本地 07:xx 的会话
+// （时间戳 T23:xxZ，UTC 前一天）排到了「零点 log」前面。这种错不报错、不红测试，
+// 只在界面上“顺序有点怪”，所以必须有一条专门的排序断言锁住。
+test("S1-16b /api/days：同一天里 log 的 at 排在该日会话之前，且两个 kind 同一时钟基准（R1）", async () => {
+  const home = await freshHome();
+  const created = await createTask(ctx("lifeosagent", "workspace"), { title: "R1 时钟基准", type: "development", category: "C" });
+  assert.ok(!("code" in created));
+  const logPath = join(created.task.docPath, "log.md");
+  await writeFile(logPath, ["# 日志", "", "## 2026-11-18 · 当天有进展", ""].join("\n"), "utf8");
+  // 会话：本地 2026-11-18 07:20 —— 东八区的时间戳是 2026-11-17T23:20:xxZ（UTC 前一天）。
+  // 这正是 architect 实测的形态：会话在“本地当天早上”，UTC 字面却像前一天。
+  const file = await writeSession(home, "lifeosagent", "workspace", "r1-clock-probe", [
+    { role: "user", at: local(2026, 11, 18, 7, 20) },
+    { role: "assistant", at: local(2026, 11, 18, 7, 21) },
+  ]);
+  await utimes(file, local(2026, 11, 19, 9), local(2026, 11, 19, 9));   // mtime 误导（防按 mtime 归日）
+
+  const { server, base } = await startOn(home);
+  try {
+    const day = (await (await fetch(`${base}/api/days?from=2026-11-18&to=2026-11-18`)).json()).items
+      .find((entry) => entry.date === "2026-11-18");
+    assert.ok(day !== undefined, "当天必须有这一天");
+    assert.equal(day.activity.length, 2, "1 条 log + 1 条 session");
+    const [first, second] = day.activity;
+    assert.equal(first.kind, "log", "log（本地零点）必须排在该日 07:xx 会话**之前**");
+    assert.equal(second.kind, "session");
+
+    // 两个 kind 的 at 都必须能被 new Date() 解析成同一基准（时区确定的时刻）。
+    const logAt = new Date(first.at);
+    const sessionAt = new Date(second.at);
+    assert.equal(Number.isNaN(logAt.getTime()), false, "log 的 at 是合法时刻（不是本地字面）");
+    assert.equal(Number.isNaN(sessionAt.getTime()), false);
+    assert.ok(logAt.getTime() < sessionAt.getTime(), "at 升序 = 时间升序（R1 的本义）");
+    assert.match(first.at, /\.\d{3}Z$/, "log 的 at 是 toISOString 形态（带毫秒与 Z）");
   } finally { server.close(); await cleanup(home); }
 });
 
