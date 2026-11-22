@@ -32,8 +32,16 @@ async function freshHome() {
 
 const ctx = (agentId, projectId) => ({ agentId, projectId });
 
-/** 删临时家目录：服务端异步写日志可能还没收尾，失败不算用例失败（不是断言对象）。 */
-const cleanup = (path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
+/**
+ * 删临时家目录。**先排空日志写链再删**：`log.*` 是 fire-and-forget（模块级链），
+ * 直接 rm 会让链上排队的写在自己的家目录已删后执行 —— `appendLine` 的
+ * `mkdir(dir, {recursive:true})` 会把删掉的目录**整棵重建**（实测 /var/folders 残留 1.2M
+ * 的完整家目录），EINVAL/ENOENT 全是这一族。排空后目录里不再有排队写，rm 是干净的。
+ */
+const cleanup = async (path) => {
+  await flushLogs();
+  await rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
+};
 
 /** 造一个会话文件（Pi 真实条目形状）；`at` 是**本地** Date，测试因此不受时区影响。 */
 async function writeSession(home, agentId, projectId, sessionId, entries) {
@@ -448,6 +456,17 @@ test("S1-19 backend 2.9：读 log.md 的非 ENOENT 失败（EISDIR）必须留�
 
   const { server, base } = await startOn(home);
   try {
+    // 诊断：fetch 前先确认 bad 的 log.md 此刻在**本家**且确实是目录（找到根因后移除）
+    {
+      const { stat } = await import("node:fs/promises");
+      const st = await stat(badLog).catch((err) => `缺失(${err.code})`);
+      console.error("S1-19 探针C（fetch 前）：", JSON.stringify({
+        badLog: badLog.replace(home, "~"),
+        isDir: st instanceof Object && "isDirectory" in st ? st.isDirectory() : st,
+        envHome: process.env.LIFEOS_HOME,
+        sameHome: process.env.LIFEOS_HOME === home,
+      }));
+    }
     // 服务进程读的也是 env：fetch 触发的扫描在 createApp 的闭包里用 resolveHome()。
     // 并发文件会在 fetch 期间切 env，所以 fetch 前**再设一次**（本行是"扫描窗口"的护栏）。
     process.env.LIFEOS_HOME = home;
@@ -460,28 +479,14 @@ test("S1-19 backend 2.9：读 log.md 的非 ENOENT 失败（EISDIR）必须留�
     assert.equal(logs.length, 1, "正常 Task 的 log 条目仍然在（失败的那条缺席，但它不拖垮别人）");
     assert.equal(logs[0].taskId, good.task.id);
 
-    // ② 失败必须留痕（非 ENOENT 才记；这里是 EISDIR）
-    // 等"含 EISDIR 的行"——不按行数等：行数到位不等于**那一行**到位
-    //（测试侧竞态修法；产品侧 catch 是同步判 code，没有这个窗口）。
-    const rows = await readLogRows(home, (parsed) =>
-      parsed.some((row) => row.module === "workbench" && row.fn === "dayIndex"
-        && typeof row.details?.message === "string" && row.details.message.includes("EISDIR")));
+    // ② 失败必须留痕（非 ENOENT 才记；这里是 EISDIR）。
+    // **先排空写链，再直接读文件**：写是 fire-and-forget，fetch 返回只说明"已入队"；
+    // 不排空就断言 = 与链上的写赛跑（首版这里 60×50ms 轮询赌，约 1/3 概率红 —— flaky 的判据是重复）。
+    await flushLogs();
+    const raw = await readFile(join(home, "logs", `backend-${logDay()}.jsonl`), "utf8").catch(() => "");
+    const rows = raw.trim() === "" ? [] : raw.trim().split("\n").map((line) => JSON.parse(line));
     const marks = rows.filter((row) => row.module === "workbench" && row.fn === "dayIndex"
       && typeof row.details?.message === "string" && row.details.message.includes("EISDIR"));
-    if (marks.length < 1) {
-      // 即时诊断：把"本家用例"的日志文件现状、LIFEOS_HOME 当前值打出来（找到根因后移除）
-      const { readdir } = await import("node:fs/promises");
-      let filesHere = [];
-      try { filesHere = await readdir(join(home, "logs")); } catch { filesHere = ["(logs 目录不存在)"]; }
-      const debugLines = (await readFile(join(home, "logs", `backend-${logDay()}.jsonl`), "utf8").catch(() => ""))
-        .split("\n").filter((line) => line.includes("workbench")).slice(0, 5);
-      console.error("S1-19 诊断：", JSON.stringify({
-        envHome: process.env.LIFEOS_HOME,
-        caseHome: home,
-        sameHome: process.env.LIFEOS_HOME === home,
-        filesHere, debugLines,
-      }, null, 2));
-    }
     assert.ok(marks.length >= 1, `必须有一条留痕（module=workbench fn=dayIndex message 含 EISDIR），实际 ${JSON.stringify(rows)}`);
     // details 里只有 ID 与路径，没有正文（backend 2.10）
     assert.equal((marks[0].details.message ?? "").length < 200, true);
@@ -507,8 +512,15 @@ test("S1-20 backend 2.9：ENOENT 是正常分支，不留痕（日志里 0 条 w
   try {
     const response = await fetch(`${base}/api/days?from=2026-11-01&to=2026-11-30`);
     assert.equal(response.status, 200);
-    await readLogRows(home, (rows) => rows.length >= 1).catch(() => []);   // 给写盘一点时间（fire-and-forget）
-    const rows = await readLogRows(home, 0);
+    // 排空写链后直接读文件（同 S1-19：不赌轮询）。
+    await flushLogs();
+    const raw = await readFile(join(home, "logs", `backend-${logDay()}.jsonl`), "utf8").catch(() => "");
+    const rows = raw.trim() === "" ? [] : raw.trim().split("\n").map((line) => JSON.parse(line));
+    // **正向控制**：先证明日志管道对这个 home 是通的（至少有一条非 workbench 的行——
+    // 常驻的 http request 行就是），再断言 0 条 workbench。否则"文件根本没写"与
+    // "写了但没有 ENOENT 留痕"两种结局无法区分 —— 假绿的形态（architect 2026-11-22 点名）。
+    const pipeline = rows.filter((row) => row.module !== "workbench");
+    assert.ok(pipeline.length >= 1, `正向控制：日志管道必须对这个 home 写过至少一条（http request 行），实际 ${JSON.stringify(rows)}`);
     const wb = rows.filter((row) => row.module === "workbench");
     assert.deepEqual(wb, [], `ENOENT 不得留痕，实际 ${JSON.stringify(wb)}`);
   } finally {

@@ -62,7 +62,6 @@ function sanitize(details: Record<string, unknown> | undefined): Record<string, 
  * 对外的承诺是"永不拒绝"——调用方（`void log.××`）不会因此把测试/业务搞崩；
  * 失败仅打印 stderr 提示（logs 目录无法创建/权限失败等运维问题由用户处理）。 */
 let chain: Promise<unknown> = Promise.resolve();
-let logsDirReady = false;
 async function appendLine(file: string, row: Record<string, unknown>): Promise<void> {
   const previous = chain;
   // file 与它的目录都在【调用时】求值：`resolveHome()` 是进程级可变状态（测试/多 home 切换），
@@ -96,7 +95,9 @@ async function write(level: LogLevel, module: string, fn: string | undefined, ms
     msg,
     ...(sanitize(details) !== undefined ? { details: sanitize(details) } : {}),
   };
-  await ensureLogsDir();
+  // file 在【调用时】求值（backendFile() 读当时的 resolveHome()），并**同步**入队 ——
+  // 必须在任何 await 之前：write() 若先 await 挂起，`void log.x` 的调用方会立刻继续，
+  // flushLogs() 读到的 chain 还不含这一条 → "排空了但文件没写"（0032 · S1-19 全量二跑实测）。
   await appendLine(backendFile(), row);
 }
 
