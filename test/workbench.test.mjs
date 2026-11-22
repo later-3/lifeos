@@ -424,9 +424,10 @@ async function readLogRows(home, until) {
   const file = join(home, "logs", `backend-${logDay()}.jsonl`);
   const predicate = typeof until === "function" ? until : (rows) => rows.length >= until;
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    // **并发全量下必须每轮把 env 设回来**：node --test 默认并发跑多个文件，
-    // 其他文件的用例会把 LIFEOS_HOME 切走；log.debug 的落盘路径是 resolveHome()（每次读 env），
-    // env 被切走时这一行会写进**别家**的 logs → 本家永远等不到（第二次竞态的根因）。
+    // **同文件用例之间必须把 env 设回来**：node --test test/*.test.mjs 默认每个文件独立进程
+    //（没开 --test-isolation=none），跨文件不会串；但模块级 chain 与 resolveHome() 都活在
+    // 同一个文件的进程里，前一个用例 cleanup(rm) 后 env 仍指向它 —— 不复位的话
+    // 这一行会写进已删目录 → ENOENT（第一次竞态的根因，824361d 修）。
     process.env.LIFEOS_HOME = home;
     const raw = await readFile(file, "utf8").catch(() => "");
     const rows = raw.trim() === "" ? [] : raw.trim().split("\n").map((line) => JSON.parse(line));
@@ -501,15 +502,16 @@ test("S1-20 backend 2.9：ENOENT 是正常分支，不留痕（日志里 0 条 w
   try {
     const response = await fetch(`${base}/api/days?from=2026-11-01&to=2026-11-30`);
     assert.equal(response.status, 200);
-    // 排空写链后直接读文件（同 S1-19：不赌轮询）。
-    await flushLogs();
-    const raw = await readFile(join(home, "logs", `backend-${logDay()}.jsonl`), "utf8").catch(() => "");
-    const rows = raw.trim() === "" ? [] : raw.trim().split("\n").map((line) => JSON.parse(line));
-    // **正向控制**：先证明日志管道对这个 home 是通的（至少有一条非 workbench 的行——
-    // 常驻的 http request 行就是），再断言 0 条 workbench。否则"文件根本没写"与
-    // "写了但没有 ENOENT 留痕"两种结局无法区分 —— 假绿的形态（architect 2026-11-22 点名）。
-    const pipeline = rows.filter((row) => row.module !== "workbench");
-    assert.ok(pipeline.length >= 1, `正向控制：日志管道必须对这个 home 写过至少一条（http request 行），实际 ${JSON.stringify(rows)}`);
+    // 栅栏 = **内容**，不是 flushLogs()：fetch resolve ≠ 处理期间的行已上链
+    //（handler 的 void log.debug 在 write() 里先 await ensureLogsDir() 才 appendLine；
+    //  http 请求行在中间件 await next() 之后才入队 —— 响应可能先回到客户端，
+    //  flushLogs() 排的是一条空链，再读文件是 0 行（S1-20 全量首跑实测 5/5 红））。
+    // 等同一次请求的 http 请求行出现：它 happens-after 处理期间的所有行，链又是串行的，
+    // 所以它出现时那几行必然已落盘 —— 与 S1-19 等 EISDIR 行同一形状。
+    const rows = await readLogRows(home, (parsed) => parsed.some((row) =>
+      row.module === "http" && typeof row.details?.path === "string" && row.details.path.includes("/api/days")));
+    // **正向控制已内建在栅栏里**（等的就是 http 行 = 管道对这个 home 通了），
+    // 再断言 0 条 workbench —— 否则"文件根本没写"与"写了但没有 ENOENT 留痕"无法区分。
     const wb = rows.filter((row) => row.module === "workbench");
     assert.deepEqual(wb, [], `ENOENT 不得留痕，实际 ${JSON.stringify(wb)}`);
   } finally {
