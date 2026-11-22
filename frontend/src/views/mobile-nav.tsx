@@ -39,7 +39,8 @@ const PAGE_SIZE = 20;
  */
 export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId, canNewSession,
   onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent,
-  onOpenProjectInfo, onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel }: {
+  onOpenProjectInfo, onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel,
+  onOpenWorkbench }: {
   open: boolean;
   level: Level;
   onLevelChange: (level: Level) => void;
@@ -85,6 +86,8 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
   onRenameChange?: (value: string) => void;
   onRenameCommit?: (value: string) => void;
   onRenameCancel?: () => void;
+  /** 打开「我的工作台」（Task 0023 · S1）：抽屉第一级的一行入口 → 独立全屏表面。 */
+  onOpenWorkbench?: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const install = useInstallPrompt();
@@ -124,6 +127,11 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {level === "agents" && (
+          <Row key="workbench" onClick={onOpenWorkbench}
+            participants={<span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-accent"><AppIcon name="folder" size={18} /></span>}
+            meta="你的待办、项目与全部内容">我的工作台</Row>
+        )}
         {level === "agents" && agents.map((item) => (
           <Row key={item.id} selected={item.id === agent?.id}
             /*
