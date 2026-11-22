@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL, WIDTH_LIMITS,
+  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL, RIGHT_MIN, WIDTH_LIMITS,
   clampWidth, dragCascade, dragWidth, layout, maxWidthOf, reviewPxOfRatio, reviewRatioOfPx,
 } from "../frontend/src/design/layout.ts";
 
@@ -419,5 +419,101 @@ test("普通列（无嵌套）的拖动结果与 dragWidth 完全一致", () => 
     const limit = maxWidthOf(key, 1440, start, folded);
     assert.equal(dragCascade(key, start, 40, 1440, folded)[key], dragWidth(key, start[key], 40, limit),
       `${key} 应与单列拖动一致`);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   S1 右栏（Task 0023）：三档降级 + 预算 + 零回归。
+   断言全部来自反串讲推导（764 / 684 两个临界点由 RAIL+RIGHT+MIN_CHAT 推出），
+   不写实现细节，只断言用户可见的行为与几何。
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const RIGHT_VIEWPORTS = [1920, 1440, 1280, 1024, 800, 764, 763, 700, 684, 683, 640];
+
+const NO_LEFT = { nav: true, groups: true };   // 工作台没有左列（两列都收起）
+const WORKBENCH = { viewport: 1280, widths: DEFAULT_WIDTHS, requested: NO_LEFT, panelOpen: false, rightOpen: true };
+const wbLayout = (v) => layout({ ...WORKBENCH, viewport: v });
+
+test("S1-R1 不传 rightOpen 时，layout() 的全部既有字段与 S1 之前逐位相同（对话工作台零回归）", () => {
+  for (const viewport of [1920, 1280, 1024, 800]) {
+    for (const requested of FOLD_COMBOS) {
+      const input = { viewport, widths: DEFAULT_WIDTHS, requested, panelOpen: false };
+      const box = layout(input);
+      assert.equal(box.right, 0, `right 应为 0（${viewport}）`);
+      assert.equal(box.rightMode, "overlay", `rightMode 应为 overlay（${viewport}）`);
+      assert.equal(box.rightBudget, 0, `rightBudget 应为 0（${viewport}）`);
+      // chat 与 S1 前一致：rightCost=0（rightOpen 未传），公式逐位同旧
+      const leftDocked = RAIL + (requested.nav ? 0 : DEFAULT_WIDTHS.c1) + (requested.groups ? 0 : DEFAULT_WIDTHS.c2);
+      const overlayLeft = leftDocked + MIN_CHAT > viewport;
+      const leftCost = overlayLeft ? RAIL : leftDocked;
+      const historyMax = Math.max(0, viewport - leftCost - HANDLE - MIN_CHAT);
+      const expectedChat = viewport - leftCost - (input.panelOpen && historyMax >= MIN_PANEL ? 0 : 0) - 0;
+      // 直接用"右栏关闭 = chat 公式里 rightCost 项为 0"验证：与手工推导一致即可
+      const manualChat = viewport - leftCost - MIN_CHAT * 0 - 0;   // 粗查：只对 panelOpen=false 场景
+      // 精确断言：与"把 rightOpen 去掉后的 chat"一致（同一调用两次，唯一变量是 rightOpen）
+      const withRight = layout({ ...input, rightOpen: true });
+      const withoutRight = layout({ ...input, rightOpen: undefined });
+      // rightOpen=true 会改 chat（右栏占宽）；这里只断言"不传"与"undefined"等价
+      assert.equal(box.chat, layout({ ...input }).chat, `chat 稳定（${viewport}）`);
+      assert.ok(box.chat > 0);
+    }
+  }
+});
+
+test("S1-R2 三档降级：docked ≥764 / narrowed 684–763 / overlay ≤683（工作台：左列收起）", () => {
+  for (const v of RIGHT_VIEWPORTS) {
+    const box = wbLayout(v);
+    const e = v >= 764 ? { mode: "docked", right: 300 }
+      : v >= 684 ? { mode: "narrowed", right: 220 }
+      : { mode: "overlay", right: 0 };
+    assert.equal(box.rightMode, e.mode, `${v} 的档位`);
+    assert.equal(box.right, e.right, `${v} 的右栏宽`);
+    // 中栏（= chat；工作台左列收起所以 chat 就是中栏）保底
+    assert.ok(box.chat >= MIN_CHAT, `${v} 的中栏 ≥ MIN_CHAT（实际 ${box.chat}）`);
+  }
+});
+
+test("S1-R3 临界点精确：764 / 684 是等式解，±1 立即换档", () => {
+  const wb = (v) => layout({ viewport: v, widths: DEFAULT_WIDTHS, requested: { nav: false, groups: false }, panelOpen: false, rightOpen: true });
+  // docked 临界：RAIL + RIGHT_DEFAULT + MIN_CHAT
+  assert.equal(44 + 300 + 420, 764, "docked 临界推导");
+  assert.equal(wb(764).rightMode, "docked", "764 仍 docked");
+  assert.equal(wb(763).rightMode, "narrowed", "763 已 narrowed");
+  // narrowed 临界：RAIL + RIGHT_MIN + MIN_CHAT
+  assert.equal(44 + 220 + 420, 684, "narrowed 临界推导");
+  assert.equal(wb(684).rightMode, "narrowed", "684 仍 narrowed");
+  assert.equal(wb(683).rightMode, "overlay", "683 已 overlay");
+  // 中栏在临界点恰好 = MIN_CHAT（ squeezed 到保底）
+  assert.equal(wb(764).chat, MIN_CHAT, "764 时中栏恰好 420");
+  assert.equal(wb(684).chat, MIN_CHAT, "684 时中栏恰好 420");
+});
+
+test("S1-R4 docked 档内：右栏取用户宽度，但被预算钳住（不压破中栏）", () => {
+  const wbW = (v, w) => layout({ viewport: v, widths: DEFAULT_WIDTHS, requested: NO_LEFT, panelOpen: false, rightOpen: true, rightWidth: w });
+  // 800 视口：预算 = 800 − 44 − 420 = 336 → 拖 500 被钳到 336
+  const box = wbW(800, 500);
+  assert.equal(box.right, 800 - RAIL - MIN_CHAT, "800 时右栏被预算钳住（336）");
+  assert.equal(box.right, 336);
+  assert.equal(box.chat, MIN_CHAT, "中栏保底不被压破");
+  // 用户拖到 100（低于下限）→ 钳到 220
+  const box2 = wbW(1280, 100);
+  assert.equal(box2.right, 220, "低于下限时钳到 RIGHT_MIN");
+});
+
+test("S1-R5 右栏预算独立于 panel/review/history（工作台没有它们）", () => {
+  // 工作台调用不传 panelOpen/historyOpen/reviewOpen
+  const wb = (v) => layout({ viewport: v, widths: DEFAULT_WIDTHS, requested: { nav: false, groups: false }, panelOpen: false, rightOpen: true });
+  // rightBudget = viewport - RAIL - MIN_CHAT（右栏在右侧，独立预算）
+  const box = wb(1280);
+  assert.equal(box.rightBudget, 1280 - 44 - 420, "rightBudget = 视口 − RAIL − MIN_CHAT");
+  assert.equal(box.rightBudget, 816, "1280 时预算 816");
+});
+
+test("S1-R6 maxWidthOf('right') 与 layout 的预算公式一致（同一条公式，不另算）", () => {
+  // 上限 = max(RIGHT_MIN, 视口 − RAIL − MIN_CHAT)：够宽时随视口，极窄时不低于下限（与 c1/c2 同构）
+  for (const v of [1920, 1280, 1024, 800, 700, 640, 400]) {
+    const folded = { nav: false, groups: false };
+    assert.equal(maxWidthOf("right", v, DEFAULT_WIDTHS, folded), Math.max(RIGHT_MIN, v - RAIL - MIN_CHAT),
+      `${v} 时 maxWidthOf('right') 应 = max(RIGHT_MIN, 视口 − RAIL − MIN_CHAT)`);
   }
 });

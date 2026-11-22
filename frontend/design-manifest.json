@@ -1,6 +1,6 @@
 {
- "generated": "2026-11-18",
- "count": 127,
+ "generated": "2026-11-22",
+ "count": 131,
  "entries": [
   {
    "name": "alphaVar",
@@ -448,9 +448,29 @@
    "file": "src/design/layout.ts"
   },
   {
-   "name": "Row",
-   "kind": "function",
-   "file": "src/design/ui.tsx"
+   "name": "RIGHT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "RIGHT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "RIGHT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "RIGHT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
+  },
+  {
+   "name": "RIGHT",
+   "kind": "const",
+   "file": "src/design/layout.ts"
   },
   {
    "name": "Row",

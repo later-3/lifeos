@@ -110,6 +110,15 @@ export type Folded = { nav: boolean; groups: boolean };
 export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: number; c5: number };
 
 /**
+ * **右栏**（工作台，Task 0023 · S1）：月历所在的一列。
+ *
+ * 与左侧列（c1/c2）的差异：它**不在 `Folded` 里**（不能被“收起列”开关收起），
+ * 它的降级由视口算出来的 `rightMode` 三档驱动（`docked` / `narrowed` / `overlay`），
+ * 这是 0023 反串讲第 3 问的方案（architect 已拍板）。
+ */
+export type WidthsExt = Widths & { right: number };
+
+/**
  * `c2` = 分组面板（项目分组 → 会话行），默认 300，下限 240。
  *
  * **上限不再写常量（Task 0006）**：旧值 440 没有任何依据（`groups-panel.md` 引的是实现自身），
@@ -120,6 +129,27 @@ export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: numb
  * `c3` 保留在类型里只为兼容既有调用（合并后不再渲染列，值恒为 0）。
  */
 export const DEFAULT_WIDTHS: Widths = { c1: 232, c2: 300, c3: 0, c4: 600, c4t: 240, c5: DEFAULT_HISTORY };
+
+/** 右栏下限：月历 7×28 = 196 + 内距 24（几何硬下限，协议 §3.13）。 */
+export const RIGHT_MIN = 220;
+/** 右栏默认宽（demo 已验证的 300）。 */
+export const RIGHT_DEFAULT = 300;
+/**
+ * 右栏的**三档降级阈值**（由 MIN_CHAT 与 RAIL 推出，不是拍的）：
+ * - 视口 ≥ `RIGHT_DOCKED_MIN`：右栏照用户拖的宽度并列（docked）；
+ * - 视口 ≥ `RIGHT_NARROW_MIN`：右栏压到下限 220（narrowed）——「右栏先让，不放弃它」；
+ * - 更窄：右栏退出布局（overlay，= 0），与 `overlayLeft` 同一个模式：
+ *   「窄了就改浮层，不压内容」（layout.ts 的 overlayLeft 注释原话，参照 Pi Web / 通用 AppShell）。
+ *
+ * 推导（HANDLE = 0，见本文件上方）：
+ *   docked 临界 = RAIL + RIGHT_DEFAULT + MIN_CHAT = 44 + 300 + 420 = 764；
+ *   narrowed 临界 = RAIL + RIGHT_MIN + MIN_CHAT = 44 + 220 + 420 = 684。
+ * 两行都有测试锁住（test/ui-layout.test.mjs 的 S1 右栏块）。
+ */
+export const RIGHT_DOCKED_MIN = RAIL + RIGHT_DEFAULT + MIN_CHAT;
+export const RIGHT_NARROW_MIN = RAIL + RIGHT_MIN + MIN_CHAT;
+/** 右栏三态。 */
+export type RightMode = "docked" | "narrowed" | "overlay";
 
 /**
  * 防坏值的**技术兜底**（不是产品约束）：localStorage 是用户可写的，一个 1e9 的宽度
@@ -147,6 +177,12 @@ export const WIDTH_LIMITS: Record<keyof Widths, [number, number]> = {
   c5: [MIN_HISTORY, 720],
 };
 
+/**
+ * 右栏的常量区间：常量只做技术兑底（防 localStorage 脏值），真实上限由 `maxWidthOf()`
+ * 从视口算（与 c1/c2 同构，见上方注释）。
+ */
+export const RIGHT_LIMITS: [number, number] = [RIGHT_MIN, SANITY];
+
 // 2026-10-18（用户定 + 参照 VS Code Activity Bar）：**不再按视口强制收起列**。
 // 旧规则（<1200 收项目、<1000 收会话）会让"点图标展开"变成死点击；现在一律以用户的收展状态为准，
 // 窗口窄就压缩列/聊天（与 VS Code 一致：它也不会因为窗口变窄就把你的侧栏关掉）。
@@ -164,6 +200,14 @@ export type LayoutInput = {
    */
   reviewOpen?: boolean;
   reviewRatio?: number;
+  /**
+   * **右栏是否打开**（工作台，Task 0023 · S1）。
+   * 不传 = 工作台不在场（对话工作台调用不变），右栏全部字段为 0 / "overlay"。
+   * 传入 true 时才参与预算 —— 对话工作台零回归的第一道闸：不传就不占宽。
+   */
+  rightOpen?: boolean;
+  /** 用户拖出的右栏宽度（存 localStorage；不传按 RIGHT_DEFAULT）。 */
+  rightWidth?: number;
 };
 
 export type Layout = {
@@ -185,6 +229,14 @@ export type Layout = {
   panelFits: boolean;
   /** 窄窗口：左三列改为浮层抽屉（overlay），不再挤占聊天列（参照 Pi Web 的移动端抽屉）。 */
   overlayLeft: boolean;
+  /**
+   * 右栏三字段（Task 0023 · S1）。`rightOpen` 未传时全部为关闭值（0/"overlay"），
+   * 对话工作台调用 `layout()` 时结果与 S1 之前完全相同。
+   */
+  right: number;
+  rightMode: RightMode;
+  /** 右栏在当前视口下的真实上限（供拖动夹紧；overlay 态为 0）。 */
+  rightBudget: number;
 };
 
 export function layout(input: LayoutInput): Layout {
@@ -231,9 +283,42 @@ export function layout(input: LayoutInput): Layout {
   const review = wantReview && reviewFits
     ? Math.min(reviewBudget, reviewPxOfRatio(input.viewport, input.reviewRatio))
     : 0;
-  const chat = input.viewport - leftCost - historyCost - (panel > 0 ? HANDLE + panel : 0) - (review > 0 ? HANDLE + review : 0);
 
-  return { rail, history, c1, c2, c3, panel, tree, review, reviewBudget, reviewFits, chat, folded, panelFits, overlayLeft };
+  /*
+   * **右栏**（Task 0023 · S1）：三档降级，全部由视口算。
+   *
+   * 与左侧列的差异：右栏不在 `Folded` 里，没有“收起列”开关；它的降级是**预算推出来的**：
+   *   docked 临界 = RAIL + RIGHT_DEFAULT + MIN_CHAT = 764；
+   *   narrowed 临界 = RAIL + RIGHT_MIN + MIN_CHAT = 684。
+   *
+   * **不把右栏挤进既有预算公式**：`rightOpen` 未传时整块跳过，chat 不变 ——
+   * 这是对话工作台零回归的第一道闸（对话侧的调用不传它，结果与 S1 前逐位相同）。
+   * 传入 true 时才把右栏算进 chat 的扣除项（走独立的 rightCost，不与 panel/review 互斥）。
+   */
+  const wantRight = input.rightOpen === true;
+  const rightMode: RightMode = !wantRight
+    ? "overlay"
+    : input.viewport >= RIGHT_DOCKED_MIN
+      ? "docked"
+      : input.viewport >= RIGHT_NARROW_MIN
+        ? "narrowed"
+        : "overlay";
+  // 右栏预算：独立于 panel/review/history（工作台页面没有它们）；
+  // 对话工作台若未来同时打开右栏，这两者互斥问题留给那时的调用方（S1 范围外）。
+  const rightBase = wantRight ? Math.max(RIGHT_MIN, Math.min(input.rightWidth ?? RIGHT_DEFAULT, SANITY)) : 0;
+  const rightBudget = wantRight
+    ? Math.max(0, input.viewport - rail - HANDLE - MIN_CHAT)
+    : 0;
+  const right = rightMode === "docked"
+    ? Math.min(rightBase, rightBudget)
+    : rightMode === "narrowed"
+      ? Math.min(RIGHT_MIN, rightBudget)
+      : 0;
+  const rightCost = right > 0 ? HANDLE + right : 0;
+
+  const chat = input.viewport - leftCost - historyCost - (panel > 0 ? HANDLE + panel : 0) - (review > 0 ? HANDLE + review : 0) - rightCost;
+
+  return { rail, history, c1, c2, c3, panel, tree, review, reviewBudget, reviewFits, chat, folded, panelFits, overlayLeft, right, rightMode, rightBudget };
 }
 
 /**
@@ -306,6 +391,17 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
   if (key === "c4" || key === "c5") {
     // 右侧列上限：视口 − 左侧全部 − 聊天保底
     return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT);
+  }
+  /*
+   * 右栏上限（Task 0023 · S1）：与 c4/c5 同一条公式（都在右侧）——
+   * 视口 − 图标轨 − 聊天保底。不写常量上限（520 是 c2 那个自创 440 的同款病）。
+   * 注意不减 c1/c2：右栏只在**工作台**页面出现，那个页面没有左列。
+   *
+   * 参数类型是 `keyof Widths`（不含 "right"，WidthsExt 才有）——但调用方（useColumnWidth）
+   * 与测试都会传 "right"，所以这里用 `as string` 拓宽比较，TS2367 不再误报。
+   */
+  if ((key as string) === "right") {
+    return Math.max(RIGHT_LIMITS[0], viewport - rail - MIN_CHAT);
   }
   if (key === "c4t") {
     /*
