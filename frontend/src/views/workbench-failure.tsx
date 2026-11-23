@@ -9,9 +9,11 @@ import { AppIcon } from "../design/icons";
 import { IconButton } from "../design/ui";
 import { failureTextOf, type LoadFailure } from "../api/fetch-timeout";
 
-export function FailureNotice({ failure, onRetry }: { failure: LoadFailure; onRetry: () => void }) {
+/** `scope` 标明**哪一块**失败了（feed / projects / days）——2.32：就绪标志按被取数对象分别维护。 */
+export function FailureNotice({ failure, onRetry, scope }: { failure: LoadFailure; onRetry: () => void; scope: string }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4" data-testid="workbench-load-failure">
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4"
+      data-testid="workbench-load-failure" data-failure-scope={scope}>
       <p className="text-center text-body text-ink-700">{failureTextOf(failure)}</p>
       <IconButton label="重试" tone="accent" onClick={onRetry}><AppIcon name="refresh" size={16} /></IconButton>
     </div>

@@ -174,10 +174,10 @@ export function ProjectPane({ tasks, projects, agents, onToggleProject, selected
   const columns = stateColumnsOf(picked);
   const projectNames = new Map(projects.map((project) => [project.id, project.name]));
   if (loading) {
-    return <div className="min-h-0 flex-1 p-3"><Skeleton rows={6} /></div>;
+    return <div className="min-h-0 flex-1 p-3" data-testid="workbench-projects-loading"><Skeleton rows={6} /></div>;
   }
   if (projects.length === 0) {
-    return <div className="min-h-0 flex-1"><EmptyState title="还没有项目" hint="项目在各助手的对话里注册后出现在这里。" /></div>;
+    return <div className="min-h-0 flex-1" data-testid="workbench-projects-empty"><EmptyState title="还没有项目" hint="项目在各助手的对话里注册后出现在这里。" /></div>;
   }
   return (
     <div className="flex min-h-0 flex-1" data-testid="workbench-projects">
@@ -197,7 +197,7 @@ export function ProjectPane({ tasks, projects, agents, onToggleProject, selected
       {/* 右：看板（列 = 归一状态；勾选的项目为范围；无勾选 = 明确空态，不静默消失） */}
       <div className="flex min-w-0 flex-1 flex-col">
         {selected.size === 0 ? (
-          <div className="min-h-0 flex-1"><EmptyState title="勾选项目，看板显示它们的任务" hint="左列默认全选；清空后这里给出指引。" /></div>
+          <div className="min-h-0 flex-1" data-testid="workbench-projects-none"><EmptyState title="勾选项目，看板显示它们的任务" hint="左列默认全选；清空后这里给出指引。" /></div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-x-auto overflow-y-hidden p-2">
             <div className="flex min-h-0 flex-1 gap-2">

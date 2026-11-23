@@ -35,6 +35,7 @@
     "test:draft": "node frontend/test/new-session-draft.mjs",
     "test:pwa": "node frontend/test/pwa-contract.mjs",
     "test:workbench": "node frontend/test/workbench-live.mjs",
+    "test:workbench:states": "node frontend/test/workbench-states.mjs",
     "test:review": "node frontend/test/review-contract.mjs",
     "test:composer": "node frontend/test/composer-scope.mjs",
     "state": "node scripts/session-state.mjs",

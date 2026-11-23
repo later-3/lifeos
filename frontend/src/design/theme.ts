@@ -451,7 +451,9 @@ export function calculatePalette(state: ThemeState): Palette {
     annoTodoSoft: dark ? [22, 0.06, 300] : [93.9, 0.0308, 304.3],
     /*
      * 内容流卡型色（Task 0023 · S1）：色相 = 契约示例 hex 反解，亮度与彩度按本项目规则。
-     * 浅色档与 tokens.css 的静态 hex 逐值一致（design-system 的一致性锁会断言）；
+     * 浅色档与 tokens.css 的静态 hex 逐值一致——**锁在 `test/design-system.test.mjs` 的
+     * A4 statics 表**（12 个 feed* 键，Task 0023 第 4 块补入；此前这条注释声称"有一致性锁"
+     * 而那 12 个键并不在表里，案例 C312）。
      * 深色档 fg L*76 / soft L*24 —— 方向与 2.30 一致（明面容器比页面底亮）。
      */
     feedDev: dark ? [76, 0.115, 264] : [40, 0.115, 264],

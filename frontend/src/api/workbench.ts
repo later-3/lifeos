@@ -12,6 +12,7 @@
  * 可见性（归档 Agent / hidden 项目）由后端统一判（S1-contract §6-R2）；前端不重复过滤（api 2.7）。
  */
 import type { LoadResult } from "./fetch-timeout";
+import type { FeedKind } from "./feed-cards";
 import type { RowAvatar } from "../../../src/session-rows.ts";
 // .ts 后缀：本模块会被 test/*.test.mjs 直接 import（node ESM 不解析无后缀相对路径）
 import { fetchJsonWithTimeout } from "./fetch-timeout.ts";
@@ -101,8 +102,13 @@ export type FeedItem = {
   /** 点赞人（契约 §3 stats.likers：头像叠放行）。S1 只存显示名缩写，不造假头像 URL。 */
   likers?: string[];
   mine: boolean;
-  /** 8 种卡型（0009 契约）。**必须能处理缺失**：缺失时 fallback 纯文本卡（architect S1 回应③）。 */
-  kind?: "dev" | "demo" | "knowledge" | "case" | "review" | "mood" | "study" | "media";
+  /**
+   * 8 种卡型（0009 契约 §2）。**必须能处理缺失**：缺失时 fallback 纯文本卡（architect S1 回应③）。
+   *
+   * 枚举**只有一处定义**（`feed-cards.ts` 的 `FeedKind`，api 2.7）——
+   * 这里原来又抄了一遍字面量联合，两份枚举迟早漂移（加一个 kind 只改一处、另一处静默不认）。
+   */
+  kind?: FeedKind;
 };
 
 /* ══════════════════ 内部小工具 ══════════════════ */
@@ -164,6 +170,16 @@ export async function fetchDays(range: { from: string; to: string }): Promise<Lo
  * 桩条目带 `_stub: true` → 渲染层据此显式出「示例」徽标，不许看起来像真数据。
  */
 export async function fetchFeed(range: { from: string; to: string }): Promise<LoadResult<FeedItem[]>> {
+  /*
+   * 测试注入点（**S2 接真接口时与桩一起删**，`grep __lifeosFeedSource` 就能找到两处）。
+   *
+   * 为什么需要它：S1 的 feed 是**桩**，桩不是网络请求 —— `page.route` 拦不到它，
+   * 于是四态契约（loading / empty / failed / content）在 feed 上没法控制。
+   * 唯一的 seam 只能是全局注入点，而不是把桩改成"fetch 一个还不存在的端点"：
+   * 后者会让每次真实打开都打一条 404（2.9：错误必须可见，不许拿假请求探路）。
+   */
+  const override = (globalThis as { __lifeosFeedSource?: () => Promise<LoadResult<FeedItem[]>> }).__lifeosFeedSource;
+  if (override !== undefined) return override();
   const { STUB_FEED } = await import("./workbench-fixtures.ts");
   void range; // S2 才按日期过滤
   return { ok: true, value: STUB_FEED };

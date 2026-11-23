@@ -70,10 +70,10 @@ export function WorkbenchCalendar({ year, month, days, today, loading, onPrevMon
       </div>
       {failed !== undefined && onRetry !== undefined ? (
         <div className="mt-2 flex min-h-40 flex-1 flex-col">
-          <FailureNotice failure={failed} onRetry={onRetry} />
+          <FailureNotice failure={failed} onRetry={onRetry} scope="days" />
         </div>
       ) : loading ? (
-        <div className="mt-2"><Skeleton rows={5} /></div>
+        <div className="mt-2" data-testid="workbench-calendar-loading"><Skeleton rows={5} /></div>
       ) : (
         <>
           <div className="mt-2 grid shrink-0 grid-cols-7 gap-0.5 text-center text-micro text-ink-300" aria-hidden="true">

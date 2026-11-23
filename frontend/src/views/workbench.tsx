@@ -156,7 +156,7 @@ export function WorkbenchSurface({ agents, profile, right, onRightResizeStart, i
           selected={selectedIds} onToggleProject={toggleProject}
           loading={(!data.tasks.ready && data.tasks.failure === undefined) || (!data.projects.ready && data.projects.failure === undefined)} />
       ) : (
-        <FailureNotice failure={(data.tasks.failure ?? data.projects.failure)!}
+        <FailureNotice failure={(data.tasks.failure ?? data.projects.failure)!} scope="projects"
           onRetry={() => { void data.reloadTasks(); void data.reloadProjects(); }} />
       ))
     : activeTab === "calendar"
@@ -168,7 +168,7 @@ export function WorkbenchSurface({ agents, profile, right, onRightResizeStart, i
             today={today} loading={!data.feed.ready && data.feed.failure === undefined}
             onClearFilter={() => setAgentFilter(undefined)} />
         ) : (
-          <FailureNotice failure={data.feed.failure!} onRetry={() => { void data.reloadFeed(); }} />
+          <FailureNotice failure={data.feed.failure!} scope="feed" onRetry={() => { void data.reloadFeed(); }} />
         ));
 
   // 手机全屏表面：焦点陷阱 + Esc + 锁滚动（与 Modal 同一条契约；关后还焦点）
@@ -186,6 +186,7 @@ export function WorkbenchSurface({ agents, profile, right, onRightResizeStart, i
           : <Tabs value={tab} options={tabOptions} onChange={setTab} label="工作台分区" idPrefix="workbench" />}
       </div>
       <div id={`workbench-panel-${activeTab}`} role="tabpanel" aria-labelledby={`workbench-tab-${activeTab}`}
+        data-testid="workbench-panel" data-panel={activeTab}
         className="flex min-h-0 flex-1 flex-col">
         {content}
       </div>

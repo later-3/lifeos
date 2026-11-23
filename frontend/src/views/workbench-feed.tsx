@@ -351,13 +351,13 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
     </span>
   ) : undefined;
   if (loading) {
-    return <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3"><Skeleton rows={5} /></div>;
+    return <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3" data-testid="workbench-feed-loading"><Skeleton rows={5} /></div>;
   }
   const items = filterFeedOf(feed, tab, agentFilter);
   if (items.length === 0) {
     const who = filterName;
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3" data-testid="workbench-feed-empty">
         {clearChip}
         <EmptyState
           title={tab === "todo" ? "待办还没有数据（S3 接入）" : who !== undefined ? `${who} 还没有任何内容` : "还没有内容"}
