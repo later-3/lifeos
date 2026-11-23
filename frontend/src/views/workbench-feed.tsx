@@ -371,6 +371,17 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
   const groups = groupFeedByDay(items);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-3.5 py-3" data-testid="workbench-feed">
+      {/*
+        **阅读宽度**（Task 0023 · S1-contract §R6，用户 2026-11-23 拍板）：
+        内容流是「逐条读」，行太长眼睛回行会丢位置 → 卡片列复用**对话区同一个设置**
+        `max-w-reading`（= `max-width: var(--container-reading)`，由 display-prefs 的宽度滑块
+        写 `--container-reading-width`）。**没有第二个滑块 / 第二个存储字段 / 第二个变量**；
+        拖到「铺满」时 `widthVar()` 给 `none`，这里自然铺满（与对话区行为一致）。
+
+        看板**不加**这个上限（它是"横向扫状态分布"，限宽会把三列挤到一起）——
+        两种宽度需求相反，用同一个值套整列必然一边将就（契约 §R6 的"为什么按内容性质分开"）。
+      */}
+      <div className="mx-auto flex w-full max-w-reading flex-col" data-testid="workbench-feed-column">
       {clearChip}
       {groups.map((group) => (
         <section key={group.day} className="mb-5">
@@ -387,6 +398,7 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
           </div>
         </section>
       ))}
+      </div>
     </div>
   );
 }

@@ -365,17 +365,88 @@ test("S1-W31 P1-3：「+N」头像堆叠的底不得是 ink-300 配白字（2.3:
     `「+N」角标不能压在 ink-300 上（白字只有 2.3:1）：${badgeLine.trim().slice(0, 100)}`);
 });
 
-test("S1-W32 规格缺口：Tabs primitive 在窄容器不折行（文字 nowrap / block 等分 truncate）", () => {
+test("S1-W32 Tabs 在窄容器不折行（nowrap / block 等分 truncate / 非 block 横滚）", () => {
   /*
    * reviewer 实测 390 宽：`动态 / 笔记` 折成两行 → 整条 tab 行高度从 44 变成两倍，
    * 而 44 是命中区契约的一部分（mobile.md §3）。修法按 architect 要求收敛在 **primitive 一处**
    * （frontend 2.20：不在工作台单独加样式）。
+   *
+   * **这条断言曾经是装饰性的**（案例 C314，architect 抓到）：
+   * 旧写法 `assert.ok(/\.length > 0/.test("x.length > 0") && tabs.includes("truncate"))`
+   * —— 左边对**字面量**做正则、**永远为真**，于是"锁了两件事"其实只锁了一件。
+   * 实测：把 block 分支从 `min-w-0 flex-1` 改成 `""`，这条断言仍然绿（它声称要锁的正是那个失效）。
+   *
+   * 现在每条都断言**被测代码里的真实字面量**，且各自独立成行（一条失败不会掩盖另一条）。
    */
   const ui = readFileSync(join(ROOT, "frontend/src/design/ui.tsx"), "utf8");
-  const tabs = ui.slice(ui.indexOf("export function Tabs"), ui.indexOf("export function Segmented"));
+  const raw = ui.slice(ui.indexOf("export function Tabs"), ui.indexOf("export function Segmented"));
+  assert.ok(raw.length > 0, "没截到 Tabs 的源码（切片边界变了？）——先确认测到了东西");
+  /*
+   * **必须剥掉注释行再断言**（第二次踩：注入 `block ? "" : "shrink-0"` 后这条**仍然绿**，
+   * 因为函数头注释里本来就写着 `min-w-0 flex-1` —— 断言匹配到了注释而不是代码）。
+   * 这与 C314 同族：**匹配到了不该匹配的东西**，只是方向相反（那次是恒真、这次是匹配错位）。
+   */
+  const tabs = raw.split("\n").filter((line) => {
+    const t = line.trimStart();
+    return !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+  }).join("\n");
+  // ① 文案永不折行（按钮上）
   assert.ok(tabs.includes("whitespace-nowrap"), "Tabs 的按钮必须 whitespace-nowrap（文案永不折行）");
-  assert.ok(/\.length > 0/.test("x.length > 0") && tabs.includes("truncate"), "block 等分时必须 truncate（宽度不够用省略号，不撑高）");
+  // ② block（等分）时：宽度不够用省略号，不靠换行撑高
+  assert.ok(tabs.includes("min-w-0 flex-1"), "block 等分分支必须是 `min-w-0 flex-1`（缺 min-w-0 时 truncate 不生效）");
+  assert.ok(tabs.includes("truncate"), "block 等分时必须 truncate（宽度不够用省略号，不撑高）");
+  // ③ 非 block（自然宽）时：整条可横向滚，高度不变
+  assert.ok(tabs.includes("shrink-0"), "非 block 时按钮必须 shrink-0（不被压窄到折行）");
   assert.ok(tabs.includes("overflow-x-auto"), "非 block（自然宽）时整条 tablist 必须可横向滚，高度不变");
-  // 高度是命中区契约：容器与按钮都必须是 h-11（44）
+  // ④ 高度是命中区契约：容器与按钮都必须是 h-11（44）
   assert.ok((tabs.match(/h-11/g) ?? []).length >= 2, "Tabs 容器与按钮都要 h-11（44 命中区）");
+});
+
+test("S1-W33 测试自己不许出现「正则对字面量」这种恒真断言（C314 的族）", () => {
+  /*
+   * C314 的形态：断言看起来锁了东西，其实左边对**源码里的字符串常量**做匹配 —— 永远 true。
+   * 它在 1765 条绿里没有任何信号，只有人工注入才暴露。
+   *
+   * 判据（便宜、可静态查）：同一行里出现 `<正则>.test("<字面量>")` 就是这种写法。
+   * 允许的形式只有 `xxx.test(source)` 这种"变量进正则"（source 来自 readFileSync）。
+   */
+  const files = ["test/workbench.test.mjs", "test/workbench-fix1.test.mjs"];
+  const offenders = [];
+  for (const rel of files) {
+    readFileSync(join(ROOT, rel), "utf8").split("\n").forEach((line, index) => {
+      if (line.trimStart().startsWith("//") || line.trimStart().startsWith("*")) return;
+      // 正则字面量紧跟 .test("  → 恒真
+      if (/\/[gimsuy]*\.test\(\s*"/.test(line)) offenders.push(`${rel}:${index + 1} ${line.trim().slice(0, 90)}`);
+    });
+  }
+  assert.deepEqual(offenders, [], `恒真断言（正则对字面量，C314）：\n${offenders.join("\n")}`);
+});
+
+/* ════════════════ 修正批 3：R6 阅读宽度（复用同一个设置，不造第二份）════════════════ */
+
+test("S1-W34 R6：内容流套 max-w-reading（复用对话区同一个设置），看板**不套**", () => {
+  /*
+   * 契约 §R6（用户 2026-11-23 拍板）：内容流是"逐条读"→ 复用对话区的阅读宽度；
+   * 看板是"横向扫"→ 不限宽、靠每列最小宽 + 容器横滚。
+   *
+   * **必须复用同一个变量**：`--container-reading`（= `--container-reading-width`，
+   * 由 display-prefs 的 `widthVar()` 写根节点）。这里断言"没有第二份"：
+   * 工作台的三个视图文件里不得出现新的宽度设置/存储/变量。
+   */
+  const feed = readFileSync(join(ROOT, "frontend/src/views/workbench-feed.tsx"), "utf8");
+  assert.ok(feed.includes("max-w-reading"), "内容流卡片列必须套 max-w-reading（§R6-1）");
+  assert.ok(feed.includes("mx-auto"), "限宽后必须居中（§R6 验收：≤860 且居中）");
+
+  // 看板：不套阅读宽度，但每列要有最小宽 + 容器横滚
+  const projects = readFileSync(join(ROOT, "frontend/src/views/workbench-projects.tsx"), "utf8");
+  assert.ok(!projects.includes("max-w-reading"), "看板不得套阅读宽度（§R6-3：它是扫不是读）");
+  assert.ok(projects.includes("min-w-48"), "看板每列必须有最小宽度（min-w-48 = 192 ≥ 契约的 190）");
+  assert.ok(projects.includes("overflow-x-auto"), "看板容器必须可横向滚（不够时不压破）");
+
+  // 「不许新造第二份」：工作台不得出现第二个宽度变量 / 第二个存储键
+  for (const rel of ["frontend/src/views/workbench-feed.tsx", "frontend/src/views/workbench-projects.tsx", "frontend/src/views/workbench.tsx"]) {
+    const text = readFileSync(join(ROOT, rel), "utf8");
+    assert.ok(!/--container-reading-width\s*:/.test(text), `${rel} 不得自己声明阅读宽度变量（§R6-1）`);
+    assert.ok(!/localStorage/.test(text), `${rel} 不得自己存宽度（§R6-1：display-prefs 是唯一实现）`);
+  }
 });
