@@ -27,7 +27,7 @@ function ActivityRow({ entry, agents }: { entry: Day["activity"][number]; agents
     : undefined;   // log 没有时刻（只有日期），不编
   return (
     <div className="flex items-center gap-2 px-1 py-1" data-testid="workbench-day-row">
-      <span className="w-10 shrink-0 text-micro tabular-nums text-ink-300">{time ?? "·"}</span>
+      <span className="w-10 shrink-0 text-micro tabular-nums text-ink-500">{time ?? "·"}</span>
       <span aria-hidden className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-hover text-ink-700`}>
         <AppIcon name={entry.kind === "session" ? "message-circle" : "pencil"} size={10} />
       </span>
@@ -76,7 +76,7 @@ export function WorkbenchCalendar({ year, month, days, today, loading, onPrevMon
         <div className="mt-2" data-testid="workbench-calendar-loading"><Skeleton rows={5} /></div>
       ) : (
         <>
-          <div className="mt-2 grid shrink-0 grid-cols-7 gap-0.5 text-center text-micro text-ink-300" aria-hidden="true">
+          <div className="mt-2 grid shrink-0 grid-cols-7 gap-0.5 text-center text-micro text-ink-500" aria-hidden="true">
             {WEEKDAYS.map((weekday) => <span key={weekday}>{weekday}</span>)}
           </div>
           <div className="mt-1 grid shrink-0 grid-cols-7 gap-0.5" role="grid" aria-label={`${year} 年 ${month + 1} 月活动日历`}>
@@ -89,7 +89,7 @@ export function WorkbenchCalendar({ year, month, days, today, loading, onPrevMon
               if (cell.count <= 0) {
                 return (
                   <span key={date} aria-hidden
-                    className={`flex h-7 w-7 items-center justify-center justify-self-center text-micro tabular-nums ${cell.isToday ? "rounded-inner bg-ink-900 font-semibold text-surface" : "text-ink-300"}`}>
+                    className={`flex h-7 w-7 items-center justify-center justify-self-center text-micro tabular-nums ${cell.isToday ? "rounded-inner bg-ink-900 font-semibold text-surface" : "text-ink-500"}`}>
                     {Number(date.slice(8, 10))}
                   </span>
                 );
@@ -122,7 +122,7 @@ export function WorkbenchCalendar({ year, month, days, today, loading, onPrevMon
                 {openDay} · {openItems.length} 条
               </p>
               {openItems.length === 0
-                ? <p className="px-1 py-2 text-micro text-ink-300">这一天没有条目</p>
+                ? <p className="px-1 py-2 text-micro text-ink-500">这一天没有条目</p>
                 : openItems.map((entry, index) => (
                   <ActivityRow key={`${entry.kind}-${index}`} entry={entry} agents={agents} />
                 ))}

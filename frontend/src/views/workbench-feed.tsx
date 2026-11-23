@@ -51,7 +51,9 @@ const SURFACE_CARD_STYLE = { borderRadius: "var(--radius-panel)", boxShadow: SUR
 /** 「示例」徽标：桩卡的唯一视觉标（S4 桩清零时整卡随 STUB_FEED 一起消失）。 */
 export function StubBadge() {
   return (
-    <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-accent-soft px-2 text-micro font-medium text-accent">
+    /* 「示例」是**标记**不是链接：底 accent-soft + 深字 ink-900（全预设 ≥9.96）。
+       不用 text-accent：accent on accent-soft 在 5 预设浅色下只有 4.22–4.35 < 4.5（axe 实测 4.28）。 */
+    <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-accent-soft px-2 text-micro font-medium text-ink-900">
       示例
     </span>
   );
@@ -283,7 +285,8 @@ function FeedCard({ item, agents, profile, onPlaceholderAction }: {
         <span className="min-w-0 truncate text-body font-semibold text-ink-900">{item.author.name}</span>
         {item.mood !== undefined && <span aria-hidden className="shrink-0 text-body">{item.mood}</span>}
         <KindChip kind={item.kind} />
-        <StubBadge />
+        {/* 只有真桩才戴「示例」（P2-2：无条件渲染会让 S2 的真卡也戴） */}
+        {item._stub === true && <StubBadge />}
       </header>
       <div className="px-3.5 pb-1 pt-2">
         {item.title !== undefined && item.title !== "" && (

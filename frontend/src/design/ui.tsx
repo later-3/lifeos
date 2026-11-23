@@ -438,8 +438,22 @@ export function Tabs<T extends string>({ value, options, onChange, label, idPref
     requestAnimationFrame(() => refs.current[index]?.focus());
   };
   return (
+    /*
+     * **窄容器降级**（Task 0023 · 修正批 1 · 规格缺口）：tab 文案**永不折行**。
+     *
+     * 现象（reviewer 实测 390 宽）：`动态 / 笔记` 折成两行，整条 tab 行从 44 变成两倍高，
+     * 而它的高度是命中区契约的一部分（mobile.md §3：≥44）。折行还会让"同一行里 4 个 tab"
+     * 变成参差不齐的两行，用户看到的是"这一排坏了"。
+     *
+     * 收敛在**这一个 primitive** 里（frontend 2.20：同一个能力只写一处，不在工作台单独加样式）：
+     * - 文案 `whitespace-nowrap`（永不断字换行）；
+     * - `block`（等分）时 `min-w-0 flex-1` + `truncate`：容器真的放不下就**省略号**，
+     *   而不是把行撑高（等分是调用方明确要的形态，宽度不够只能省略）；
+     * - 非 block（自然宽）时按钮 `shrink-0`，整条 tablist `max-w-full overflow-x-auto`：
+     *   放不下就横向滚，高度不变。
+     */
     <div role="tablist" aria-label={label} aria-orientation="horizontal"
-      className={`inline-flex h-11 shrink-0 items-center rounded-control bg-hover ${block ? "w-full" : ""}`}>
+      className={`inline-flex h-11 max-w-full shrink-0 items-center overflow-x-auto rounded-control bg-hover ${block ? "w-full" : ""}`}>
       {options.map((option, index) => (
         <button key={option.value} type="button" role="tab"
           id={`${idPrefix}-tab-${option.value}`}
@@ -454,10 +468,12 @@ export function Tabs<T extends string>({ value, options, onChange, label, idPref
             else if (event.key === "Home") { event.preventDefault(); select(0); }
             else if (event.key === "End") { event.preventDefault(); select(options.length - 1); }
           }}
-          className={`h-11 rounded-control px-2.5 text-body transition-colors ${block ? "flex-1" : ""} ${
+          className={`h-11 whitespace-nowrap rounded-control px-2.5 text-body transition-colors ${
+            block ? "min-w-0 flex-1" : "shrink-0"
+          } ${
             option.value === value ? "bg-surface text-ink-900 shadow-sm" : "text-ink-700 hover:text-ink-900"
           }`}>
-          {option.label}
+          <span className="block truncate">{option.label}</span>
         </button>
       ))}
     </div>

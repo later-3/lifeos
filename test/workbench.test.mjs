@@ -297,3 +297,85 @@ test("S1-W28 桩块覆盖契约 §3 的三类 blocks 与 refs 的全部字段", 
   assert.ok(STUB_FEED.some((item) => item.docs !== undefined));
   assert.ok(STUB_FEED.some((item) => item.likers !== undefined && item.likers.length > 0));
 });
+/* ════════════════ 修正批 1：P2-2 徽标机制 / P1-3 ink-300 禁承载文字 ════════════════ */
+
+test("S1-W29 P2-2：「示例」徽标由 _stub 驱动（正反两条），不是无条件渲染", () => {
+  // 正：桩条目必须有 _stub: true（渲染层据此出徽标）
+  for (const item of STUB_FEED) {
+    assert.equal(item._stub, true, `桩卡 ${item.id} 缺 _stub —— 徽标就不会出现`);
+  }
+  // 反：**渲染层必须条件渲染**。这条防的是 reviewer 抓到的"两条断言各自为真、合起来假绿"：
+  //   旧实现无条件 <StubBadge />，而 FeedItem 连 _stub 都没有 —— S2 的真卡也会戴「示例」。
+  const source = readFileSync(join(ROOT, "frontend/src/views/workbench-feed.tsx"), "utf8");
+  const badgeLines = source.split("\n").filter((line) => line.includes("<StubBadge />"));
+  assert.equal(badgeLines.length, 1, "StubBadge 只应有一处渲染点");
+  assert.ok(badgeLines[0].includes("item._stub === true"),
+    `StubBadge 必须条件渲染（实际：${badgeLines[0].trim()}）—— 无条件渲染会让 S2 真卡也戴「示例」`);
+  // 类型层：_stub 只允许 true（语义是"这是桩"，不是布尔开关）
+  const types = readFileSync(join(ROOT, "frontend/src/api/workbench.ts"), "utf8");
+  assert.ok(/_stub\?: true/.test(types), "FeedItem._stub 的类型必须是 `?: true`");
+});
+
+test("S1-W30 P1-3：工作台新代码不得用 ink-300 承载文字（tokens.css 明文禁止；axe 实测 2.3:1）", () => {
+  /*
+   * tokens.css 头注原文：ink-300 只允许用于分隔线、图标、占位装饰，禁止承载文本。
+   * 允许的用法（规范明说）：图标 / 装饰箭头 / 边框 / 悬停底 / 柱状图底。
+   * 不许的：任何元素包着用户要读的字段（编号、日期、时刻、空态文案）用 text-ink-300。
+   *
+   * 判据（可复核、不靠人眼）：逐行找 text-ink-300，若同一行没有 aria-hidden
+   * 且不是在画图标/边框/底色 → 记违规。白名单只放**已确认的装饰**，每条写理由。
+   */
+  /*
+   * 白名单按**内容片段**匹配，不按行号 —— 行号会因为上面加注释而整体下移，
+   * 白名单就悄悄指到别的行上（这条测试自己第一次就踩了：写 `:102`，加了 2 行注释后真实行是 104）。
+   */
+  const ALLOW_SNIPPETS = [
+    // 媒体占位框：这一格**只有一个图标**（AppIcon），没有任何文字；ink-300 是规范允许的"占位装饰"
+    "overflow-hidden bg-hover text-ink-300",
+  ];
+  const files = [
+    "frontend/src/views/workbench.tsx",
+    "frontend/src/views/workbench-feed.tsx",
+    "frontend/src/views/workbench-projects.tsx",
+    "frontend/src/views/workbench-calendar.tsx",
+    "frontend/src/views/workbench-failure.tsx",
+  ];
+  const offenders = [];
+  for (const rel of files) {
+    const lines = readFileSync(join(ROOT, rel), "utf8").split("\n");
+    lines.forEach((line, index) => {
+      if (!line.includes("text-ink-300")) return;
+      const key = `${rel}:${index + 1}`;
+      if (ALLOW_SNIPPETS.some((snippet) => line.includes(snippet))) return;
+      if (line.includes("aria-hidden")) return;   // 纯装饰（箭头 / 图标容器）
+      offenders.push(`${key} ${line.trim().slice(0, 90)}`);
+    });
+  }
+  assert.deepEqual(offenders, [], `ink-300 承载了文字（改 ink-500/ink-700）：\n${offenders.join("\n")}`);
+});
+
+test("S1-W31 P1-3：「+N」头像堆叠的底不得是 ink-300 配白字（2.3:1）", () => {
+  const source = readFileSync(join(ROOT, "frontend/src/views/workbench-projects.tsx"), "utf8");
+  const line = source.split("\n").find((text) => text.includes("+{rest}") || text.includes("rounded-full bg-ink-"));
+  assert.ok(line !== undefined, "找不到「+N」角标");
+  // 角标是白字：底必须与白字 ≥4.5（ink-500 白字 4.83）；ink-300 白字只有 2.3
+  const badgeLine = source.split("\n").find((text) => text.includes("font-semibold text-white") && text.includes("rounded-full"));
+  assert.ok(badgeLine !== undefined, "找不到「+N」角标那一行");
+  assert.ok(!badgeLine.includes("bg-ink-300"),
+    `「+N」角标不能压在 ink-300 上（白字只有 2.3:1）：${badgeLine.trim().slice(0, 100)}`);
+});
+
+test("S1-W32 规格缺口：Tabs primitive 在窄容器不折行（文字 nowrap / block 等分 truncate）", () => {
+  /*
+   * reviewer 实测 390 宽：`动态 / 笔记` 折成两行 → 整条 tab 行高度从 44 变成两倍，
+   * 而 44 是命中区契约的一部分（mobile.md §3）。修法按 architect 要求收敛在 **primitive 一处**
+   * （frontend 2.20：不在工作台单独加样式）。
+   */
+  const ui = readFileSync(join(ROOT, "frontend/src/design/ui.tsx"), "utf8");
+  const tabs = ui.slice(ui.indexOf("export function Tabs"), ui.indexOf("export function Segmented"));
+  assert.ok(tabs.includes("whitespace-nowrap"), "Tabs 的按钮必须 whitespace-nowrap（文案永不折行）");
+  assert.ok(/\.length > 0/.test("x.length > 0") && tabs.includes("truncate"), "block 等分时必须 truncate（宽度不够用省略号，不撑高）");
+  assert.ok(tabs.includes("overflow-x-auto"), "非 block（自然宽）时整条 tablist 必须可横向滚，高度不变");
+  // 高度是命中区契约：容器与按钮都必须是 h-11（44）
+  assert.ok((tabs.match(/h-11/g) ?? []).length >= 2, "Tabs 容器与按钮都要 h-11（44 命中区）");
+});

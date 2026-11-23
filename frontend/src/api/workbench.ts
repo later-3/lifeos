@@ -103,6 +103,16 @@ export type FeedItem = {
   likers?: string[];
   mine: boolean;
   /**
+   * **桩标记**（Task 0023 · 修正批 1 · P2-2）：`true` 时渲染层才出「示例」徽标。
+   *
+   * 为什么必须是真的字段：reviewer 抓到 `workbench-feed.tsx` **无条件渲染** StubBadge，
+   * 而 `FeedItem` 连 `_stub` 都没有 —— 注释与实现各说一套，两条断言各自为真、合起来假绿。
+   * 后果具体：S2 接真接口后**真卡也会戴「示例」**，而所有测试仍是绿的。
+   * 现在：字段存在 + 条件渲染 + `S1-W10`/`S1-W29` 正反两条锁住。
+   * S2 接真时把 fixtures 整份删掉即可（真接口的响应不会带这个字段）。
+   */
+  _stub?: true;
+  /**
    * 8 种卡型（0009 契约 §2）。**必须能处理缺失**：缺失时 fallback 纯文本卡（architect S1 回应③）。
    *
    * 枚举**只有一处定义**（`feed-cards.ts` 的 `FeedKind`，api 2.7）——
@@ -171,14 +181,27 @@ export async function fetchDays(range: { from: string; to: string }): Promise<Lo
  */
 export async function fetchFeed(range: { from: string; to: string }): Promise<LoadResult<FeedItem[]>> {
   /*
-   * 测试注入点（**S2 接真接口时与桩一起删**，`grep __lifeosFeedSource` 就能找到两处）。
+   * 测试注入点（**S2 接真接口时与桩一起删**）。
    *
    * 为什么需要它：S1 的 feed 是**桩**，桩不是网络请求 —— `page.route` 拦不到它，
    * 于是四态契约（loading / empty / failed / content）在 feed 上没法控制。
    * 唯一的 seam 只能是全局注入点，而不是把桩改成"fetch 一个还不存在的端点"：
    * 后者会让每次真实打开都打一条 404（2.9：错误必须可见，不许拿假请求探路）。
+   *
+   * **`import.meta.env.DEV` 守卫**（Task 0023 · 修正批 1 · architect 硬约束 1）：
+   * 这是本项目第一个**测试专用入口**，而它原来被原样打进了生产产物
+   * （`dist/assets/index-*.js` 里 grep 得到 —— architect 实测）。守卫后：
+   * - 生产构建里 `import.meta.env.DEV` 是 `false`，整段被摇掉 → 产物里**不存在这个符号**；
+   * - 四态契约跑 vite dev（`pnpm dev:web`）不受影响。
+   * 先例：`main.tsx` 的 Service Worker 注册用 `import.meta.env.PROD` 同款守卫。
+   *
+   * **S2 交付清单硬要求**：`grep -rn __lifeosFeedSource frontend/` 必须为 **0**
+   * （reviewer 纠正过数字：不是「两处」，是 **3 文件 5 行** —— 本文件 2 行 +
+   * `frontend/test/workbench-states.mjs` 3 行。删的时候按 5 行核）。
    */
-  const override = (globalThis as { __lifeosFeedSource?: () => Promise<LoadResult<FeedItem[]>> }).__lifeosFeedSource;
+  const override = import.meta.env.DEV
+    ? (globalThis as { __lifeosFeedSource?: () => Promise<LoadResult<FeedItem[]>> }).__lifeosFeedSource
+    : undefined;
   if (override !== undefined) return override();
   const { STUB_FEED } = await import("./workbench-fixtures.ts");
   void range; // S2 才按日期过滤

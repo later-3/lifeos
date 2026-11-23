@@ -34,7 +34,7 @@ function AvatarStack({ agentIds, agents }: { agentIds: string[]; agents: Agent[]
         );
       })}
       {rest > 0 && (
-        <span className="-ml-1.5 flex h-4 min-w-4 items-center justify-center overflow-hidden rounded-full bg-ink-300 px-0.5 text-micro font-semibold text-white">
+        <span className="-ml-1.5 flex h-4 min-w-4 items-center justify-center overflow-hidden rounded-full bg-ink-500 px-0.5 text-micro font-semibold text-white">
           +{rest}
         </span>
       )}
@@ -75,8 +75,8 @@ function KanbanCard({ task, agents, projectName }: { task: GlobalTask; agents: A
   return (
     <div className="rounded-control bg-surface p-2.5 ring-1 ring-line" data-testid="workbench-kanban-card">
       <div className="mb-1 flex items-center gap-1.5">
-        <span className="shrink-0 font-mono text-micro text-ink-300">{task.id}</span>
-        <span className="min-w-0 truncate text-micro text-ink-300">{projectName}</span>
+        <span className="shrink-0 font-mono text-micro text-ink-500">{task.id}</span>
+        <span className="min-w-0 truncate text-micro text-ink-500">{projectName}</span>
         <span className="ml-auto inline-flex h-5 shrink-0 items-center rounded-inner bg-hover px-1.5 text-micro text-ink-700">{task.category}</span>
       </div>
       <p className="line-clamp-2 text-meta leading-snug text-ink-900" title={task.title}>{task.title}</p>
@@ -84,7 +84,7 @@ function KanbanCard({ task, agents, projectName }: { task: GlobalTask; agents: A
         <AgentAvatar id={task.agentId} name={agent?.name ?? task.agentId}
           {...(agent?.avatar !== undefined ? { avatar: agent.avatar } : {})} size={16} />
         <span className="min-w-0 truncate text-micro text-ink-500">{agent?.name ?? task.agentId}</span>
-        {task.date !== undefined && <span className="ml-auto shrink-0 text-micro text-ink-300 tabular-nums">{task.date}</span>}
+        {task.date !== undefined && <span className="ml-auto shrink-0 text-micro text-ink-500 tabular-nums">{task.date}</span>}
       </div>
     </div>
   );
@@ -98,8 +98,14 @@ function KanbanColumn({ label, tone, cards, agents, projectNames }: {
   agents: Agent[];
   projectNames: Map<string, string>;
 }) {
+  /*
+   * 列头色：**语义 token 成对用**，不用 accent。
+   * "进行中" = running 语义（Task 0005 为"正在跑"拍板的同一族），running on running-soft 全预设 ≥5.29；
+   * 旧写法 `text-accent` on `bg-accent-soft` 只有 4.22–4.35（axe 实测 4.28 < 4.5）。
+   * "已完成" 的 success on success-soft 全预设 ≥4.84，本来就达标，保持。
+   */
   const toneClass = tone === "run"
-    ? "bg-accent-soft text-accent"
+    ? "bg-running-soft text-running"
     : tone === "done"
       ? "bg-success-soft text-success"
       : "bg-wash-hover text-ink-700";
@@ -111,7 +117,7 @@ function KanbanColumn({ label, tone, cards, agents, projectNames }: {
       </header>
       <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-y-contain p-1.5">
         {cards.length === 0
-          ? <p className="px-2 py-4 text-center text-micro text-ink-300">没有{label}的任务</p>
+          ? <p className="px-2 py-4 text-center text-micro text-ink-500">没有{label}的任务</p>
           : cards.map((task) => (
             <KanbanCard key={`${task.agentId}/${task.projectId}/${task.id}`} task={task} agents={agents}
               projectName={projectNames.get(task.projectId) ?? task.projectId} />
@@ -134,7 +140,7 @@ function OtherGroup({ cards, agents }: { cards: GlobalTask[]; agents: Agent[] })
         <AppIcon name={open ? "chevron-down" : "chevron-right"} size={14} className="shrink-0 text-ink-500" />
         <span className="inline-flex h-5 items-center rounded-full bg-wash-hover px-2 text-micro font-medium text-ink-700">其他</span>
         <span className="text-micro tabular-nums text-ink-500">{cards.length}</span>
-        <span className="ml-auto text-micro text-ink-300">{open ? "收起" : "展开"}</span>
+        <span className="ml-auto text-micro text-ink-500">{open ? "收起" : "展开"}</span>
       </ClickableRow>
       {open && (
         <div className="space-y-1 p-1.5 pt-0">
@@ -144,8 +150,8 @@ function OtherGroup({ cards, agents }: { cards: GlobalTask[]; agents: Agent[] })
               <div key={`${task.agentId}/${task.projectId}/${task.id}`}
                 className="rounded-control bg-surface px-2.5 py-2 ring-1 ring-line" data-testid="workbench-kanban-other-card">
                 <div className="flex items-center gap-1.5">
-                  <span className="shrink-0 font-mono text-micro text-ink-300">{task.id}</span>
-                  <span className="min-w-0 truncate text-micro text-ink-300">{task.projectId}</span>
+                  <span className="shrink-0 font-mono text-micro text-ink-500">{task.id}</span>
+                  <span className="min-w-0 truncate text-micro text-ink-500">{task.projectId}</span>
                   <span className="ml-auto shrink-0 text-micro text-ink-700">{agent?.name ?? task.agentId}</span>
                 </div>
                 {/* 原文 status 全文（R4 的核心：用户要能看出"已作废"还是"状态写错了"） */}
