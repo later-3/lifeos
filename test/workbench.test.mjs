@@ -147,8 +147,15 @@ test("S1-W14 月历网格：周一开头、补位到整行、格子数 = 当月�
 
 test("S1-W15 feed 分组：保持输入顺序、相邻同日合并（不做当天内折叠——边界 #9）", () => {
   const groups = groupFeedByDay(STUB_FEED);
-  assert.deepEqual(groups.map((g) => g.day), ["2026-11-22", "2026-11-21"]);
-  assert.equal(groups[0].items.length, 3);
+  // 关系：每组的天 = 输入里**相邻去重**的天序列；每组条数 = 该天在原顺序里的连续段长
+  const expectedDays = [];
+  let last;
+  for (const item of STUB_FEED) {
+    if (item.day !== last) { expectedDays.push(item.day); last = item.day; }
+  }
+  assert.deepEqual(groups.map((g) => g.day), expectedDays);
+  // 合并后总条数守恒（不丢不重）
+  assert.equal(groups.reduce((sum, g) => sum + g.items.length, 0), STUB_FEED.length);
 });
 
 test("S1-W16 feed 筛选：动态=全部（kind 缺失也是动态，渲染层 fallback）/待办 S1 恒空 × 作者（me 按 kind=user）", () => {
@@ -184,4 +191,109 @@ test("S1-W19 日期分隔文案：今天/昨天/M月D日（跨年补年份）", 
   assert.equal(dayLabelOf("2026-11-21", "2026-11-22"), "昨天");
   assert.equal(dayLabelOf("2026-11-01", "2026-11-22"), "11月1日");
   assert.equal(dayLabelOf("2025-12-31", "2026-11-22"), "2025年12月31日");
+});
+
+/* ════════════════ 第 4 块：卡型与媒体网格（纯函数）════════════════ */
+
+import {
+  FEED_KIND_META, kindMetaOf, mediaTierOf, mediaCellClassOf, mediaFrameClassOf,
+  visibleMediaOf, chartBarsOf, progressPercentOf, textClampedOf, reviewSummaryOf, MEDIA_GRID_CLASS,
+} from "../frontend/src/api/feed-cards.ts";
+
+test("S1-W20 契约 §4：媒体网格 5 档（1/2/3/4/5+）", () => {
+  assert.equal(mediaTierOf(0), undefined);
+  assert.equal(mediaTierOf(1), "n1");
+  assert.equal(mediaTierOf(2), "n2");
+  assert.equal(mediaTierOf(3), "n3");   // 1 大 2 小
+  assert.equal(mediaTierOf(4), "n4");   // 2×2
+  assert.equal(mediaTierOf(5), "nmany");
+  assert.equal(mediaTierOf(12), "nmany");
+});
+
+test("S1-W21 三格 = 1 大 2 小（首图跨两行两列，其余两格），四格 = 2×2，5+ = 三列 +N", () => {
+  assert.equal(mediaCellClassOf("n3", 0), "col-span-3 row-span-2");
+  assert.equal(mediaCellClassOf("n3", 1), "col-span-2");
+  const { shown, overflow } = visibleMediaOf([1, 2, 3, 4, 5, 6]);
+  assert.equal(shown.length, 4);        // 5+ 只画前 4 格
+  assert.equal(overflow, 2);            // 其余折成 +N
+  assert.equal(visibleMediaOf([1, 2, 3]).overflow, 0);
+});
+
+test("S1-W22 媒体网格类：每档都有真实 grid 定义，且不锁 16:9 的只有 nmany", () => {
+  for (const tier of ["n1", "n2", "n3", "n4", "nmany"]) {
+    assert.match(MEDIA_GRID_CLASS[tier], /grid/, `${tier} 必须是 grid`);
+  }
+  assert.equal(mediaFrameClassOf("n1"), "aspect-video");
+  assert.equal(mediaFrameClassOf("nmany"), "");   // 三列每格 1:1，不锁整体比例
+});
+
+test("S1-W23 卡型 chip：8 kind 都有显示名；未知/缺失走中性（不编色相）", () => {
+  for (const kind of ["dev", "demo", "knowledge", "case", "review", "mood", "study", "media"]) {
+    assert.ok(FEED_KIND_META[kind].label.length > 0, `${kind} 缺 label`);
+    assert.ok(FEED_KIND_META[kind].chip.includes("bg-"), `${kind} 缺 chip 类`);
+  }
+  // study / media 契约标「待定」：不编色相 → 与未知 kind 同一档中性 chip
+  assert.equal(kindMetaOf("study").chip, kindMetaOf(undefined).chip);
+  assert.equal(kindMetaOf("media").chip, kindMetaOf(undefined).chip);
+  // 六个有契约色相的 kind，chip 必须引用 feed token（不许裸色板）
+  for (const kind of ["dev", "demo", "knowledge", "case", "review", "mood"]) {
+    assert.match(kindMetaOf(kind).chip, /feed-/, `${kind} 的 chip 必须用 --color-feed-* 派生的类`);
+  }
+  assert.equal(kindMetaOf(undefined).label, "动态");
+});
+
+test("S1-W24 图表柱高：第三元已是百分比（不归一到最大值）；muted 是下标列表，不是「值为 0」", () => {
+  // 契约 §3：`bars: [["P0",0,12],…], muted: [0,3]` —— 第三个是 heightPercent，muted 标"这几根不强调"
+  const bars = chartBarsOf([["P0", 0, 12], ["P1", 2, 26], ["质量", 2, 42], ["功能", 0, 12]], [0, 3]);
+  assert.deepEqual(bars.map((bar) => bar.percent), [12, 26, 42, 12]);   // 原样，不缩放
+  assert.equal(bars[0].muted, true);     // 下标 0 在 muted 里
+  assert.equal(bars[1].muted, false);    // 1 不在
+  assert.equal(bars[3].muted, true);
+  // 值为 0 但没被标 muted → 不是灰柱（语义不被数值偷换）；越界钳到 0–100
+  const notMuted = chartBarsOf([["A", 0, 0], ["B", 9, 260], ["C", 1, -30]], []);
+  assert.equal(notMuted[0].muted, false);
+  assert.deepEqual(notMuted.map((bar) => bar.percent), [0, 100, 0]);
+});
+
+test("S1-W25 进度百分比：0–1 收敛到 0–100，缺失/越界不炸", () => {
+  assert.equal(progressPercentOf(0.7), 70);
+  assert.equal(progressPercentOf(1), 100);
+  assert.equal(progressPercentOf(undefined), 0);
+  assert.equal(progressPercentOf(2), 100);
+  assert.equal(progressPercentOf(-1), 0);
+  assert.equal(progressPercentOf(Number.NaN), 0);
+});
+
+test("S1-W26 契约 §5：有图卡正文两行截断；检视闭环文案 closed/total", () => {
+  assert.equal(textClampedOf(0), false);
+  assert.equal(textClampedOf(1), true);
+  assert.equal(reviewSummaryOf({ closed: 2, total: 2, note: "检视闭环" }), "检视闭环 2/2");
+  assert.equal(reviewSummaryOf({ closed: 1, total: 3 }), "检视 1/3");
+});
+
+test("S1-W27 桩覆盖契约 §2 的 8 kind + kind 缺失，并覆盖 §4 的全部 5 档媒体", () => {
+  const kinds = new Set(STUB_FEED.map((item) => item.kind));
+  for (const kind of ["dev", "demo", "knowledge", "case", "review", "mood", "media"]) {
+    assert.ok(kinds.has(kind), `桩里缺 kind=${kind}（契约 §2 的卡型要能被看见）`);
+  }
+  assert.ok(STUB_FEED.some((item) => item.kind === undefined), "桩里必须有一条 kind 缺失（回应③）");
+  // study 契约标「预留」：S1 不做它的专属块，桩里不必须有
+  const tiers = new Set(STUB_FEED.map((item) => mediaTierOf((item.media ?? []).length)));
+  for (const tier of ["n1", "n2", "n3", "n4", "nmany"]) {
+    assert.ok(tiers.has(tier), `桩里缺媒体档 ${tier}（契约 §4 的 5 档要都能被看见）`);
+  }
+});
+
+test("S1-W28 桩块覆盖契约 §3 的三类 blocks 与 refs 的全部字段", () => {
+  const blocks = STUB_FEED.flatMap((item) => item.blocks ?? []);
+  for (const type of ["code", "diagram", "chart"]) {
+    assert.ok(blocks.some((block) => block.type === type), `桩里缺 block=${type}`);
+  }
+  // refs：project / task / worktree / review / docs 都要有（session/knowledge/case S1 无数据源）
+  assert.ok(STUB_FEED.some((item) => item.projectId !== undefined));
+  assert.ok(STUB_FEED.some((item) => item.task !== undefined));
+  assert.ok(STUB_FEED.some((item) => item.worktree !== undefined));
+  assert.ok(STUB_FEED.some((item) => item.review !== undefined));
+  assert.ok(STUB_FEED.some((item) => item.docs !== undefined));
+  assert.ok(STUB_FEED.some((item) => item.likers !== undefined && item.likers.length > 0));
 });

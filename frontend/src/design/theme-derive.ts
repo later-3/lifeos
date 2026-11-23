@@ -228,6 +228,25 @@ export function deriveMissingVars(raw: Vars): { filled: Vars; rules: Array<{ nam
     set("--color-avatar-3", hslToHex((h + 240) % 360, s, l), "accent-solid 色相 +240°");
   }
 
+  // ── 11 内容流卡型色（Task 0023 · S1 第 4 块）──
+  /*
+   * 契约（0009 feed-post-contract §5）给的是**色相序号**，它是 HSL 语义——
+   * 而内置引擎用 OKLCH（同一序号在 OKLCH 里偏青），所以内置主题的色相是
+   * 「契约示例 hex 反解成 OKLCH」后的值（264/157/304/37/69/324）。
+   *
+   * 外部主题不在我们的 OKLCH 空间里，本条派生**直接用契约的 HSL 色相序号** —
+   * 那是契约的原始语义，也省掉一次跨色彩空间换算的误差。soft = 卡型色 × surface 混合
+   *（与批注五色同一条规则：明面容器方向，深浅自适应）。
+   */
+  const feedHues: Array<[string, number]> = [
+    ["dev", 221], ["demo", 158], ["knowledge", 262], ["case", 12], ["review", 35], ["mood", 300],
+  ];
+  for (const [name, hue] of feedHues) {
+    const base = dark ? hslToHex(hue, 45, 72) : hslToHex(hue, 45, 36);
+    set(`--color-feed-${name}` as ContractVar, base, `内容流卡型默认色相 ${hue}°（主题未提供）`);
+    set(`--color-feed-${name}-soft` as ContractVar, mix(base, surface, dark ? 0.82 : 0.92), "卡型色 × surface 混合");
+  }
+
   return { filled: out, rules };
 }
 

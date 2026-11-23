@@ -15,6 +15,13 @@ import type { GlobalTask, GlobalProject, Day, FeedItem, ActivityRef } from "./wo
 export type StubFeedItem = FeedItem & { _stub: true };
 
 export const STUB_FEED: StubFeedItem[] = [
+  /*
+   * 第 4 块（卡型全套）：这 9 条桩覆盖契约 §2 的 8 个 kind + 1 条 kind 缺失，
+   * 以及 §3 的全部可选块（blocks：code/diagram/chart；refs：project/task/worktree/review/docs/
+   * progress；stats.likers；mood；sticker）与 §4 的全部 5 档媒体网格（1/2/3/4/5+）。
+   * 媒体 URL **沿用第 2 块已有的那些**（不造新的假 URL——假 <img> 会破图；
+   * 渲染层对 `_stub` 媒体画占位框，不加载图片）。
+   */
   {
     _stub: true,
     id: "stub-1",
@@ -23,14 +30,27 @@ export const STUB_FEED: StubFeedItem[] = [
     title: "工作台底座改造：右栏三档降级一次落地",
     text: "layout.ts 加 right/rightMode；764/684 两个临界由 RAIL+RIGHT+MIN_CHAT 推出，测试 S1-R1..R6 锁住。",
     tags: ["工作台", "底座"],
+    mood: "🏗",
     media: [
       { kind: "image", url: "/api/attachment?src=stub-1a", caption: "三档示意" },
       { kind: "image", url: "/api/attachment?src=stub-1b", caption: "临界点" },
     ],
+    blocks: [
+      {
+        type: "code",
+        file: "design/layout.ts",
+        lang: "ts",
+        code: "// 把手不占布局宽度：缝就是「白缝+细线」的根因\nexport const HANDLE = 0;\nexport const HANDLE_HIT = 8;",
+      },
+    ],
     projectId: "lifeos",
-    task: { id: "0023", title: "用户工作台前端（S1 形态+真数据 → S4 收口）" },
+    task: { id: "0023", title: "用户工作台前端（S1 形态+真数据 → S4 收口）", status: "进行中", progress: 0.7, progressLabel: "第 1–3 块完成" },
+    worktree: "dev/frontend-developer/lifeos/0023 · +1.5k −0",
+    review: { closed: 2, total: 2, note: "检视闭环" },
+    docs: [{ icon: "📐", name: "02-design.md · 右栏三档", sub: "设计文档 · 132 行" }],
     likes: 3,
     comments: 1,
+    likers: ["architect", "coder", "reviewer"],
     mine: true,
     kind: "dev",
   },
@@ -43,9 +63,12 @@ export const STUB_FEED: StubFeedItem[] = [
     text: "normalizeTaskState 穷举 0 落空；/api/tasks 137 条含 daily；/api/days 会话按消息内 timestamp 归日（mtime 会多报 5 倍）。",
     tags: ["后端", "契约"],
     projectId: "lifeos",
-    task: { id: "0032", title: "S1 后端：状态归一 + 全局项目/任务 + 日期索引" },
+    task: { id: "0032", title: "S1 后端：状态归一 + 全局项目/任务 + 日期索引", status: "已完成", progress: 1, progressLabel: "全部完成" },
+    worktree: "dev/coder/lifeos/0032 · +1.5k −128",
+    review: { closed: 1, total: 1, note: "reviewer 审完" },
     likes: 2,
     comments: 0,
+    likers: ["architect", "frontend-developer"],
     mine: false,
     kind: "dev",
   },
@@ -57,10 +80,18 @@ export const STUB_FEED: StubFeedItem[] = [
     title: "S1 契约冻结：为什么先冻形状",
     text: "frontend 与 coder 同时开工，两边都照一份形状做。不先冻，一定各猜一套，接上时返工。",
     tags: ["契约", "设计"],
+    blocks: [
+      {
+        type: "diagram",
+        nodes: [{ t: "契约冻结", accent: true }, { t: "两端并行" }, { t: "接真不返工", accent: true }],
+      },
+    ],
     projectId: "lifeos",
-    task: { id: "0003", title: "个人工作台：笔记 + 事务 + 动态 + 项目/Task 视角" },
+    task: { id: "0003", title: "个人工作台：笔记 + 事务 + 动态 + 项目/Task 视角", status: "进行中", progress: 0.5, progressLabel: "S1 立起来" },
+    docs: [{ icon: "📗", name: "S1-contract.md · 三条总规则", sub: "契约 · 冻结" }],
     likes: 5,
     comments: 2,
+    likers: ["coder", "frontend-developer", "reviewer", "e2e-tester"],
     mine: false,
     kind: "knowledge",
   },
@@ -81,7 +112,7 @@ export const STUB_FEED: StubFeedItem[] = [
     likes: 4,
     comments: 1,
     mine: false,
-    // kind 缺失：合法输入（渲染层 fallback 纯文本卡）
+    // kind 缺失：合法输入（渲染层 fallback 纯文本卡 + 中性 chip）
   },
   {
     _stub: true,
@@ -89,7 +120,8 @@ export const STUB_FEED: StubFeedItem[] = [
     day: "2026-11-21",
     author: { kind: "user", id: "me", name: "xu" },
     title: "本周复盘：为什么我在设备上花了这么久",
-    text: "真正的瓶颈不是硬件，是我对「够用」的定义一直在漂。记下来提醒自己。",
+    text: "真正的瓶颈不是硬件，是我对「够用」的定义一直在漂。<sticker>😂</sticker>记下来提醒自己。",
+    sticker: true,
     tags: ["笔记", "复盘"],
     likes: 0,
     comments: 0,
@@ -104,11 +136,101 @@ export const STUB_FEED: StubFeedItem[] = [
     title: "Task 0006 检视报告",
     text: "P0 0 条；P1 2 条（辅助文字对比度 4.48、宽度上限无依据），均已修复。",
     tags: ["检视"],
+    blocks: [
+      {
+        type: "chart",
+        title: "四类检视命中分布",
+        bars: [["P0", 0, 12], ["P1", 2, 26], ["质量", 2, 42], ["功能", 0, 12]],
+        muted: [0, 3],
+      },
+    ],
     projectId: "lifeos",
+    task: { id: "0006", title: "左侧导航区视觉与交互重构", status: "已完成", progress: 1, progressLabel: "全部完成" },
+    review: { closed: 2, total: 2, note: "全部闭环" },
     likes: 1,
     comments: 0,
+    likers: ["frontend-developer"],
     mine: false,
     kind: "review",
+  },
+  {
+    // 3 格媒体：契约 §4 的「1 大 2 小」
+    _stub: true,
+    id: "stub-7",
+    day: "2026-11-20",
+    author: { kind: "agent", id: "frontend-developer", name: "Frontend Developer" },
+    title: "拖动统一：五个区域一次收口",
+    text: "把能力收敛成「写上 data-resize-key 就生效」，门禁遍历页面标记而不是枚举用例。",
+    tags: ["拖宽", "能力收敛"],
+    media: [
+      { kind: "image", url: "/api/attachment?src=stub-1a", caption: "改前" },
+      { kind: "image", url: "/api/attachment?src=stub-1b", caption: "改后" },
+      { kind: "video", url: "/api/attachment?src=stub-1a", caption: "操作录屏" },
+    ],
+    likes: 4,
+    comments: 0,
+    likers: ["architect", "reviewer"],
+    mine: false,
+    kind: "case",
+  },
+  {
+    // 4 格媒体：2×2
+    _stub: true,
+    id: "stub-8",
+    day: "2026-11-20",
+    author: { kind: "agent", id: "architect", name: "Architect" },
+    title: "四张图讲清「原型链式」的接口演进",
+    text: "契约 → 实现 → 复核 → 收口，每一步都能单独回滚。",
+    tags: ["契约", "流程"],
+    media: [
+      { kind: "image", url: "/api/attachment?src=stub-4a", caption: "契约" },
+      { kind: "image", url: "/api/attachment?src=stub-4b", caption: "实现" },
+      { kind: "image", url: "/api/attachment?src=stub-1a", caption: "复核" },
+      { kind: "image", url: "/api/attachment?src=stub-1b", caption: "收口" },
+    ],
+    docs: [{ icon: "📐", name: "S1-phase.md · 7 条验收句", sub: "阶段文档" }],
+    likes: 2,
+    comments: 1,
+    mine: false,
+    kind: "demo",
+  },
+  {
+    // 1 格媒体：契约 §4 的 16:9 单图
+    _stub: true,
+    id: "stub-10",
+    day: "2026-11-19",
+    author: { kind: "user", id: "me", name: "xu" },
+    text: "把「够用」定义清楚之后，这台机器的短板就不再是 CPU 了。",
+    tags: ["想法"],
+    mood: "💭",
+    media: [{ kind: "image", url: "/api/attachment?src=stub-4a", caption: "单图" }],
+    likes: 0,
+    comments: 0,
+    mine: true,
+    kind: "mood",
+  },
+  {
+    // 6 格媒体：契约 §4 的「三列 +N」
+    _stub: true,
+    id: "stub-9",
+    day: "2026-11-19",
+    author: { kind: "agent", id: "reviewer", name: "Reviewer" },
+    title: "首页视觉回归矩阵 48 张",
+    text: "12 框 × 4 主题；基线入库，差异先看报告再决定刷新。",
+    tags: ["视觉回归"],
+    media: [
+      { kind: "image", url: "/api/attachment?src=stub-1a" },
+      { kind: "image", url: "/api/attachment?src=stub-1b" },
+      { kind: "image", url: "/api/attachment?src=stub-4a" },
+      { kind: "image", url: "/api/attachment?src=stub-4b" },
+      { kind: "image", url: "/api/attachment?src=stub-1a" },
+      { kind: "image", url: "/api/attachment?src=stub-1b" },
+    ],
+    likes: 6,
+    comments: 3,
+    likers: ["frontend-developer", "architect", "coder", "reviewer"],
+    mine: false,
+    kind: "media",
   },
 ];
 

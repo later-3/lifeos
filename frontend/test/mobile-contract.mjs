@@ -192,7 +192,24 @@ for (const width of widths) {
     await page.waitForTimeout(200);
   }
   check(`[${width}] 导航从助手级开始`, (await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "agents");
-  await page.locator('[data-mobile-level="agents"] [role="button"]').first().click();
+  /*
+   * 选 Agent = 助手列表里的**某一行**，不是"抽屉里第一个角色为 button 的元素"。
+   * Task 0023 · S1 在抽屉第一级顶部加了「我的工作台」入口行（architect 已批准的形态），
+   * 它排在最前 → 原来的 `.first()` 会点到它（点开工作台表面，抽屉关掉），脚本看起来像"选 Agent 失败"。
+   * 断言意图不变（选 Agent 不关抽屉、进项目级），只是把"选哪一行"说准确：
+   * 排除工作台入口行。**没有放宽**——仍要求点完抽屉还在、且层级变成 projects。
+   */
+  /*
+   * 选 Agent = 助手列表里的**某一行**，不是"抽屉里第一个 role=button 的元素"。
+   * Task 0023 · S1 在抽屉第一级顶部加了「我的工作台」入口行（architect 已批准的形态），
+   * 它排在最前 → 原来的 `.first()` 点到的是它（点开工作台表面、抽屉关掉），
+   * 脚本的报错于是长成"选 Agent 失败"。
+   * 这里按**它是否在场**决定跳几个（在场就跳过第一个），断言本身一个字不改：
+   * 仍要求点完抽屉还在、层级变成 projects。**不是放宽**。
+   */
+  const workbenchEntry = page.locator('[data-mobile-level="agents"] [data-testid="mobile-workbench-entry"]');
+  const skipWorkbench = (await workbenchEntry.count()) > 0 ? 1 : 0;
+  await page.locator('[data-mobile-level="agents"] [role="button"]').nth(skipWorkbench).click();
   await page.waitForTimeout(400);
   check(`[${width}] 选 Agent 后导航仍在、进入项目级`, (await page.locator('[data-testid="mobile-nav"]').count()) === 1 && (await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "projects");
   const projectRow = page.locator('[data-mobile-level="projects"] [role="button"]').first();

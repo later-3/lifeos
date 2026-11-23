@@ -92,6 +92,7 @@ if (profile.avatar === null || profile.avatar === undefined) {
 // 验收句 2：点助手头像筛选内容流，再点取消
 {
   const target = agents[0];
+  const filteredBefore = await page.locator('[data-testid="workbench-feed-card"]').count();
   await page.locator('[data-testid="workbench-stories"] button', { hasText: target.name }).first().click();
   await page.waitForTimeout(250);
   const filtered = await page.locator('[data-testid="workbench-feed-card"]').count();
@@ -100,11 +101,12 @@ if (profile.avatar === null || profile.avatar === undefined) {
   check("验收句 2：点助手 → 只看它（出现筛选 chip + 卡数变化或为空态）",
     (await page.locator('[data-testid="workbench-clear-filter"]').count()) === 1,
     `${filtered} 张`);
+  const beforeFilter = filteredBefore;   // 筛选前的卡数（关系，不写死数字——R3）
   await page.locator('[data-testid="workbench-clear-filter"]').click();
   await page.waitForTimeout(250);
   const restored = await page.locator('[data-testid="workbench-feed-card"]').count();
-  check("验收句 2：再点取消 → 回到全部", restored === 6 && (await page.locator('[data-testid="workbench-clear-filter"]').count()) === 0,
-    `${restored} 张`);
+  check("验收句 2：再点取消 → 回到筛选前的卡数", restored === beforeFilter && (await page.locator('[data-testid="workbench-clear-filter"]').count()) === 0,
+    `${restored} vs ${beforeFilter}`);
 }
 
 // 8) 桩卡带「示例」

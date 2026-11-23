@@ -128,7 +128,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {level === "agents" && (
-          <Row key="workbench" onClick={onOpenWorkbench}
+          <Row key="workbench" testId="mobile-workbench-entry" onClick={onOpenWorkbench}
             participants={<span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-accent"><AppIcon name="folder" size={18} /></span>}
             meta="你的待办、项目与全部内容">我的工作台</Row>
         )}

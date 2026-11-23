@@ -63,7 +63,21 @@ export type ActivityRef =
   | { kind: "session"; agentId: string; projectId: string; sessionId: string; title: string; at: string }
   | { kind: "log"; agentId: string; projectId: string; taskId: string; taskTitle: string; heading: string; at: string };
 
-/** 内容流条目（S2 才有真接口；S1 走桩，形状现在定死）。 */
+/** 内容流条目（S2 才有真接口；S1 走桩，形状现在定死）。
+ *
+ * 字段与 0009 `feed-post-contract.md` §3 对齐（8 kind / refs / blocks / stats），
+ * 但**只取 B1 真接口将来真会给的那些**：
+ * - `author` 用 RowAvatar 同形（api 2.7：同一个对象只有一个形状）；
+ * - `media.items` 的 `type` 对齐契约的 image|video；图片宽高 `w/h` 可选（契约 §3 有）；
+ * - `blocks` 只做 S1 要展示的三类（code / diagram / chart）；mermaid 与真播放器是 S2+；
+ * - `refs` 用扁平的 `project` / `task` / `worktree` / `review` / `docs`；session/knowledge/case
+ *   在 S1 无数据源（等 S2/S3），不预先发明字段名。
+ */
+export type FeedBlock =
+  | { type: "code"; file: string; lang: string; code: string }
+  | { type: "diagram"; nodes: Array<{ t: string; accent?: boolean }> }
+  | { type: "chart"; title: string; bars: Array<[string, number, number]>; muted?: number[] };
+
 export type FeedItem = {
   id: string;
   day: string;
@@ -71,11 +85,21 @@ export type FeedItem = {
   title?: string;
   text: string;
   tags: string[];
+  /** 卡片头的心情（契约 §3 mood）：emoji。 */
+  mood?: string;
+  /** 正文内表情包（契约 §3 sticker）：文本里的 `<sticker>x</sticker>` 标记，或单独的 emoji 列表。 */
+  sticker?: boolean;
   media?: { kind: "image" | "video"; url: string; caption?: string; w?: number; h?: number }[];
+  blocks?: FeedBlock[];
   projectId?: string;
-  task?: { id: string; title: string };
+  task?: { id: string; title: string; status?: string; progress?: number; progressLabel?: string };
+  worktree?: string;
+  review?: { closed: number; total: number; note?: string };
+  docs?: Array<{ icon: string; name: string; sub: string }>;
   likes: number;
   comments: number;
+  /** 点赞人（契约 §3 stats.likers：头像叠放行）。S1 只存显示名缩写，不造假头像 URL。 */
+  likers?: string[];
   mine: boolean;
   /** 8 种卡型（0009 契约）。**必须能处理缺失**：缺失时 fallback 纯文本卡（architect S1 回应③）。 */
   kind?: "dev" | "demo" | "knowledge" | "case" | "review" | "mood" | "study" | "media";
