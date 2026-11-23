@@ -15,6 +15,7 @@ import test from "node:test";
 import {
   FROZEN_MS,
   LONG_TASK_MS,
+  THROTTLED_FROZEN_MS,
   TRAIL_MAX,
   UPLOAD_BATCH_MAX,
   alreadyReported,
@@ -160,4 +161,29 @@ test("T33-13 恢复时长用「最后报活 → 恢复后首次报活」重算�
 test("T33-14 恢复时长的边界：时间倒流不产生负数", () => {
   // 系统时间被改 / 单调时钟与墙上时钟不一致时，不能出现 durationMs = -800 这种记录
   assert.equal(freezeDurationOf(5_000, 4_200), 0);
+});
+
+/* ───────── 隐藏标签页节流（2026-11-23 真实现场抓到的假阳性） ───────── */
+
+test("T33-23 隐藏标签页：60 秒不再算冻结（Chrome 节流周期 60s）", () => {
+  /*
+   * 实测现场：连续 7 条假记录，时长 53000/60012/59772/60000/59998/59999/44498ms，
+   * 全部 visibility:hidden。Chrome 把隐藏页定时器压到 60 秒一次，
+   * 主线程 beat(500ms) 与 Worker check(1s) 同时被压 → 每分钟误报一条"冻结 60 秒"。
+   */
+  assert.equal(frozenFor(1_000, 1_000 + 60_000, false), 0, "隐藏页 60 秒不该算冻结");
+  assert.equal(frozenFor(1_000, 1_000 + 89_000, false), 0, "隐藏页 89 秒仍不算（阈值 90s）");
+  // 活性：把 threshold 改成固定 FROZEN_MS → 本用例第一条变红
+});
+
+test("T33-24 隐藏标签页：超过 90 秒仍然要报（后台卡死不能漏）", () => {
+  assert.equal(frozenFor(1_000, 1_000 + THROTTLED_FROZEN_MS, false), THROTTLED_FROZEN_MS, "正好 90 秒要报");
+  assert.equal(frozenFor(1_000, 1_000 + 120_000, false), 120_000, "真实时长，不是阈值");
+  // 活性：把 hidden 分支删掉（永远用 FROZEN_MS）→ T33-23 红；把 threshold 改成 Infinity → 本用例红
+});
+
+test("T33-25 前台不受影响：3 秒就报", () => {
+  assert.equal(frozenFor(1_000, 1_000 + FROZEN_MS, true), FROZEN_MS);
+  assert.equal(frozenFor(1_000, 1_000 + 60_000, true), 60_000);
+  // 活性：把 visible 判断写反（visible 走 90s）→ 本用例变红
 });

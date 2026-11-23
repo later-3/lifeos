@@ -261,7 +261,13 @@ async function flushPeriodic(): Promise<void> {
  */
 function checkFreeze(): void {
   const now = Date.now();
-  const gap = frozenFor(lastBeatAt, now);
+  /*
+   * visibility 来自最后一次 beat 的快照：隐藏标签页会被浏览器节流到 60 秒一次定时器，
+   * 若不区分，每分钟都会误报一条"冻结 60 秒"（2026-11-23 实测 7 条假阳性）。
+   * 阈值见 `THROTTLED_FROZEN_MS`。
+   */
+  const visible = lastKnown.snapshot?.visibility === "visible";
+  const gap = frozenFor(lastBeatAt, now, visible);
   if (gap === 0) return;                     // 没冻（恢复由 heartbeat 分支处理）
   if (alreadyReported(reportedThisFreeze)) return;   // 这一段已经报过
 

@@ -56,6 +56,23 @@ function lifeosBuildVersion(): Plugin {
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), lifeosBuildVersion()],
+  build: {
+    /*
+     * **sourcemap 是卡死取证的前提**（Task 0033 · P5）。
+     *
+     * 为什么需要：卡死时 `Debugger.paused` 给的 location 是**运行时**的
+     * （生产产物是 `index-xxx.js:97:7163`，压缩后的行列）。没有 `.map` 就翻译不回源码行，
+     * 只能人工对照 —— 那等于没定位到"哪一行"。
+     *
+     * 代价（实测）：`.js.map` 体积约等于对应 JS；前端产物 896 KB → 多出约 2 MB。
+     * 对本地自用的 Life OS 可以忽略（不走公网 CDN、不追求首屏字节数）。
+     *
+     * `hidden` 而不是 `true`：**不**在 JS 末尾追加 `//# sourceMappingURL` 注释。
+     * 理由：注释会让浏览器 DevTools 自动去拉 map（多一次请求），而我们的用场是
+     * **离线翻译**（脚本读文件），不需要浏览器自己去拉。文件照样生成。
+     */
+    sourcemap: "hidden",
+  },
   server: {
     // 后端地址：默认 43120；调试别的端口时用 VITE_DEV_API=http://127.0.0.1:43121 pnpm dev:web
     proxy: {
