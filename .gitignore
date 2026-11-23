@@ -28,3 +28,6 @@ Snipaste_*.png
 # node_modules/ 只匹配目录；worktree 里是 symlink，需要不带斜杠的模式（0018 实测：软链进了检视 diff）。
 .lifeos-worktree.json
 node_modules
+
+# Task 的实测脚本与运行产物（过程工具，不是交付物；输出已复制进任务 evidence/）
+.probe/

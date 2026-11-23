@@ -6,6 +6,7 @@ import { pathExists, resolveHome } from "./home.ts";
 import { createApp } from "./server.ts";
 import { initLogs } from "./logging.ts";
 import { ensureMediaDir } from "./media.ts";
+import { backfillUserLayer } from "./user-layer-backfill.ts";
 
 const portArg = process.argv.find((arg) => arg.startsWith("--port="));
 const port = portArg === undefined ? 43120 : Number(portArg.slice("--port=".length));
@@ -22,6 +23,9 @@ if (!await pathExists(home)) {
 }
 await initLogs();
 await ensureMediaDir(home);   // 媒体库目录与说明文件（协议 §5.2）；已存在不覆盖
+// 用户层回填（协议 §4.2.1 · Task 0035）：存量全局项目不会重走注册，所以这里补一次。
+// create-only、幂等；失败只留一条 warn（不阻断启动，home:check 会把缺口报出来）。
+await backfillUserLayer(home);
 /*
  * 用 `createAdaptorServer` 而不是 `serve`：需要拿到 `http.Server` 才能挂 `upgrade`
  * （事件通道走 WebSocket，见 `src/event-socket.ts`；`serve()` 内部把 server 建好就直接 listen 了，

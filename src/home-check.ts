@@ -198,7 +198,7 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
     if (!await isFile(join(harness, "task-types", type, "template.json"))) errors.push(`协议默认任务类型缺少模板：task-types/${type}/template.json`);
     if (!await isFile(join(harness, "task-types", type, "AGENTS.md"))) errors.push(`协议默认任务类型缺少规则：task-types/${type}/AGENTS.md`);
   }
-  for (const name of ["layer-shared", "layer-agent", "layer-project", "task", "specs", "concept-space", "flywheel"]) {
+  for (const name of ["layer-shared", "layer-agent", "layer-project", "layer-user", "layer-user-project", "task", "specs", "concept-space", "flywheel"]) {
     if (!await isFile(join(harness, "skeleton", `${name}.md`))) errors.push(`协议目录缺少骨架模板：skeleton/${name}.md`);
   }
   for (const legacy of LEGACY_HARNESS) {
@@ -271,6 +271,68 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
       if (defaults === 0) errors.push(`Agent × 项目缺少默认 Task（类型 daily）：${rel}/tasks/`);
       if (defaults > 1) errors.push(`默认 Task 应只有一个，现在有 ${defaults} 个：${rel}/tasks/`);
       await requireNotes(home, pdir, errors, counter, taskDirs);
+    }
+  }
+  // 用户层（协议 §4.2.1、§5.1 · Task 0035）：用户是使用者本人，有自己的项目空间，但**没有对话能力**。
+  // 口径：`users/` 下每个 `<uid>/` 都要有实体与结构；`projects/<pid>/` 必须与全局项目**逐项对得上**。
+  // “零假阳性”的判据是“报的都是真缺”：现状（只有 `user.json`）会报缺 AGENTS.md / 缺 projects/ / 缺 workspace/
+  // —— 那三条都是真的缺（Task 0035 已经一次迁移补上），不是误报。
+  const usersRoot = join(home, "users");
+  // "全局项目"= 有 `project.json` 的那些（与 `listGlobalProjects()` 同一口径）。
+  // 只有 `projects/registry.json` 条目的目录（如 `longagentshare`）**不是**全局项目，
+  // 用户侧也不该有它 —— 两处口径不一致时，回填写 5 个、检查要 6 个（实测踩到）。
+  const globalIds = new Set<string>();
+  for (const pid of await subdirs(projectsRoot)) {
+    if (await readJsonFile(join(projectsRoot, pid, "project.json")) !== undefined) globalIds.add(pid);
+  }
+  for (const uid of await subdirs(usersRoot)) {
+    const userDir = join(usersRoot, uid);
+    const rel = `users/${uid}`;
+    counter.n += 1;
+    if (!await isFile(join(userDir, "user.json"))) errors.push(`用户层缺少 user.json：${rel}/`);
+    if (!await isFile(join(userDir, "AGENTS.md"))) errors.push(`用户层缺少 AGENTS.md：${rel}/`);
+    // P6：用户层**不提供对话能力**（不可协商）
+    if (await isDir(join(userDir, "sessions"))) errors.push(`用户层不应有 sessions/（不提供对话能力）：${rel}/sessions`);
+    // Task 属于 Agent × project（§3.7），用户层不设 tasks/task-types
+    for (const forbidden of ["tasks", "task-types"]) {
+      if (await isDir(join(userDir, forbidden))) errors.push(`用户层不应有 ${forbidden}/（Task 属于 Agent × project）：${rel}/${forbidden}`);
+    }
+    // 不参与装配的那几样也不该在用户层（放一份没人读的正是 architecture 2.1 的陷阱）
+    for (const forbidden of ["specs", "cases", "memory"]) {
+      if (await isDir(join(userDir, forbidden))) errors.push(`用户层不应有 ${forbidden}/（不参与装配 / 记忆另有位置）：${rel}/${forbidden}`);
+    }
+    for (const forbidden of ["flywheel.md", "concept-space.md"]) {
+      if (await isFile(join(userDir, forbidden))) errors.push(`用户层不应有 ${forbidden}（不参与装配）：${rel}/`);
+    }
+    // 与全局项目逐项对账（§4.2.1：用户给 Agent 添加的每一个全局项目，用户侧都有一份）。
+    // **含 workspace**（它本身就是全局项目，§9.1 修正版）——所以这里不需要另查顶层 workspace/。
+    const userProjects = join(userDir, "projects");
+    if (!await isDir(userProjects)) {
+      errors.push(`用户层缺少 projects/：${rel}/`);
+    } else {
+      const present = new Set<string>(await subdirs(userProjects));
+      for (const pid of globalIds) {
+        if (!present.has(pid)) errors.push(`用户层缺少全局项目对应的目录：${rel}/projects/${pid}/`);
+      }
+      for (const pid of present) {
+        if (!globalIds.has(pid)) errors.push(`用户层有全局项目里不存在的目录：${rel}/projects/${pid}/`);
+      }
+      for (const pid of present) {
+        const pdir = join(userProjects, pid);
+        const prel = `${rel}/projects/${pid}`;
+        if (!await isFile(join(pdir, "AGENTS.md"))) errors.push(`用户 × 项目缺少 AGENTS.md：${prel}/`);
+        // 用户 × 项目只有四样子结构（§9.1 修正版）：知识/日记/待办/工具。
+        for (const sub of ["knowledge", "daily", "todo", "tools"]) {
+          if (!await isDir(join(pdir, sub))) errors.push(`用户 × 项目缺少 ${sub}/：${prel}/`);
+        }
+        // 用户 × 项目也没有 sessions/tasks（与用户层同一条理由）；也**不该有**被否决的那几样
+        for (const forbidden of ["sessions", "tasks", "task-types", "memory"]) {
+          if (await isDir(join(pdir, forbidden))) errors.push(`用户 × 项目不应有 ${forbidden}/：${prel}/${forbidden}`);
+        }
+        for (const forbidden of ["flywheel.md", "concept-space.md"]) {
+          if (await isFile(join(pdir, forbidden))) errors.push(`用户 × 项目不应有 ${forbidden}（不参与装配）：${prel}/`);
+        }
+      }
     }
   }
   await requireNotes(home, harness, errors, counter);

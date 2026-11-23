@@ -82,3 +82,58 @@ export async function ensureTaskSkeleton(dir: string): Promise<void> {
   await dirWithNote(join(dir, "tools"), "tools");
   await dirWithNote(join(dir, "todo"), "todo");
 }
+
+// ——————————————— 用户层（`users/<uid>/`，协议 §4.2.1 · Task 0035）———————————————
+//
+// 形状由 architect 2026-11-24 裁定（`0003/phases/S1-delivery.md` §9.1 修正版）：
+//   users/<uid>/{user.json, avatar-<rev>.<ext>, AGENTS.md, projects/<pid>/…}
+//   users/<uid>/projects/<pid>/{AGENTS.md, knowledge/, daily/, todo/, tools/}
+//
+// **只有这五样**（全部有现场消费方）：
+//   · `knowledge/` —— 成文笔记（B4–B6）；
+//   · `daily/`    —— 日记（用户层没有 Task，所以这类内容落在层上）；
+//   · `todo/`     —— 用户自己的待办；
+//   · `tools/`    —— 用户的工具登记（S4.5 要显示）。
+//
+// **刻意没有**（每条都有否决理由，别"照着 Agent 层抄"就加回来）：
+//   · `sessions/`  —— P6：用户层不提供对话能力（不可协商）；
+//   · `tasks/`、`task-types/` —— Task 属于 Agent × project（§3.7）；
+//   · `memory/`    —— 用户记忆物理位置仍是 `memory/user/<uid>/`（§3.11、`src/memory/roles.ts:36`），
+//                    再放一份 = 第二处事实源；
+//   · `specs/`、`cases/`、`flywheel.md`、`concept-space.md` —— 它们的作用是"被装配/被加载"，
+//                    而用户层不参与 §4.3 装配（§4.3 已写明）——放一份没人读的正是 architecture 2.1 的陷阱。
+//
+// `workspace` 也是 `projects/` 下的一份（不是顶层）：它本身就是全局项目
+// （`project-registry.ts` 的 `SHARED_WORKSPACE_ID`，`listGlobalProjects()` 一并返回），
+// Agent 侧也在 `projects/workspace` —— 否则"每个全局项目一份"要分两类判。
+
+/** 用户 × 项目层的子结构（§9.1 修正版：只有这四样）。 */
+async function userProjectLayer(dir: string): Promise<void> {
+  await dirWithNote(join(dir, "knowledge"), "knowledge");
+  await dirWithNote(join(dir, "daily"), "daily");
+  await dirWithNote(join(dir, "todo"), "todo");
+  await dirWithNote(join(dir, "tools"), "tools");
+}
+
+/**
+ * 用户 × project（`users/<uid>/projects/<pid>/`，`workspace` 也走这里）：说明文件 + 四样子结构。
+ *
+ * create-only（backend 2.2）：这里会碰到用户自己写的笔记与待办，覆盖就是丢用户内容。
+ */
+export async function ensureUserProjectLayer(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-user-project"));
+  await userProjectLayer(dir);
+}
+
+/**
+ * 用户层根（`users/<uid>/`）：说明文件 + `projects/`（含 workspace 一份）。
+ *
+ * 不建 `user.json`：实体由 `profile.ts` 的 `writeProfile` 写（唯一来源，§4.2.1）。
+ * 两处各写一半会让"谁是用户"有两个答案。
+ */
+export async function ensureUserLayer(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeIfMissing(join(dir, "AGENTS.md"), await skeletonText("layer-user"));
+  await ensureUserProjectLayer(join(dir, "projects", "workspace"));
+}

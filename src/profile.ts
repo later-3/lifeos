@@ -133,6 +133,39 @@ async function listUserIds(home: string): Promise<string[]> {
   return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name).sort();
 }
 
+/**
+ * 用户层的路径规则（协议 §4.2.1、§5.1）。**这里也是唯一一处**——
+ * 校验器、骨架、工作区裁剪都从这三个函数取路径，不各自拼 `join(home, "users", …)`。
+ * （`specs/code/api/api.md` 2.7：同一个对象只有一处形状。）
+ */
+export const userProjectsDirOf = (home: string, uid: string): string => join(userDir(home, uid), "projects");
+export const userProjectDirOf = (home: string, uid: string, pid: string): string => join(userProjectsDirOf(home, uid), pid);
+/** 用户层根（`users/<uid>/`）；与上面三个同族，不让人在别处另拼一遍。 */
+export const userDirOf = (home: string, uid: string): string => userDir(home, uid);
+
+/** 当前用户的 id（**唯一来源**：需要 uid 的调用方都走这里，不自己扫 `users/`）。 */
+export async function currentUserId(home: string): Promise<string> {
+  return (await readProfile(home)).id;
+}
+
+/**
+ * **已存在的**用户实体 id（`users/<uid>/user.json` 真的在）；没有就 `undefined`。
+ *
+ * 与 `currentUserId` 的区别：后者找不到实体时会回落到"按系统名派生一个 id"（读路径要有兜底），
+ * 但**结构补齐不能这么干** —— 拿一个还只存在于回落里的 id 去建目录，就会造出
+ * `users/xu-later/` 这种**没有 user.json 的假用户**（实测：`test/protocol-flow.test.mjs` 的
+ * "新 Agent 与外部项目"用例因此报 4 条"用户层缺…"）。
+ *
+ * 所以：**读**用 `currentUserId`，**建**用 `existingUserId`（没有实体就不建）。
+ */
+export async function existingUserId(home: string): Promise<string | undefined> {
+  const ids = await listUserIds(home);
+  for (const id of ids) {
+    if (await readUserEntity(home, id) !== undefined) return id;
+  }
+  return undefined;
+}
+
 /** 读某个用户实体（不存在 → undefined）。 */
 async function readUserEntity(home: string, id: string): Promise<UserProfile | undefined> {
   const text = await readFile(userJson(home, id), "utf8").catch(() => undefined);
@@ -205,6 +238,8 @@ export async function writeProfile(home: string, profile: Omit<UserProfile, "id"
     createdAt: profile.createdAt ?? new Date().toISOString(),
   };
   await writeUserEntity(home, next);
+  // 结构不在这里建（协议 §4.2.1 的结构由 `ensureUserLayer` 在**注册全局项目**与**启动回填**时补齐）：
+  // 写实体是"我就是谁"，建目录是"我的空间长什么样"——两件事分开，且让 profile 不依赖骨架模板。
   return next;
 }
 
