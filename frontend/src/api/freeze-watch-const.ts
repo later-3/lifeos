@@ -96,11 +96,36 @@ export type LogRow = {
  * 边界：`lastBeatAt === 0` 表示 Worker 刚起来、主线程还没报活 —— **不算冻结**
  * （页面正在加载，主线程本来就忙着；这段由 longtask 覆盖）。
  */
-export function frozenFor(lastBeatAt: number, now: number): number {
+export function frozenFor(lastBeatAt: number, now: number, visible: boolean = true): number {
   if (lastBeatAt <= 0) return 0;
   const gap = now - lastBeatAt;
-  return gap >= FROZEN_MS ? gap : 0;
+  /*
+   * **隐藏标签页必须用更高的阈值**（2026-11-23 真实现场抓到）。
+   *
+   * Chrome/Edge 对隐藏标签页做 intensive throttling：`setInterval` 被压到**每分钟一次**。
+   * 主线程的 beat（500ms）与 Worker 的 check（1000ms）**同时**被压，
+   * 于是 Worker 每分钟醒来都看到"60 秒没报活" → 报一条"冻结 60 秒"。
+   *
+   * 实测那天：连续 7 条假记录（53000/60012/59772/60000/59998/59999/44498ms，
+   * 全部 `visibility: hidden`），而真正的冻结只有 1 条（`visible`，3523ms）。
+   * 假阳性比真事故多 7 倍 —— 不修就等于把日志淹掉。
+   *
+   * 判据：隐藏时阈值必须高于节流周期（60 秒），取 `THROTTLED_FROZEN_MS = 90_000`。
+   * 代价：真正在后台卡死时，要 90 秒才报（但会带着真实时长，不丢信息）。
+   */
+  const threshold = visible ? FROZEN_MS : THROTTLED_FROZEN_MS;
+  return gap >= threshold ? gap : 0;
 }
+
+/**
+ * 隐藏标签页的冻结阈值。
+ *
+ * 为什么是 90 秒：Chrome 的 intensive throttling 把隐藏页的定时器压到 **60 秒一次**
+ * （见 https://developer.chrome.com/blog/timer-throttling-in-chrome-88 与实测：
+ * 隐藏期的 7 条记录全部落在 44–60 秒）。阈值必须显著高于 60，否则每次节流都会被当成冻结；
+ * 90 秒留出 1.5× 余量，同时保证"后台真的卡死 90 秒以上"仍然能被记录。
+ */
+export const THROTTLED_FROZEN_MS = 90_000;
 
 /**
  * 这一段冻结是否**已经报过**。
