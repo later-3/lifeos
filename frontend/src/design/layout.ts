@@ -481,8 +481,35 @@ export function dragCascade(
    * 「面板 − MIN_VIEWER」为止；想让面板整体更宽，拖**外层**（c4）的把手。
    */
   if (key === "right") {
-    // 右栏（工作台月历列）：与 c1/c2/c5 同一档——普通单列拖动，没有嵌套关系。
-    return { right: dragWidth("right", start.right, deltaX, maxWidthOf("right", viewport, start, folded)) };
+    /*
+     * 右栏（工作台月历列）：普通单列拖动，没有嵌套关系 —— 但**基准必须是渲染宽，不是存储值**。
+     *
+     * 为什么（Task 0023 · 修正批 1 · P1-1）：`layout()` 会把 right 钳到
+     * `[RIGHT_MIN, rightBudget]` 与三档降级（docked/narrowed/overlay）之内，
+     * 而 `start.right` 存的是**用户上次拖出来的原始值**。两者不相等的窄窗里，
+     * 用存储值当基准 = 拖一下先跳到渲染值，用户看到的是"按下去就跳一截"。
+     *
+     * 实测（stored=500，±10px）：
+     *   vp=1280 rendered=500 cap=816 → 现状 窄490/宽510，修后同（不跳）
+     *   vp= 900 rendered=436 cap=436 → 现状 窄436/宽436（**拖不动**），修后 窄426/宽436
+     *   vp= 800 rendered=336 cap=336 → 现状 336/336（拖不动），修后 326/336
+     *   vp= 700 rendered=220 cap=236 → 现状 236/236（**跳 16px**），修后 220/230
+     *
+     * **必须把 `rightWidth: start.right` 喂进 `layout()`**：不传会走 RIGHT_DEFAULT=300，
+     * 于是 vp=1280 时返回 300 而真实渲染是 500 → 拖 1px 得 301，跳 199px
+     * （reviewer 原修法漏了这一项，architect 实测抓出）。
+     *
+     * 两条接受语义（不是缺陷，不再修）：
+     * 1. 窄窗里真拖过之后 stored 变成钳制后的值，拉回 1280 也回不到 500 —— 与 c1/c2/c5 一致
+     *    （拖动即提交）;
+     * 2. 死区是存量：c4（vp=1024 / stored=800 → 死区 240px）、c1/c2/c5 同一模式。
+     *    本批只修右栏，其余已由 architect 登记 todo。
+     */
+    const rendered = layout({
+      viewport, widths: start, requested: folded, panelOpen: false,
+      rightOpen: true, rightWidth: start.right,
+    }).right;
+    return { right: dragWidth("right", rendered, deltaX, maxWidthOf("right", viewport, start, folded)) };
   }
   if (RESIZE_PARENT[key] === undefined) {
     return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<WidthsExt>;

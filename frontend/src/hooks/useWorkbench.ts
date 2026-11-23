@@ -22,6 +22,19 @@ import {
 /** 单个列表的装载状态：ready=服务端已确认；failure 只在 count=0 时影响表面。 */
 type ListState<T> = { ready: boolean; value?: T; failure?: LoadFailure };
 
+/**
+ * 月份相关的状态**必须带 monthKey**（Task 0023 · 修正批 1 · P1-2）。
+ *
+ * 为什么：`ready` 只是"服务端确认过"这个事实，**不区分确认的是哪个月**。
+ * 切月时如果不记 key，界面拿到的仍是上个月的值与 ready=true → 新月份到底有没有内容
+ * 完全无法判断（既不能说"加载中"，也不能说"这个月没有"）——旧实现因此在下一次响应
+ * 回来之前是「本月全 0 底色 + 无骨架 + 无提示」。
+ *
+ * 判据是 **`monthKey === 当前月`**，不是 `value.length === 0`：
+ * 后者把"这个月确实没内容"和"这个月的响应还没回来"混成一个（规范 2.32 的同一条病）。
+ */
+export type MonthState<T> = { monthKey: string; ready: boolean; value?: T; failure?: LoadFailure };
+
 const initial = <T,>(): ListState<T> => ({ ready: false });
 
 export type WorkbenchMonth = { year: number; month: number };
@@ -29,7 +42,7 @@ export type WorkbenchMonth = { year: number; month: number };
 export function useWorkbench(month: WorkbenchMonth) {
   const [tasks, setTasks] = useState<ListState<GlobalTask[]>>(initial);
   const [projects, setProjects] = useState<ListState<GlobalProject[]>>(initial);
-  const [days, setDays] = useState<ListState<Day[]>>(initial);
+  const [days, setDays] = useState<MonthState<Day[]>>({ monthKey: "", ready: false });
   const [feed, setFeed] = useState<ListState<FeedItem[]>>(initial);
 
   const loadTasks = useCallback(async () => {
@@ -66,11 +79,16 @@ export function useWorkbench(month: WorkbenchMonth) {
   const loadDays = useCallback(async () => {
     const key = monthKeyRef.current;
     const range = monthRangeOf(month.year, month.month);
+    /*
+     * 切月立刻把状态收敛到"这个月还没有内容"（ready=false、不带旧值、不带旧失败）——
+     * 否则在新响应回来之前，界面会拿上个月的 value + ready=true 画出一个假结论。
+     */
+    setDays({ monthKey: key, ready: false });
     const result = await fetchDays(range);
-    if (monthKeyRef.current !== key) return;   // 已切月：丢弃旧响应
-    if (result.ok) setDays({ ready: true, value: result.value });
+    if (monthKeyRef.current !== key) return;   // 已切月：丢弃旧响应（2.12 作用域守卫）
+    if (result.ok) setDays({ monthKey: key, ready: true, value: result.value });
     else {
-      setDays((prev) => ({ ready: prev.ready, ...(prev.value !== undefined ? { value: prev.value } : {}), failure: result.failure }));
+      setDays({ monthKey: key, ready: false, failure: result.failure });
       logger.warn("load", `工作台日期索引加载失败：${result.failure.label}`, failureLogOf(result.failure));
     }
   }, [month.year, month.month]);
@@ -82,7 +100,7 @@ export function useWorkbench(month: WorkbenchMonth) {
   useEffect(() => { void loadDays(); }, [loadDays]);
 
   return {
-    tasks, projects, days, feed,
+    tasks, projects, days, feed, monthKey,
     reloadTasks: loadTasks, reloadProjects: loadProjects, reloadDays: loadDays, reloadFeed: loadFeed,
   };
 }

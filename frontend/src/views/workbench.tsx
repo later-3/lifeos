@@ -133,20 +133,55 @@ export function WorkbenchSurface({ agents, profile, right, onRightResizeStart, i
   const [mobileTab, setMobileTab] = useState<WorkbenchTab | "calendar">("all");
   const activeTab = isMobile ? mobileTab : tab;
 
+  /**
+   * **本月的数据到了没**（Task 0023 · 修正批 1 · P1-2）。
+   *
+   * 判据是 `data.days.monthKey === data.monthKey`（这个月的响应回来了），
+   * **不是** `value.length === 0` / `ready`：
+   * - `ready` 不区分"确认的是哪个月"，切月后仍是 true → loading 恒 false（旧实现的样子）；
+   * - `value.length` 把"这个月确实没内容"和"响应还没回来"混成一个。
+   *
+   * 切月瞬间 `useWorkbench` 已把状态收敛成 `{monthKey: 新key, ready:false}`，
+   * 所以这里三种情况互斥：key 不符 = 加载中；key 符且失败 = 失败；key 符且成功 = 有内容/空。
+   */
+  const daysForMonth = data.days.monthKey === data.monthKey;
   /** 月历的 props（桌面右栏与手机日历块共用一份，防两处漂移）。 */
   const calendarProps = {
     year: month.year,
     month: month.month,
-    days: data.days.value ?? [],
+    days: daysForMonth ? (data.days.value ?? []) : [],
     today,
-    loading: !data.days.ready && data.days.failure === undefined,
+    loading: !daysForMonth || (!data.days.ready && data.days.failure === undefined),
     onPrevMonth: () => shiftMonth(-1),
     onNextMonth: () => shiftMonth(1),
     agents,
+    /*
+     * 统计块的三个数字（P2-3 修的是一致性，不是数值）：
+     * `tasks` 原来用 `value.length`（含 daily）→ 显示「137 任务」，
+     * 而同屏的项目副行与看板是「106」（`stateColumnsOf` / `taskCountsByProject` 排除 daily）——
+     * 同一屏两个「任务」互相打架。
+     *
+     * 选择：**统计块也用 `type !== "daily"`**（与看板/项目区唯一判据，R3），而不是改标签写
+     * 「任务（含日常）」。理由：用户看到的"任务"应当与他能点进看板看到的那些是同一批；
+     * 改标签只是把矛盾写清楚，仍然让同一屏出现两套数。
+     * 判据只此一处（`stateColumnsOf` 与 `taskCountsByProject` 同用 `type === "daily"`）。
+     */
+    /*
+     * 失败与重试**放进 calendarProps**（P1-2 的连带发现）：
+     * 原来只在 `activeTab === "calendar"` 那一处（手机分段）spread 了 failed/onRetry，
+     * 而桌面右栏是另一个调用点（`<WorkbenchCalendar {...calendarProps} />`）——
+     * 于是**桌面切月失败时没有任何提示**（实测：header 变成 12 月、格子全 0、零提示）。
+     * 两个调用点共用一个 props 对象，是"防两处漂移"的同一手法。
+     */
+    ...(daysForMonth && data.days.failure !== undefined
+      ? { failed: data.days.failure, onRetry: () => { void data.reloadDays(); } }
+      : {}),
     stats: {
       projects: projectCount,
       agents: agents.length,
-      tasks: data.tasks.ready ? (data.tasks.value ?? []).length : undefined,
+      tasks: data.tasks.ready
+        ? (data.tasks.value ?? []).filter((task) => task.type !== "daily").length
+        : undefined,
     },
   };
 
@@ -160,9 +195,7 @@ export function WorkbenchSurface({ agents, profile, right, onRightResizeStart, i
           onRetry={() => { void data.reloadTasks(); void data.reloadProjects(); }} />
       ))
     : activeTab === "calendar"
-      ? <WorkbenchCalendar {...calendarProps}
-          {...(data.days.failure !== undefined && (data.days.value?.length ?? 0) === 0
-            ? { failed: data.days.failure, onRetry: () => { void data.reloadDays(); } } : {})} />
+      ? <WorkbenchCalendar {...calendarProps} />
       : ((data.feed.failure === undefined || feedValue.length > 0) ? (
           <FeedView feed={feedValue} tab={activeTab} agentFilter={agentFilter} agents={agents} profile={profile}
             today={today} loading={!data.feed.ready && data.feed.failure === undefined}

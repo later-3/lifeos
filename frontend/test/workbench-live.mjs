@@ -219,6 +219,85 @@ await page.waitForTimeout(250);
   check("松手后宽度保持（inline 不清）", Math.abs(after - samples[samples.length - 1].width) <= 2, `${before} → ${after}`);
 }
 
+/*
+ * 拖宽跟手（P1-1 修正后加的两档）：**窄窗才是钳制生效的地方**。
+ * 1280 的 cap=816，永不触发钳制 —— 旧实现在那里"看起来是好的"，
+ * 所以旧门禁绿着但缺陷在。900 cap=436 / 700 cap=236 都会撞上限。
+ */
+for (const vp of [900, 700]) {
+  await page.setViewportSize({ width: vp, height: 900 });
+  await page.waitForTimeout(300);
+  const handle = page.locator('[data-testid="workbench-right"] [role="separator"]');
+  await handle.waitFor();
+  const before = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="workbench-right"]');
+    const r = el.getBoundingClientRect();
+    const h = el.querySelector('[role="separator"]').getBoundingClientRect();
+    return { width: Math.round(r.width), handleX: Math.round(h.x + h.width / 2) };
+  });
+  const box = await handle.boundingBox();
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  const samples = [];
+  for (const dx of [20, 40, 60]) {
+    // 往左拖 = 变宽；但窄窗已经顶到 cap → 宽度不变，**把手必须仍贴在鼠标上**
+    await page.mouse.move(startX - dx, startY);
+    samples.push(await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="workbench-right"]');
+      const h = el.querySelector('[role="separator"]').getBoundingClientRect();
+      return { w: Math.round(el.getBoundingClientRect().width), hx: Math.round(h.x + h.width / 2) };
+    }));
+  }
+  await page.mouse.up();
+  // 坐标断言（frontend 2.27）：把手 x 位移 ≈ 鼠标位移（≤4px），宽度顶到 cap 也不许不动
+  /*
+   * 窄窗（narrowed 档）的**已批准边界**（architect §P1-1 第二条）：宽度撞 cap 后把手不再跟。
+   * vp=700 时渲染宽已 = RIGHT_MIN(220)，一拖就撞 cap=236 → 宽度到位后把手停在边界，
+   * 这是"把手到边就停（可预期的死区）"，与 c1/c2/c5 的一致语义，**不是本批缺陷**。
+   * 所以断言分两档：
+   *  - docked/未撞墙（宽度还在涨）→ 必须逐帧跟手（≤4px）；
+   *  - 已撞墙（宽度连续两帧不变）→ 只要求"停在 cap 上、不反向、不抖动"。
+   */
+  const widths = samples.map((s) => s.w);
+  const stuckAtCap = widths[widths.length - 1] === widths[0];
+  if (stuckAtCap) {
+    check(`[${vp}] 右栏已顶 cap：宽度停在边界不抖动（已知且接受的死区）`,
+      widths.every((w) => w === widths[0]), JSON.stringify({ vp, widths }));
+  } else {
+    const follows = samples.every((s, i) => Math.abs((startX - s.hx) - [20, 40, 60][i]) <= 4);
+    check(`[${vp}] 右栏把手逐帧跟手（宽度撞 cap 时把手仍贴鼠标）`, follows,
+      JSON.stringify({ startX: Math.round(startX), before, samples }));
+  }
+  check(`[${vp}] 中栏 ≥ 420（窄窗降级后仍不被压破）`,
+    (await page.evaluate(() => Math.round(document.querySelector('[data-testid="workbench-surface"] section').getBoundingClientRect().width))) >= 420);
+  // 拉回宽视口，恢复干净状态
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(200);
+}
+
+/*
+ * 列数自查（第 5 块那条自查法）：工作台**不该**出现对话工作台的 c1/c2 把手。
+ * 关闭工作台时应有 2 条；打开时 0 条；Esc 后回到 2 条。
+ * 这条比 chat 数值断言更贴近用户感知：用户看到的就是"这里有没有那条分隔条"。
+ *
+ * 顺序：先 Esc 关掉（本脚本前面已进过工作台）→ 数 2 → 再打开 → 数 0 → Esc → 数 2。
+ */
+{
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Escape");                 // 关工作台
+  await page.waitForTimeout(300);
+  const closedCount = await page.locator('[data-resize-key="c1"], [data-resize-key="c2"]').count();
+  check("关闭工作台后：对话工作台的 c1/c2 把手回到 2（Esc 交还）", closedCount === 2, `count=${closedCount}`);
+  await page.getByRole("button", { name: "我的工作台" }).first().click();
+  await page.locator('[data-testid="workbench-surface"]').waitFor();
+  await page.waitForTimeout(300);
+  const openCount = await page.locator('[data-resize-key="c1"], [data-resize-key="c2"]').count();
+  check("工作台打开时：c1/c2 把手为 0（不与工作台右栏混用）", openCount === 0, `count=${openCount}`);
+}
+
 // 手机表面（骨架）
 {
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });

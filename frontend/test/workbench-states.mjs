@@ -65,6 +65,15 @@ const mustExist = (label, stats) => {
   return ok;
 };
 
+/**
+ * FYI-2：这条场景没有打到任何"没准备"的 /api 路径。
+ * 打印实际打到的清单（空 = 夹具覆盖完整），为空才算通过。
+ */
+const makeAssertNoUnmatched = (unmatched) => () => {
+  check("夹具覆盖完整（没有打到兜底 501）", unmatched.length === 0,
+    unmatched.length === 0 ? "" : `未准备：${[...new Set(unmatched)].join(", ")}`);
+};
+
 /* ══════════════ 夹具（入口写死）══════════════ */
 
 const AGENT = { id: "lifeosagent", name: "Life Agent", description: "", defaultProjectId: "workspace", schemaVersion: 1, defaultSessionId: "sess-fixture" };
@@ -89,6 +98,14 @@ const GLOBAL_TASK = {
   type: "development", category: "A 改产品行为", status: "进行中", goal: "",
   path: "", docPath: "", date: "2026-11-22", agentId: AGENT.id, projectId: PROJECT.id, state: "进行中",
 };
+/**
+ * 「其他」卡的夹具（R4 活性）：**原文 status 必须非空且不等于"其他"** ——
+ * 那是 R4 的核心要求（用户要能看出"已作废"还是"状态写错了"）。
+ */
+const OTHER_TASK = {
+  ...GLOBAL_TASK, id: "9002", dirName: "9002-夹具其他任务", number: 9002,
+  title: "四态夹具·其他状态卡", status: "已作废（夹具，未使用）", state: "其他",
+};
 const GLOBAL_PROJECT = { id: PROJECT.id, name: PROJECT.name, icon: "🏠", agentIds: [AGENT.id] };
 const DAY = {
   date: "2026-11-22", documents: [], todos: [],
@@ -108,7 +125,9 @@ const FEED_SEED = [{
  * - `empty`：全给空数组（**已就绪**的空，不是"没拿到"）；
  * - `failed`：三接口 500 + feed 返回 http 失败；
  * - `loading`：全部挂起（永不到达）→ 骨架；
- * - `partial`：tasks 有数据、**feed 失败**、projects 有数据（2.32 的"按对象分别维护"）。
+ * - `partial`：tasks 有数据、**feed 失败**、projects 有数据（2.32 的"按对象分别维护"）；
+ * - `other`：tasks 里有一张 `state:"其他"` 的卡（原文 status 非空）——**R4 尾部组的活性夹具**。
+ * - `other-moved`：同一张卡改成 `进行中` → 尾部组必须**消失**（反向）。
  */
 async function openWorkbench({ mode, waitMs = 700 }) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -116,6 +135,27 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   const json = (route, body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   const fail = (route) => json(route, { error: { code: "boom", message: "夹具失败" } }, 500);
   const hang = () => new Promise(() => {});   // 永不 resolve：骨架态
+
+  /*
+   * **兜底 catch-all（FYI-2）**：必须**先**注册（Playwright 后注册先匹配 → 这条成最后兜底）。
+   * 返回 501 并**记到 node 侧数组**（不写 window：route handler 里 `page.evaluate` 会在
+   * 页面未就绪时悬挂，请求永远不 fulfill、App 起不来——实测踩过）。
+   * 每个场景收尾断言该数组为空，于是"App 新增首屏接口而夹具没准备"会变红。
+   */
+  const unmatched = [];
+  /*
+   * **必须用 predicate 而不是 .../api/... 这种通配**：后者会命中 Vite 的开发模块路径
+   * /src/api/emoji-catalog.ts（实测：rootHTML len=0、App 根本起不来）。
+   * predicate 只认 pathname 以 /api/ 开头 = 真正的后端调用。
+   */
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
+    unmatched.push(new URL(route.request().url()).pathname);
+    return route.fulfill({
+      status: 501,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "unmatched_fixture", message: "四态夹具没有为这条路径准备响应" } }),
+    });
+  });
 
   /* 应用自身的接口（与工作台无关，但 App 要能起来；全部固定） */
   await page.route(/\/api\/agents.*$/, async (route) => {
@@ -142,6 +182,8 @@ async function openWorkbench({ mode, waitMs = 700 }) {
     if (mode === "failed") return fail(route);
     if (mode === "loading") return hang();
     if (mode === "empty") return json(route, { items: [] });
+    if (mode === "other") return json(route, { items: [GLOBAL_TASK, OTHER_TASK] });
+    if (mode === "other-moved") return json(route, { items: [GLOBAL_TASK, { ...OTHER_TASK, state: "进行中", status: "进行中" }] });
     return json(route, { items: [GLOBAL_TASK] });   // content / partial
   });
   await page.route("**/api/projects", (route) => {
@@ -175,12 +217,12 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   await page.getByRole("button", { name: "我的工作台" }).first().click();
   await page.locator('[data-testid="workbench-surface"]').waitFor({ timeout: 10_000 });
   await page.waitForTimeout(waitMs);   // 等四态落定（loading 态也走这一步，让骨架先画出来）
-  return { ctx, page };
+  return { ctx, page, assertNoUnmatched: makeAssertNoUnmatched(unmatched) };
 }
 
 /* ══════════════ ① loading：骨架，且不写结论 ══════════════ */
 {
-  const { ctx, page } = await openWorkbench({ mode: "loading" });
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "loading" });
   const feedSkeletons = await page.locator('[data-testid="workbench-feed-loading"]').count();
   const cards = await page.locator('[data-testid="workbench-feed-card"]').count();
   mustExist("loading/feed 骨架", { skeletons: feedSkeletons });
@@ -194,12 +236,13 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   const projectRows = await page.locator('[data-testid="workbench-project-row"]').count();
   mustExist("loading/项目区骨架", { skeletons: projectSkeletons });
   check("loading：项目区不画行（骨架与内容互斥）", projectRows === 0, `rows=${projectRows}`);
+  assertNoUnmatched();
   await ctx.close();
 }
 
 /* ══════════════ ② empty：确实为空（已就绪）+ 空态出口 ══════════════ */
 {
-  const { ctx, page } = await openWorkbench({ mode: "empty" });
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "empty" });
   const emptyFeed = await page.locator('[data-testid="workbench-feed-empty"]').count();
   const cards = await page.locator('[data-testid="workbench-feed-card"]').count();
   mustExist("empty/内容流空态", { emptyNodes: emptyFeed });
@@ -210,12 +253,13 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   await page.waitForTimeout(300);
   const emptyProjects = await page.locator('[data-testid="workbench-projects-empty"]').count();
   mustExist("empty/项目区空态", { emptyNodes: emptyProjects });
+  assertNoUnmatched();
   await ctx.close();
 }
 
 /* ══════════════ ③ failed：失败有出口（原因 + 重试），不冒充空态 ══════════════ */
 {
-  const { ctx, page } = await openWorkbench({ mode: "failed" });
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "failed" });
   const notices = await page.locator('[data-testid="workbench-load-failure"]').count();
   mustExist("failed/失败表面", { notices });
   const scope = await page.locator('[data-testid="workbench-load-failure"]').first().getAttribute("data-failure-scope");
@@ -223,12 +267,13 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   const text = (await page.locator('[data-testid="workbench-load-failure"]').first().textContent()) ?? "";
   check("failed：有原因文案（不是空白/不是空态）", text.trim().length > 0 && !text.includes("还没有内容"), text.slice(0, 60));
   check("failed：有重试入口", (await page.getByRole("button", { name: "重试" }).count()) >= 1);
+  assertNoUnmatched();
   await ctx.close();
 }
 
 /* ══════════════ ④ content：真内容 + 关系的形状 ══════════════ */
 {
-  const { ctx, page } = await openWorkbench({ mode: "content" });
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "content" });
   const cards = await page.locator('[data-testid="workbench-feed-card"]').count();
   mustExist("content/内容流卡片", { cards });
   check("content：卡片带「示例」徽标（桩变漂亮了还是桩）",
@@ -238,12 +283,13 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   const rows = await page.locator('[data-testid="workbench-project-row"]').count();
   const kanbanCards = await page.locator('[data-testid="workbench-kanban-card"]').count();
   mustExist("content/项目区", { rows, kanbanCards });
+  assertNoUnmatched();
   await ctx.close();
 }
 
 /* ══════════════ ⑤ partial：有内容 + 对端失败（不是整体失败页）══════════════ */
 {
-  const { ctx, page } = await openWorkbench({ mode: "partial" });
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "partial" });
   const feedNotice = await page.locator('[data-testid="workbench-load-failure"][data-failure-scope="feed"]').count();
   mustExist("partial/内容流失败表面", { notices: feedNotice });
   await page.getByRole("tab", { name: /项目/ }).click();
@@ -252,6 +298,64 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   mustExist("partial/项目区仍有内容（快的那个不被慢的那个代言）", { rows });
   check("partial：项目区没有跟着报错",
     (await page.locator('[data-testid="workbench-load-failure"][data-failure-scope="projects"]').count()) === 0);
+  assertNoUnmatched();
+  await ctx.close();
+}
+
+/* ══════════════ ⑥ other：R4 尾部组的**正路径**（夹具，不靠 live 数据）══════════════ */
+{
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "other" });
+  await page.getByRole("tab", { name: /项目/ }).click();
+  await page.waitForTimeout(400);
+  const group = await page.locator('[data-testid="workbench-kanban-other"]').count();
+  mustExist("other/「其他」尾部组", { groups: group });
+  // 点开展开组（折叠组的展开行）
+  await page.locator('[data-testid="workbench-kanban-other"] button, [data-testid="workbench-kanban-other"] [role="button"]').first().click();
+  await page.waitForTimeout(250);
+  const cards = await page.locator('[data-testid="workbench-kanban-other-card"]').count();
+  mustExist("other/组内卡片", { cards });
+  const text = (await page.locator('[data-testid="workbench-kanban-other-card"]').first().textContent()) ?? "";
+  check("other：组内卡显示**原始 status**（不是「其他」两个字）",
+    text.includes("已作废（夹具，未使用）"), text.slice(0, 80));
+  assertNoUnmatched();
+  await ctx.close();
+}
+
+/* ══════════════ ⑦ other-moved：同一张卡改成进行中 → 尾部组**消失**（反向活性）══════════════ */
+{
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "other-moved" });
+  await page.getByRole("tab", { name: /项目/ }).click();
+  await page.waitForTimeout(400);
+  const group = await page.locator('[data-testid="workbench-kanban-other"]').count();
+  check("other-moved：没有「其他」卡时尾部组不渲染（空组不出现）", group === 0, `groups=${group}`);
+  // 那张卡应当出现在「进行中」列里
+  const runCards = await page.locator('[data-testid="workbench-kanban-card"]').count();
+  mustExist("other-moved/看板卡片", { cards: runCards });
+  assertNoUnmatched();
+  await ctx.close();
+}
+
+/* ══════════════ ⑧ month-fail：从有内容的月份切到**失败**的月份（P1-2）══════════════ */
+{
+  const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "content" });
+  // 桌面：月历在右栏（testid=workbench-right），不是 tab（手机才是分段）
+  await page.locator('[data-testid="workbench-right"] [data-testid="workbench-calendar"]').waitFor({ timeout: 10_000 });
+  const hasDay = await page.locator('[data-testid="workbench-calendar"] [role="grid"] button').count();
+  mustExist("month-fail/本月内容", { days: hasDay });
+  // 让下一次 /api/days 失败（route 后注册优先匹配）
+  await page.route("**/api/days*", (route) => route.fulfill({
+    status: 500, contentType: "application/json",
+    body: JSON.stringify({ error: { code: "boom", message: "切月失败夹具" } }),
+  }));
+  // 点下个月
+  await page.getByRole("button", { name: "下个月" }).click();
+  await page.waitForTimeout(700);
+  const failure = await page.locator('[data-testid="workbench-load-failure"][data-failure-scope="days"]').count();
+  mustExist("month-fail/切月后失败表面", { surfaces: failure });
+  const panelText = (await page.locator('[data-testid="workbench-panel"]').textContent()) ?? "";
+  check("month-fail：不是「这个月没有活动」那种空态结论",
+    !panelText.includes("这个月还没有") && !panelText.includes("这个月没有活动"), panelText.slice(0, 80));
+  assertNoUnmatched();
   await ctx.close();
 }
 
