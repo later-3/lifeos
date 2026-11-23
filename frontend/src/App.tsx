@@ -1002,6 +1002,34 @@ export default function App() {
    */
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
+  /** 渲染窗口的最新值（冻结快照要读它；放 ref 是为了不进 effect 依赖）。 */
+  const visibleCountRef = useRef(VISIBLE_PAGE_SIZE);
+  visibleCountRef.current = visibleCount;
+  /*
+   * 冻结观测（Task 0033 · P0）：装一次，之后主线程只负责报活与记动作。
+   * 为什么在 App 里而不是 main.tsx：快照要读 App 的内部状态（会话/消息数/界面开关）。
+   * 装配幂等（StrictMode 双跑 effect 由 installFreezeWatch 内部挡住）。
+   */
+  useEffect(() => {
+    installFreezeWatch();
+  }, []);
+
+  /* 快照登记：状态一变就把"能解释卡顿的因子"写进寄存器（一次属性赋值，不触发渲染）。 */
+  useEffect(() => {
+    updateSnapshot({
+      ...(agent?.id !== undefined ? { agentId: agent?.id } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      messages: messages.length,
+      visibleCount,
+      busy,
+      phase,
+      ...(activeTool !== undefined ? { activeTool } : {}),
+      panelOpen,
+      historyOpen: history !== undefined,
+      reviewOpen,
+    });
+  }, [agent?.id, sessionId, messages.length, visibleCount, busy, phase, activeTool, panelOpen, history, reviewOpen]);
+
   /** 等锚点出现的上限（ms）。放大渲染窗口要提交一帧，长会话展开十几轮需要几步；400ms 是安全余量。 */
   const RAIL_ANCHOR_WAIT_MS = 400;
   /**
@@ -1619,6 +1647,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     followTail.current = true;
     setAtBottom(true);
     setMessages(data.messages ?? []);
+    trail(`load-messages:${(data.messages ?? []).length}`);
     /*
      * 种子（见 `streamSeed` 的注释）：尾部是"还在跑"的 assistant 时，把它的块记下来。
      * 只有这样，随后到达的增量才会**接在**这些块后面，而不是把它们覆盖掉。
@@ -1721,6 +1750,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       const older = data.messages ?? [];
       if (older.length === 0) { setHasOlderMessages(false); return; }
       setMessages((existing) => [...older, ...existing]);
+      trail(`load-older:+${older.length}`);
       setHasOlderMessages(data.hasOlder === true);
       olderCursorRef.current = data.olderCursor;
       // 前置了内容：让"渲染窗口"也一起长大（否则刚取回来的还是被窗口裁掉）
@@ -1765,6 +1795,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     }
     const items = result.value.items;
     setRailTicks(Array.isArray(items) ? items : []);
+    trail(`load-rail:${Array.isArray(items) ? items.length : 0}`);
     /*
      * 长会话：刻度到手后触发后台补齐历史（见 `ensureFullHistory`）。
      * 判据"刻度数 > 40"：装得下的会话不需要滚动，也就不需要补，
@@ -1964,6 +1995,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    */
   const ensureFullHistory = useCallback(async (id: string, sid: string): Promise<void> => {
     if (fullHistoryInFlight.current === `${id}/${sid}`) return;   // 已经在补了
+    trail("ensure-full-history");
     fullHistoryInFlight.current = `${id}/${sid}`;
     try {
       let stalls = 0;
@@ -2155,6 +2187,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   }
 
   async function openSession(a: Agent, sid: string) {
+    trail("open-session");
     resetChatState();
     setTailError(undefined);              // 切会话：旧会话的失败残留不带到新会话
     setSessionId(sid);
@@ -2862,6 +2895,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     setRetry(undefined);
     const elapsed = Math.max(1, Math.round((Date.now() - turnStartedAtRef.current) / 1000));
     setTurnStatus({ text: `4/4 · ${outcome === "done" ? "完成" : "失败"} · ${elapsed}s` });
+    trail(`finish-turn:${outcome}`);
     if (current.current !== undefined && ctx.current.agentId !== undefined) {
       void loadMessages(ctx.current.agentId, current.current);
       // 轮次结束：这一轮的"轮末回复"刚刚成为事实，重取刻度（Task 0020）
@@ -2886,6 +2920,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
 
   /** 助手列表变化（新建/归档，工具与 HTTP 都会广播）→ 自动重取，无需手动刷新。 */
   async function onAgentsChanged(): Promise<void> {
+    trail("agents-changed");
     const data = (await (await fetch("/api/agents")).json()) as { items: Agent[] };
     setAgents(data.items);
     try { localStorage.setItem("lifeos.agents", JSON.stringify(data.items)); } catch { /* 隐私模式 */ }
@@ -3268,6 +3303,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     followTail.current = true;
     setAtBottom(true);
     setMessages((list) => [...list, { role: "user", text, blocks: userBlocks(text, pending) }, { role: "assistant", text: "", blocks: [], streaming: true }]);
+    trail("send");
     const fail = (message: string) => {
       // 错误放独立状态（不进 messages）：否则紧接着的 loadMessages 会把它整体冲掉（见 tailError 注释）
       setTailError(message);
@@ -5365,3 +5401,5 @@ import { AppIcon } from "./design/icons";
 import { applyThemePack, loadActivePackId, loadThemePacks } from "./design/theme-package.ts";
 import { ListSkeleton, MessageSkeleton } from "./design/skeleton";
 import { cacheableOf, createMessageCache } from "./message-cache";
+import { installFreezeWatch, refreshSnapshot, trail } from "./api/freeze-watch";
+import { updateSnapshot } from "./api/freeze-snapshot";
