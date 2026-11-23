@@ -19,11 +19,14 @@
  * 每张卡都带「示例」徽标（`_stub: true`）——**卡型做全了也还是桩**，这正是假数据最容易混成真的时刻。
  * 桩媒体画占位框（不加载假 URL，假 `<img>` 会破图）；点赞/评论点了只给 toast（S4 才接真）。
  */
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { useToast } from "../design/toast";
 import { AppIcon } from "../design/icons";
 import { EmptyState, MicroButton, Skeleton } from "../design/ui";
-import { SURFACE } from "../design/surface";
+import { SCRIM_CLASS, SURFACE } from "../design/surface";
+import { ImageTrigger } from "../design/image-viewer";
+import { WorkbenchFeedDetail } from "./workbench-feed-detail";
 import { AgentAvatar } from "./agent-avatar";
 import { UserAvatar } from "./user-avatar";
 import type { Agent, UserProfile } from "../hooks/types";
@@ -59,8 +62,8 @@ export function StubBadge() {
   );
 }
 
-/** 卡型徽标：色相由 `kindMetaOf` 给（8 kind；未知/缺失走中性）。 */
-function KindChip({ kind }: { kind: FeedItem["kind"] }) {
+/** 卡型徽标：色相由 `kindMetaOf` 给（8 kind；未知/缺失走中性）。导出给详情浮层复用（不写第二份）。 */
+export function KindChip({ kind }: { kind: FeedItem["kind"] }) {
   const meta = kindMetaOf(kind);
   return (
     <span className={`inline-flex h-5 shrink-0 items-center rounded-full px-2 text-micro font-medium ${meta.chip}`}>
@@ -92,6 +95,17 @@ function AuthorAvatar({ item, agents, profile }: { item: FeedItem; agents: Agent
 
 /* ══════════════════ 媒体网格（契约 §4：5 档）══════════════════ */
 
+/**
+ * 媒体网格（契约 §4：5 档）。
+ *
+ * **现在是真 `<img>`**（Task 0023 · 修正批 4 / e2e 第 8 条）：桩条的 URL 指向
+ * `frontend/public/samples/*.jpg`（下载进仓库的 800×450 固定图，理由见该目录 README）——
+ * 所以桩卡与将来真数据的 URL **同一种渲染路径**，不再按 `_stub` 分叉，
+ * 占位框（`bg-hover` + 图标）退休。「示例」徽标是另一件事（`_stub` 驱动），仍在。
+ *
+ * 加载失败有出口：`ImageTrigger` 的 `failureText` 渲染一行说明（不是碎图图标）。
+ * 点击放大走同一个 `ImageTrigger`（不新造查看器）。
+ */
 function MediaGrid({ items }: { items: NonNullable<FeedItem["media"]> }) {
   const tier = mediaTierOf(items.length);
   if (tier === undefined) return undefined;
@@ -101,15 +115,18 @@ function MediaGrid({ items }: { items: NonNullable<FeedItem["media"]> }) {
       <div className={`${MEDIA_GRID_CLASS[tier]} ${mediaFrameClassOf(tier)}`}>
         {shown.map((media, index) => (
           <div key={index}
-            className={`relative flex items-center justify-center overflow-hidden bg-hover text-ink-300 ${mediaCellClassOf(tier, index)} ${
+            className={`relative overflow-hidden bg-hover ${mediaCellClassOf(tier, index)} ${
               tier === "nmany" ? "aspect-square" : ""
-            }`}
-            /* 桩媒体 = 占位框（不喂假 URL）；caption 走 title，不假装是图 */
-            title={media.caption ?? "示例媒体占位"}>
-            <AppIcon name={media.kind === "video" ? "photo" : "photo"} size={16} />
+            }`}>
+            <ImageTrigger src={media.url} alt={media.caption ?? "示例图"} className="block h-full w-full"
+              testId="workbench-feed-image" failureText="这张示例图没加载出来">
+              <img src={media.url} alt={media.caption ?? "示例图"} loading="lazy" decoding="async"
+                className="h-full w-full object-cover" />
+            </ImageTrigger>
             {media.kind === "video" && (
-              <span aria-hidden className="absolute text-ink-500">
-                <AppIcon name="chevron-right" size={18} />
+              <span aria-hidden
+                className={`pointer-events-none absolute inset-0 flex items-center justify-center ${SCRIM_CLASS} text-white`}>
+                <AppIcon name="chevron-right" size={22} />
               </span>
             )}
             {media.caption !== undefined && (
@@ -270,13 +287,20 @@ function bodyNodesOf(item: FeedItem): ReactNode {
  * 布局顺序按契约 §5：头（头像/名字/心情/类型/时间）→ 标题/正文 → 媒体 → 富块 → 文档卡 →
  * 上下文 chips → 进度 → 点赞人行 → 动作行 → 标签行。缺什么不渲染什么（`有数据才渲染`）。
  */
-function FeedCard({ item, agents, profile, onPlaceholderAction }: {
+function FeedCard({ item, agents, profile, onPlaceholderAction, onOpen }: {
   item: FeedItem; agents: Agent[]; profile?: UserProfile;
   onPlaceholderAction: () => void;
+  /** 点卡片正文 → 详情浮层（e2e 第 9 条）。 */
+  onOpen: () => void;
 }) {
   const media = item.media ?? [];
   const clamped = textClampedOf(media.length);
   return (
+    /*
+     * **可点容器不得内嵌可点元素**（frontend 2.25）：媒体里是 `ImageTrigger`（放大）、
+     * 动作行是 4 个真 `<button>`。若把"打开详情"挂在卡片根上，它们全都变成 nested-interactive。
+     * 所以点击只挂在**标题+正文那一块**（`role="button"`，与媒体/动作行是兄弟）。
+     */
     <article className="overflow-hidden bg-surface" data-testid="workbench-feed-card"
       data-kind={item.kind ?? "none"}
       style={SURFACE_CARD_STYLE}>
@@ -288,11 +312,20 @@ function FeedCard({ item, agents, profile, onPlaceholderAction }: {
         {/* 只有真桩才戴「示例」（P2-2：无条件渲染会让 S2 的真卡也戴） */}
         {item._stub === true && <StubBadge />}
       </header>
-      <div className="px-3.5 pb-1 pt-2">
+      <div role="button" tabIndex={0} onClick={onOpen} data-testid="workbench-feed-card-open"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); }
+        }}
+        aria-label={`打开详情：${item.title ?? item.text.slice(0, 24)}`}
+        className="cursor-pointer px-3.5 pb-1 pt-2 transition-colors hover:bg-wash-hover">
         {item.title !== undefined && item.title !== "" && (
           <h3 className="mb-1 text-content font-semibold leading-snug text-ink-900">{item.title}</h3>
         )}
         <p className={`text-content leading-relaxed text-ink-900 ${clamped ? "line-clamp-2" : ""}`}>{bodyNodesOf(item)}</p>
+        <span className="mt-1 inline-flex items-center gap-1 text-micro text-ink-500">
+          阅读全文
+          <AppIcon name="chevron-right" size={12} aria-hidden="true" />
+        </span>
       </div>
       {media.length > 0 && <div className="px-0"><MediaGrid items={media} /></div>}
       <div className="px-3.5">
@@ -342,6 +375,9 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
 }) {
   const toast = useToast();
   const placeholderAction = () => toast("这条是示例——点赞 / 评论在 S4 接真数据", "success");
+  /** 打开哪一条详情（undefined = 没开）。状态放在这一层：卡片只是触发者。 */
+  const [openId, setOpenId] = useState<string | undefined>(undefined);
+  const openItem = openId === undefined ? undefined : feed.find((entry) => entry.id === openId);
   const filterName = agentFilter === undefined
     ? undefined
     : agentFilter === "me" ? "我" : (agents.find((agent) => agent.id === agentFilter)?.name ?? agentFilter);
@@ -393,12 +429,16 @@ export function FeedView({ feed, tab, agentFilter, agents, profile, today, loadi
           </div>
           <div className="flex flex-col gap-2.5">
             {group.items.map((item) => (
-              <FeedCard key={item.id} item={item} agents={agents} profile={profile} onPlaceholderAction={placeholderAction} />
+              <FeedCard key={item.id} item={item} agents={agents} profile={profile} onPlaceholderAction={placeholderAction}
+                onOpen={() => setOpenId(item.id)} />
             ))}
           </div>
         </section>
       ))}
       </div>
+      {openItem !== undefined && (
+        <WorkbenchFeedDetail item={openItem} agents={agents} profile={profile} onClose={() => setOpenId(undefined)} />
+      )}
     </div>
   );
 }

@@ -85,6 +85,16 @@ export type FeedItem = {
   author: { kind: "user" | "agent"; id: string; name: string; avatar?: RowAvatar };
   title?: string;
   text: string;
+  /**
+   * **详情正文**（Markdown 原文；契约 §3「详情正文」的落到前端的那一格）。
+   *
+   * Task 0023 · 修正批 4（e2e 第 9 条）：点卡片 → 详情浮层渲染它。
+   * S1 挂在桩数据上（`workbench-fixtures.ts`），**S2 接真时连这个字段一起换**
+   * （真接口 `GET /api/feed/:id` 返回 `body`）。
+   *
+   * 缺省 = 卡片没有详情可看（详情浮层不出现"空白"：用 `text` 兜底渲染，见 `WorkbenchFeedDetail`）。
+   */
+  body?: string;
   tags: string[];
   /** 卡片头的心情（契约 §3 mood）：emoji。 */
   mood?: string;

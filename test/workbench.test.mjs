@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   STUB_FEED, STUB_TASKS, STUB_PROJECTS, STUB_DAYS, allAtAreUtc,
@@ -449,4 +449,60 @@ test("S1-W34 R6：内容流套 max-w-reading（复用对话区同一个设置）
     assert.ok(!/--container-reading-width\s*:/.test(text), `${rel} 不得自己声明阅读宽度变量（§R6-1）`);
     assert.ok(!/localStorage/.test(text), `${rel} 不得自己存宽度（§R6-1：display-prefs 是唯一实现）`);
   }
+});
+
+/* ════════════════ 修正批 4：真图 / 详情 / 编辑预览（e2e 第 8、9 条的前置）════════════════ */
+
+test("S1-W35 内容流媒体：真 <img> 渲染（不是占位框），且 URL 指向本地示例图", () => {
+  /*
+   * e2e 第 8 条的判据是"卡片内 `<img>` 数 ≥1 且 naturalWidth > 0"——
+   * 只数到占位 div 是假绿。所以静态层要锁两件：
+   * ① 渲染层必须真的输出 `<img>`（不是 `bg-hover` 占位块 + 图标）；
+   * ② 桩数据里的 URL 必须指向 `frontend/public/samples/`（本地文件，不是 `/api/attachment`）。
+   */
+  const feed = readFileSync(join(ROOT, "frontend/src/views/workbench-feed.tsx"), "utf8");
+  const mediaGrid = feed.slice(feed.indexOf("function MediaGrid"), feed.indexOf("卡内富块"));
+  assert.ok(mediaGrid.includes("<img"), "媒体网格必须渲染真的 <img>（占位框会让 naturalWidth 断言没得测）");
+  assert.ok(mediaGrid.includes("object-cover"), "图片必须撑满格子（否则 4:3 原图会撑破 16:9 档）");
+  assert.ok(mediaGrid.includes("failureText"), "加载失败要有文案出口（ImageTrigger.failureText）");
+
+  const fixtures = readFileSync(join(ROOT, "frontend/src/api/workbench-fixtures.ts"), "utf8");
+  assert.ok(!fixtures.includes("/api/attachment"), "桩媒体不得再用 /api/attachment（那个端点不存在 → 400）");
+  const urls = [...fixtures.matchAll(/url: "(\/samples\/[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(urls.length >= 12, `桩媒体 URL 至少 12 处（实际 ${urls.length}）`);
+  for (const url of urls) {
+    const file = join(ROOT, "frontend/public", url);
+    assert.ok(existsSync(file), `示例图不存在：${url}（缺文件 = 破图，naturalWidth 会是 0）`);
+  }
+  // 体积纪律（architect：8–12 张、总体积 ≤1MB）
+  const unique = [...new Set([...fixtures.matchAll(/url: "\/samples\/([^"]+)"/g)].map((m) => m[1]))];
+  const total = unique.reduce((sum, name) => sum + statSync(join(ROOT, "frontend/public/samples", name)).size, 0);
+  assert.ok(total <= 1024 * 1024, `示例图总体积 ${Math.round(total / 1024)}KB > 1024KB`);
+});
+
+test("S1-W36 动态详情：FeedItem 有 body 字段；卡片正文区可点（且不构成 nested-interactive）", () => {
+  const types = readFileSync(join(ROOT, "frontend/src/api/workbench.ts"), "utf8");
+  assert.ok(/body\?: string/.test(types), "FeedItem 必须有 body?: string（详情正文，S2 换真）");
+  const fixtures = readFileSync(join(ROOT, "frontend/src/api/workbench-fixtures.ts"), "utf8");
+  assert.ok(fixtures.includes("body: ["), "桩数据里至少要有详情正文（否则详情浮层是空的）");
+  // body 里标题/段落/代码块各至少一处（任务书要求）
+  const bodyBlock = fixtures.slice(fixtures.indexOf("body: ["), fixtures.indexOf("body: [") + 2000);
+  assert.ok(bodyBlock.includes("# ") && bodyBlock.includes('""') && bodyBlock.includes("```ts"), "桩 body 要含标题/分段/代码块");
+
+  const feed = readFileSync(join(ROOT, "frontend/src/views/workbench-feed.tsx"), "utf8");
+  // 打开详情挂在**正文块**（role=button 的兄弟区域），不是卡片根
+  assert.ok(feed.includes('data-testid="workbench-feed-card-open"'), "卡片正文区必须有 data-testid=workbench-feed-card-open");
+  const articleLine = feed.split("\n").find((line) => line.includes('data-testid="workbench-feed-card"'));
+  assert.ok(articleLine !== undefined && !articleLine.includes("onClick"),
+    "卡片根不得挂 onClick（媒体/动作行是它的后代，会构成 nested-interactive，frontend 2.25）");
+});
+
+test("S1-W37 md 编辑预览：compose 有 编辑/预览 切换，预览用同一个 Markdown 渲染器", () => {
+  const compose = readFileSync(join(ROOT, "frontend/src/views/workbench-compose.tsx"), "utf8");
+  assert.ok(compose.includes("Segmented"), "切换控件必须是既有 primitive（Segmented），不新造");
+  assert.ok(compose.includes('value: "edit"') && compose.includes('value: "preview"'), "必须有编辑/预览两档");
+  assert.ok(compose.includes("from \"./message-markdown\""), "预览必须复用对话区的 Markdown（不新写渲染器）");
+  assert.ok(compose.includes('data-testid="compose-preview"'), "预览容器要有 testid（e2e 要量实际 DOM）");
+  // 内容只在 text 一个 state 里：切档不得清空
+  assert.ok(!/setText\(""\)/.test(compose), "切档不得清空正文（setText(\"\") 出现即违规）");
 });

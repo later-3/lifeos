@@ -5,11 +5,15 @@
  * 发布在 S2 接 Agent 工具（用户裁决定 #3：发布是工具，参数自带项目/Task，格式由工具生成）。
  * 所以「发布」点了给 toast 说明——**不给"已经发布了"的假反馈**，也不静默无效。
  *
- * 预览切换不在 S1（发布格式是 S2 的事；预览渲染器也不在本次范围）。
+ * **编辑 / 预览切换**（Task 0023 · 修正批 4 · 用户原话「md 编辑和预览」）：
+ * 预览用对话区同一个 `Markdown` 渲染链路（marked → DOMPurify → 代码块着色），
+ * 不新写渲染器。切走再切回**内容不丢**（正文只在 `text` 一个 state 里）。
+ * 发布本身仍等 S2（发布是 Agent 工具，格式由工具生成）。
  */
 import { useState, useEffect } from "react";
 import { Modal } from "../design/overlay";
-import { Button, Field, controlClass, ToggleChip } from "../design/ui";
+import { Button, Field, Segmented, controlClass, ToggleChip } from "../design/ui";
+import { Markdown } from "./message-markdown";
 import { useToast } from "../design/toast";
 import { fetchGlobalProjects } from "../api/workbench";
 
@@ -27,6 +31,8 @@ export function WorkbenchCompose({ onClose }: {
   /* 关联项目的补全候选：模态每次打开现取一次 /api/projects（同一端点，不是第二份事实源）；
      取不到就空 datalist —— 补全是锦上添花，不该让它拦住写字。 */
   const [projectNames, setProjectNames] = useState<string[]>([]);
+  /** 编辑 / 预览（用户 2026-11-23：「md 编辑和预览」）。切走再切回内容不丢。 */
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -51,10 +57,29 @@ export function WorkbenchCompose({ onClose }: {
           <input value={title} onChange={(event) => setTitle(event.currentTarget.value)}
             className={controlClass} placeholder="不填就不显示标题" />
         </Field>
-        <Field label="正文" hint="Markdown；渲染与预览随发布（S2）一起接入。">
-          <textarea value={text} onChange={(event) => setText(event.currentTarget.value)} rows={6}
-            className={`${controlClass} resize-y`} placeholder="写点什么…" />
-        </Field>
+        {/* 正文：编辑 / 预览（同一个 text state，切换不丢内容） */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-meta text-ink-700">正文</span>
+            <Segmented value={mode} onChange={setMode}
+              options={[{ value: "edit", label: "编辑" }, { value: "preview", label: "预览" }]} />
+          </div>
+          {mode === "edit" ? (
+            <textarea value={text} onChange={(event) => setText(event.currentTarget.value)} rows={6}
+              aria-label="正文（Markdown）"
+              className={`${controlClass} resize-y`} placeholder="写点什么…（支持 Markdown）" />
+          ) : (
+            <div data-testid="compose-preview"
+              className="min-h-36 rounded-control bg-sunken px-2.5 py-2 ring-1 ring-line">
+              {text.trim() === ""
+                ? <p className="text-meta text-ink-500">还没有内容——切回「编辑」写点什么。</p>
+                : <Markdown text={text} className="text-body" />}
+            </div>
+          )}
+          <span className="block text-micro text-ink-500">
+            Markdown；预览用对话区同一条渲染链路。发布在 S2 接 Agent 工具后可用。
+          </span>
+        </div>
         <Field label="标签" hint="决定它出现在哪里；「笔记」也是一个标签。">
           <div className="flex flex-wrap gap-1.5">
             {TAG_POOL.map((tag) => (

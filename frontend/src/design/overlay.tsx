@@ -13,6 +13,20 @@ import { AppIcon } from "./icons";
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 /**
+ * 打开着的对话框栈（**唯一事实源**：谁在最上面）。
+ *
+ * 为什么需要它（Task 0023 · 修正批 4 实测）：`Esc` 的处理是挂在 `document` 上的**捕获**监听，
+ * 同一节点上的多个监听按**注册顺序**触发 —— 外层表面（手机工作台全屏表面）先注册，
+ * 于是"详情浮层按 Esc"会**先把外层表面关掉**，浮层随之一起消失：用户看到的是
+ * "按一下 Esc 整屏都没了"，而且焦点归还到不可见的元素上。
+ * 这不只影响本任务：手机上的设置页、检视面板里再开一个 Modal 都会撞同一件事。
+ *
+ * 做法：每个 `useDialogFocus` 挂载时把自己压栈，**只有栈顶**处理 Esc / Tab 循环。
+ * 栈在卸载时按身份移除（不用 pop —— 关的顺序不必是开的逆序）。
+ */
+const dialogStack: object[] = [];
+
+/**
  * 全屏表面共用的焦点契约：打开时进入、Tab 循环、Esc 关闭、锁背景滚动、关闭后还焦点。
  * Modal 和手机全屏面板共用，避免每个面板各写一套（之前 MobileNav/历史/文件各自裸 div）。
  */
@@ -27,6 +41,9 @@ export function useDialogFocus(
   const initialFocus = options?.initialFocus;
   useEffect(() => {
     if (!enabled) return;
+    /** 本实例在栈里的身份（关闭时按身份移除，不假设顺序）。 */
+    const token = {};
+    dialogStack.push(token);
     const previous = document.activeElement as HTMLElement | null;
     const node = panel.current;
     const previousBodyOverflow = document.body.style.overflow;
@@ -37,6 +54,8 @@ export function useDialogFocus(
     else if (node !== null && !node.contains(document.activeElement)) (list()[0] ?? node)?.focus();
 
     function onKeyDown(event: KeyboardEvent) {
+      // 只有**最上面那一层**响应（否则 Esc 会一次关掉两层，见 dialogStack 的注释）
+      if (dialogStack[dialogStack.length - 1] !== token) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseRef.current(); return; }
       if (event.key !== "Tab") return;
       const items = list();
@@ -49,6 +68,8 @@ export function useDialogFocus(
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      const at = dialogStack.indexOf(token);
+      if (at >= 0) dialogStack.splice(at, 1);
       document.body.style.overflow = previousBodyOverflow;
       previous?.focus();
     };
