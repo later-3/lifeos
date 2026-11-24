@@ -1020,6 +1020,16 @@ export const MessageRail = memo(function MessageRail({
     <div
       ref={(node) => { containerRef.current = node; rootRef.current = node; }}
       data-testid="message-rail"
+      /*
+       * **截图基线里整列要遮**（Task 0023 · 终审 P2-①；testing 2.9「基线只比骨架，动态数据必须遮」）。
+       *
+       * 这一列的全部内容都由**当前会话的消息**决定：刻度条（一条消息一根、长度 = 字数）、
+       * 「读到哪一截」的滑块、底部百分比 —— 换一条会话/聊多一句就全变。
+       * 实测（同一帧 860 宽）：不遮 → 遮 toolbar（只占其中一部分）→ 遮整列，差异 **0.243% → 0.052% → 0.000%**；
+       * 在 empty.png 的账里它占 **82.5%**（约 68 万像素级）。
+       * 遮的是**根**：滑块与百分比是 `role=toolbar` 的**兄弟**（要贴可视框、不跟列滚），只遮工具栏会剩两块。
+       */
+      data-shot-mask="message-rail"
       data-rail-scrollable={rows.scrollable ? "true" : "false"}
       data-rail-active-index={anchorIndex ?? "none"}
       /* 诊断用：解析出的行号与列表目标滚动量（与滑块/高亮同一个来源） */

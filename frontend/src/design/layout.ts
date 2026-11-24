@@ -110,6 +110,15 @@ export type Folded = { nav: boolean; groups: boolean };
 export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: number; c5: number };
 
 /**
+ * **右栏**（工作台，Task 0023 · S1）：月历所在的一列。
+ *
+ * 与左侧列（c1/c2）的差异：它**不在 `Folded` 里**（不能被“收起列”开关收起），
+ * 它的降级由视口算出来的 `rightMode` 三档驱动（`docked` / `narrowed` / `overlay`），
+ * 这是 0023 反串讲第 3 问的方案（architect 已拍板）。
+ */
+export type WidthsExt = Widths & { right: number };
+
+/**
  * `c2` = 分组面板（项目分组 → 会话行），默认 300，下限 240。
  *
  * **上限不再写常量（Task 0006）**：旧值 440 没有任何依据（`groups-panel.md` 引的是实现自身），
@@ -120,6 +129,27 @@ export type Widths = { c1: number; c2: number; c3: number; c4: number; c4t: numb
  * `c3` 保留在类型里只为兼容既有调用（合并后不再渲染列，值恒为 0）。
  */
 export const DEFAULT_WIDTHS: Widths = { c1: 232, c2: 300, c3: 0, c4: 600, c4t: 240, c5: DEFAULT_HISTORY };
+
+/** 右栏下限：月历 7×28 = 196 + 内距 24（几何硬下限，协议 §3.13）。 */
+export const RIGHT_MIN = 220;
+/** 右栏默认宽（demo 已验证的 300）。 */
+export const RIGHT_DEFAULT = 300;
+/**
+ * 右栏的**三档降级阈值**（由 MIN_CHAT 与 RAIL 推出，不是拍的）：
+ * - 视口 ≥ `RIGHT_DOCKED_MIN`：右栏照用户拖的宽度并列（docked）；
+ * - 视口 ≥ `RIGHT_NARROW_MIN`：右栏压到下限 220（narrowed）——「右栏先让，不放弃它」；
+ * - 更窄：右栏退出布局（overlay，= 0），与 `overlayLeft` 同一个模式：
+ *   「窄了就改浮层，不压内容」（layout.ts 的 overlayLeft 注释原话，参照 Pi Web / 通用 AppShell）。
+ *
+ * 推导（HANDLE = 0，见本文件上方）：
+ *   docked 临界 = RAIL + RIGHT_DEFAULT + MIN_CHAT = 44 + 300 + 420 = 764；
+ *   narrowed 临界 = RAIL + RIGHT_MIN + MIN_CHAT = 44 + 220 + 420 = 684。
+ * 两行都有测试锁住（test/ui-layout.test.mjs 的 S1 右栏块）。
+ */
+export const RIGHT_DOCKED_MIN = RAIL + RIGHT_DEFAULT + MIN_CHAT;
+export const RIGHT_NARROW_MIN = RAIL + RIGHT_MIN + MIN_CHAT;
+/** 右栏三态。 */
+export type RightMode = "docked" | "narrowed" | "overlay";
 
 /**
  * 防坏值的**技术兜底**（不是产品约束）：localStorage 是用户可写的，一个 1e9 的宽度
@@ -147,6 +177,12 @@ export const WIDTH_LIMITS: Record<keyof Widths, [number, number]> = {
   c5: [MIN_HISTORY, 720],
 };
 
+/**
+ * 右栏的常量区间：常量只做技术兑底（防 localStorage 脏值），真实上限由 `maxWidthOf()`
+ * 从视口算（与 c1/c2 同构，见上方注释）。
+ */
+export const RIGHT_LIMITS: [number, number] = [RIGHT_MIN, SANITY];
+
 // 2026-10-18（用户定 + 参照 VS Code Activity Bar）：**不再按视口强制收起列**。
 // 旧规则（<1200 收项目、<1000 收会话）会让"点图标展开"变成死点击；现在一律以用户的收展状态为准，
 // 窗口窄就压缩列/聊天（与 VS Code 一致：它也不会因为窗口变窄就把你的侧栏关掉）。
@@ -164,6 +200,14 @@ export type LayoutInput = {
    */
   reviewOpen?: boolean;
   reviewRatio?: number;
+  /**
+   * **右栏是否打开**（工作台，Task 0023 · S1）。
+   * 不传 = 工作台不在场（对话工作台调用不变），右栏全部字段为 0 / "overlay"。
+   * 传入 true 时才参与预算 —— 对话工作台零回归的第一道闸：不传就不占宽。
+   */
+  rightOpen?: boolean;
+  /** 用户拖出的右栏宽度（存 localStorage；不传按 RIGHT_DEFAULT）。 */
+  rightWidth?: number;
 };
 
 export type Layout = {
@@ -185,6 +229,14 @@ export type Layout = {
   panelFits: boolean;
   /** 窄窗口：左三列改为浮层抽屉（overlay），不再挤占聊天列（参照 Pi Web 的移动端抽屉）。 */
   overlayLeft: boolean;
+  /**
+   * 右栏三字段（Task 0023 · S1）。`rightOpen` 未传时全部为关闭值（0/"overlay"），
+   * 对话工作台调用 `layout()` 时结果与 S1 之前完全相同。
+   */
+  right: number;
+  rightMode: RightMode;
+  /** 右栏在当前视口下的真实上限（供拖动夹紧；overlay 态为 0）。 */
+  rightBudget: number;
 };
 
 export function layout(input: LayoutInput): Layout {
@@ -231,24 +283,68 @@ export function layout(input: LayoutInput): Layout {
   const review = wantReview && reviewFits
     ? Math.min(reviewBudget, reviewPxOfRatio(input.viewport, input.reviewRatio))
     : 0;
-  const chat = input.viewport - leftCost - historyCost - (panel > 0 ? HANDLE + panel : 0) - (review > 0 ? HANDLE + review : 0);
 
-  return { rail, history, c1, c2, c3, panel, tree, review, reviewBudget, reviewFits, chat, folded, panelFits, overlayLeft };
+  /*
+   * **右栏**（Task 0023 · S1）：三档降级，全部由视口算。
+   *
+   * 与左侧列的差异：右栏不在 `Folded` 里，没有“收起列”开关；它的降级是**预算推出来的**：
+   *   docked 临界 = RAIL + RIGHT_DEFAULT + MIN_CHAT = 764；
+   *   narrowed 临界 = RAIL + RIGHT_MIN + MIN_CHAT = 684。
+   *
+   * **不把右栏挤进既有预算公式**：`rightOpen` 未传时整块跳过，chat 不变 ——
+   * 这是对话工作台零回归的第一道闸（对话侧的调用不传它，结果与 S1 前逐位相同）。
+   * 传入 true 时才把右栏算进 chat 的扣除项（走独立的 rightCost，不与 panel/review 互斥）。
+   */
+  const wantRight = input.rightOpen === true;
+  const rightMode: RightMode = !wantRight
+    ? "overlay"
+    : input.viewport >= RIGHT_DOCKED_MIN
+      ? "docked"
+      : input.viewport >= RIGHT_NARROW_MIN
+        ? "narrowed"
+        : "overlay";
+  // 右栏预算：独立于 panel/review/history（工作台页面没有它们）；
+  // 对话工作台若未来同时打开右栏，这两者互斥问题留给那时的调用方（S1 范围外）。
+  const rightBase = wantRight ? Math.max(RIGHT_MIN, Math.min(input.rightWidth ?? RIGHT_DEFAULT, SANITY)) : 0;
+  const rightBudget = wantRight
+    ? Math.max(0, input.viewport - rail - HANDLE - MIN_CHAT)
+    : 0;
+  const right = rightMode === "docked"
+    ? Math.min(rightBase, rightBudget)
+    : rightMode === "narrowed"
+      ? Math.min(RIGHT_MIN, rightBudget)
+      : 0;
+  const rightCost = right > 0 ? HANDLE + right : 0;
+
+  const chat = input.viewport - leftCost - historyCost - (panel > 0 ? HANDLE + panel : 0) - (review > 0 ? HANDLE + review : 0) - rightCost;
+
+  return { rail, history, c1, c2, c3, panel, tree, review, reviewBudget, reviewFits, chat, folded, panelFits, overlayLeft, right, rightMode, rightBudget };
 }
 
 /**
  * 把手语义的唯一来源：把手在列的**右缘** → 右拉变大（+1）；把手在列的**左缘**（右侧停靠面板）→ 右拉变小（-1）。
  * 以前是"if (key === 'c4')"写死的，新加 c5 就漏了 —— 方向必须由把手位置决定，不能由 key 名字决定。
  */
-export const HANDLE_SIGN: Record<keyof Widths, 1 | -1> = { c1: 1, c2: 1, c3: 1, c4: -1, c4t: 1, c5: -1 };
+/**
+ * 把手语义的唯一来源（Task 0023 · S1 扩到右栏）：把手在列的**右缘** → 右拉变大（+1）；
+ * 把手在列的**左缘**（右侧停靠面板）→ 右拉变小（-1）。
+ *
+ * `right` 与 c4/c5 同侧（都在视口右侧、把手在左缘）：往右拖 = 中栏变宽 = 右栏变小（-1）。
+ * 用 `keyof WidthsExt` 而不是 `keyof Widths`：right 现在是**合法宽度键**（ResizeKey 已含它），
+ * 类型上不承认它，调用点就只能在组件里写第二套拖动逻辑 —— 正是 2026-11-09 那次
+ * 「五处可拖只有两处跟手」的成因，不重演。
+ */
+export const HANDLE_SIGN: Record<keyof WidthsExt, 1 | -1> = { c1: 1, c2: 1, c3: 1, c4: -1, c4t: 1, c5: -1, right: -1 };
 
 /** 拖拽夹紧（纯函数，供 useColumnWidth 调用）。`limit` 为调用方从视口算出的上限（默认走常量表）。 */
-export function dragWidth(key: keyof Widths, startWidth: number, deltaX: number, limit?: number): number {
+export function dragWidth(key: keyof WidthsExt, startWidth: number, deltaX: number, limit?: number): number {
   return clampWidth(key, startWidth + HANDLE_SIGN[key] * deltaX, limit);
 }
 
-export function clampWidth(key: keyof Widths, value: number, limit?: number): number {
-  const [min, max] = WIDTH_LIMITS[key];
+export function clampWidth(key: keyof WidthsExt, value: number, limit?: number): number {
+  // right 用自己的常量区间（RIGHT_LIMITS）：它与六列的限制表同构但不同源
+  // （月历的几何下限 220 与聊天列无关），不硬塞进 WIDTH_LIMITS。
+  const [min, max] = key === "right" ? RIGHT_LIMITS : WIDTH_LIMITS[key];
   const ceiling = limit === undefined ? max : Math.min(max, limit);
   return Math.min(ceiling, Math.max(min, Math.round(value)));
 }
@@ -284,7 +380,12 @@ export const RESIZE_PARENT: Partial<Record<keyof Widths, keyof Widths>> = {
  * 该函数是 `layout()` 的逆运算：拿掉目标列自身的宽度，算剩下的空间最多能给它多少
  * —— 且不突破 `overlayLeft` 阈值（否则用户拖宽反而丢列）。
  */
-export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, folded: Folded): number {
+export function maxWidthOf(key: keyof WidthsExt, viewport: number, widths: Widths, folded: Folded): number {
+  /*
+   * 参数是 `keyof WidthsExt`（= keyof Widths + "right"）：右栏是**合法宽度键**，
+   * 这件事在类型上成立，函数体里不需要 `as string` cast。
+   * 传入 Widths（不含 right）调用的既有代码不受影响 —— keyof Widths 是 keyof WidthsExt 的子集。
+   */
   const rail = RAIL;
   // 左侧两列：只有展开的列占宽
   const c1 = folded.nav ? 0 : widths.c1;
@@ -306,6 +407,29 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
   if (key === "c4" || key === "c5") {
     // 右侧列上限：视口 − 左侧全部 − 聊天保底
     return Math.max(WIDTH_LIMITS[key][0], viewport - rail - c1 - c2 - MIN_CHAT);
+  }
+  /*
+   * 右栏上限（Task 0023 · S1）：与 c4/c5 同一条公式（都在右侧）——
+   * 视口 − 图标轨 − 聊天保底。不写常量上限（520 是 c2 那个自创 440 的同款病）。
+   * 注意不减 c1/c2：右栏只在**工作台**页面出现，那个页面没有左列。
+   *
+   * 参数类型是 `keyof WidthsExt`（含 "right"）。将来 `Widths` 扩容（如再加一个键）
+   * 要同步扩 `WidthsExt`，否则新键过不了这里的类型检查 —— 这是刻意的闸，不是负担。
+   */
+  if (key === "right") {
+    /*
+     * **narrowed 档的拖动上限 = RIGHT_MIN**（Task 0023 · 终审 P1-A c 面）。
+     *
+     * 本函数自己的承诺是「拖动上限 = 该列的真实可视上限」，而 `layout()` 在 narrowed 档
+     * 只给 220（`right = min(RIGHT_MIN, rightBudget)`）—— 两处不同源时：
+     *   vp=700：这里 236 / layout 220 → 拖到 236 存进 stored，**layout 只认 220，写进去看不见**。
+     * 实测四视口（stored=500）：1280 816/500 · 900 436/436 · 800 336/336 · **700 236/220**；
+     * vp=800 恰好相等，所以只看 800/900 发现不了。
+     * 同源后：窄档拖到 220 就停（与渲染一致），宽档仍随视口。
+     * 机器检查：`test/ui-layout.test.mjs` 的 S1-R7（三档 × 逐档上限 == layout().right 的可达区间）。
+     */
+    if (viewport < RIGHT_DOCKED_MIN) return Math.max(RIGHT_LIMITS[0], Math.min(RIGHT_MIN, viewport - rail - MIN_CHAT));
+    return Math.max(RIGHT_LIMITS[0], viewport - rail - MIN_CHAT);
   }
   if (key === "c4t") {
     /*
@@ -347,12 +471,15 @@ export function maxWidthOf(key: keyof Widths, viewport: number, widths: Widths, 
  * 方向由 `HANDLE_SIGN` 决定，见 `dragWidth`）。
  */
 export function dragCascade(
-  key: keyof Widths,
-  start: Widths,
+  key: keyof WidthsExt,
+  /* start 是 WidthsExt：右栏（right）拖动要读 start.right —— 六列的调用点传 Widths 也兼容
+     （Widths 可赋给 WidthsExt 吗？不 —— right 缺失会让 TS 报错，调用方必须给全）。
+     所以调用方（useColumnWidth）的 widths 状态本身就是 WidthsExt。 */
+  start: WidthsExt,
   deltaX: number,
   viewport: number,
   folded: Folded,
-): Partial<Widths> {
+): Partial<WidthsExt> {
   /*
    * **拖动的唯一语义：拖哪条边，哪条边跟手**（2026-11-10 重写）。
    *
@@ -365,8 +492,39 @@ export function dragCascade(
    * 现在：树变宽 = 查看器变窄（面板总宽、左缘、左列一概不动），跟手到
    * 「面板 − MIN_VIEWER」为止；想让面板整体更宽，拖**外层**（c4）的把手。
    */
+  if (key === "right") {
+    /*
+     * 右栏（工作台月历列）：普通单列拖动，没有嵌套关系 —— 但**基准必须是渲染宽，不是存储值**。
+     *
+     * 为什么（Task 0023 · 修正批 1 · P1-1）：`layout()` 会把 right 钳到
+     * `[RIGHT_MIN, rightBudget]` 与三档降级（docked/narrowed/overlay）之内，
+     * 而 `start.right` 存的是**用户上次拖出来的原始值**。两者不相等的窄窗里，
+     * 用存储值当基准 = 拖一下先跳到渲染值，用户看到的是"按下去就跳一截"。
+     *
+     * 实测（stored=500，±10px）：
+     *   vp=1280 rendered=500 cap=816 → 现状 窄490/宽510，修后同（不跳）
+     *   vp= 900 rendered=436 cap=436 → 现状 窄436/宽436（**拖不动**），修后 窄426/宽436
+     *   vp= 800 rendered=336 cap=336 → 现状 336/336（拖不动），修后 326/336
+     *   vp= 700 rendered=220 cap=236 → 现状 236/236（**跳 16px**），修后 220/230
+     *
+     * **必须把 `rightWidth: start.right` 喂进 `layout()`**：不传会走 RIGHT_DEFAULT=300，
+     * 于是 vp=1280 时返回 300 而真实渲染是 500 → 拖 1px 得 301，跳 199px
+     * （reviewer 原修法漏了这一项，architect 实测抓出）。
+     *
+     * 两条接受语义（不是缺陷，不再修）：
+     * 1. 窄窗里真拖过之后 stored 变成钳制后的值，拉回 1280 也回不到 500 —— 与 c1/c2/c5 一致
+     *    （拖动即提交）;
+     * 2. 死区是存量：c4（vp=1024 / stored=800 → 死区 240px）、c1/c2/c5 同一模式。
+     *    本批只修右栏，其余已由 architect 登记 todo。
+     */
+    const rendered = layout({
+      viewport, widths: start, requested: folded, panelOpen: false,
+      rightOpen: true, rightWidth: start.right,
+    }).right;
+    return { right: dragWidth("right", rendered, deltaX, maxWidthOf("right", viewport, start, folded)) };
+  }
   if (RESIZE_PARENT[key] === undefined) {
-    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<Widths>;
+    return { [key]: dragWidth(key, start[key], deltaX, maxWidthOf(key, viewport, start, folded)) } as Partial<WidthsExt>;
   }
   // 嵌套列：以**渲染宽**为基准（存储值可能被 layout 钳小过，拿它当基准会"拖了先不动"）。
   // 每帧都从「基准 + 累计位移」重算 → 同一鼠标位置永远同一结果（幂等，无累计漂移）。

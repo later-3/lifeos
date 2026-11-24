@@ -359,6 +359,20 @@ test("A4 收编族：引擎 light 输出与 tokens.css 静态值逐 hex 一致�
     annoQuery: "#b8860b", annoQuerySoft: "#fff6d6", annoCritic: "#c53030", annoCriticSoft: "#ffe8e8",
     annoPraise: "#2b6a4d", annoPraiseSoft: "#e2f6ea", annoArchive: "#4c51bf", annoArchiveSoft: "#e8eaff",
     annoTodo: "#805ad5", annoTodoSoft: "#f2e9ff",
+    /*
+     * 内容流卡型色（Task 0023 · S1 第 4 块）。
+     *
+     * **这一行是补的，理由要记住**（案例 C312）：`theme.ts` 的注释当时写着
+     * "浅色档与 tokens.css 的静态 hex 逐值一致（design-system 的一致性锁会断言）"，
+     * 而这张表里一个 feed* 键都没有 —— **声称存在一把不存在的锁，是最坏的一种注释**：
+     * 它让后来的人不再去核。现在补上，注释与锁对上。
+     */
+    feedDev: "#3c5b9f", feedDevSoft: "#edf5ff",
+    feedDemo: "#007143", feedDemoSoft: "#e9faef",
+    feedKnowledge: "#6d4c93", feedKnowledgeSoft: "#f8f1ff",
+    feedCase: "#93432b", feedCaseSoft: "#fff0eb",
+    feedReview: "#875000", feedReviewSoft: "#fff3e5",
+    feedMood: "#7d4583", feedMoodSoft: "#fdf0fd",
   };
   const p = calculatePalette({ ...THEME_DEFAULTS, mode: "light" });
   for (const [k, h] of Object.entries(statics)) {

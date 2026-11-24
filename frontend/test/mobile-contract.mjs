@@ -39,6 +39,28 @@ const checkKnown = (name, ok, detail, fixedBy) => {
   console.log(`⚠ KNOWN ${name}（修在 ${fixedBy}）${detail === "" ? "" : `  → ${detail}`}`);
   known.push({ name, fixedBy, resolved: false });
 };
+
+/**
+ * 抽屉里的实体行**按稳定 testid 定位**（Task 0023 · 批 6）。
+ *
+ * 为什么不能用 `.first()` / `.nth(跳过N)`：S1 在抽屉第一级顶部加了「我的工作台」入口行
+ * （architect 已批准的形态），它排在最前。按序号取会点到它 → 打开工作台表面、抽屉关掉
+ * → 后面的 projects/sessions 两级都下不去（实测点完 projects 行数 = 0；跳过入口行后 = 3）。
+ *
+ * 三类实体行各有自己的锚点（`mobile-nav.tsx` 里声明）：
+ *   `mobile-agent-row` / `mobile-project-row` / `mobile-session-row`；
+ * 入口行是 `mobile-workbench-entry`。以后在抽屉里加任何行都不影响这些断言。
+ *
+ * 活性：把 `clickRow` 改回 `.first()` → `[320/360/390/430] 选 Agent 后导航仍在、进入项目级` 四条必红。
+ */
+const ROW_TESTID = { agents: "mobile-agent-row", projects: "mobile-project-row", sessions: "mobile-session-row" };
+const clickRow = async (page, level, options = {}) => {
+  const locator = page.locator(`[data-testid="${ROW_TESTID[level]}"]`);
+  if ((await locator.count()) === 0) return false;
+  await locator.first().click(options).catch(() => {});
+  return true;
+};
+
 const browser = await chromium.launch({ headless: true });
 for (const width of widths) {
   const context = await browser.newContext({ viewport: { width, height: 844 }, hasTouch: true, isMobile: true });
@@ -130,7 +152,7 @@ for (const width of widths) {
   await navEntry.click();
   await page.waitForTimeout(300);
   if ((await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "agents") {
-    await page.locator('[data-mobile-level="agents"] [role="button"]').first().click();
+    await clickRow(page, "agents");
     await page.waitForTimeout(400);
   }
   const swiped = await page.evaluate(() => {
@@ -192,10 +214,20 @@ for (const width of widths) {
     await page.waitForTimeout(200);
   }
   check(`[${width}] 导航从助手级开始`, (await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "agents");
-  await page.locator('[data-mobile-level="agents"] [role="button"]').first().click();
+  /*
+   * 选 Agent = 助手列表里的**某一行**，不是"抽屉里第一个角色为 button 的元素"。
+   * Task 0023 · S1 在抽屉第一级顶部加了「我的工作台」入口行（architect 已批准的形态），
+   * 它排在最前 → 原来的 `.first()` 会点到它（点开工作台表面，抽屉关掉），脚本看起来像"选 Agent 失败"。
+   * 断言意图不变（选 Agent 不关抽屉、进项目级），只是把"选哪一行"说准确：
+   * 排除工作台入口行。**没有放宽**——仍要求点完抽屉还在、且层级变成 projects。
+   */
+  /* 选 Agent = 助手列表里的**某一行**（按稳定 testid 认，不按序号 —— 见文件头的 `clickRow` / `ROW_TESTID`）。
+     断言本身一个字不改：仍要求点完抽屉还在、层级变成 projects。**不是放宽**。 */
+  const clickedAgent = await clickRow(page, "agents");
+  if (!clickedAgent) check(`[${width}] 抽屉助手级有可点的实体行`, false, "抽屉里只有入口行，没有助手行");
   await page.waitForTimeout(400);
   check(`[${width}] 选 Agent 后导航仍在、进入项目级`, (await page.locator('[data-testid="mobile-nav"]').count()) === 1 && (await page.locator('[data-testid="mobile-nav"]').getAttribute("data-mobile-level")) === "projects");
-  const projectRow = page.locator('[data-mobile-level="projects"] [role="button"]').first();
+  const projectRow = page.locator('[data-testid="mobile-project-row"]').first();
   if (await projectRow.count() === 0) {
     check(`[${width}] 选项目后进入会话级`, false, "没有项目行");
   } else {
@@ -388,7 +420,7 @@ for (const width of widths) {
       await page.waitForTimeout(600);
     }
     if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
-      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
+      await clickRow(page, "agents");
       await page.waitForTimeout(1000);
     }
     const infoBtn = page.locator("[data-project-info]").first();
@@ -503,15 +535,15 @@ for (const width of widths) {
       });
       await page.waitForTimeout(400);
     }
-    await page.locator('[data-mobile-level="agents"] [role="button"]').first().click({ force: true });
+    await clickRow(page, "agents", { force: true });
     await page.waitForTimeout(1200);
-    await page.locator('[data-mobile-level="projects"] [role="button"]').first().click({ force: true });
+    await clickRow(page, "projects", { force: true });
     await page.waitForTimeout(2000);
 
     /** 点第 n 个会话 → 消息出现耗时；再退回项目级，供下一次复用。 */
     const openOnce = async (index) => {
       const started = Date.now();
-      await page.locator('[data-mobile-level="sessions"] [role="button"]').nth(index).click({ force: true });
+      await page.locator('[data-testid="mobile-session-row"]').nth(index).click({ force: true });
       await page.waitForFunction(() => document.querySelectorAll('[data-testid="message"]').length > 0, { timeout: 30000 }).catch(() => {});
       const visibleMs = Date.now() - started;
       await page.waitForTimeout(2500);
@@ -525,7 +557,7 @@ for (const width of widths) {
         });
         await page.waitForTimeout(500);
       }
-      await page.locator('[data-mobile-level="projects"] [role="button"]').first().click({ force: true });
+      await clickRow(page, "projects", { force: true });
       await page.waitForTimeout(1800);
       return visibleMs;
     };
@@ -583,7 +615,7 @@ for (const width of widths) {
       await page.waitForTimeout(400);
     }
     const started = Date.now();
-    await page.locator('[data-mobile-level="agents"] [role="button"]').first().click({ force: true });
+    await clickRow(page, "agents", { force: true });
     await page.waitForFunction(() => document.querySelector('[data-mobile-level="projects"]') !== null, { timeout: 5000 }).catch(() => {});
     const switchMs = Date.now() - started;
     check("[390] 点助手后抽屉立即切到项目级（不等网络）", switchMs <= 300, `${switchMs} ms`);
@@ -878,7 +910,7 @@ for (const width of [360, 390]) {
     await navEntry3.first().click();
     await page.waitForTimeout(700);
     if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
-      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
+      await clickRow(page, "agents");
       await page.waitForTimeout(1000);
     }
     const projectRow3 = page.locator('[data-mobile-level="projects"] [role="button"]').first();

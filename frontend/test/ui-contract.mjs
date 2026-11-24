@@ -389,11 +389,14 @@ const railButtons = page.locator('nav[aria-label="左侧图标轨"] button');
 // Task 0009（2026-11-09 用户二次裁决）：rail 有**两类**开关，都不能少：
 //   ① 列开关（toggle）：助手 / 对话 —— 高亮 = 该列展开（aria-pressed），点击 = 开关该列；
 //   ② 功能页（tab）：设置（底部）—— 高亮 = 当前所在页（aria-current=page）。
+// Task 0023（2026-11-23 · S1，14-final-design §2.1 已批准）：再两类——
+//   ③ 顶部「我」（tab）：当前页 = 用户工作台（aria-current），工作台页面的入口；
+//   ④ 推底「写一条」（mode:action）：点击弹模态并返回，不驻留（rail.tsx 的第三类语义）。
 // 为什么两个列开关不合并：Agent × Project × Session 三级里两列可各自收起，是本产品与 LobeHub 的差异点
 // （用户原话：「这里的会话按钮还是不能少的，这是我们跟其他的项目不一样的」）。
-check("rail 两个列开关 + 底部设置 = 3 个按钮", await railButtons.count() === 3, `实际 ${await railButtons.count()} 个`);
-check("按钮顺序固定：助手 → 对话 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
-  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "助手,对话,设置");
+check("rail 5 位：我 + 助手 + 对话 + 写一条 + 设置", await railButtons.count() === 5, `实际 ${await railButtons.count()} 个`);
+check("按钮顺序固定：我 → 助手 → 对话 → 写一条 → 设置（末尾）", await page.evaluate(() => [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
+  .map((b) => (b.getAttribute("aria-label") ?? "").replace(/^(展开|收起)/, "")).join(",")) === "我的工作台,助手,对话,写一条,设置");
 check("列开关用 aria-pressed 表达展开态（两个都为 true）", await page.evaluate(() => {
   const toggles = [...document.querySelectorAll('nav[aria-label="左侧图标轨"] button')]
     .filter((b) => b.hasAttribute("aria-pressed"));
@@ -694,8 +697,8 @@ check("设置是功能页：默认不是当前页（aria-current 为空）", awa
     const hover = await overlayOf();
     results.push({ label, rest, hover, changed: rest === "0" && hover === "1" });
   }
-  check("rail 三个按钮 hover 都有反馈（含已激活的列开关）",
-    results.length === 3 && results.every((r) => r.changed === true),
+  check("rail 全部按钮 hover 都有反馈（含已激活的列开关；Task 0023 起 5 位）",
+    results.length === 5 && results.every((r) => r.changed === true),
     results.map((r) => `${r.label}:${r.changed ? "✓" : "✗"}`).join(" "));
   await railPage.close();
 }
@@ -2447,9 +2450,33 @@ const shotPageFor = async (viewport) => {
       const res = await route.fetch();
       const body = await res.json().catch(() => ({}));
       delete body.theme;
+      /*
+       * display 也要剥掉 —— 与 `pageFor`（测量页）同一个理由，且这条是**截图**路径。
+       *
+       * 2026-11-24 实测（Task 0023 · 批 5）：这一行原来只剥 theme，于是本机 dev 家目录
+       * `ui.json` 的 `display.width.value = 640` 会经 `/api/ui-prefs` 盖掉 `addInitScript` 里
+       * 写死的 860（`useAppearance` 的规则是"服务端有值就覆盖"）。后果是 empty.png 在**这台机器**上
+       * 就带着 640 宽：输入框/状态条/发送按钮整体内缩 110px（实测发送按钮右缘 x=1142，
+       * 而 860 时是 1252）→ 与别的机器上抓的基线永远差 ≈0.37 个百分点（reviewer 同轮独立复现）。
+       * 同族事故早有记录（`pageFor` 那段注释："display.width=full 时截的 empty.png 与 limited/860 差 0.48%"）
+       * —— 当时修了测量页，漏了截图页。
+       *
+       * 结论：**截图基线只比骨架**，展示偏好是用户数据，两条路径都必须钉在 860/100%（testing 2.9）。
+       */
+      delete body.display;
       await route.fulfill({ response: res, body: JSON.stringify(body) });
     } catch { /* 页面已关 */ }
   });
+  /*
+   * **profile 走夹具**（Task 0023 · 终审 P2-①）：`empty.png` 里 rail 首位的头像+名字是**用户数据**，
+   * 换头像/改名就红（testing 2.9：基线只比骨架）。固定成 `{name:"xu", avatar:null}`
+   * （首字母块，与 `/api/profile` 今天的真实形态一致）。
+   * 注意：这条只值 **34 像素级**差异 —— 别拿它当"修好了 empty.png"（主因是消息导航整列）。
+   */
+  await context.route("**/api/profile", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ name: "xu", avatar: null }),
+  }));
   await context.addInitScript(() => {
     localStorage.setItem("lifeos.theme", JSON.stringify({
       preset: "cool", mode: "light", accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
@@ -2532,6 +2559,19 @@ async function capture(width, setup, clipTo, install) {
  */
 const SHOTS = [
   ["empty.png", 1600, async (shotPage) => {
+    /*
+     * **先等会话详情到位，再收起两列**（Task 0023 · 批 6 追因）。
+     *
+     * 不等的话这一帧取决于"截图那一刻 `sessionTotals.turns` 是 0 还是 >0"：
+     * `App.tsx` 的 `{(isMobile || sessionTotals.turns === 0) && <IconButton label="添加图片">}`
+     * 意味着**详情没到**时「添加图片」渲染在 composer 里、**到了**之后搬到 SessionBar。
+     * 实测（`evidence/b6-causal-empty-png.txt`）：把详情请求挂住不返回 → 图标在 composer
+     * （与 `acc1480` 基线逐像素相同 0.000%）；正常加载 → 图标在 SessionBar（与基线差 0.008%，
+     * 全部 119 px 就是那一个 28×28 图标）。
+     * 也就是说**基线锁定的是"详情还没到"的那一帧** —— 那是加载竞态，不是可以当契约的骨架。
+     * 现在钉住"已经加载完"这一侧（`session-bar` 出现 = 详情到了），基线只比稳定的骨架。
+     */
+    await shotPage.waitForSelector('[data-testid="session-bar"]', { timeout: 15000 }).catch(() => {});
     // 两列都收起 = 空态。零用户数据（只剩图标轨与空态文案），是唯一还能看的"整体构图"。
     await shotPage.evaluate(() => {
       document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="收起助手"]')?.click();
@@ -2990,7 +3030,7 @@ const REQUIRED = [
   "empty.png", "picker.png", "modal.png",
   "对话区：两侧消息都有头像", "过程条：只数事实", "过程条不冒充消息块",
   "显示设置：滑块真生效",
-  "rail 三个按钮 hover 都有反馈",
+  "rail 全部按钮 hover 都有反馈",
   "拖动列宽：宽度逐帧跟手", "拖动列宽：拖动过程中无长任务", "两列拖到墙后聊天列宽度一致",
   "头部快捷显示设置：入口存在（桌面）",
   "头部快捷显示设置：贴锚点下方 6px 且不越出视口",

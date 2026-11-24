@@ -39,7 +39,8 @@ const PAGE_SIZE = 20;
  */
 export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents, groups, agent, projectId, sessionId, canNewSession,
   onSelectAgent, onSelectProject, onOpenSession, onNewSession, onAddProject, onConfigAgent,
-  onOpenProjectInfo, onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel }: {
+  onOpenProjectInfo, onRenameSession, onDeleteSession, renaming, onRenameChange, onRenameCommit, onRenameCancel,
+  onOpenWorkbench }: {
   open: boolean;
   level: Level;
   onLevelChange: (level: Level) => void;
@@ -85,6 +86,8 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
   onRenameChange?: (value: string) => void;
   onRenameCommit?: (value: string) => void;
   onRenameCancel?: () => void;
+  /** 打开「我的工作台」（Task 0023 · S1）：抽屉第一级的一行入口 → 独立全屏表面。 */
+  onOpenWorkbench?: () => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const install = useInstallPrompt();
@@ -124,8 +127,13 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {level === "agents" && (
+          <Row key="workbench" testId="mobile-workbench-entry" onClick={onOpenWorkbench}
+            participants={<span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-accent"><AppIcon name="folder" size={18} /></span>}
+            meta="你的待办、项目与全部内容">我的工作台</Row>
+        )}
         {level === "agents" && agents.map((item) => (
-          <Row key={item.id} selected={item.id === agent?.id}
+          <Row key={item.id} testId="mobile-agent-row" selected={item.id === agent?.id}
             /*
              * 切级**立即发生**，不等 Agent 数据（2026-11-17 用户实测："点 agent 到会话页面有时候还是卡"）。
              *
@@ -146,7 +154,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
         ))}
 
         {level === "projects" && groups.slice(0, visibleRows).map((group) => (
-          <Row key={group.project.id} selected={group.project.id === projectId}
+          <Row key={group.project.id} testId="mobile-project-row" selected={group.project.id === projectId}
             onClick={() => { void Promise.resolve(onSelectProject(group.project)).then(() => onLevelChange("sessions")); }}
             /* 信息按钮常显（同会话行 ⋯ 的理由：触屏没有 hover，且这里点行就进会话） */
             actionsAlwaysVisible
@@ -163,7 +171,7 @@ export function MobileNav({ open, level, onLevelChange, onBack, onClose, agents,
         {level === "projects" && groups.length === 0 && <p className="px-3 py-8 text-center text-meta text-ink-500">还没有项目</p>}
 
         {level === "sessions" && sessions.slice(0, visibleRows).map((item) => (
-          <Row key={item.sessionId} selected={item.sessionId === sessionId}
+          <Row key={item.sessionId} testId="mobile-session-row" selected={item.sessionId === sessionId}
             onClick={renaming?.sid === item.sessionId ? undefined : () => onOpenSession(item.sessionId)}
             /* 动作放 Row 的 actions 槽（与主点击区是兄弟，不嵌套 —— axe nested-interactive 的既有教训）。
                **触屏没有 hover**：Row 的 actions 槽在 `@media(hover:none)` 下只在 focus 内可见，

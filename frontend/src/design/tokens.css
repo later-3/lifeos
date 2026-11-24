@@ -148,6 +148,32 @@
   --color-anno-todo-soft: #f2e9ff;
 
   /*
+   * 内容流卡型色（Task 0023 · S1 第 4 块）。
+   *
+   * **色相是契约给的，亮度与彩度是我们算的**（0009 `feed-post-contract.md` §5 只写了色相序号 +
+   * demo 的示例 hex；序号是 HSL 语义，照抄会让「开发」从蓝变青——所以基准取契约里的示例 hex，
+   * 反解成 OKLCH 色相：dev 264 / demo 157 / knowledge 304 / case 37 / review 69 / mood 324）。
+   *
+   * 亮度与彩度按本项目自己的规则：浅色 fg L*40 / soft L*96.4；深色 fg L*76 / soft L*24
+   *（= spec 2.30「深色明面底比页面底亮」）。
+   * 对比度实测全部 ≥5.6（affordance：fg on soft），推导与输出存 `0023/evidence/feed-kind-hue-probe.txt`。
+   * 下面只写浅色档；深色档由 design/theme.ts 引擎派生（VAR_MAP 同族），不在这里手写第二份。
+   * study / media 两种契约标「待定」，**不编色相**——渲染时走中性 chip。
+   */
+  --color-feed-dev: #3c5b9f;
+  --color-feed-dev-soft: #edf5ff;
+  --color-feed-demo: #007143;
+  --color-feed-demo-soft: #e9faef;
+  --color-feed-knowledge: #6d4c93;
+  --color-feed-knowledge-soft: #f8f1ff;
+  --color-feed-case: #93432b;
+  --color-feed-case-soft: #fff0eb;
+  --color-feed-review: #875000;
+  --color-feed-review-soft: #fff3e5;
+  --color-feed-mood: #7d4583;
+  --color-feed-mood-soft: #fdf0fd;
+
+  /*
    * 导航层自成一层（Task 0006 · design-language D17 的落地）。
    *
    * 为什么要有这一族而不是复用 surface/sunken/hover：旧的三个语义全挤在 L* 98–100 的

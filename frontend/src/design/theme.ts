@@ -210,6 +210,25 @@ export type Palette = {
   annoTodo: PaletteColor;
   annoTodoSoft: PaletteColor;
   /**
+   * 内容流卡型色（Task 0023 · S1 第 4 块）。
+   *
+   * 色相来自 0009 契约 §5 的**示例 hex** 反解（契约给的 HSL 序号照抄会让「开发」从蓝变青）；
+   * 亮度与彩度按本项目规则：浅色 fg L*40 / soft L*96.4，深色 fg L*76 / soft L*24
+   *（spec 2.30：深色明面底要比页面底亮）。对比度 fg on soft ≥5.9（推导见 0023/evidence/）。
+   */
+  feedDev: PaletteColor;
+  feedDevSoft: PaletteColor;
+  feedDemo: PaletteColor;
+  feedDemoSoft: PaletteColor;
+  feedKnowledge: PaletteColor;
+  feedKnowledgeSoft: PaletteColor;
+  feedCase: PaletteColor;
+  feedCaseSoft: PaletteColor;
+  feedReview: PaletteColor;
+  feedReviewSoft: PaletteColor;
+  feedMood: PaletteColor;
+  feedMoodSoft: PaletteColor;
+  /**
    * 头像底色三档（按 id 派生，同一个助手永远同色）。
    *
    * 为什么单独给 token（2026-11-09 视觉矩阵抓到的缺陷）：头像首字母固定**白字**，
@@ -430,6 +449,25 @@ export function calculatePalette(state: ThemeState): Palette {
     annoArchiveSoft: dark ? [22, 0.06, 275] : [93.2, 0.0284, 281.5],
     annoTodo: dark ? [78, 0.12, 300] : [50, 0.1812, 294.1],
     annoTodoSoft: dark ? [22, 0.06, 300] : [93.9, 0.0308, 304.3],
+    /*
+     * 内容流卡型色（Task 0023 · S1）：色相 = 契约示例 hex 反解，亮度与彩度按本项目规则。
+     * 浅色档与 tokens.css 的静态 hex 逐值一致——**锁在 `test/design-system.test.mjs` 的
+     * A4 statics 表**（12 个 feed* 键，Task 0023 第 4 块补入；此前这条注释声称"有一致性锁"
+     * 而那 12 个键并不在表里，案例 C312）。
+     * 深色档 fg L*76 / soft L*24 —— 方向与 2.30 一致（明面容器比页面底亮）。
+     */
+    feedDev: dark ? [76, 0.115, 264] : [40, 0.115, 264],
+    feedDevSoft: dark ? [24, 0.055, 264] : [96.4, 0.022, 264],
+    feedDemo: dark ? [76, 0.115, 157] : [40, 0.115, 157],
+    feedDemoSoft: dark ? [24, 0.055, 157] : [96.4, 0.022, 157],
+    feedKnowledge: dark ? [76, 0.115, 304] : [40, 0.115, 304],
+    feedKnowledgeSoft: dark ? [24, 0.055, 304] : [96.4, 0.022, 304],
+    feedCase: dark ? [76, 0.115, 37] : [40, 0.115, 37],
+    feedCaseSoft: dark ? [24, 0.055, 37] : [96.4, 0.022, 37],
+    feedReview: dark ? [76, 0.115, 69] : [40, 0.115, 69],
+    feedReviewSoft: dark ? [24, 0.055, 69] : [96.4, 0.022, 69],
+    feedMood: dark ? [76, 0.115, 324] : [40, 0.115, 324],
+    feedMoodSoft: dark ? [24, 0.055, 324] : [96.4, 0.022, 324],
   };
 }
 
@@ -496,6 +534,19 @@ export const VAR_MAP: Array<[string, keyof Palette]> = [
   ["--color-anno-archive-soft", "annoArchiveSoft"],
   ["--color-anno-todo", "annoTodo"],
   ["--color-anno-todo-soft", "annoTodoSoft"],
+  /* 内容流卡型色（Task 0023 · S1 第 4 块） */
+  ["--color-feed-dev", "feedDev"],
+  ["--color-feed-dev-soft", "feedDevSoft"],
+  ["--color-feed-demo", "feedDemo"],
+  ["--color-feed-demo-soft", "feedDemoSoft"],
+  ["--color-feed-knowledge", "feedKnowledge"],
+  ["--color-feed-knowledge-soft", "feedKnowledgeSoft"],
+  ["--color-feed-case", "feedCase"],
+  ["--color-feed-case-soft", "feedCaseSoft"],
+  ["--color-feed-review", "feedReview"],
+  ["--color-feed-review-soft", "feedReviewSoft"],
+  ["--color-feed-mood", "feedMood"],
+  ["--color-feed-mood-soft", "feedMoodSoft"],
 ];
 
 /** 把主题写到 :root。幂等；任何值变化即全站生效（Tailwind utility 引用 var）。 */

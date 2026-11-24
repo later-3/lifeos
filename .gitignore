@@ -1,25 +1,3 @@
-node_modules/
-.output/
-dist/
-.playwright-mcp/
-frontend/dist/
-.vite/
-.env
-.env.*
-*.log
-.DS_Store
-Snipaste_*.png
-
-# 视觉契约测试的**产物**不入 Git；**基线入 Git**（Task 0017 · P1.5，用户 2026-11-16 拍板方案 A）。
-# 原来连基线一起忽略，而 ui-contract 有"缺基线就写一份并报绿"的分支 → 干净环境首次跑等于没测。
-# 现在缺基线直接红（`frontend/test/ui-contract.mjs` 的 `截图基线 X 存在`）。
-.ui-shots/
-
-# README 配图：**入库**（Task 0022 D4，翻转 2026-11-06 的决定）。
-# 翻转理由：现在的图是「演示家目录跑真实实例」拍的，不是手绘设计稿；
-# 相对路径入库才能让 PR 看到图的变化、换机器也能复现（我们没有 CDN）。
-# 硬约束：单个 GIF ≤10MB（GitHub 上限）、总媒体预算 ≤20MB；宣传片 mp4 不入库（Task 0023 D16）。
-
 # 视觉矩阵的**输入产物**不入库，**基线入库**（2026-11-09 起：换机器也能跑，
 # 否则首次跑等于没测）
 .visual-matrix-shots/
@@ -28,6 +6,10 @@ Snipaste_*.png
 # node_modules/ 只匹配目录；worktree 里是 symlink，需要不带斜杠的模式（0018 实测：软链进了检视 diff）。
 .lifeos-worktree.json
 node_modules
+
+# 工作台的实测截图产物（Task 0023）：输入产物，不入库
+.workbench-shots/
+
 # pi/ 的演练软链（同 node_modules 的道理： submodule 被软链替代时 git 把它当成
 # "deleted submodule + new symlink"，0032 实测 T 标记进了检视 diff）。
 # 锚定仓根（R2）：裸 `pi` 会静默忽略任意层级的同名文件，那是最难查的一类。

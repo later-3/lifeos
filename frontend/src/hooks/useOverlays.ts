@@ -50,6 +50,15 @@ export function useOverlays() {
   const [mobileNavLevel, setMobileNavLevel] = useState<Level>("agents");
   const [peerTarget, setPeerTarget] = useState<PeerTarget | undefined>(undefined);
   const [renaming, setRenaming] = useState<RenameDraft>();
+  /**
+   * 用户工作台（Task 0023 · S1）：第三张全页表面（与设置同一模式——覆盖除图标轨外的区域，
+   * 对话区不卸载， underneath 原样保留）。它不是弹层，但生命周期与弹层同形（开/关、Esc/返回关闭），
+   * 放这里与 settingsOpen 同居，App 不再各存一份。
+   * 与设置互斥：打开一方时先关另一方（rail 点击时判）。
+   */
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  /** 「写一条」模态（rail ⊞ 的动作）：S1 只有骨架（发布在 S2 接工具），字段与交互现在定形。 */
+  const [composeOpen, setComposeOpen] = useState(false);
 
   return {
     confirm, setConfirm,
@@ -61,5 +70,7 @@ export function useOverlays() {
     mobileNavLevel, setMobileNavLevel,
     peerTarget, setPeerTarget,
     renaming, setRenaming,
+    workbenchOpen, setWorkbenchOpen,
+    composeOpen, setComposeOpen,
   };
 }

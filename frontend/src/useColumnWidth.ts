@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DEFAULT_WIDTHS, dragCascade, dragWidth, layout, maxWidthOf, type Folded, type Widths } from "./design/layout";
+import { DEFAULT_WIDTHS, RIGHT_DEFAULT, dragCascade, dragWidth, layout, maxWidthOf, type Folded, type Widths, type WidthsExt } from "./design/layout";
 
 // 列宽与拖拽（数值全部走 design/layout.ts 的唯一计算入口）：
 // - 持久化；旧格式（无 c4t）整体重置为默认，避免历史坏值把树钳死；
@@ -17,26 +17,29 @@ const WIDTH_KEY = "lifeos.columnWidths";
  */
 const WIDTH_VERSION = 2;
 
-type StoredWidths = { version?: number; widths?: Partial<Widths> };
+type StoredWidths = { version?: number; widths?: Partial<WidthsExt> };
 
-function loadWidths(): Widths {
+/** 六列默认 + 右栏默认（right 只在工作台页面被消费；存在同一份里，一次拖动一次提交）。 */
+const DEFAULTS_EXT: WidthsExt = { ...DEFAULT_WIDTHS, right: RIGHT_DEFAULT };
+
+function loadWidths(): WidthsExt {
   try {
     const raw = localStorage.getItem(WIDTH_KEY);
-    if (raw === null) return DEFAULT_WIDTHS;
-    const parsed = JSON.parse(raw) as Partial<Widths> & Partial<StoredWidths>;
+    if (raw === null) return DEFAULTS_EXT;
+    const parsed = JSON.parse(raw) as Partial<WidthsExt> & Partial<StoredWidths>;
     // 旧格式（无 version）→ 整份重置：c1/c4/c4t/c5 都是用户拖过的，但 c2 语义变了，
     // 与其猜哪些还适用，不如回到默认（这些值用户都能再拖一次）。
-    if (parsed.version !== WIDTH_VERSION) return DEFAULT_WIDTHS;
+    if (parsed.version !== WIDTH_VERSION) return DEFAULTS_EXT;
     const stored = parsed.widths;
-    if (stored === undefined) return DEFAULT_WIDTHS;
-    return { ...DEFAULT_WIDTHS, ...stored };
+    if (stored === undefined) return DEFAULTS_EXT;
+    return { ...DEFAULTS_EXT, ...stored };
   } catch {
-    return DEFAULT_WIDTHS;
+    return DEFAULTS_EXT;
   }
 }
 
-export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; historyOpen?: boolean; reviewOpen?: boolean; reviewRatio?: number }) {
-  const [widths, setWidths] = useState<Widths>(loadWidths);
+export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; historyOpen?: boolean; reviewOpen?: boolean; reviewRatio?: number; /** 工作台（Task 0023 · S1）：右栏是否在场；不传 = 不占宽（对话工作台零回归）。 */ rightOpen?: boolean }) {
+  const [widths, setWidths] = useState<WidthsExt>(loadWidths);
   const [viewport, setViewport] = useState(() => window.innerWidth);
 
   useEffect(() => {
@@ -46,7 +49,7 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
   }, []);
   useEffect(() => { localStorage.setItem(WIDTH_KEY, JSON.stringify({ version: WIDTH_VERSION, widths })); }, [widths]);
 
-  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true, reviewOpen: input.reviewOpen === true, reviewRatio: input.reviewRatio });
+  const box = layout({ viewport, widths, requested: input.folded, panelOpen: input.panelOpen, historyOpen: input.historyOpen === true, reviewOpen: input.reviewOpen === true, reviewRatio: input.reviewRatio, rightOpen: input.rightOpen === true, rightWidth: widths.right });
 
   /**
    * 拖动期间**不走 React 状态**，直接写列元素的宽度；松手时提交一次。
@@ -63,7 +66,7 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
    * 这样既不牺牲"拖到哪停到哪"的准确度，也不需要在消息层引入 memo 的复杂度
    * （消息层的 props 里有十几个每帧重建的回调，memo 反而容易漏更新）。
    */
-  function beginDrag(key: keyof Widths, event: ReactMouseEvent) {
+  function beginDrag(key: keyof WidthsExt, event: ReactMouseEvent) {
     event.preventDefault();
     const startX = event.clientX;
     /*
@@ -85,10 +88,36 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
      * 如果拿 draft 当基准又把累计位移喂进去，位移会被重复累加 ——
      * 鼠标移 200px，树长了 270px，手感立刻不对。
      */
-    const base: Widths = { ...widths };
-    let draft: Widths = { ...base };
-    const targets = new Map<keyof Widths, HTMLElement>();
-    const targetOf = (name: keyof Widths): HTMLElement | undefined => {
+    const base: WidthsExt = { ...widths };
+    let draft: WidthsExt = { ...base };
+    /**
+     * **渲染宽 vs 存储值：两套坐标系，必须以渲染宽为准**（Task 0023 · 终审 P1-A b 面）。
+     *
+     * `dragCascade` 已经改成「以渲染宽为基准」算补丁（a 面），但拖动期间这里原来做两件事都用了
+     * **存储值**（`draft`）：
+     *   ① `paint()` 写 `draft[name]` 到 DOM；
+     *   ② `stop()` 比较 `prev[name] !== draft[name]` 决定要不要提交。
+     * 于是窄窗里出现"视觉零变化、stored 却变了"：vp=900 拖 -10px → draft 被预算钳到 436（和渲染一样），
+     * 但 stored 从 500 变成 436 → **拉回 1280 也回不去 500**（永久少 64px）。
+     * 实测（reviewer 数）：vp=900 拖前渲染 436 / 提交后 stored 436 / 该 stored 在 1280 渲染 436。
+     *
+     * 现在统一到「渲染宽」这一套：屏幕画 `renderedOf(draft)`，提交判 `renderedOf(draft)` 是否变化。
+     * - 视觉没变（被钳住）→ **不提交**，用户宽度原封不动；
+     * - 视觉变了 → 提交，且提交的是能让渲染变成这个样子所需的 stored（窄窗钳制后 stored 会收敛，
+     *   这是"拖动即提交"的既有语义，与 c1/c2/c5 一致）。
+     */
+    const renderedOf = (source: WidthsExt): Record<keyof WidthsExt, number> => {
+      const box = layout({
+        viewport, widths: source, requested: input.folded, panelOpen: input.panelOpen,
+        historyOpen: input.historyOpen === true, reviewOpen: input.reviewOpen === true,
+        reviewRatio: input.reviewRatio, rightOpen: input.rightOpen === true, rightWidth: source.right,
+      });
+      return { c1: box.c1, c2: box.c2, c3: box.c3, c4: box.panel, c4t: box.tree, c5: box.history, right: box.right };
+    };
+    /** 按下那一刻各列的**渲染宽**（提交判定与"有没有视觉变化"的基准）。 */
+    const atStart = renderedOf(base);
+    const targets = new Map<keyof WidthsExt, HTMLElement>();
+    const targetOf = (name: keyof WidthsExt): HTMLElement | undefined => {
       const cached = targets.get(name);
       if (cached !== undefined) return cached;
       const found = document.querySelector<HTMLElement>(`[data-resize-key="${name}"]`) ?? undefined;
@@ -97,19 +126,21 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
     };
 
     let frame = 0;
-    let dirty: Array<keyof Widths> = [];
+    let dirty: Array<keyof WidthsExt> = [];
     const paint = () => {
       frame = 0;
+      const rendered = renderedOf(draft);
       for (const name of dirty) {
         const element = targetOf(name);
-        if (element !== undefined) element.style.width = `${draft[name]}px`;
+        // 画的是**渲染宽**（不是 draft 的存储值）：窄窗里两者不同，画错就会出现"数据没变但界面变"
+        if (element !== undefined) element.style.width = `${rendered[name]}px`;
       }
     };
 
     const move = (moveEvent: MouseEvent) => {
       // 每帧都从 base + 累计位移重算（幂等）：同一鼠标位置永远得到同一个结果，不会漂移
       const patch = dragCascade(key, base, moveEvent.clientX - startX, viewport, input.folded);
-      dirty = Object.keys(patch) as Array<keyof Widths>;
+      dirty = Object.keys(patch) as Array<keyof WidthsExt>;
       draft = { ...base, ...patch };
       if (frame !== 0) return;                       // 一帧只写一次（mousemove 可能高于帧率）
       frame = window.requestAnimationFrame(paint);
@@ -130,12 +161,22 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
        * 现在保留 inline（它的值就是最后一次拖到的真实宽度，判断上仍与 React 一致），
        * 状态有变化时 React 重渲染会直接覆写 inline；无变化时也停留在正确的值。
        */
-      // 一次性提交：所有被改动的列（嵌套拖动现在只可能是一个键，但保持通用）
+      /*
+       * 一次性提交，**判据是"渲染宽变没变"**（不是"存储值变没变"）—— P1-A b 面的修法。
+       * `atStart` 是按下那一刻的渲染宽；松手后重算一次，只把**屏幕上真的变了**的列写回状态。
+       * 因此"拖了但被预算钳住（视觉零变化）"不会再静默改写用户存的宽度。
+       */
       setWidths((prev) => {
+        const next: WidthsExt = { ...prev };
+        const renderedNow = renderedOf(next);
+        // prev 与 draft 的渲染差异：先看 draft 相对按下时有没有变化，再落到 prev 上
+        const renderedDraft = renderedOf({ ...prev, ...draft });
         let changed = false;
-        const next = { ...prev };
-        for (const name of Object.keys(draft) as Array<keyof Widths>) {
-          if (prev[name] !== draft[name]) { next[name] = draft[name]; changed = true; }
+        for (const name of Object.keys(draft) as Array<keyof WidthsExt>) {
+          if (renderedDraft[name] === atStart[name]) continue;        // 视觉没变 → 不提交
+          if (renderedNow[name] === renderedDraft[name]) continue;    // 已经就是这个样子 → 不必写
+          next[name] = draft[name];
+          changed = true;
         }
         return changed ? next : prev;
       });

@@ -36,6 +36,10 @@ const ALLOW = new Map([
   ["views/AgentConfig.tsx", "表单字段用 controlClass + 原生 input/select（需保留 name/autoComplete 语义）"],
   ["views/DirectoryPicker.tsx", "路径输入框用 controlClass + 原生 input（需保留 ref 与受控输入语义）"],
   ["views/mobile-nav.tsx", "会话动作菜单是 role=menu/menuitem 的列表项浮层（微按钮装不下 role 与两项的语义）"],
+  // ── Task 0023 · S1 工作台（三类自绘，均为首次出现且无既有 primitive 能承接）───
+  ["views/workbench.tsx", "stories 头像环：avatar 套 ring + 名字的复合筛选器（aria-pressed），ToggleChip 的 border 模型装不下头像环"],
+  ["views/workbench-calendar.tsx", "月历格是数据格（热力四档底色 + 当日高亮 + aria-pressed），不是任何控件样式档"],
+  ["views/workbench-feed.tsx", "卡片动作行是四等分（flex-1）行内动作，Button/MicroButton 的尺寸与内距档装不下等分形态"],
 ]);
 
 /* 只查 <button：input/select 在本项目里统一用 `controlClass`（design/ui 导出的类），
