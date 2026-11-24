@@ -17,7 +17,7 @@
 <!-- design-manifest:auto BEGIN -->
 ## 组件清单（自动生成，pnpm design:list）
 
-共 127 项：
+共 131 项：
 
 - **alphaVar**（const）— `src/design/wash.ts`
 - **AppIcon**（function）— `src/design/icons.tsx`
@@ -108,7 +108,11 @@
 - **ResizeColumn**（function）— `src/design/resize-column.tsx`
 - **reviewPxOfRatio**（function）— `src/design/layout.ts`
 - **reviewRatioOfPx**（function）— `src/design/layout.ts`
-- **Row**（function）— `src/design/ui.tsx`
+- **RIGHT**（const）— `src/design/layout.ts`
+- **RIGHT**（const）— `src/design/layout.ts`
+- **RIGHT**（const）— `src/design/layout.ts`
+- **RIGHT**（const）— `src/design/layout.ts`
+- **RIGHT**（const）— `src/design/layout.ts`
 - **Row**（function）— `src/design/ui.tsx`
 - **RowSkeleton**（function）— `src/design/skeleton.tsx`
 - **saveActivePackId**（function）— `src/design/theme-package.ts`

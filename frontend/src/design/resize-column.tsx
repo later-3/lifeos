@@ -25,7 +25,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
  * 鼠标按下去根本没有 mousedown —— 表现是"拖不动"而不是"拖了不跟手"。
  * 因此本组件**自带 `overflow-visible`**，需要裁切的内容请放在 `children` 自己的内层容器里。
  */
-export type ResizeKey = "c1" | "c2" | "c3" | "c4" | "c4t" | "c5";
+export type ResizeKey = "c1" | "c2" | "c3" | "c4" | "c4t" | "c5" | "right";
 
 export function DragHandle({ onStart, side = "right", className }: {
   onStart: (event: ReactMouseEvent) => void;

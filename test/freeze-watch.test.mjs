@@ -16,6 +16,8 @@ import {
   FROZEN_MS,
   LONG_TASK_MS,
   THROTTLED_FROZEN_MS,
+  TAB_SUSPEND_MS,
+  looksLikeTabSuspend,
   TRAIL_MAX,
   UPLOAD_BATCH_MAX,
   alreadyReported,
@@ -186,4 +188,29 @@ test("T33-25 前台不受影响：3 秒就报", () => {
   assert.equal(frozenFor(1_000, 1_000 + FROZEN_MS, true), FROZEN_MS);
   assert.equal(frozenFor(1_000, 1_000 + 60_000, true), 60_000);
   // 活性：把 visible 判断写反（visible 走 90s）→ 本用例变红
+});
+
+/* ───── 标签页挂起（2026-11-23 现场的第二类假阳性：206 条 36 天记录） ───── */
+
+test("T33-27 36 天的间隔不是冻结，是标签页被挂起", () => {
+  /*
+   * 实测现场：206 条 durationMs ≈ 3,153,xxx,xxx（36.5 天），startedAt=2026-10-18，
+   * 每秒一条连刷两小时，把唯一一条真冻结（3523ms）淹掉。
+   */
+  const thirtySixDays = 36 * 24 * 60 * 60 * 1000;
+  assert.equal(looksLikeTabSuspend(thirtySixDays, true), true);
+  assert.equal(looksLikeTabSuspend(TAB_SUSPEND_MS, true), true, "正好 1 小时算挂起");
+  assert.equal(looksLikeTabSuspend(TAB_SUSPEND_MS - 1, true), false, "差 1ms 不算");
+  // 活性：把 TAB_SUSPEND_MS 改大（如 10 小时）→ 第一条变红
+});
+
+test("T33-28 正常冻结（3–90 秒）不被误标成挂起", () => {
+  assert.equal(looksLikeTabSuspend(3_523, true), false, "真实冻结 3.5 秒必须照常报");
+  assert.equal(looksLikeTabSuspend(60_000, true), false, "前台 60 秒仍是冻结");
+  assert.equal(looksLikeTabSuspend(120_000, true), false, "前台 2 分钟仍是冻结");
+});
+
+test("T33-29 隐藏页：超过 90 秒算挂起/节流，不是冻结事故", () => {
+  assert.equal(looksLikeTabSuspend(60_000, false), false, "隐藏页 60 秒不够判据（90s）");
+  assert.equal(looksLikeTabSuspend(THROTTLED_FROZEN_MS, false), true);
 });

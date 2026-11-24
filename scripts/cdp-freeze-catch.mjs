@@ -309,6 +309,17 @@ if (!attached.ok) {
 }
 const sessionId = attached.value.sessionId;
 
+/*
+ * ⭐ `scriptId → url` 映射：`Debugger.enable` **之前**必须挂好监听。
+ * enable 会重放全部已有脚本（实测 165 条），之后注册就收不到 →
+ * `callFrame.url` 恒为空，栈里全是 `(no url)`（2026-11-24 实测）。
+ */
+const scriptUrls = new Map();
+browser.on("Debugger.scriptParsed", (params, sid) => {
+  if (sid !== undefined && sid !== sessionId) return;
+  if (typeof params?.url === "string" && params.url !== "") scriptUrls.set(params.scriptId, params.url);
+});
+
 /* 3) Debugger.enable：这一步在已冻死的页面上也成功（实测 6 秒内） */
 const enabled = await withTimeout(browser.send("Debugger.enable", {}, sessionId), STEP_TIMEOUT_MS, "Debugger.enable");
 if (!enabled.ok) {
@@ -339,7 +350,7 @@ if (paused === undefined) {
 
 console.log(`\n✅ 已暂停（${Date.now() - pauseStarted}ms）reason=${paused.reason}`);
 const frames = paused.callFrames ?? [];
-const rows = await translateFrames(frames, (url) => loadSourceMapFor(url));
+const rows = await translateFrames(frames, (url) => loadSourceMapFor(url), scriptUrls);
 console.log(`\n调用栈（栈顶 = 卡住的地方）：`);
 printStack(rows, `${APP_PATTERN.startsWith("http") ? APP_PATTERN : ""}`);
 

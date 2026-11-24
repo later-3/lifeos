@@ -16,7 +16,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { decodeMappingsForTest, originalPositionFor, prettifySource } from "../scripts/sourcemap-translate.mjs";
+import { decodeMappingsForTest, firstNonEmpty, originalPositionFor, prettifySource } from "../scripts/sourcemap-translate.mjs";
 
 /*
  * VLQ 基础：`AAAA` = [0,0,0,0]（生成列 0、源 0、行 0、列 0）
@@ -124,4 +124,17 @@ test("T33-26 源码路径收敛：相对路径与第三方库都可读（生产�
   // 不能把产物自身的路径也改掉（它是"没翻译成功"的标志）
   assert.equal(prettifySource("/assets/index-BHp-9GxW.js"), "/assets/index-BHp-9GxW.js");
   // 活性：把前导 ../ 的去掉逻辑删掉 → 第一条变红
+});
+
+test("T33-30 CDP 用空字符串表示\"没有 url\"：必须回落到 scriptParsed 映射", () => {
+  /*
+   * 实测缺陷（2026-11-24，白折腾一小时）：
+   * `callFrame.url` 是 `""` 而不是 undefined，于是 `frame.url ?? fallback` 永远短路，
+   * 拿到空串 → 日志一直显示 `url=空`，而映射表里明明有 `scriptId=4 → index-BHp-9GxW.js`。
+   */
+  assert.equal(firstNonEmpty("", "", "http://x/index-abc.js"), "http://x/index-abc.js");
+  assert.equal(firstNonEmpty(undefined, null, "http://x/a.js"), "http://x/a.js");
+  assert.equal(firstNonEmpty("", undefined, null), "", "全空时返回空串，不返回 undefined");
+  assert.equal(firstNonEmpty("http://x/first.js", "http://x/second.js"), "http://x/first.js", "取第一个");
+  // 活性：把 firstNonEmpty 改成 `return values.find(v => v !== undefined) ?? ""` → 第一条变红（返回 ""）
 });

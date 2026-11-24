@@ -2,7 +2,7 @@
 import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { writeTextAtomic } from "./atomic-file.ts";
 import { createBoundedSink } from "./bounded-sink.ts";
 import { MAX_WATCHING, setFocusOf, subscribeBus } from "./events.ts";
@@ -28,12 +28,13 @@ import { loadAttachmentForServe } from "./attachment-serve.ts";
 import { referencedImagePaths } from "./attachment-references.ts";
 import { railTicksOf } from "./rail-ticks.ts";
 import { bindProject, listAgentProjects, projectOverview, readProjectManifest, readProjectManifests, unbindProject } from "./projects.ts";
-import { archiveAgent, createAgent, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
+import { archiveAgent, createAgent, listAgents, readAgent, writeAgent, type AgentDefinition } from "./agents.ts";
 import {
   MAX_AVATAR_BYTES, avatarExists, normalizeName, readProfile, readProfileAvatar, storeProfileAvatar, writeProfile,
 } from "./profile.ts";
 import { DEFAULT_PI_THINKING_LEVEL, resolveModelChoice } from "./assembly.ts";
 import { listTasks } from "./tasks.ts";
+import { dayIndex, globalProjects, globalTasks, isDateString } from "./workbench.ts";
 import { readUiPrefs, writeUiPrefs } from "./ui-prefs.ts";
 import { classifyFailure } from "./failure.ts";
 import { resolveHome } from "./home.ts";
@@ -227,20 +228,44 @@ app.use(async (c, next) => {
   });
 
   app.get("/api/agents", async (c) => {
-    const entries = await readdir(agentsRoot(), { withFileTypes: true }).catch(() => []);
-    const items: AgentDefinition[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const agent = await readAgent(entry.name);
-      if (agent !== undefined && agent.archivedAt === undefined) items.push(agent);   // 归档的不再出现
-    }
-    return c.json({ items });
+    // 列举口径只有一处（`listAgents`）：归档的不出现。工作台的 /api/tasks、/api/projects 调的是同一个。
+    return c.json({ items: await listAgents() });
   });
 
   app.get("/api/agents/:id", async (c) => {
     const agent = await readAgent(c.req.param("id"));
     if (agent === undefined || agent.archivedAt !== undefined) { const error = problem("agent_not_found", "找不到这个 Agent", 404); return c.json(error.body, error.status); }
     return c.json(agent);
+  });
+
+  // —— 全局工作台（S1）：三条只读查询 ——
+  //
+  // 为什么是全局（不带 agentId/projectId）：工作台要回答的是“我这台机器上所有 Agent 手上的事”
+  // 与“所有项目”，不是“当前 Agent 的那一份”。聚合逻辑在 `src/workbench.ts`，这里只做参数校验。
+  // 形状由 `phases/S1-contract.md`（冻结）规定。
+
+  /** 全局任务列表（契约 §1）：`TaskSummary` + `agentId/projectId/state`，含 daily，不替前端筛。 */
+  app.get("/api/tasks", async (c) => c.json({ items: await globalTasks() }));
+
+  /** 全局项目列表（契约 §2）：合并键 = 全局 pid；没有 `project.json` 的不出现；不返回任务计数。 */
+  app.get("/api/projects", async (c) => c.json({ items: await globalProjects() }));
+
+  /**
+   * 日期索引（契约 §3）：`from`/`to` 必填、含两端；稀疏。
+   * 缺参数、格式不对、不是真实日期、`from > to` 一律 `400 invalid_range`（一个错误码，不拆细）。
+   */
+  app.get("/api/days", async (c) => {
+    const from = c.req.query("from");
+    const to = c.req.query("to");
+    if (from === undefined || to === undefined || !isDateString(from) || !isDateString(to)) {
+      const error = problem("invalid_range", "需要 from 与 to 两个 YYYY-MM-DD 参数（含两端）", 400);
+      return c.json(error.body, error.status);
+    }
+    if (from > to) {
+      const error = problem("invalid_range", `from（${from}）不能晚于 to（${to}）`, 400);
+      return c.json(error.body, error.status);
+    }
+    return c.json({ items: await dayIndex(from, to) });
   });
 
   // 四个端点（/sessions ×2、/rows ×2）只差"哪个项目"，其余一律同一份组装：

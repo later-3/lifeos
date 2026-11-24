@@ -24,16 +24,30 @@ export type RailTab = {
   key: string;
   label: string;
   icon: ReactNode;
-  /** 列开关：该列是否已展开；功能页：是否当前页 */
+  /** 列开关：该列是否已展开；功能页：是否当前页；动作：无状态 */
   active: boolean;
-  /** `toggle` = 列开关（aria-pressed）；`tab` = 功能页（aria-current） */
-  mode?: "toggle" | "tab";
+  /**
+   * `toggle` = 列开关（aria-pressed）；`tab` = 功能页（aria-current）；
+   * `action` = **动作**（不是页面，也不是开关 —— 点击执行一个动作后返回，rail 无状态变化）。
+   *
+   * **为什么要第三类**（Task 0023 · S1，architect 拍板 (a)）：「⊞ 写一条」点击后弹模态，
+   * 点击者**没有进入任何页面** —— 写成 `tab` 会有人给它 `aria-current="page"`（撒谎：我没有在某个页面上），
+   * 写成 `toggle` 会有人给它 `aria-pressed`（撒谎：它不是开关）。类型上给三选一，
+   * 误用的唯一出路是显式写 `mode:"action"`，写错就是 typecheck 红。
+   */
+  mode?: "toggle" | "tab" | "action";
   onClick: () => void;
   /** 未读数（>0 显示角标） */
   badge?: number;
 };
 
-export type RailGroup = { id: string; items: RailTab[] };
+export type RailGroup = { id: string; items: RailTab[];
+  /**
+   * 组后加分隔线（Task 0023 · S1 工作台）：rail 顶部「我」与业务列之间的一条 20px 细线
+   * （demo 已验证的形态，14-final-design §2.1 的 ┄）。为什么要显式 prop 而不是看位置猜：
+   * 分隔是**语义**（身份区 ≠ 业务区），不是装饰——由调用方声明，不靠 NavRail 猜第几组。
+   */
+  sep?: boolean; };
 
 export function NavRail({ groups, bottom }: {
   groups: RailGroup[];
@@ -42,12 +56,18 @@ export function NavRail({ groups, bottom }: {
 }) {
   const item = (tab: RailTab) => {
     const isToggle = tab.mode === "toggle";
+    const isAction = tab.mode === "action";
+    // aria 语义唯一映射：toggle=pressed（开关）/ tab=page（位置）/ action=两者都不给
+    // （动作不驻留：点击后弹模态并返回，rail 上没有“当前在某某”或“某某已开启”的事实）。
+    const aria = isToggle
+      ? { "aria-pressed": tab.active }
+      : isAction
+        ? {}
+        : { "aria-current": tab.active ? ("page" as const) : undefined };
     return (
       <button key={tab.key} type="button" onClick={tab.onClick}
         aria-label={isToggle ? (tab.active ? `收起${tab.label}` : `展开${tab.label}`) : tab.label}
-        {...(isToggle
-          ? { "aria-pressed": tab.active }
-          : { "aria-current": tab.active ? ("page" as const) : undefined })}
+        {...aria}
         title={isToggle ? (tab.active ? `收起${tab.label}列` : `展开${tab.label}列`) : tab.label}
         // hover 反馈对**两种状态都给**，且用**叠加层**而不是换底色（2026-11-09 用户报"有时变有时不变"）：
         //
@@ -60,7 +80,7 @@ export function NavRail({ groups, bottom }: {
         //   深色下 ink-900 是近白 → 底色变亮 4.4–6.4（同向、同样明显）。
         // 一套规则在 2 个状态 × 2 种深浅色下都成立，不需要为每个分支各写一遍。
         className={`group relative flex h-9 w-9 items-center justify-center rounded-control text-ink-500 transition-colors hover:text-ink-900 ${
-          tab.active ? "bg-wash-selected text-ink-900" : ""
+          tab.mode !== "action" && tab.active ? "bg-wash-selected text-ink-900" : ""
         }`}>
         <span aria-hidden
           className="pointer-events-none absolute inset-0 rounded-control bg-ink-900/6 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
@@ -80,6 +100,7 @@ export function NavRail({ groups, bottom }: {
       {groups.map((group) => (
         <div key={group.id} className="flex flex-col items-center gap-1">
           {group.items.map(item)}
+          {group.sep === true && <span aria-hidden className="my-0.5 h-px w-5 bg-nav-line" />}
         </div>
       ))}
       {bottom !== undefined && bottom.length > 0 && (

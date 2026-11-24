@@ -46,6 +46,13 @@ const ROOT = join(HERE, "..");
 const APP_URL = process.env.APP_URL ?? "http://localhost:5173";
 const BASELINE = join(ROOT, "frontend/test/visual-matrix");
 const SHOTS = join(ROOT, ".visual-matrix-shots");
+/*
+ * 产物目录必须自己建（Task 0023 · S1 第 4 块实测）：
+ * `.visual-matrix-shots/` 在 .gitignore 里，**新工作区 / 干净环境从来没有这个目录** ——
+ * 原来第一次 `writeFileSync(join(SHOTS, file))` 直接 ENOENT 崩溃，
+ * 报错长得像"页面挂了"，实际是"工具没建自己的输出目录"。
+ */
+mkdirSync(SHOTS, { recursive: true });
 const UPDATE = process.argv.includes("--update");
 const REPORT = (() => {
   const index = process.argv.indexOf("--report");
