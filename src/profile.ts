@@ -143,7 +143,12 @@ export const userProjectDirOf = (home: string, uid: string, pid: string): string
 /** 用户层根（`users/<uid>/`）；与上面三个同族，不让人在别处另拼一遍。 */
 export const userDirOf = (home: string, uid: string): string => userDir(home, uid);
 
-/** 当前用户的 id（**唯一来源**：需要 uid 的调用方都走这里，不自己扫 `users/`）。 */
+/**
+ * 当前用户的 id（**读**路径用）。实体不存在时按系统名派生一个 id —— 读要有兜底。
+ *
+ * **当前无调用方**（Task 0035 只做"建"，全部走 `existingUserId`）；S2 的笔记 / 待办读路径会接它。
+ * 与 `existingUserId` 的分工见下一条。
+ */
 export async function currentUserId(home: string): Promise<string> {
   return (await readProfile(home)).id;
 }

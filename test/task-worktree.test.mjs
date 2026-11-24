@@ -168,6 +168,56 @@ test("P2-U1 收窄态真 worktree：只有本 Task + 身份 + 共享层；read-t
   assert.deepEqual(trackedChanges, [], `已跟踪文件不该被收窄变成删除/修改：\n${trackedChanges.join("\n")}`);
 });
 
+// ── P2-U2（Task 0035 · 复核 P2-2）：用户层的"先排后放"必须在**真 git** 上成立 ──────────
+// 纯函数那份（`worktree-profile-narrow.test.mjs`）只能锁模式序列；gitignore 的实际匹配语义
+// （后写覆盖先写、目录模式与叶子模式的交互）必须真跑一次。`users/` 这套手法是从 `agents/`
+// 抄过来的，但从未在真 git 上验过 —— 这一条补上（architect 2026-11-24 复核点名）。
+test("P2-U2 用户层真 worktree：本 pid + workspace 在；别的 pid 与别的 uid 不在（先排后放生效）", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+
+  // 活性前置：把用户层夹具 commit 进 main（否则"不在"是空集断言，恒真）
+  const userId = "xu";
+  const userRoot = join(home, "users", userId);
+  await mkdir(join(userRoot, "projects", "workspace", "knowledge"), { recursive: true });
+  await mkdir(join(userRoot, "projects", "ziji", "knowledge"), { recursive: true });
+  await writeFile(join(userRoot, "user.json"), '{"schemaVersion":1,"id":"xu","name":"xu"}\n', "utf8");
+  await writeFile(join(userRoot, "AGENTS.md"), "# 用户层\n", "utf8");
+  await writeFile(join(userRoot, "projects", "workspace", "knowledge", "note.md"), "# 本 Task 的 project\n", "utf8");
+  await writeFile(join(userRoot, "projects", "ziji", "knowledge", "other.md"), "# 别的 project\n", "utf8");
+  // 另一个 uid（"别的 uid"那半条）
+  await mkdir(join(home, "users", "zz-other"), { recursive: true });
+  await writeFile(join(home, "users", "zz-other", "user.json"), '{"schemaVersion":1,"id":"zz-other","name":"zz-other"}\n', "utf8");
+  await git(home, ["add", "-A"]);
+  await git(home, ["commit", "-q", "-m", "夹具：用户层三个 pid 与两个 uid"]);
+
+  const headFiles = (await git(home, ["ls-tree", "-r", "--name-only", "HEAD"])).split("\n");
+  for (const expected of [
+    `users/${userId}/projects/workspace/knowledge/note.md`,
+    `users/${userId}/projects/ziji/knowledge/other.md`,
+    "users/zz-other/user.json",
+  ]) {
+    assert.ok(headFiles.includes(expected), `夹具必须在 HEAD 里（否则断言恒真）：${expected}`);
+  }
+
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const created = await createTask(ctx, { title: "用户层收窄", category: "G", type: "general" });
+  assert.ok(!("code" in created), `createTask 失败：${JSON.stringify(created)}`);
+  const wt = join(created.task.path, "home");
+
+  // 该在的
+  assert.equal(await exists(join(wt, "users", userId, "AGENTS.md")), true, "用户实体本身（AGENTS.md）应在");
+  assert.equal(await exists(join(wt, "users", userId, "user.json")), true, "用户实体本身（user.json）应在");
+  assert.equal(await exists(join(wt, "users", userId, "projects", "workspace", "knowledge", "note.md")), true,
+    "本 Task 所在 project 的用户空间应在");
+
+  // 不该在的（它们在 HEAD 里 —— 见上面的活性前置）
+  assert.equal(await exists(join(wt, "users", userId, "projects", "ziji", "knowledge", "other.md")), false,
+    "别的 pid 的用户空间不该被检出（先排后放生效）");
+  assert.equal(await exists(join(wt, "users", "zz-other")), false,
+    "别的 uid 不该被检出");
+});
+
 test("P2-fallback taskDocRootOf 必须命中工作区（不是静默回落主区）", async () => {
   const { home } = await installedGitHome();
   process.env.LIFEOS_HOME = home;

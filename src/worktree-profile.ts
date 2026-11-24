@@ -41,7 +41,7 @@ export type WorktreeProfileInput = {
   /**
    * 当前使用者的 id（`users/<uid>/` 的目录名，协议 §4.2.1）。
    *
-   * **唯一来源**是调用方从 `profile.ts` 的 `currentUserId(home)` 取；本函数是纯函数，
+   * **唯一来源**是调用方从 `profile.ts` 的 `existingUserId(home)` 取（**建**只看真存在的实体）；本函数是纯函数，
    * **不读盘**（不扫 `users/` 取第一个——那是"碰巧只有一个"，不是"结构上只有一个"）。
    * 不传 = 不放行用户层（存量未收窄形态的兼容路径）。
    */
@@ -110,11 +110,20 @@ export function worktreeProfileOf(input: WorktreeProfileInput): string[] {
   // 别的项目的用户空间**不放行** —— 与 `!/agents/*` 同一道理：一个 Task 只该看到它自己在做的事。
   if (input.userId !== undefined) {
     const user = `/users/${escapeGlob(input.userId)}`;
-    // 实体本身（user.json + AGENTS.md + 头像）：显式，不靠上面的 `/*` 兜。
+    // **两层都与 `agents/` 同构**，缺一层就漏（2026-11-24 复核 P2-2 实测的真 git 结果）：
+    //
+    // 只做「排掉用户项目」是不够的 —— 第一条 `/*` 会把**整个 `users/`**（含别人的 uid）检进来。
+    // 实测（`.probe/sparse-probe.py`，真 `sparse-checkout set --no-cone`）：
+    //   只排 `projects/*`      → `users/other/user.json` **在**（别人的用户目录泄漏进来）
+    //   先排 `!/users/*` 再放行 → 别人的 uid 不在，本 uid 的 workspace 在 ✅
+    //
+    // 顺序（后写覆盖先写）：
+    //   ① `!/users/*`            排掉所有使用者
+    //   ② `/users/<uid>/`        放行自己（实体本身：AGENTS.md / user.json / 头像）
+    //   ③ `!/users/<uid>/projects/*`  先排掉自己的所有项目
+    //   ④ `/users/<uid>/projects/workspace/` + `/users/<uid>/projects/<本 pid>/`  再放行这两个
+    patterns.push("!/users/*");
     patterns.push(`${user}/`, `${user}/AGENTS.md`, `${user}/user.json`);
-    // 与 Agent 层同构的顺序：**先排掉所有用户项目**，再单独放行 workspace 与本 Task 的那个 pid。
-    // 今天 `/*` 把全部用户项目都检进了每个 Task 工作区（过度包含）——验收句 5 的"不该包含"因此断言不了；
-    // 显式化之后"别的 pid 不在本工作区"才是结构事实（architect 2026-11-24 实测：`git add` 会 exit=1）。
     patterns.push(`!${user}/projects/*`, `${user}/projects/${SHARED_WORKSPACE}/`);
     if (input.projectId !== undefined) {
       patterns.push(`${user}/projects/${escapeGlob(input.projectId)}/`);

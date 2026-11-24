@@ -198,7 +198,7 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
     if (!await isFile(join(harness, "task-types", type, "template.json"))) errors.push(`协议默认任务类型缺少模板：task-types/${type}/template.json`);
     if (!await isFile(join(harness, "task-types", type, "AGENTS.md"))) errors.push(`协议默认任务类型缺少规则：task-types/${type}/AGENTS.md`);
   }
-  for (const name of ["layer-shared", "layer-agent", "layer-project", "layer-user", "layer-user-project", "task", "specs", "concept-space", "flywheel"]) {
+  for (const name of ["layer-shared", "layer-agent", "layer-project", "layer-user", "layer-user-project", "users", "task", "specs", "concept-space", "flywheel"]) {
     if (!await isFile(join(harness, "skeleton", `${name}.md`))) errors.push(`协议目录缺少骨架模板：skeleton/${name}.md`);
   }
   for (const legacy of LEGACY_HARNESS) {
@@ -278,6 +278,12 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
   // “零假阳性”的判据是“报的都是真缺”：现状（只有 `user.json`）会报缺 AGENTS.md / 缺 projects/ / 缺 workspace/
   // —— 那三条都是真的缺（Task 0035 已经一次迁移补上），不是误报。
   const usersRoot = join(home, "users");
+  // 容器自身的说明文件（协议 §5.2「建目录即写说明」）。模板里有 `.lifeos/users/AGENTS.md`，
+  // 所以安装后应当就在；缺了要报 —— 否则它会成为"没人校验的一处口径"（2026-11-24 复核 P2-3）。
+  if (await isDir(usersRoot)) {
+    counter.n += 1;
+    if (!await isFile(join(usersRoot, "AGENTS.md"))) errors.push("缺少说明文件 AGENTS.md：users/（用户层容器）");
+  }
   // "全局项目"= 有 `project.json` 的那些（与 `listGlobalProjects()` 同一口径）。
   // 只有 `projects/registry.json` 条目的目录（如 `longagentshare`）**不是**全局项目，
   // 用户侧也不该有它 —— 两处口径不一致时，回填写 5 个、检查要 6 个（实测踩到）。
@@ -322,8 +328,11 @@ export async function checkHome(home: string): Promise<HomeCheckReport> {
         const prel = `${rel}/projects/${pid}`;
         if (!await isFile(join(pdir, "AGENTS.md"))) errors.push(`用户 × 项目缺少 AGENTS.md：${prel}/`);
         // 用户 × 项目只有四样子结构（§9.1 修正版）：知识/日记/待办/工具。
+        // 每个子目录都要有说明文件（协议 §5.2）：只查"目录在"会漏掉 AGENTS.md（2026-11-24 复核 P2-3）。
         for (const sub of ["knowledge", "daily", "todo", "tools"]) {
-          if (!await isDir(join(pdir, sub))) errors.push(`用户 × 项目缺少 ${sub}/：${prel}/`);
+          const sdir = join(pdir, sub);
+          if (!await isDir(sdir)) { errors.push(`用户 × 项目缺少 ${sub}/：${prel}/`); continue; }
+          if (!await isFile(join(sdir, "AGENTS.md"))) errors.push(`用户 × 项目缺少说明文件 ${sub}/AGENTS.md：${prel}/`);
         }
         // 用户 × 项目也没有 sessions/tasks（与用户层同一条理由）；也**不该有**被否决的那几样
         for (const forbidden of ["sessions", "tasks", "task-types", "memory"]) {

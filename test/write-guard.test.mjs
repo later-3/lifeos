@@ -792,3 +792,25 @@ test("R7 agents/<a>/memory/data/x.db → 拒（无中间层，旧正则能过，
     assert.equal(verdict.allow, false, `${rel} 必须拒`);
   }
 });
+
+
+// ── Task 0035 · P2-1（2026-11-24 复核）：bash 路径也要带 userId ─────────────────
+// 少了它，`cat > users/other/x` 这类 bash 写不会被拒，而范围表宣称两条都拒。
+// 这里用**真工作区夹具**（`gitHome` + `createTask`），不是手搭路径——假挂载点会被判据①.5 拒掉，
+// 那样测到的是别的分支而不是 users 的范围。
+test("G21 bash 写用户层：本 pid 放行；别的 pid / 别的 uid 拒", async () => {
+  const home = await gitHome();
+  const task = await taskWithWorktrees(home);
+  const cwd = join(task.path, "home");
+  const userId = "xu";
+
+  const own = await decideBash({ home, scope: ctx, taskId: task.id, command: "cat > users/xu/projects/workspace/note.md", cwd, userId });
+  assert.equal(own.allow, true, `本 pid（workspace）的 bash 写应放行：${JSON.stringify(own)}`);
+
+  const otherPid = await decideBash({ home, scope: ctx, taskId: task.id, command: "cat > users/xu/projects/ziji/knowledge/x.md", cwd, userId });
+  assert.equal(otherPid.allow, false, `别的 pid 的 bash 写必须拒：${JSON.stringify(otherPid)}`);
+  assert.match(otherPid.reason ?? "", /ziji/, "拒绝文案要点名 pid");
+
+  const otherUid = await decideBash({ home, scope: ctx, taskId: task.id, command: "cat > users/zz-other/x.md", cwd, userId });
+  assert.equal(otherUid.allow, false, `别的 uid 的 bash 写必须拒：${JSON.stringify(otherUid)}`);
+});

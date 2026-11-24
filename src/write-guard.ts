@@ -109,7 +109,8 @@ export type HomeScopeOptions = {
   /**
    * 当前使用者的 uid（协议 §4.2.1 · Task 0035）。
    *
-   * **唯一来源**是调用方从 `profile.ts` 的 `currentUserId(home)` 取；本函数纯函数、**不读盘**。
+   * **唯一来源**是调用方从 `profile.ts` 的 `existingUserId(home)` 取（**建**只看真存在的实体；
+   * `currentUserId` 是读路径的派生兜底，不用于范围判定）；本函数纯函数、**不读盘**。
    * 不传 = 不做"别的 uid"这层判定（存量调用点与不认识用户层的场景，行为与改动前一致）。
    */
   userId?: string;
@@ -181,7 +182,7 @@ function scopeReasonOf(target: string, reason: string): string {
 /**
  * 从 `<taskDir>/home` 反推 owner（`agents/<a>/projects/<p>/tasks/<dir>`）。形状不认识 → undefined。
  *
- * `userId` 不在这里反推（路径里没有它）：由调用方从 `profile.currentUserId(home)` 取后
+ * `userId` 不在这里反推（路径里没有它）：由调用方从 `profile.existingUserId(home)` 取后
  * 经 `HomeScopeOptions` 传入。**纯函数不读盘**（与 `worktree-profile.ts` 同一条纪律）。
  */
 function ownerOfHomeMount(mount: string): { agentId: string; projectId: string; dirName: string } | undefined {
@@ -318,7 +319,7 @@ export async function taskDocContextOf(home: string, scope: GuardScope, taskId: 
 export async function decideWrite(input: {
   home: string; scope: GuardScope; taskId: string | undefined; target: string;
   /** 当前使用者的 uid（协议 §4.2.1 · Task 0035）：只用于"别的 uid / 别的 pid 的用户空间"判定。
-   *  由调用方从 `currentUserId(home)` 取；不传则跳过这一层（与改动前行为一致）。 */
+   *  由调用方从 `existingUserId(home)` 取；不传则跳过这一层（与改动前行为一致）。 */
   userId?: string;
 }): Promise<WriteVerdict> {
   const { home, scope, taskId, target, userId } = input;
@@ -530,6 +531,9 @@ export type BashVerdict = { allow: true } | { allow: false; reason: string };
  */
 export async function decideBash(input: {
   home: string; scope: GuardScope; taskId: string | undefined; command: string; cwd: string; depth?: number;
+  /** 当前用户 uid（协议 §4.2.1）。**与 `decideWrite` 同形**：不传则跳过"别的 uid"那半条判定。
+   *  少了它，`cat > users/other/x` 这类 bash 写不会被拒，而范围表宣称两条都拒（2026-11-24 复核 P2-1）。 */
+  userId?: string;
 }): Promise<BashVerdict> {
   const depth = input.depth ?? 0;
   if (depth > 3) return { allow: true };        // 递归读脚本的上限：不无限展开
@@ -611,7 +615,10 @@ export async function decideBash(input: {
     for (const raw of targets) {
       if (raw === "" || raw.includes("$") || raw.startsWith("-")) continue;
       const target = resolveTarget(raw, cwd, input.home);
-      const verdict = await decideWrite({ home: input.home, scope: input.scope, taskId: input.taskId, target });
+      const verdict = await decideWrite({
+        home: input.home, scope: input.scope, taskId: input.taskId, target,
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+      });
       if (!verdict.allow) {
         return {
           allow: false,
@@ -649,7 +656,7 @@ async function getCurrentUserIdSafely(): Promise<string | undefined> {
 export function createLifeOsWriteGuardExtension(input: {
   agentId: string; projectId: string; getTaskId: () => string | undefined;
   /**
-   * 取当前用户 uid（协议 §4.2.1）。由调用方注入，默认走 `profile.currentUserId`。
+   * 取当前用户 uid（协议 §4.2.1）。由调用方注入，默认走 `profile.existingUserId`。
    * 注入点存在是为了测试能固定 uid，且**纯逻辑不读盘**这条纪律仍然成立。
    */
   getUserId?: () => Promise<string | undefined>;
@@ -678,7 +685,8 @@ export function createLifeOsWriteGuardExtension(input: {
         if (BASH_TOOLS.has(toolName)) {
           const command = typed.input?.command;
           if (typeof command !== "string" || command.trim() === "") return;
-          const verdict = await decideBash({ home, scope, taskId, command, cwd: ctx.cwd });
+          const userId = await (input.getUserId ?? getCurrentUserIdSafely)();
+          const verdict = await decideBash({ home, scope, taskId, command, cwd: ctx.cwd, ...(userId !== undefined ? { userId } : {}) });
           if (!verdict.allow) return { block: true, reason: verdict.reason };
         }
       });

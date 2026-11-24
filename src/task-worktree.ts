@@ -151,7 +151,8 @@ async function identitySkipOf(worktree: string, agentId: string): Promise<{ iden
 }
 
 /** 家目录工作区：建在家目录仓上，按 Agent 可见范围裁剪。 */
-export async function createHomeWorktree(input: {  taskDir: string; taskId: string; agentId: string; projectId: string; boundProjects: string[];
+export async function createHomeWorktree(input: {
+  taskDir: string; taskId: string; agentId: string; projectId: string; boundProjects: string[];
   /** 本 Task 的目录名（`NNNN-标题`）：传了就是**收窄态**，只检出这一个 Task（Task 0004 · P2）。 */
   taskDirName?: string;
 }): Promise<WorktreeResult> {
@@ -166,7 +167,7 @@ export async function createHomeWorktree(input: {  taskDir: string; taskId: stri
   await git(home, ["worktree", "add", "--no-checkout", path, "-b", branch, base]);
   try {
     // 收窄：只检出本 Task（Task 0004 · P2）。不传 taskDirName 时保持旧形态（存量工作区）。
-    // `userId` 从 `profile.ts` 的 `currentUserId(home)` 取（**唯一来源**，Task 0035）；
+    // `userId` 从 `profile.ts` 的 `existingUserId(home)` 取（**唯一来源**，Task 0035）；
     // 取不到（用户实体还没建）就不传 —— 那是“用户层还不存在”的正常情形，不是错误。
     const userId = await safeCurrentUserId(home);
     const profile = worktreeProfileOf({

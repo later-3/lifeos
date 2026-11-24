@@ -239,3 +239,31 @@ test("S1.5-6b 不传 userId 时：别的 pid 仍然拒（那是与 uid 无关的
   const ownPid = worktreeScopeOf(`${mount}/users/xu/projects/lifeos/daily/x.md`);
   assert.equal(ownPid.reason, undefined, "本 pid 照常放行");
 });
+
+// —— P2-3（2026-11-24 复核）：容器自身与子目录的 AGENTS.md 都要校验 ——
+
+test("S1.5-1e 删掉 users/AGENTS.md（容器自身）→ home:check 必须报", async () => {
+  const home = await freshHome();
+  try {
+    const dir = await bareUser(home);
+    await ensureUserLayer(dir);
+    await backfillUserLayer(home);
+    await rm(join(home, "users", "AGENTS.md"));
+    const report = await checkHome(home);
+    assert.ok(report.errors.some((line) => line.includes("用户层容器")),
+      `容器缺说明文件必须报：${JSON.stringify(userErrors(report.errors))}`);
+  } finally { await cleanup(home); }
+});
+
+test("S1.5-1f 删掉 projects/<pid>/knowledge/AGENTS.md → home:check 必须报", async () => {
+  const home = await freshHome();
+  try {
+    const dir = await bareUser(home);
+    await ensureUserLayer(dir);
+    await backfillUserLayer(home);
+    await rm(join(dir, "projects", "workspace", "knowledge", "AGENTS.md"));
+    const report = await checkHome(home);
+    assert.ok(report.errors.some((line) => line.includes("knowledge/AGENTS.md")),
+      `子目录缺说明文件必须报：${JSON.stringify(userErrors(report.errors))}`);
+  } finally { await cleanup(home); }
+});
