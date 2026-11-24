@@ -1,14 +1,19 @@
 #!/usr/bin/env node
-// dev-port：开发实例的端口分配（Task 0016）。判定逻辑在 dev-ports-core.mjs（有测试），这里只做命令行。
+// dev-port：开发实例的端口分配（Task 0016；登记键 `<agent>/<project>/<NNNN>` 见 Task 0032 · S1 §4）。
+// 判定逻辑在 dev-ports-core.mjs（有测试），这里只做命令行。
 //
-//   node scripts/dev-port.mjs claim --task 0016 [--worktree <path>]
+//   node scripts/dev-port.mjs claim --worktree <Task 工作区路径>
+//   node scripts/dev-port.mjs claim --agent coder --project lifeos --task 0032
+//   node scripts/dev-port.mjs claim --key coder/lifeos/0032
 //   node scripts/dev-port.mjs list [--prune]
-//   node scripts/dev-port.mjs release --task 0016
+//   node scripts/dev-port.mjs release --key coder/lifeos/0032
+//   node scripts/dev-port.mjs release --task 0032            # 登记表里唯一匹配时才释放
+//   node scripts/dev-port.mjs release --worktree <路径>
 //
 // 副作用：写 ~/.lifeos/state/dev-ports.json（原子写，全局唯一，与 LIFEOS_HOME 无关）。不杀进程、不改代码。
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { claimPorts, isPortBusy, listInstances, prune, releasePorts } from "./dev-ports-core.mjs";
+import { claimPorts, isPortBusy, listInstances, prune, releaseByTaskNumber, releasePorts } from "./dev-ports-core.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0];
@@ -23,12 +28,13 @@ const home = join(homedir(), ".lifeos");
 const portFree = async (port) => !(await isPortBusy(port));
 
 const die = (message) => { console.error(message); process.exit(1); };
+const refArgs = () => ({
+  key: flag("key"), agentId: flag("agent"), projectId: flag("project"), taskId: flag("task"), worktree: flag("worktree"),
+});
 
 if (command === "claim") {
-  const taskId = flag("task");
-  if (taskId === undefined) die("用法：dev-port claim --task <NNNN> [--worktree <path>]");
   try {
-    const result = await claimPorts({ home, taskId, worktree: flag("worktree") ?? "" });
+    const result = await claimPorts({ home, ...refArgs() });
     console.log(JSON.stringify(result, null, 2));
     console.log(`\n后端：LIFEOS_HOME=<独立家目录> node scripts/dev-supervisor.mjs --port=${result.backend}`);
     console.log(`前端：VITE_DEV_API=http://127.0.0.1:${result.backend} pnpm --dir frontend exec vite --port ${result.web}`);
@@ -38,22 +44,38 @@ if (command === "claim") {
 } else if (command === "list") {
   if (argv.includes("--prune")) {
     const dropped = await prune({ home, probe: portFree });
-    for (const taskId of dropped) console.log(`清理幽灵条目：${taskId}`);
+    for (const key of dropped) console.log(`清理幽灵条目：${key}`);
   }
   const rows = await listInstances({ home, probe: portFree });
   if (rows.length === 0) console.log("没有登记的开发实例。");
   else {
-    console.log(["Task", "后端", "前端", "活动", "Worktree"].join("\t"));
+    console.log(["Task", "Agent", "项目", "后端", "前端", "活动", "Worktree"].join("\t"));
     for (const row of rows) {
       const alive = row.backendAlive && row.webAlive ? "运行中" : row.backendAlive || row.webAlive ? "部分" : "已停";
-      console.log([row.taskId, row.backend, row.web, alive, row.worktree].join("\t"));
+      console.log([row.taskId, row.agentId, row.projectId, row.backend, row.web, alive, row.worktree].join("\t"));
     }
   }
 } else if (command === "release") {
-  const taskId = flag("task");
-  if (taskId === undefined) die("用法：dev-port release --task <NNNN>");
-  const existed = await releasePorts({ home, taskId });
-  console.log(existed ? `已释放 ${taskId} 的端口登记（没有杀进程）` : `${taskId} 没有登记`);
+  const { key, agentId, projectId, taskId, worktree } = refArgs();
+  try {
+    // 三种说法：给全归属（或 key/worktree）就直接释放；只给 --task 时要求登记表里唯一匹配。
+    const explicit = key !== undefined || worktree !== undefined || (agentId !== undefined && projectId !== undefined);
+    if (explicit) {
+      const existed = await releasePorts({ home, key, agentId, projectId, taskId, worktree });
+      const name = key ?? worktree ?? `${agentId}/${projectId}/${taskId}`;
+      console.log(existed ? `已释放 ${name} 的端口登记（没有杀进程）` : `${name} 没有登记`);
+    } else if (taskId !== undefined) {
+      const result = await releaseByTaskNumber({ home, taskId });
+      console.log(result.released ? `已释放 ${result.key} 的端口登记（没有杀进程）` : `${taskId} 没有登记`);
+    } else {
+      die("用法：dev-port release （--key <agent>/<project>/<NNNN> | --task NNNN --agent A --project P | --worktree <路径> | --task NNNN）");
+    }
+  } catch (error) {
+    die(`释放失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 } else {
-  die("用法：dev-port <claim|list|release> [--task NNNN] [--worktree <path>] [--prune]");
+  die("用法：\n"
+    + "  dev-port claim (--worktree <路径> | --agent A --project P --task NNNN | --key A/P/NNNN)\n"
+    + "  dev-port list [--prune]\n"
+    + "  dev-port release (--key A/P/NNNN | --agent A --project P --task NNNN | --worktree <路径> | --task NNNN)");
 }

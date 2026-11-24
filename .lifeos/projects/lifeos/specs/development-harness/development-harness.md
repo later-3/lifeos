@@ -94,12 +94,13 @@
 |---|---|---|
 | 代码 | 主 worktree `/Users/xulater/Code/lifeos` | 本 Task 的 `repo/`（`<taskDir>/repo/`，`git worktree add`；历史 Task 在 `evidence/worktree/`，协议 §3.7） |
 | 数据 | `~/.lifeos` | 独立 `LIFEOS_HOME=~/.lifeos-dev/<Task 编号>` |
-| 后端 / 前端 | **43120 / 5173（保留号）** | 由 `node scripts/dev-port.mjs claim --task NNNN` 分配 |
+| 后端 / 前端 | **43120 / 5173（保留号）** | 由 `node scripts/dev-port.mjs claim --worktree "<本 Task 工作区>"` 分配 |
 | 日志 | `/tmp/lifeos-dev-supervisor.log` | `LIFEOS_SUPERVISOR_LOG=/tmp/lifeos-<Task 编号>.log` |
 
 - **必须** 不占、不 kill、不写主实例的三样东西：43120/5173、`~/.lifeos`、主 worktree。冲突时改开发实例自己的一侧。
 - **必须** 开发实例四件套齐全才算隔离：worktree + 独立 `LIFEOS_HOME` + 独立端口 + 独立日志（缺一即 C160 那种串线）。
-- **必须** 端口只从工具取，不抄示例数字：`node scripts/dev-port.mjs claim --task NNNN`；收工 `release`。
+- **必须** 端口只从工具取，不抄示例数字：`node scripts/dev-port.mjs claim --worktree "<本 Task 工作区>"`；收工 `release`。
+  登记键是 **`<agentId>/<projectId>/<NNNN>`**（Task 0032）：Task ID 只在 Agent × Project 内唯一，裸编号会让两个 Agent 的同号 Task 撞同一组端口。
 - **必须** 首次在新 worktree 里装独立家目录，不复制用户真实会话（C117）。
 - **应该** 把 worktree / home / 端口写进当前 Task 的 `log.md`，便于交接。
 
@@ -158,8 +159,8 @@
 
 ```bash
 # 1) 停自己起的后端与前端（只停自己端口上的）
-# 2) 释放端口
-node scripts/dev-port.mjs release --task NNNN
+# 2) 释放端口（登记键 <agent>/<project>/<NNNN>；只给 --task 时要求唯一匹配）
+node scripts/dev-port.mjs release --key <agent>/<project>/<NNNN>
 # 3) 删独立家目录（先确认里面没有要留的东西）
 rm -rf ~/.lifeos-dev/NNNN
 # 4) 对账：没有自己的进程与端口残留
