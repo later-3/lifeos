@@ -329,17 +329,26 @@ test("S1-W30 P1-3：工作台新代码不得用 ink-300 承载文字（tokens.cs
    * 白名单按**内容片段**匹配，不按行号 —— 行号会因为上面加注释而整体下移，
    * 白名单就悄悄指到别的行上（这条测试自己第一次就踩了：写 `:102`，加了 2 行注释后真实行是 104）。
    */
-  const ALLOW_SNIPPETS = [
-    // 媒体占位框：这一格**只有一个图标**（AppIcon），没有任何文字；ink-300 是规范允许的"占位装饰"
-    "overflow-hidden bg-hover text-ink-300",
-  ];
-  const files = [
-    "frontend/src/views/workbench.tsx",
-    "frontend/src/views/workbench-feed.tsx",
-    "frontend/src/views/workbench-projects.tsx",
-    "frontend/src/views/workbench-calendar.tsx",
-    "frontend/src/views/workbench-failure.tsx",
-  ];
+  /*
+   * 白名单：**0 条**。
+   *
+   * 原来有一条 `"overflow-hidden bg-hover text-ink-300"`（媒体占位框），但批 4 把媒体从"占位框+图标"
+   * 改成真 `<img>` 之后，那个片段在全仓 **0 命中** —— 留着就是"死白名单"：
+   * 它不保护任何东西，却会让下一个人以为"这类写法是被允许的"（规范 2.x 的白名单纪律：只放活着的）。
+   * 需要再加时，按**内容片段**写，并写明为什么它不是文字。
+   */
+  const ALLOW_SNIPPETS = [];
+  /*
+   * **文件清单必须由目录枚举得到，不能写死**（Task 0023 · 终审 P2-②）。
+   * 写死 5 个文件的后果：批 4 新增的 `workbench-feed-detail.tsx` 与 `workbench-compose.tsx`
+   * **自动逃检**（它们里也有 text-ink-300 的风险点，但断言永远扫不到）。
+   * 判据改成"工作台域的所有视图文件"：`views/workbench*.tsx`（含将来新增的）。
+   * 活性：新增任何一个 workbench-*.tsx 并写入违规行 → 这条必须红。
+   */
+  const files = readdirSync(join(ROOT, "frontend/src/views"))
+    .filter((name) => /^workbench(?:-[a-z0-9-]+)?\.tsx$/.test(name))
+    .map((name) => `frontend/src/views/${name}`)
+    .sort();
   const offenders = [];
   for (const rel of files) {
     const lines = readFileSync(join(ROOT, rel), "utf8").split("\n");

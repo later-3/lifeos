@@ -12,13 +12,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_WIDTHS, MIN_CHAT, RAIL, RIGHT_MIN, dragCascade, layout, maxWidthOf,
+  DEFAULT_WIDTHS, MIN_CHAT, RAIL, RIGHT_DOCKED_MIN, RIGHT_MIN, dragCascade, layout, maxWidthOf,
 } from "../frontend/src/design/layout.ts";
 import { stateColumnsOf, taskCountsByProject } from "../frontend/src/api/workbench.ts";
 import { STUB_TASKS } from "../frontend/src/api/workbench-fixtures.ts";
 
 const FOLDED_NO_LEFT = { nav: true, groups: true };   // 工作台：左列收起
-const capOf = (vp) => Math.max(RIGHT_MIN, vp - RAIL - MIN_CHAT);
+/**
+ * 拖动上限（**与 `maxWidthOf("right")` 同源，也就是与 `layout()` 同源**）。
+ *
+ * 三档（Task 0023 · 终审 P1-A c 面，architect 裁定）：
+ *  - docked（视口 ≥ 764）：`视口 − RAIL − MIN_CHAT`（够宽就随视口）；
+ *  - narrowed（684–763）：**`RIGHT_MIN`(220)** —— `layout()` 在这一档只给 220，
+ *   若上限仍是视口算的（700 → 236），拖到 236 会存进 stored 而 layout 只认 220（"写进去看不见"）；
+ *  - overlay（≤ 683）：右栏退出布局，无拖动可言（调用方不该给出把手）。
+ * 旧断言在 narrowed 档写的是"视口算"，那是缺陷本身（不是规格）。
+ */
+const capOf = (vp) => (vp >= RIGHT_DOCKED_MIN
+  ? Math.max(RIGHT_MIN, vp - RAIL - MIN_CHAT)
+  : Math.max(RIGHT_MIN, Math.min(RIGHT_MIN, vp - RAIL - MIN_CHAT)));
 
 /** 从存储宽度出发，返回"这一帧应渲染多少"。 */
 const renderedOf = (vp, stored) =>
@@ -55,14 +67,18 @@ test("C1-P1-1 vp=800（cap 336）：同 vp=900 的形态", () => {
   assert.equal(dragCascade("right", start, -10, vp, FOLDED_NO_LEFT).right, 336, "宽 10（撞 cap）");
 });
 
-test("C1-P1-1 vp=700（narrowed 档：渲染 220 = RIGHT_MIN，cap 236）：往上拖要能长，不是跳到 236", () => {
+test("C1-P1-1 vp=700（narrowed 档）：拖动上限 = RIGHT_MIN(220)，与 layout() 同源（c 面）", () => {
   const vp = 700, stored = 500;
   const start = { ...DEFAULT_WIDTHS, right: stored };
   assert.equal(renderedOf(vp, stored), 220, "700 下渲染宽 = RIGHT_MIN 220（narrowed 档）");
-  assert.equal(capOf(vp), 236);
-  // 旧实现：基准 stored=500 → 钳到 236 → 一按下就跳 16px，而且再窄也窄不下去
+  /*
+   * **上限从 236 改成 220**（终审 P1-A c 面）：`layout()` 在 narrowed 档只渲染 220，
+   * 上限若给 236，用户拖到 236 会把它写进 stored，而 layout 仍只画 220 —— "写进去看不见"。
+   * 现在的语义是"这一档就这么宽，拖不动"（可预期的死区），与 c1/c2/c5 的"顶到边界就停"一致。
+   */
+  assert.equal(capOf(vp), RIGHT_MIN, "narrowed 档的上限 = RIGHT_MIN");
   assert.equal(dragCascade("right", start, 10, vp, FOLDED_NO_LEFT).right, 220, "窄 10（停在 RIGHT_MIN）");
-  assert.equal(dragCascade("right", start, -10, vp, FOLDED_NO_LEFT).right, 230, "宽 10（从 220 起算，不是从 236 起算）");
+  assert.equal(dragCascade("right", start, -10, vp, FOLDED_NO_LEFT).right, 220, "宽 10（同样是 220：这一档没有行程）");
 });
 
 test("C1-P1-1 每帧位移 = 鼠标位移（≤4px，frontend 2.27 的 coordinate 断言，四视口）", () => {
@@ -80,11 +96,15 @@ test("C1-P1-1 每帧位移 = 鼠标位移（≤4px，frontend 2.27 的 coordinat
   }
 });
 
-test("C1-P1-1 maxWidthOf('right') 与 layout 的预算同源（上限仍是视口算的，不是 520 常量）", () => {
-  for (const vp of [1920, 1280, 900, 800, 700, 640]) {
+test("C1-P1-1 maxWidthOf('right') 三档同源（docked 随视口 / narrowed = RIGHT_MIN）", () => {
+  for (const vp of [1920, 1280, 1024, 900, 800, 764, 763, 700, 684, 640]) {
     assert.equal(maxWidthOf("right", vp, { ...DEFAULT_WIDTHS, right: 500 }, FOLDED_NO_LEFT), capOf(vp),
-      `${vp}：maxWidthOf('right') = max(RIGHT_MIN, 视口−RAIL−MIN_CHAT)`);
+      `${vp}：maxWidthOf('right') 必须与 layout() 同源（docked 随视口、narrowed = RIGHT_MIN=220）`);
   }
+  // 活性反面：800/900 两档**恰好相等**（旧缺陷只看这两档就看不出来），700 才是分水岭
+  assert.ok(maxWidthOf("right", 800, { ...DEFAULT_WIDTHS, right: 500 }, FOLDED_NO_LEFT) === 336);
+  assert.ok(maxWidthOf("right", 700, { ...DEFAULT_WIDTHS, right: 500 }, FOLDED_NO_LEFT) === 220,
+    "700 必须是 220（旧实现 236 → 写进去看不见）");
 });
 
 test("C1-P2-3 统计块的「任务」与看板/项目区**同口径**（都排除 daily）", () => {

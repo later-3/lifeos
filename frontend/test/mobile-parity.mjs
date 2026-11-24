@@ -57,6 +57,10 @@ const FEATURES = [
   { id: "agent-config", label: "助手配置", mobile: "entry", probe: 'button:has-text("配置当前助手")', why: "抽屉底部的「配置当前助手」按钮（助手级）" },
   { id: "add-project", label: "添加项目", mobile: "entry", probe: 'button:has-text("添加项目")', why: "抽屉底部（项目级）" },
   { id: "switch-project", label: "切换项目", mobile: "entry", probe: "[data-mobile-level], nav", why: "抽屉助手→项目→会话三级下钻（每个项目行可点）" },
+  /* Task 0023 · S1：手机抽屉第一级的「我的工作台」入口（独立全屏表面）。
+     登记它有两个作用：① 它是**新加的手机入口**，清单必须跟着产品长；
+     ② 它守住了"这行不能被挤掉/改名"——探测点就是它的 testid。 */
+  { id: "workbench", label: "我的工作台", mobile: "entry", probe: '[data-testid="mobile-workbench-entry"]', why: "S1：抽屉第一级入口行 → 独立全屏工作台表面" },
   { id: "attach-image", label: "发图", mobile: "entry", probe: '[aria-label="添加图片"], input[type="file"]', why: "composer 内的图片入口" },
   { id: "slash-commands", label: "斜杠命令", mobile: "entry", probe: 'textarea[aria-label="输入消息"]', why: "输入 / 触发 palette" },
   { id: "jump-to-latest", label: "回到底部", mobile: "entry", probe: '[data-testid="jump-to-latest"]', why: "离开底部时出现的箭头（Pi TUI 基线）" },
@@ -173,6 +177,48 @@ async function ensureSurfaces() {
   await collect();
   // 导航抽屉
   await page.evaluate(() => { document.querySelector("[data-mobile-toolbar-more]")?.click(); });
+  /**
+   * 在某一级里选一个**真要下钻的实体行**。
+   *
+   * 为什么不能 `.first()`（Task 0023 · 批 5）：抽屉第一级多了一行「我的工作台」入口，
+   * 它排在第一位（产品决定：手机上第一眼看到自己的东西）。`.first()` 点到它 → 打开工作台表面
+   * 而不是项目列表 → 后面两级都下不去 → 「新建会话」「会话操作」在 agents 级当然找不到（实测 0 个）。
+   * 归因是**门禁的定位太脆**，不是功能回归（两个 testid 都还在，位置也没变）。
+   *
+   * 现在的选法：**跳过工作台入口行**（按 testid 认，不按序号），并优先点当前选中的那个
+   *（`Row selected` 会给行根 `aria-current="true"`）。两处都不依赖行序。
+   */
+  const drillableIndex = (level) => page.evaluate((lvl) => {
+    const rows = [...document.querySelectorAll(`[data-mobile-level="${lvl}"] [role="button"]`)];
+    const isWorkbenchEntry = (el) => {
+      for (let node = el; node !== null; node = node.parentElement) {
+        if (node.getAttribute?.("data-testid") === "mobile-workbench-entry") return true;
+      }
+      return false;
+    };
+    const rowRootOf = (el) => {
+      for (let node = el; node !== null; node = node.parentElement) {
+        if (node.getAttribute?.("data-mobile-level") === lvl) return null;
+        if (node.getAttribute?.("aria-current") === "true") return node;
+      }
+      return null;
+    };
+    let fallback = -1;
+    for (const [index, el] of rows.entries()) {
+      if (isWorkbenchEntry(el)) continue;
+      if (fallback === -1) fallback = index;
+      if (rowRootOf(el) !== null) return index;
+    }
+    return fallback;
+  }, level);
+  const clickDrillableRow = async (level) => {
+    const index = await drillableIndex(level);
+    if (index < 0) return false;
+    await page.locator(`[data-mobile-level="${level}"] [role="button"]`).nth(index).click().catch(() => {});
+    await page.waitForTimeout(900);
+    await collect();
+    return true;
+  };
   await page.waitForTimeout(200);
   const navEntry = page.getByRole("button", { name: "打开导航" }).or(page.getByRole("button", { name: "返回项目" }));
   if (await navEntry.count() > 0) {
@@ -186,15 +232,53 @@ async function ensureSurfaces() {
       await page.waitForTimeout(400);
     }
     await collect();
-    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
-      await page.locator('[data-mobile-level="agents"] [role="button"]').first().click().catch(() => {});
-      await page.waitForTimeout(900);
-      await collect();
+    /*
+     * 抽屉结构自检（Task 0023 · 批 5）：agents 级必须**同时**有「我的工作台」入口与
+     * 至少一个可下钻的实体行（助手行）。缺前者 = 用户看不到自己的工作台；缺后者 =
+     * 抽屉变成死胡同（只能开工作台，进不去任何项目/会话）。
+     * 这两条以前没人守，第一次被挤掉就是这么发现的（`.first()` 点到工作台入口）。
+     */
+    const agentsLevel = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll('[data-mobile-level="agents"] [role="button"]')];
+      const isWorkbenchEntry = (el) => {
+        for (let node = el; node !== null; node = node.parentElement) {
+          if (node.getAttribute?.("data-testid") === "mobile-workbench-entry") return true;
+        }
+        return false;
+      };
+      return {
+        workbenchEntry: document.querySelector('[data-testid="mobile-workbench-entry"]') !== null,
+        entityRows: buttons.filter((el) => !isWorkbenchEntry(el)).length,
+        total: buttons.length,
+      };
+    });
+    if (agentsLevel.workbenchEntry !== true) {
+      failures.push("抽屉 agents 级找不到「我的工作台」入口（[data-testid=mobile-workbench-entry]）");
     }
+    if (agentsLevel.entityRows < 1) {
+      failures.push(`抽屉 agents 级没有可下钻的助手行（共 ${agentsLevel.total} 行）`);
+    } else {
+      console.log(`  [agents 级] 工作台入口=true · 助手行=${agentsLevel.entityRows} · 行总数=${agentsLevel.total}（预期 = 助手行 + 1）`);
+    }
+    const clickedAgents = await clickDrillableRow("agents");
+    if (clickedAgents !== true) failures.push("抽屉 agents 级没有可点的助手行（下钻无从开始）");
+    if ((await page.locator('[data-mobile-level="projects"]').count()) === 0) {
+      failures.push(`点助手行之后没进到项目级（当前级别属性：${await page.locator("[data-mobile-level]").first().getAttribute("data-mobile-level").catch(() => "—")}）`);
+    } else {
+      const projectRows = await page.locator('[data-mobile-level="projects"] [role="button"]').count();
+      console.log(`  [projects 级] 项目行=${projectRows}`);
+      if (projectRows < 1) failures.push("抽屉 projects 级没有任何项目行");
+    }
+    const clickedProjects = await clickDrillableRow("projects");
+    if (clickedProjects !== true) failures.push("抽屉 projects 级没有可点的项目行（下钻无从继续）");
     if ((await page.locator('[data-mobile-level="sessions"]').count()) === 0) {
-      await page.locator('[data-mobile-level="projects"] [role="button"]').first().click().catch(() => {});
-      await page.waitForTimeout(900);
-      await collect();
+      /*
+       * 这一条是「定位是否够硬」的判据本身（活性验证用得上）：把定位改回 `.first()`
+       * → 点到的会是工作台入口 → 停在 agents 级 → 这里必红。
+       */
+      failures.push(`抽屉没能下钻到会话级（agents → projects → sessions）；当前级别属性：${await page.locator("[data-mobile-level]").first().getAttribute("data-mobile-level").catch(() => "—")}（工作台入口若排在第一位，按序取第一个会点到它）`);
+    } else {
+      console.log(`  [sessions 级] 会话行=${await page.locator('[data-mobile-level="sessions"] [role="button"]').count()}`);
     }
   }
   /*

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL, RIGHT_MIN, WIDTH_LIMITS,
+  DEFAULT_REVIEW_RATIO, DEFAULT_WIDTHS, HANDLE, MIN_CHAT, MIN_PANEL, MIN_REVIEW, MIN_VIEWER, RAIL, RIGHT_DOCKED_MIN, RIGHT_MIN, RIGHT_NARROW_MIN, WIDTH_LIMITS,
   clampWidth, dragCascade, dragWidth, layout, maxWidthOf, reviewPxOfRatio, reviewRatioOfPx,
 } from "../frontend/src/design/layout.ts";
 
@@ -514,11 +514,29 @@ test("S1-R5 右栏预算独立于 panel/review/history（工作台没有它们�
   assert.equal(box.rightBudget, 816, "1280 时预算 816");
 });
 
-test("S1-R6 maxWidthOf('right') 与 layout 的预算公式一致（同一条公式，不另算）", () => {
-  // 上限 = max(RIGHT_MIN, 视口 − RAIL − MIN_CHAT)：够宽时随视口，极窄时不低于下限（与 c1/c2 同构）
-  for (const v of [1920, 1280, 1024, 800, 700, 640, 400]) {
-    const folded = { nav: false, groups: false };
-    assert.equal(maxWidthOf("right", v, DEFAULT_WIDTHS, folded), Math.max(RIGHT_MIN, v - RAIL - MIN_CHAT),
-      `${v} 时 maxWidthOf('right') 应 = max(RIGHT_MIN, 视口 − RAIL − MIN_CHAT)`);
+test("S1-R7 maxWidthOf('right') 的三档同源：拖到上限后 layout() 真的就渲染那个宽（P1-A c 面）", () => {
+  /*
+   * **这条替换了 S1-R6 的旧写法**（旧断言在 narrowed 档已经不成立，那正是缺陷本身）。
+   *
+   * 反例（实测，stored=500）：
+   *   vp=700 → maxWidthOf 236 / layout().right **220** ⇒ 拖到 236 存进 stored，layout 只认 220
+   *            （"stored 230 写进去看不见"的另一半）
+   *   vp=800 → 336 / 336（恰好相等，所以只看 800/900 发现不了）
+   *
+   * 现在断言**关系**（不是数字）：把 rightWidth 设成 maxWidthOf 给的上限，layout() 渲染出来的
+   * right 必须**等于**那个上限（顶得住），且不得超过它；并且三档（docked/narrowed/overlay）分别验。
+   */
+  const folded = { nav: false, groups: false };
+  for (const v of [1920, 1600, 1280, 900, 800, 764, 763, 700, 684, 683]) {
+    const cap = maxWidthOf("right", v, DEFAULT_WIDTHS, folded);
+    const box = layout({ viewport: v, widths: DEFAULT_WIDTHS, requested: folded, panelOpen: false, rightOpen: true, rightWidth: cap });
+    const mode = v >= RIGHT_DOCKED_MIN ? "docked" : v >= RIGHT_NARROW_MIN ? "narrowed" : "overlay";
+    if (mode === "overlay") {
+      // overlay 档右栏退出布局：拖到任何值都不应让它占宽（且上限本身不该诱导用户拖）
+      assert.equal(box.right, 0, `${v}（overlay）right 必须为 0，实际 ${box.right}`);
+      continue;
+    }
+    assert.ok(box.right <= cap, `${v}（${mode}）渲染宽 ${box.right} 超过拖动上限 ${cap}——用户拖不到那里`);
+    assert.equal(box.right, cap, `${v}（${mode}）拖到上限 ${cap} 后 layout() 必须渲染 ${cap}（实际 ${box.right}）`);
   }
 });

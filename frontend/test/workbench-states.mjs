@@ -340,7 +340,8 @@ async function openWorkbench({ mode, waitMs = 700 }) {
   const { ctx, page, assertNoUnmatched } = await openWorkbench({ mode: "content" });
   // 桌面：月历在右栏（testid=workbench-right），不是 tab（手机才是分段）
   await page.locator('[data-testid="workbench-right"] [data-testid="workbench-calendar"]').waitFor({ timeout: 10_000 });
-  const hasDay = await page.locator('[data-testid="workbench-calendar"] [role="grid"] button').count();
+  // 同上：用 testid 定位（role 已从 grid 改成 group）
+  const hasDay = await page.locator('[data-testid="workbench-calendar-grid"] button').count();
   mustExist("month-fail/本月内容", { days: hasDay });
   // 让下一次 /api/days 失败（route 后注册优先匹配）
   await page.route("**/api/days*", (route) => route.fulfill({

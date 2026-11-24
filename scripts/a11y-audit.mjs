@@ -78,6 +78,36 @@ const SCENES = [
     },
   },
   {
+    /*
+     * 工作台（Task 0023 · 终审 P1-B）：**必须进这个门禁**，否则它的可访问性问题永远不会被扫到。
+     * `a11y-audit` 原来只覆盖对话/设置/历史/文件面板四个场景 —— 工作台是第四张全页表面，
+     * 之前 `role="grid"` 的 `aria-required-children` critical 就是因为它不在场景表里才活下来的。
+     *
+     * 顺序：点 rail 顶部「我」→ 等表面 → 再切到「项目」tab（两块的组件不同，各查一遍）。
+     * 这两个不留痕的 `enter` 里都包了 try/catch 语义：拿不到就记 `scene-enter-failed`（advisory），
+     * 不静默跳过（否则"没测到"会伪装成"没问题"）。
+     */
+    name: "工作台-内容流",
+    enter: async (page) => {
+      await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="我的工作台"]').click();
+      await page.waitForSelector('[data-testid="workbench-surface"]', { timeout: 10_000 });
+      await page.waitForTimeout(600);
+    },
+  },
+  {
+    name: "工作台-项目区",
+    enter: async (page) => {
+      await page.locator('nav[aria-label="左侧图标轨"] button[aria-label="我的工作台"]').click();
+      await page.waitForSelector('[data-testid="workbench-surface"]', { timeout: 10_000 });
+      await page.waitForTimeout(400);
+      await page.getByRole("tab", { name: /项目/ }).click();
+      await page.waitForTimeout(500);
+      // 「其他」组展开（组内卡也有字段文字）
+      const other = page.locator('[data-testid="workbench-kanban-other"] button').first();
+      if ((await other.count()) > 0) { await other.click(); await page.waitForTimeout(300); }
+    },
+  },
+  {
     name: "文件面板",
     enter: async (page) => {
       const trigger = page.locator('button[aria-label="展开文件面板"]').first();

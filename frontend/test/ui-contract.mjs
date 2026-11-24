@@ -2450,9 +2450,33 @@ const shotPageFor = async (viewport) => {
       const res = await route.fetch();
       const body = await res.json().catch(() => ({}));
       delete body.theme;
+      /*
+       * display 也要剥掉 —— 与 `pageFor`（测量页）同一个理由，且这条是**截图**路径。
+       *
+       * 2026-11-24 实测（Task 0023 · 批 5）：这一行原来只剥 theme，于是本机 dev 家目录
+       * `ui.json` 的 `display.width.value = 640` 会经 `/api/ui-prefs` 盖掉 `addInitScript` 里
+       * 写死的 860（`useAppearance` 的规则是"服务端有值就覆盖"）。后果是 empty.png 在**这台机器**上
+       * 就带着 640 宽：输入框/状态条/发送按钮整体内缩 110px（实测发送按钮右缘 x=1142，
+       * 而 860 时是 1252）→ 与别的机器上抓的基线永远差 ≈0.37 个百分点（reviewer 同轮独立复现）。
+       * 同族事故早有记录（`pageFor` 那段注释："display.width=full 时截的 empty.png 与 limited/860 差 0.48%"）
+       * —— 当时修了测量页，漏了截图页。
+       *
+       * 结论：**截图基线只比骨架**，展示偏好是用户数据，两条路径都必须钉在 860/100%（testing 2.9）。
+       */
+      delete body.display;
       await route.fulfill({ response: res, body: JSON.stringify(body) });
     } catch { /* 页面已关 */ }
   });
+  /*
+   * **profile 走夹具**（Task 0023 · 终审 P2-①）：`empty.png` 里 rail 首位的头像+名字是**用户数据**，
+   * 换头像/改名就红（testing 2.9：基线只比骨架）。固定成 `{name:"xu", avatar:null}`
+   * （首字母块，与 `/api/profile` 今天的真实形态一致）。
+   * 注意：这条只值 **34 像素级**差异 —— 别拿它当"修好了 empty.png"（主因是消息导航整列）。
+   */
+  await context.route("**/api/profile", (route) => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ name: "xu", avatar: null }),
+  }));
   await context.addInitScript(() => {
     localStorage.setItem("lifeos.theme", JSON.stringify({
       preset: "cool", mode: "light", accentH: 221, accentC: 0, lockNeutral: true, neutralC: 4,
@@ -2535,6 +2559,19 @@ async function capture(width, setup, clipTo, install) {
  */
 const SHOTS = [
   ["empty.png", 1600, async (shotPage) => {
+    /*
+     * **先等会话详情到位，再收起两列**（Task 0023 · 批 6 追因）。
+     *
+     * 不等的话这一帧取决于"截图那一刻 `sessionTotals.turns` 是 0 还是 >0"：
+     * `App.tsx` 的 `{(isMobile || sessionTotals.turns === 0) && <IconButton label="添加图片">}`
+     * 意味着**详情没到**时「添加图片」渲染在 composer 里、**到了**之后搬到 SessionBar。
+     * 实测（`evidence/b6-causal-empty-png.txt`）：把详情请求挂住不返回 → 图标在 composer
+     * （与 `acc1480` 基线逐像素相同 0.000%）；正常加载 → 图标在 SessionBar（与基线差 0.008%，
+     * 全部 119 px 就是那一个 28×28 图标）。
+     * 也就是说**基线锁定的是"详情还没到"的那一帧** —— 那是加载竞态，不是可以当契约的骨架。
+     * 现在钉住"已经加载完"这一侧（`session-bar` 出现 = 详情到了），基线只比稳定的骨架。
+     */
+    await shotPage.waitForSelector('[data-testid="session-bar"]', { timeout: 15000 }).catch(() => {});
     // 两列都收起 = 空态。零用户数据（只剩图标轨与空态文案），是唯一还能看的"整体构图"。
     await shotPage.evaluate(() => {
       document.querySelector('nav[aria-label="左侧图标轨"] button[aria-label="收起助手"]')?.click();

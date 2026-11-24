@@ -48,6 +48,10 @@ async function loadPlaywright() {
 
 let pass = 0;
 const failures = [];
+const fail = (name) => {
+  failures.push(name);
+  console.log(`✖ ${name}`);
+};
 const check = (name, ok, detail = "") => {
   if (ok) { pass += 1; console.log(`✔ ${name}${detail ? `  → ${detail}` : ""}`); }
   else { failures.push(name); console.log(`✖ ${name}  → ${detail}`); }
@@ -170,7 +174,11 @@ await page.screenshot({ path: join(SHOTS, "workbench-projects-1280.png"), fullPa
 await page.getByRole("tab", { name: /^全部/ }).click();
 const right = page.locator('[data-testid="workbench-right"]');
 await right.waitFor();
-const dayCell = page.locator('[data-testid="workbench-right"] [role="grid"] button[title*="条"]').first();
+/*
+ * 用 `data-testid` 定位、**不用 `role="grid"`**：那个 role 已按 axe 的 `aria-required-children`
+ * 改成 `group`（月历是一组开关按钮，不是 ARIA 网格）。走 testid 后，将来再调 ARIA 语义也不会让探针失联。
+ */
+const dayCell = page.locator('[data-testid="workbench-calendar-grid"] button[title*="条"]').first();
 await dayCell.waitFor();
 const cellTitle = await dayCell.getAttribute("title");
 const expectedCount = Number((cellTitle.match(/(\d+) 条/) ?? [])[1]);
@@ -224,7 +232,8 @@ await page.waitForTimeout(250);
  * 1280 的 cap=816，永不触发钳制 —— 旧实现在那里"看起来是好的"，
  * 所以旧门禁绿着但缺陷在。900 cap=436 / 700 cap=236 都会撞上限。
  */
-for (const vp of [900, 700]) {
+/* 钳制档位（architect 批 6 点名 vp=700 / vp=760；900 是 docked 档但已撞 cap）：三档各拖一次。 */
+for (const vp of [900, 760, 700]) {
   await page.setViewportSize({ width: vp, height: 900 });
   await page.waitForTimeout(300);
   const handle = page.locator('[data-testid="workbench-right"] [role="separator"]');
@@ -238,10 +247,14 @@ for (const vp of [900, 700]) {
   const box = await handle.boundingBox();
   const startX = box.x + box.width / 2;
   const startY = box.y + box.height / 2;
+  /** 拖动**前**用户存的右栏宽（P1-A b 面的判据基准：视觉零变化时它必须原封不动）。 */
+  const storedBefore = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem("lifeos.columnWidths") ?? "{}").widths?.right ?? null; } catch { return null; }
+  });
   await page.mouse.move(startX, startY);
   await page.mouse.down();
   const samples = [];
-  for (const dx of [20, 40, 60]) {
+  for (const dx of [20, 40, 60, 80]) {
     // 往左拖 = 变宽；但窄窗已经顶到 cap → 宽度不变，**把手必须仍贴在鼠标上**
     await page.mouse.move(startX - dx, startY);
     samples.push(await page.evaluate(() => {
@@ -261,13 +274,81 @@ for (const vp of [900, 700]) {
    *  - 已撞墙（宽度连续两帧不变）→ 只要求"停在 cap 上、不反向、不抖动"。
    */
   const widths = samples.map((s) => s.w);
-  const stuckAtCap = widths[widths.length - 1] === widths[0];
-  if (stuckAtCap) {
-    check(`[${vp}] 右栏已顶 cap：宽度停在边界不抖动（已知且接受的死区）`,
-      widths.every((w) => w === widths[0]), JSON.stringify({ vp, widths }));
+  /*
+   * **"顶住 cap"的判据必须可能失败**（Task 0023 · 终审 D，reviewer 穷举证明）。
+   *
+   * 旧写法：`stuckAtCap = 非增 && 首尾相等`，然后内层断言 `widths.every(w => w === widths[0])`
+   * —— `非增 ∧ 首尾相等 ⇒ 全等`，所以那条内层断言在 `stuckAtCap` 为真时**恒真**：
+   * 绿着、却不测任何新东西，还让读者以为"这里还有一层校验"（testing 2.4 的尸变断言）。
+   *
+   * 现在拆成两条各自可能失败的断言：
+   *   ① 宽度要么"逐帧变化"（还在长）、要么"从某一帧起再也不动"（撞墙），**不允许"变了又回来"**；
+   *   ② 撞墙之后的总变化量必须 ≤ 4px（死区允许的抖动），而不是"首尾相等"这种同义反复。
+   * 活性：把 `maxWidthOf` 改回返 budget（vp=700 拿到 236 而渲染 220）→ 宽度会在 220↔236 之间来回，
+   * 第 ① 条的 `everGrew` 与 `lastMoveIndex` 组合会红。
+   */
+  /*
+   * 三条**各自可失败**的判据（不要把"总漂移"当死区判据 —— 那是我的第一版错误：
+   * vp=900 正常增长 380→436 共 56px，被 `totalDrift<=4` 判成红）。
+   *  - `nonDecreasing`：拖的方向只朝一边（往左拖=变宽，宽度只许涨不许回）；
+   *  - `flatAfterLastMove`：最后一次变化之后**再也不动**（顶住 cap 的形态）；
+   *  - `finalStep`：最后一段位移 ≤ 4px（"到边就停"，而不是跨一大步撞过去）。
+   */
+  const monotonic = widths.every((w, i) => i === 0 || w >= widths[i - 1]);
+  const everGrew = widths.some((w) => w !== widths[0]);
+  const lastMoveIndex = widths.reduce((last, w, i) => (w !== widths[i - 1] && i > 0 ? i : last), 0);
+  const flatAfterLastMove = widths.every((w, i) => i <= lastMoveIndex || w === widths[lastMoveIndex]);
+  /*
+   * 最后一段的**位移偏差**（宽度变化 vs 鼠标位移），不是"宽度变化的绝对值"。
+   * `samples` 的鼠标位置是 `startX - [20,40,60,80]`，相邻两帧的鼠标位移 = 20px；
+   * 宽度从 420 到 436（16px）是**被 cap 截断的正常结果**，偏差 4px —— 这就是"到边就停"。
+   * （第一版把 `finalStep` 写成"宽度变化绝对值"，vp=900 的 16px 被误判成红；口径错了。）
+   */
+  const finalStepDeviation = lastMoveIndex === 0
+    ? 0
+    : Math.abs(Math.abs(widths[lastMoveIndex] - widths[lastMoveIndex - 1]) - 20);
+  const totalDrift = Math.max(...widths) - Math.min(...widths);
+  if (!everGrew) {
+    /*
+     * 三帧全一样（narrowed 档的常态：渲染宽恒 220，拖不动）。
+     * 这条**必须**保留，因为它是"拖动没把 stored 改坏"的可见形态；活性见下面的 stored 断言。
+     */
+    check(`[${vp}] 右栏宽度全程不变（撞 cap 或本档不可拖）——不是"抖一圈回原点"`, monotonic,
+      JSON.stringify({ vp, widths, totalDrift }));
   } else {
-    const follows = samples.every((s, i) => Math.abs((startX - s.hx) - [20, 40, 60][i]) <= 4);
-    check(`[${vp}] 右栏把手逐帧跟手（宽度撞 cap 时把手仍贴鼠标）`, follows,
+    /*
+     * 宽度真的变了 → 必须"从某帧起再也不动"，且总漂移 ≤ 4px（死区）。
+     * 这一支**可能失败**：宽度来回摆（220→236→220）会让 `flatAfterLastMove` 为假。
+     */
+    check(`[${vp}] 右栏宽度只朝一个方向走、撞墙后不再回升（最后一段 ≤4px）`,
+      monotonic && flatAfterLastMove && finalStepDeviation <= 4,
+      JSON.stringify({ vp, widths, lastMoveIndex, finalStepDeviation, totalDrift }));
+  }
+  /*
+   * **stored 不许被静默改写**（P1-A b 面的机器判据）。
+   *
+   * 视觉零变化（宽度全程不变）时，用户存的宽度必须原封不动 —— 否则"拉回宽视口也回不去"
+   * （reviewer 实测：vp=900 拖 −10px → stored 500→436，拉回 1280 永久窄 64px）。
+   * 活性：把 `useColumnWidth` 的 `stop()` 改回比较 draft → 这一条必红（实测 narrowed 档差 280）。
+   */
+  const storedAfter = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem("lifeos.columnWidths") ?? "{}").widths?.right ?? null; } catch { return null; }
+  });
+  /*
+   * **双向判据**（两条分支都可能失败，不是 `? true :` 那种一半恒真）：
+   *  · 视觉**没**变（被 cap 钳住 / 本档不可拖）→ stored **必须**原封不动；
+   *  · 视觉**变了** → stored **必须**跟着变（否则"拖了但没保存"，下一帧就弹回）。
+   */
+  check(`[${vp}] stored 与视觉一致：视觉没变就不许改写、变了就必须保存`,
+    everGrew ? storedAfter !== storedBefore : storedAfter === storedBefore,
+    `stored ${storedBefore} → ${storedAfter}（everGrew=${everGrew}）`);
+  /*
+   * 钳制档的**首个可见位移 ≤4px**（architect 追加，reviewer 缩短了采样盲区）：
+   * `deltas` 扩到 80px，能覆盖"70px 之后才回升"那类反面（旧的 20/40/60 抓不到）。
+   */
+  if (everGrew) {
+    const follows = samples.every((s, i) => Math.abs((startX - s.hx) - [20, 40, 60, 80][i]) <= 4);
+    check(`[${vp}] 右栏把手逐帧跟手（宽度还在长时把手必须贴鼠标）`, follows,
       JSON.stringify({ startX: Math.round(startX), before, samples }));
   }
   check(`[${vp}] 中栏 ≥ 420（窄窗降级后仍不被压破）`,
