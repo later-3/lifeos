@@ -18,3 +18,12 @@ node_modules
 /pi
 # Task 的实测脚本与运行产物（过程工具，不是交付物；输出已复制进任务 evidence/）
 .probe/
+
+# 构建产物与截图产物不入库（2026-11-24：一次脏合并把它们带进了 main，
+# 根因是 0023 工作区里它们未提交，而 merge 端点会先「合入前存档」全量 add -A）。
+# 服务器构建产物（pnpm build 的输出；每次构建都会变，没有版本控制的意义）
+dist/
+frontend/dist/
+# Playwright / 截图调试产物
+.ui-shots/
+.playwright-mcp/
