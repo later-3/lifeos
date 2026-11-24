@@ -3131,6 +3131,17 @@ check("门禁自检：所有检查项都在（防静默删除）", missing.lengt
       ws.onMessage(() => undefined);   // 客户端不发有意义的东西；读掉即可
       ws.send(JSON.stringify({ t: "snapshot", seq: snapshot.seq, d: snapshot }));
     });
+    /*
+     * **`/api/runtime` 也必须跟到同一套夹具**（Task 0037）。
+     * 2026-11-24 起，`App` 的 30s 运行态对账会**同时**纠正徽标槽位（`reconcileRunningSlots`），
+     * 而且发现"服务端说结束、槽位还停在 running"时会重取一次列表。
+     * 不桩它的话，对账打到真实后端（那里的运行集合与夹具无关）→ 刚注入的两个 running 被清掉，
+     * 断言变成读真实家目录的数字（testing 2.15「夹具必须跟住实现的取数路径」的同一坑）。
+     */
+    await countPage.route("**/api/runtime", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ draining: false, running: snapshot.running.map((entry) => ({ sessionId: entry.sessionId, agentId: entry.agentId, projectId: entry.projectId, startedAt: entry.startedAt })) }),
+    }));
     await countPage.goto(`${APP_URL}/?agent=lifeosagent&project=workspace`, { waitUntil: "domcontentloaded" });
     const ready = await countPage.waitForFunction(
       () => document.querySelectorAll('[data-state-count]').length > 0, null, { timeout: 15000 },

@@ -735,7 +735,14 @@ export default function App() {
    * 三态互斥（与后端 aggregateSlotOf 一致）：running / unreadDone / unreadError；
    * 不在表里 = 不计数（已看过、或从未结束）。
    */
-  const [sessionSlots, setSessionSlots] = useState<Map<string, { agentId: string; projectId?: string; slot: "running" | "unreadDone" | "unreadError" }>>(() => new Map());
+  const [sessionSlots, setSessionSlots] = useState<Map<string, SlotEntry>>(() => new Map());
+  /**
+   * 槽位的只读镜像：对账 effect 需要**同步**判断"是否真的不一致"（`setState(fn)` 的函数是
+   * 渲染期才执行的，在里面置标志位再读会是 false）。这是 React 里读"当前值"的标准做法，
+   * 不引入第二份事实源 —— 写入仍然只走 `setSessionSlots`。
+   */
+  const sessionSlotsRef = useRef(sessionSlots);
+  sessionSlotsRef.current = sessionSlots;
   const runFactsRef = useRef(runFacts);
   runFactsRef.current = runFacts;
 
@@ -2068,6 +2075,15 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   // 运行态定期对账（2026-10-26）：`done` 事件可能漏掉（标签页后台被节流、半开连接、
   // 或客户端乱序守卫丢弃），而心跳正常时看门狗不会重连，绿色呼吸点就永久亮着。
   // 服务端持事实，所以每 30 秒用 /api/runtime 收敛一次；只动运行态，不碰未读与归属。
+  //
+  // **徽标槽位也要一起对账**（Task 0037）：槽位的维护路径只有"补丁"与"重取列表"，
+  // 而重取只对当前 Agent 生效 —— 别的 Agent 的终止补丁一旦被漏掉（或像 2026-11-24 那个
+  // `{running:null, unread:null}` 的分支顺序缺陷那样被吞掉），它的呼吸数字就**永不收敛**，
+  // 用户看到的就是"都没有会话在跑了，为什么还有呼吸的 1"。运行集合是服务端事实，用它纠正。
+  //
+  // 行上的点同理：它由 `groups[].activity.state` 派生（不是 `runFacts`），所以对账发现不一致时
+  // 要重取一次列表 —— 否则会出现"数字对了、点还在呼吸"的反向不一致（与 2026-11-05 那个
+  // "点在有数字没有"同一族，两次都是两条呈现路径各自为政）。重取只在**真不一致**时发生。
   useEffect(() => {
     let cancelled = false;
     const reconcileRunning = async () => {
@@ -2077,6 +2093,16 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       const data = await response.json().catch(() => undefined) as { running?: Array<{ sessionId: string; agentId?: string; projectId?: string }> } | undefined;
       if (cancelled || data?.running === undefined) return;
       setRunFacts((facts) => applyRunningFacts(facts, data.running ?? [], Date.now()));
+      const running = (data.running ?? []).flatMap((entry) => entry.agentId === undefined
+        ? []
+        : [{ sessionId: entry.sessionId, agentId: entry.agentId, ...(entry.projectId !== undefined ? { projectId: entry.projectId } : {}) }]);
+      const reconciled = reconcileRunningSlots(sessionSlotsRef.current, running);
+      if (reconciled === undefined) return;                 // 已一致：不重渲染、不重取
+      // 只有「服务端说已结束、槽位还停在 running」才需要多一次列表重取：
+      // 行上的呼吸点与徽标同源不同路（行看 `activity.state`，数字看槽位），残留时两边都得清。
+      const stale = staleRunningSlots(sessionSlotsRef.current, running);
+      setSessionSlots(reconciled);
+      if (stale.length > 0 && ctx.current.agentId !== undefined) void reloadGroups();
     };
     const timer = window.setInterval(() => { void reconcileRunning(); }, RUN_RECONCILE_MS);
     void reconcileRunning();                                  // 打开页面先对一次
@@ -2413,12 +2439,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       const slots = new Map(previous);
       for (const group of next) {
         for (const item of group.sessions) {
-          const state = item.activity.state;
-          const want: "running" | "unreadDone" | "unreadError" | undefined =
-            state === "running" ? "running"
-              : state === "unread" ? "unreadDone"
-                : state === "failure" ? "unreadError"
-                  : undefined;
+          // 行的四态 → 槽位：与 `rowActivityOf()` 同源的一份映射（`api/session-slots.ts`）
+          const want = slotOfActivity(item.activity);
           const current = slots.get(item.sessionId);
           if (want === undefined) {
             if (current === undefined) continue;
@@ -2611,6 +2633,33 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
   }
 
   /**
+   * 从一条补丁更新"这条会话现在是什么状态"（状态机的**唯一入口**）。
+   *
+   * 所有 Agent 的补丁都走这里 —— 别的 Agent 的行不在当前列表里，但它的数字必须在。
+   * 数字由 deriveStatus 数出来，所以这里只描述状态，不做加减。
+   *
+   * 判断本身在 `api/session-slots.ts` 的 `nextSlotEntry()`：补丁里的多个字段是**独立事实**，
+   * 不能像 2026-11-24 之前那样用 else-if 挑一支（`{running:null, unread:null}` 会只清未读、
+   * 留下呼吸的 1；案例见该模块头注与 `test/session-slots.test.mjs` T80）。
+   */
+  function applySlotFromPatch(sessionId: string, agentId: string, projectId: string | undefined, patch: RowPatchPayload): void {
+    setSessionSlots((previous) => {
+      const current = previous.get(sessionId);
+      const next = nextSlotEntry(current, agentId, projectId, patch);
+      if (next === undefined) {
+        if (current === undefined) return previous;
+        const kept = new Map(previous);
+        kept.delete(sessionId);
+        return kept;
+      }
+      if (current !== undefined && current.slot === next.slot && current.agentId === next.agentId && current.projectId === next.projectId) return previous;
+      const kept = new Map(previous);
+      kept.set(sessionId, next);
+      return kept;
+    });
+  }
+
+  /**
    * 一行的局部补丁（任务 0005）：**只重建那一行**，其余行引用不变。
    *
    * 为什么不是 reloadGroups：那样一个字段变化要 1+N 次请求、每次全扫 JSONL
@@ -2618,80 +2667,6 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    *
    * `running` / `unread` / `failure` 传 `null` 表示"清掉"（终态会发 `running: null`）。
    */
-  /**
-   * 记一条会话的状态（唯一事实源）。`slot` 为 `undefined` = 这条不再计数。
-   *
-   * 为什么是"设值"而不是"加一"：加一要求每条路径都对称地减（查看、删除、重连、
-   * 别的 Agent 的补丁…），漏一条就永久错位；设值只关心"这条现在是什么状态"，
-   * 同一个补丁收到十次也不会算十次。
-   */
-  function setSlot(sessionId: string, agentId: string, projectId: string | undefined, slot: "running" | "unreadDone" | "unreadError" | undefined): void {
-    setSessionSlots((previous) => {
-      const current = previous.get(sessionId);
-      if (slot === undefined) {
-        if (current === undefined) return previous;
-        const next = new Map(previous);
-        next.delete(sessionId);
-        return next;
-      }
-      // **projectId 只增不减**（2026-11-05）：有些补丁不带 projectId（例如 focus 端点
-      // 历史上传的是 undefined），若直接覆盖，这条会话的数字会从"某个项目"掉进
-      // "该 Agent 的无项目桶"——项目行上的数字就消失了，用户看到"项目后面没有状态"。
-      const effective = projectId ?? current?.projectId;
-      if (current !== undefined && current.slot === slot && current.agentId === agentId && current.projectId === effective) return previous;
-      const next = new Map(previous);
-      next.set(sessionId, { agentId, ...(effective !== undefined ? { projectId: effective } : {}), slot });
-      return next;
-    });
-  }
-
-  /**
-   * **只清"未读"，不动"在跑"**（2026-11-05 修，用户实测的 bug）。
-   *
-   * 症状（用户截图）：一个正在跑的会话，行上蓝点在呼吸，但项目行/助手行**没有数字**。
-   *
-   * 根因：点开一个正在跑的会话会触发 focus → 服务端 `markSessionViewed()` →
-   * 推 `{ unread: null }`；这里原来一律 `setSlot(..., undefined)`，
-   * 把这条会话的槽位**整个删掉** —— 包括它正在跑的 running 态。
-   * 于是"行上有蓝点（applyRowPatch 只删 unread、running 没动），上级没有数字"。
-   *
-   * `{ unread: null }` 的语义只能是"这条不再有未读"，不是"这条不再有任何状态"。
-   * 在跑的会话本来就没有未读可清，收到这种补丁应当**什么都不做**。
-   */
-  function clearUnreadSlot(sessionId: string, agentId: string): void {
-    setSessionSlots((previous) => {
-      const current = previous.get(sessionId);
-      if (current === undefined) return previous;
-      if (current.slot === "running") return previous;   // 在跑的不受"已读"影响
-      void agentId;
-      const next = new Map(previous);
-      next.delete(sessionId);
-      return next;
-    });
-  }
-
-  /**
-   * 从一条补丁更新"这条会话现在是什么状态"（状态机的**唯一入口**）。
-   *
-   * 所有 Agent 的补丁都走这里 —— 别的 Agent 的行不在当前列表里，但它的数字必须在。
-   * 数字由 deriveStatus 数出来，所以这里只描述状态，不做加减。
-   */
-  function applySlotFromPatch(sessionId: string, agentId: string, projectId: string | undefined, patch: RowPatchPayload): void {
-    if (patch.removed === true) {
-      setSlot(sessionId, agentId, projectId, undefined);
-    } else if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
-      // 终态：带 failure 就是失败待看，否则完成待看
-      setSlot(sessionId, agentId, projectId, patch.failure !== undefined && patch.failure !== null ? "unreadError" : "unreadDone");
-    } else if ("unread" in patch && patch.unread === null) {
-      // 用户点开 / 已读 → **只清未读**，在跑的保持不动（见 clearUnreadSlot 注释）
-      clearUnreadSlot(sessionId, agentId);
-    } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
-      setSlot(sessionId, agentId, projectId, "running");
-    } else if ("running" in patch && patch.running === null) {
-      setSlot(sessionId, agentId, projectId, undefined);
-    }
-  }
-
   function applyRowPatch(agentId: string, sessionId: string, patch: RowPatchPayload | undefined, projectId?: string): void {
     if (patch === undefined || patch === null) return;
     // 不再提前返回（2026-11-04）：别的 Agent 的行不在当前列表里，但它的**数字**必须在。
@@ -2707,7 +2682,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
       // 不在这里减的话，行消失了但数字还在（用户实测：「删了一个未读，数量没有减少」）。
       // `was` 由服务端判定（与 aggregateStatus 共用 aggregateSlotOf），前端不自己推算。
       // 删了 → 这条不再有状态（数字由数出来，自然少一）
-      setSlot(sessionId, agentId, projectId, undefined);
+      applySlotFromPatch(sessionId, agentId, projectId, patch);
       return;
     }
     // 只有当前 Agent 的行在列表里：别的 Agent 的补丁跳过列表更新，
@@ -3940,7 +3915,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * `sessionSlots` 是唯一事实源：每条会话在 running / unreadDone / unreadError 里最多占一格，
    * 不占 = 不计数。这里只是把它按 Agent × 项目数一数 —— 没有计数器，所以不会漂移。
    *
-   * 快照到达时用它重建（服务端是全量事实）；`row` 补丁到达时用 setSlot 改单条。
+   * 快照到达时用它重建（服务端是全量事实）；`row` 补丁到达时用 `applySlotFromPatch` 改单条。
    * 两条路径写的是**同一份数据的不同部分**，不会互相覆盖。
    */
   const agentAggregate = (() => {
@@ -5477,6 +5452,7 @@ import { logger } from "./api/logger";
 import { emptyRunFacts, markViewed, applyRunEvent, applyRunningFacts, applySnapshotFacts, queueAdd, queueClear, rememberMeta, settleStopped, startedAtOf } from "./api/run-facts";
 import { routeEvent, type RouteAction, type RouteEvent, type RouteFocus } from "./api/event-router";
 import { deriveStatus, projectKey, type StatusFacts } from "./api/status-map";
+import { nextSlotEntry, reconcileRunningSlots, slotOfActivity, staleRunningSlots, type SlotEntry } from "./api/session-slots";
 import { outcomeOfTurn, turnNoticeOf } from "./api/turn-notice";
 import { busyBelongsTo, isStaleTerminal } from "./api/event-guards";
 import { LAYER_CLASS, SCRIM_CLASS, surfaceStyle } from "./design/surface";
