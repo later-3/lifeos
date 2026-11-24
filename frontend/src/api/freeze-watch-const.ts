@@ -118,6 +118,43 @@ export function frozenFor(lastBeatAt: number, now: number, visible: boolean = tr
 }
 
 /**
+ * 超过这个时长就不当作"主线程冻结"，而是"标签页被浏览器挂起过"。
+ *
+ * ## 为什么需要（2026-11-23 真实现场抓到的第二类假阳性）
+ *
+ * 日志里出现 **206 条** `durationMs ≈ 3,153,xxx,xxx`（36.5 天）的记录：
+ * `startedAt = 2026-10-18T04:00:29`（上一次页面能跑的时刻），
+ * 今天解冻时报"冻结 36 天"，并且**每秒一条、连刷两小时**。
+ *
+ * 真因：Chrome 的 tab 挂起/内存回收（Memory Saver 之类）会把整个标签页停掉。
+ * 解冻后 Worker 醒来，看到的 gap 是"上次 beat 到现在"，于是报成冻结。
+ *
+ * 这不是主线程被 JS 卡住，**证据价值为零**，而且会把真记录淹掉
+ * （那天真记录 1 条、假记录 200+ 条）。
+ *
+ * ## 为什么取 1 小时
+ *
+ * 真人不会盯着"卡死 1 小时以上"还继续用同一个标签页：真卡死超过 1 小时，
+ * 用户早就关掉或重启了（实测最长真事故是 11 小时满核，但那是**进程**在烧，
+ * 页面自己的 beat 早就停了 —— 那种情况由"恢复记录缺失"表达，而不是靠超长 duration）。
+ * 1 小时是"明显不像 interacted-by-human"的量级分界，不是精确科学。
+ */
+export const TAB_SUSPEND_MS = 60 * 60 * 1000;
+
+/**
+ * 判断一条冻结记录是否"像是标签页被挂起"而不是主线程卡死。
+ *
+ * @param durationMs 观测到的间隔
+ * @param visible    最后一次快照里的 visibility
+ * @returns true = 记录应标为 `tab-suspended`，不作为冻结事故
+ */
+export function looksLikeTabSuspend(durationMs: number, visible: boolean): boolean {
+  if (durationMs >= TAB_SUSPEND_MS) return true;
+  /* 隐藏页只有超过 90 秒才算（节流阈值见 THROTTLED_FROZEN_MS） */
+  return !visible && durationMs >= THROTTLED_FROZEN_MS;
+}
+
+/**
  * 隐藏标签页的冻结阈值。
  *
  * 为什么是 90 秒：Chrome 的 intensive throttling 把隐藏页的定时器压到 **60 秒一次**

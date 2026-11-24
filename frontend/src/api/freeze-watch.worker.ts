@@ -28,6 +28,7 @@ import {
   CHECK_MS,
   alreadyReported,
   freezeDurationOf,
+  looksLikeTabSuspend,
   IDB_KEEP,
   MODULE_FREEZE,
   MODULE_LONG_TASK,
@@ -273,7 +274,14 @@ function checkFreeze(): void {
 
   reportedThisFreeze = gap;
   const snapshot = lastKnown.snapshot;
-  const freezeRow = row("error", MODULE_FREEZE, "主线程冻结", {
+  /*
+   * 超长间隔不是"主线程卡死"，是**标签页被浏览器挂起过**（Chrome Memory Saver / tab discard）。
+   * 实测 2026-11-23：206 条 durationMs≈36.5 天的记录、每秒一条连刷两小时，
+   * 把唯一一条真冻结淹掉。这类记录单独一种 msg + `level: "info"`，
+   * 既留痕又不冒充事故（判据见 `looksLikeTabSuspend`）。
+   */
+  const suspended = looksLikeTabSuspend(gap, snapshot?.visibility === "visible");
+  const freezeRow = row(suspended ? "info" : "error", MODULE_FREEZE, suspended ? "标签页被挂起过（非主线程冻结）" : "主线程冻结", {
     durationMs: gap,
     startedAt: new Date(lastBeatAt).toISOString(),
     detectedAt: new Date(now).toISOString(),
