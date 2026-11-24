@@ -86,8 +86,11 @@ const ownerOf = (port) => {
   } catch { return "占用者未知"; }
 };
 // 端口必须有来源：从登记表里找这个号属于哪个 Task（Task 0016）。
+// 登记键自 Task 0032 起是 `<agent>/<project>/<NNNN>`（协议 §3.7：Task ID 只在 Agent×Project 内唯一），
+// 所以这里拿到的 key 本身就带归属；`taskId` 只是它的最后一段（供守卫与日志用）。
 const registry = await readRegistry(homedir() + "/.lifeos");
-const registration = Object.entries(registry.instances).find(([, entry]) => entry.backend === backendPort)?.[0];
+const registrationKey = Object.entries(registry.instances).find(([, entry]) => entry.backend === backendPort)?.[0];
+const registration = registrationKey === undefined ? undefined : { key: registrationKey, taskId: registrationKey.split("/").at(-1) };
 // 先分清启动者：用户手敲终端 = 他的主实例，隔离检查一条都不适用；
 // Agent 起的 shell = 开发实例，必须四件套齐全（Task 0016）。
 const kind = launchKind();
@@ -100,7 +103,7 @@ const problems = kind === "user" ? checkUserInstance() : checkIsolation({
   expectedHome: homedir() + "/.lifeos",
   expectedWorktree: process.env.LIFEOS_MAIN_WORKTREE ?? homedir() + "/Code/lifeos",
   probe: (await portBusy(backendPort)) ? { busy: true, owner: ownerOf(backendPort) } : { busy: false },
-  registration: registration === undefined ? undefined : { taskId: registration },
+  registration,
   requireRegistration: true,
 });
 
@@ -113,7 +116,7 @@ if (kind === "user" && process.env.LIFEOS_SUPERVISOR_ALLOW_MAIN_EDITS !== "1") {
 if (problems.length > 0) {
   console.error(`[dev-supervisor] 启动自检未通过，拒绝启动（不会重试）：启动者=${kind}`);
   for (const problem of problems) console.error(`  · ${problem}`);
-  console.error("[dev-supervisor] 修正方式：node scripts/dev-port.mjs claim --task <NNNN>，按输出起实例。");
+  console.error("[dev-supervisor] 修正方式：node scripts/dev-port.mjs claim --worktree <本 Task 的工作区路径>（或 --agent/--project/--task 三项），按输出起实例。");
   process.exit(2);
 }
 log(`自检通过（启动者=${kind}）：worktree=${root} LIFEOS_HOME=${process.env.LIFEOS_HOME ?? "(默认)"} 端口=${backendPort} 日志=${logFile}`);

@@ -53,7 +53,7 @@ export function checkIsolation({ port, home, worktree, logFile, expectedHome, ex
   // 来源检查（必须）：端口必须由工具分配。少了这条，Agent 自己挑一个没人用的号就能"合法"启动，
   // 撞车只是时间问题（2026-11-02 三份实例正是各自"合理"地挑了同一个号）。
   if (requireRegistration === true && registration === undefined) {
-    problems.push(`端口 ${String(port)} 不在 dev-port 登记表里：先 node scripts/dev-port.mjs claim --task <NNNN>`);
+    problems.push(`端口 ${String(port)} 不在 dev-port 登记表里：先 node scripts/dev-port.mjs claim --worktree <本 Task 工作区>`);
   }
   // worktree 位置检查：必须在某个 Task 的工作区下。
   // 两种合法形态：tasks/<NNNN>/repo/（协议 §3.7，2026-11-10 增补的建 Task 自动工作区）

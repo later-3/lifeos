@@ -127,6 +127,17 @@ export function localDate(now = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+/**
+ * ISO 时间戳 → 本地日期（与 `localDate()` 同口径；`/api/days` 把活动归日就靠它）。
+ *
+ * 无效时间戳返回 `undefined`——**不猜**成今天，也不编一个日期（契约 §3：宁可少，不猜）。
+ * 会话 entry 的 `timestamp` 是 UTC ISO；归日必须落本地时区，否则晚 8 点的对话会被算到第二天。
+ */
+export function localDateOfIso(iso: string): string | undefined {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? undefined : localDate(at);
+}
+
 /** 现有任务目录 → 下一个编号（同一层内连续；0001 起）。 */
 export async function nextTaskNumber(ctx: TaskContext): Promise<number> {
   const entries = await readdir(tasksRoot(ctx), { withFileTypes: true }).catch(() => []);

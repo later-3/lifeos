@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { resolveHome } from "./home.ts";
 import { classifyFailure, type FailureKind } from "./failure.ts";
 import { readGlobalProject } from "./project-registry.ts";
-import { listTasks } from "./tasks.ts";
+import { listTasks, localDateOfIso } from "./tasks.ts";
 import { readAgent } from "./agents.ts";
 import { runningOf } from "./session-runtime.ts";
 import { sessionViewsOf } from "./session-views.ts";
@@ -63,7 +63,7 @@ type RawEntry = {
   data?: { taskId?: unknown; peerAgentId?: unknown };
 };
 
-type ScannedSession = {
+export type ScannedSession = {
   sessionId: string;
   rawTitle: string;
   counts: RowCounts;
@@ -74,6 +74,16 @@ type ScannedSession = {
   activeTaskId?: string;
   peerAgentId?: string;
   failure?: { kind: FailureKind; detail: string; at?: string };
+  /**
+   * 这个会话里**用户发过消息**的本地日期（`/api/days` 的归日依据；契约 §3）。
+   *
+   * 为什么是 `role=user` 而不是"消息"也不是 mtime：
+   *  - mtime 会被 `model_change` / `thinking_level_change` 这类非消息条目刷新 —— 实测按 mtime 归日多报 5 倍；
+   *  - 只有 assistant 的会话（失败回合、只有系统提示）不构成"那天有对话"。
+   * `at` = 那天**第一条**用户消息的时间戳（真实时刻，不编）。
+   * 升序；只在有用户消息时有内容。
+   */
+  userDays: Array<{ date: string; at: string }>;
 };
 
 const emptyCounts = (): RowCounts => ({ user: 0, assistant: 0, toolResult: 0, system: 0, total: 0 });
@@ -117,8 +127,7 @@ export function clearSessionScanCache(): void {
   scanCache.clear();
 }
 
-async function scanSessionFile(path: string): Promise<ScannedSession | undefined> {
-  // 先 stat：命中缓存时省掉 readFile（这是全部收益的来源）
+async function scanSessionFile(path: string): Promise<ScannedSession | undefined> {  // 先 stat：命中缓存时省掉 readFile（这是全部收益的来源）
   const info = await stat(path).catch(() => undefined);
   const fingerprint = info === undefined ? undefined : `${info.size}:${info.mtimeMs}`;
   if (fingerprint !== undefined) {
@@ -142,6 +151,8 @@ async function scanSessionFile(path: string): Promise<ScannedSession | undefined
   let firstMessageAt: string | undefined;
   let lastMessageAt: string | undefined;
   const counts = emptyCounts();
+  // 用户发过消息的本地日期 → 那天第一条用户消息的时间戳（`/api/days` 的唯一归日依据）。
+  const userDayAt = new Map<string, string>();
   // 失败态：只有"最后一条 assistant 以 error 结束"才算（历史失败不盖当前状态）。
   let failing: { kind: FailureKind; detail: string; at?: string } | undefined;
 
@@ -179,6 +190,10 @@ async function scanSessionFile(path: string): Promise<ScannedSession | undefined
       if (role === "user" || role === "assistant") lastMessageAt = at;
     }
     if (role === "user" && firstUserText === "") firstUserText = textOfContent(entry.message?.content);
+    if (role === "user" && at !== undefined) {
+      const day = localDateOfIso(at);
+      if (day !== undefined && !userDayAt.has(day)) userDayAt.set(day, at);
+    }
 
     if (role === "assistant") {
       const stopReason = entry.message?.stopReason;
@@ -202,6 +217,7 @@ async function scanSessionFile(path: string): Promise<ScannedSession | undefined
     ...(firstMessageAt !== undefined ? { firstMessageAt } : {}),
     ...(lastMessageAt !== undefined ? { lastMessageAt } : {}),
     fileModifiedAt: (info?.mtime ?? new Date(0)).toISOString(),
+    userDays: [...userDayAt.entries()].map(([date, at]) => ({ date, at })).sort((a, b) => (a.date < b.date ? -1 : 1)),
     ...(activeTaskId !== undefined ? { activeTaskId } : {}),
     ...(peerAgentId !== undefined ? { peerAgentId } : {}),
     ...(failing !== undefined ? { failure: failing } : {}),
@@ -270,7 +286,7 @@ export type SessionRowsOptions = { now?: number; defaultSessionId?: string };
  * 现在两处共用这一遍扫描 —— 与 `sessionRowsOf` 同源，就不会出现
  * "列表里算的和 /tasks 里算的不一样"。
  */
-async function scanProject(agentId: string, projectId: string): Promise<ScannedSession[]> {
+export async function scanProject(agentId: string, projectId: string): Promise<ScannedSession[]> {
   const dir = join(resolveHome(), "agents", agentId, "projects", projectId, "sessions");
   const names = await readdir(dir).catch(() => [] as string[]);
   // 并行扫描：逐个 await 会让 69 个文件的 IO 完全串行（实测串行 156ms vs 并行读 133ms，
@@ -298,6 +314,8 @@ async function scanProject(agentId: string, projectId: string): Promise<ScannedS
         : emptyCounts(),
       createdAt: pending.at,
       fileModifiedAt: pending.at,
+      // 未落盘会话没有可读的 entry（也不在磁盘上）：`userDays` 恒空 —— 不编它的日期。
+      userDays: [],
       ...(pending.taskId !== undefined ? { activeTaskId: pending.taskId } : {}),
     });
   }
@@ -316,31 +334,9 @@ export async function sessionRowsOf(agentId: string, projectId: string, options:
   );
   const peerCache = new Map<string, RowPeer>();
 
+  // 未落盘的会话由 `scanProject` 合并（它已经做了这件事；原来这里还有一份一模一样的循环，
+  // 靠 `fileIds` 去重才没生效——两处各写一遍就是下一次漂移的来源，Task 0032 删掉重复）。
   const scanned = await scanProject(agentId, projectId);
-
-  // 未落盘的会话（Pi 延迟写文件）：字段与落盘会话**同源同形**——现状只给 title/updatedAt/messages，
-  // 导致刚建的新会话在 Task 列是空的（01 §3 第 7 条）。
-  const fileIds = new Set(scanned.map((item) => item.sessionId));
-  for (const pending of pendingSessions(agentId)) {
-    if (pending.projectId !== projectId || fileIds.has(pending.sessionId)) continue;
-    if (pending.name === undefined || pending.name === "") continue;   // 草稿不进列表
-    // 计数取内存会话的真实角色分布（与落盘后同一口径）。
-    // 注意一个**真实但正确**的情形：模型不可用时，`prompt` 立刻失败，内存会话里没有消息条目，
-    // 而标题已经写进 sessionManager 的名字 —— 于是出现"有标题、counts 全 0"。
-    // 这不是缺失语义错误：当时的真实事实就是"还没有成功发出任何消息条目"。
-    // （2026-11-03 在开发实例实测到；落盘后 counts 会由文件扫描给出真实值。）
-    const pendingCounts = pending.counts;
-    scanned.push({
-      sessionId: pending.sessionId,
-      rawTitle: pending.name,
-      counts: pendingCounts !== undefined
-        ? { ...pendingCounts, total: pendingCounts.user + pendingCounts.assistant + pendingCounts.toolResult + pendingCounts.system }
-        : emptyCounts(),
-      createdAt: pending.at,
-      fileModifiedAt: pending.at,
-      ...(pending.taskId !== undefined ? { activeTaskId: pending.taskId } : {}),
-    });
-  }
 
   // 项目目录异常（manifest 缺失）：不编一个 {id, name:id}，直接返回空。
   if (project === undefined) return [];

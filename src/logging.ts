@@ -4,7 +4,7 @@
 // - 正文/凭据零出现：用户消息正文在会话 JSONL，details 里的 key/token/password/cookie/auth 字段一律丢弃；
 // - debug 默认静默（info 起可读），环境变量 LIFEOS_LOG_DEBUG=1 打开 debug。
 import { appendFile, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveHome } from "./home.ts";
 
 export type LogLevel = "error" | "warn" | "info" | "debug";
@@ -62,14 +62,23 @@ function sanitize(details: Record<string, unknown> | undefined): Record<string, 
  * 对外的承诺是"永不拒绝"——调用方（`void log.××`）不会因此把测试/业务搞崩；
  * 失败仅打印 stderr 提示（logs 目录无法创建/权限失败等运维问题由用户处理）。 */
 let chain: Promise<unknown> = Promise.resolve();
-let logsDirReady = false;
 async function appendLine(file: string, row: Record<string, unknown>): Promise<void> {
   const previous = chain;
+  // file 与它的目录都在【调用时】求值：`resolveHome()` 是进程级可变状态（测试/多 home 切换），
+  // 若在【执行时】再求，链排到这条写时 home 已被切换，mkdir 与 appendFile 会各写各的目录
+  // ——实测（0032 · S1-19 全量首跑）：前家用例的 cleanup 与下一个用例的写赛跑，
+  // 出现「mkdir 建在新家、appendFile 开旧家的文件」→ ENOENT/EINVAL，行静默丢。
+  const dir = dirname(file);
   const work = previous.then(async () => {
-    try { await mkdir(logsDir(), { recursive: true, mode: 0o700 }); } catch { return; }
+    try { await mkdir(dir, { recursive: true, mode: 0o700 }); } catch { return; }
     await appendFile(file, JSON.stringify(row) + "\n", { encoding: "utf8", flag: "a" });
   });
-  chain = work;
+  // chain 存的是**已处理**的 promise：一次写失败（磁盘满 / 权限 / 路径被占）
+  // 若把 rejected 留在链上，下一次 `previous.then(cb)` 会在 rejected 上直接跳过 cb ——
+  // **整机日志从这一刻起永久静默**，且每条都报同一个旧错（2026-11-23 architect 实测：
+  // 把 backend jsonl 做成目录造 EISDIR，第二条也报 EISDIR 且文件不存在）。
+  // "日志最先坏掉时恰恰最需要日志" —— 所以失败只允许报一次，不允许毒化后续。
+  chain = work.catch(() => undefined);
   return work.catch((err) => { console.error("[logs] 写失败：", err instanceof Error ? err.message : String(err)); });
 }
 
@@ -91,8 +100,22 @@ async function write(level: LogLevel, module: string, fn: string | undefined, ms
     msg,
     ...(sanitize(details) !== undefined ? { details: sanitize(details) } : {}),
   };
-  await ensureLogsDir();
+  // file 在【调用时】求值（backendFile() 读当时的 resolveHome()），并**同步**入队 ——
+  // 必须在任何 await 之前：write() 若先 await 挂起，`void log.x` 的调用方会立刻继续，
+  // flushLogs() 读到的 chain 还不含这一条 → "排空了但文件没写"（0032 · S1-19 全量二跑实测）。
   await appendLine(backendFile(), row);
+}
+
+/**
+ * 等待排队的写全部落盘（测试与排障用）。
+ *
+ * 为什么必须导出：`log.*` 是 fire-and-forget（`void log.debug(...)`），写操作排在**模块级**
+ * `chain` 上。测试切了 `LIFEOS_HOME` 后，旧家目录的写仍可能排在链尾 —— 断言"日志里有没有
+ * 某条"前必须先排空，否则读到的是上一家的文件、或自己的还没写（S1-19 全量首跑就是这么假红的：
+ * 单文件 14/14、全量 1745/1746，前家用例的 cleanup 与本家断言赛跑）。
+ */
+export async function flushLogs(): Promise<void> {
+  await chain.catch(() => undefined);
 }
 
 /** 便捷入口：log.info("agent-host", "runTurn", "受理回合", { sessionId, turnId }) */

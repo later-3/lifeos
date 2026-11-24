@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
+import { log } from "./logging.ts";
 import { entityId, sanitizeSegment, uniqueId } from "./segments.ts";
 import { ensureSharedLayer } from "./project-skeleton.ts";
 
@@ -81,7 +82,17 @@ export async function listGlobalProjects(): Promise<Map<string, GlobalProject>> 
 }
 
 export async function readGlobalProject(id: string): Promise<GlobalProject | undefined> {
-  return parse(await readFile(manifestPath(id), "utf8").catch(() => ""));
+  // 没有 project.json（ENOENT）是正常分支——不是所有 projects/<pid>/ 都是全局项目；
+  // 其他读失败（权限/IO）按 backend 2.9 留 debug 痕，不当"没有"。
+  const raw = await readFile(manifestPath(id), "utf8").catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      void log.debug("project-registry", "readGlobalProject", "读 project.json 失败，该项目不计", {
+        details: { pid: id, message: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    return "";
+  });
+  return parse(raw);
 }
 
 /** 规范化路径（解析符号链接）；不存在时退回 resolve。 */
