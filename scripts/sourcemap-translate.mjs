@@ -160,15 +160,48 @@ export function loadSourceMapFromDisk(runtimeUrl) {
 /**
  * 把 `Debugger.paused` 的 callFrames 翻译成可读栈。
  *
- * @param frames  callFrames（CDP 原样）
- * @param resolve 每帧的 map 解析器（由调用方决定用 fetch 还是磁盘）
+ * ## ⭐ `url` 为空的真正原因（2026-11-24 实测）
+ *
+ * `callFrame.url` 在 Edge 与 Chrome 上**都可能是空字符串**，哪怕那是产品代码。
+ * URL 其实来自 `Debugger.scriptParsed` 事件（`{scriptId, url}`），而那个事件
+ * **只在 `Debugger.enable` 时重放一次** —— enable 之后再注册监听就一条也收不到。
+ *
+ * 所以调用方必须：
+ *   1. **先** `on("Debugger.scriptParsed", …)` 收集 `scriptId → url`；
+ *   2. **再** `send("Debugger.enable")`（它会重放全部已有脚本，实测 165 个）；
+ *   3. 把这张映射表作为 `scriptUrls` 传进来。
+ *
+ * 实测效果（`/src/md-stream.ts` 的真实死循环）：
+ * ```
+ * 0. runLength               /src/md-stream.ts:47:2
+ * 1. unmatchedCodeStart      /src/md-stream.ts:57:16
+ * 2. closePlain              /src/md-stream.ts:144:20
+ * 3. closeIncompleteMarkdown /src/md-stream.ts:173:40
+ * ```
+ *
+ * @param frames     callFrames（CDP 原样）
+ * @param resolve    每帧的 map 解析器（由调用方决定用 fetch 还是磁盘）
+ * @param scriptUrls `scriptId → url` 映射（由调用方从 `Debugger.scriptParsed` 收集）
  * @returns 每帧 `{ functionName, raw, source, line, column, mapped }`
  */
-export async function translateFrames(frames, resolve) {
+export async function translateFrames(frames, resolve, scriptUrls) {
   const cache = new Map();
   const rows = [];
   for (const frame of frames) {
-    const rawUrl = String(frame.url ?? "");
+    /*
+     * 三处都可能有 url：`frame.url`、`frame.location.url`（新版 CDP 有）、
+     * 以及 `scriptUrls`（从 scriptParsed 收集）。按可靠度依次回落。
+     *
+     * ⚠️ **必须判"非空字符串"而不是 `??`**：CDP 把 `frame.url` 给成**空字符串**
+     * （实测：`"url": ""`），而 `??` 只对 null/undefined 生效 —— 空字符串会短路，
+     * 于是永远拿不到 `scriptUrls` 里的真 url。这一条让我在 2026-11-24 白折腾了一小时
+     * （日志一直显示 `url=空`，但映射表明明有 `scriptId=4 → index-BHp-9GxW.js`）。
+     */
+    const rawUrl = firstNonEmpty(
+      frame.url,
+      frame.location?.url,
+      scriptUrls?.get?.(frame.location?.scriptId),
+    );
     const location = frame.location ?? {};
     const raw = `${rawUrl.replace(/^https?:\/\/[^/]+/, "")}:${location.lineNumber}:${location.columnNumber}`;
     const row = {
@@ -195,6 +228,19 @@ export async function translateFrames(frames, resolve) {
     rows.push(row);
   }
   return rows;
+}
+
+/**
+ * 取第一个**非空字符串**（`??` 不够：CDP 常用 `""` 表示"没有"）。
+ *
+ * @param values 候选值，可能是 undefined / null / "" / 非字符串
+ * @returns 第一个非空字符串；全都没有时返回 ""
+ */
+export function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value !== "") return value;
+  }
+  return "";
 }
 
 /**
