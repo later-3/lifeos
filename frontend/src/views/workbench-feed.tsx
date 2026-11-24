@@ -316,7 +316,12 @@ function FeedCard({ item, agents, profile, onPlaceholderAction, onOpen }: {
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); }
         }}
-        aria-label={`打开详情：${item.title ?? item.text.slice(0, 24)}`}
+        /*
+         * **不写 aria-label**（Task 0023 · 终审 P1-B 连带）：axe 的
+         * `label-content-name-mismatch` 要求"可见文字必须出现在可访问名里"——
+         * 上一版 `aria-label="打开详情：…"` 与可见的标题/正文不逐字相符，于是判 serious。
+         * `role="button"` 会从**内容**推导可访问名，这正是我们要的：读屏念的就是卡片上写的那些字。
+         */
         className="cursor-pointer px-3.5 pb-1 pt-2 transition-colors hover:bg-wash-hover">
         {item.title !== undefined && item.title !== "" && (
           <h3 className="mb-1 text-content font-semibold leading-snug text-ink-900">{item.title}</h3>

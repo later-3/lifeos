@@ -17,6 +17,7 @@
  * `body` 缺省时用 `text` 兜底：**不出现空白浮层**（用户点开看到空白等于坏）。
  * Markdown 用 `Markdown` 组件（与对话区同一条渲染链路：marked → DOMPurify → 代码块着色）。
  */
+import { useState } from "react";
 import { Modal } from "../design/overlay";
 import { AppIcon } from "../design/icons";
 import { AgentAvatar } from "./agent-avatar";
@@ -114,12 +115,30 @@ function MoodEmoji({ mood }: { mood: string | undefined }) {
 }
 
 /**
- * 详情里的媒体块：与卡片里**同一套网格规则**，但不复用 `MediaGrid`（那个带 `ImageTrigger` 的
- * 卡片内交互与 caption 胶囊；详情里要的是大图直排）。
+ * 详情里的媒体块：**另一种媒体形态**，不是卡片那五档网格的复用。
  *
- * 为什么在这里要一层：卡片内的媒体是"缩略"，详情是"看图"。**档位规则共用**（`mediaTierOf`），
- * 只是每格尺寸跟着浮层宽度走 —— 不写第二套档位判定。
+ * 卡片是"缩略"（按契约 §4 的 1/2/3/4/5+ 五档铺满、点图片进 `ImageTrigger` 放大）；
+ * 详情是"读文章时的配图"（每张 `max-h-72` 上限、多图两列、caption 在图下）。
+ * 两者**需求相反**（一个要铺满、一个要克制），所以这里显式**不调用** `mediaTierOf`
+ * —— 上一版注释写成"档位规则共用"，与实现不符（reviewer 抓到；现在改成说真话）。
+ *
+ * 加载失败有出口：`DetailImage`（`role="status"` 一行说明），与卡片里 `ImageTrigger.failureText` 同语义。
  */
+function DetailImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span role="status" data-testid="detail-image-failure"
+        className="flex h-24 items-center justify-center bg-hover px-3 text-center text-micro text-ink-500">
+        这张图没加载出来（{alt}）
+      </span>
+    );
+  }
+  return (
+    <img src={src} alt={alt} loading="lazy" decoding="async" onError={() => setFailed(true)}
+      className="block max-h-72 w-full object-cover" />
+  );
+}
 function MediaBlock({ items }: { items: NonNullable<FeedItem["media"]> }) {
   /*
    * **详情里的图不按原始比例无限放大**（实测反馈：760 宽的浮层里一张 16:9 图高 428，
@@ -137,8 +156,7 @@ function MediaBlock({ items }: { items: NonNullable<FeedItem["media"]> }) {
               <AppIcon name="chevron-right" size={28} />
             </div>
           ) : (
-            <img src={media.url} alt={media.caption ?? "示例图"} loading="lazy" decoding="async"
-              className="block max-h-72 w-full object-cover" />
+            <DetailImage src={media.url} alt={media.caption ?? "示例图"} />
           )}
           {media.caption !== undefined && (
             <figcaption className="px-3 py-1.5 text-micro text-ink-500">{media.caption}</figcaption>

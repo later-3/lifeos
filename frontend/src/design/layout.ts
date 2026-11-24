@@ -417,6 +417,18 @@ export function maxWidthOf(key: keyof WidthsExt, viewport: number, widths: Width
    * 要同步扩 `WidthsExt`，否则新键过不了这里的类型检查 —— 这是刻意的闸，不是负担。
    */
   if (key === "right") {
+    /*
+     * **narrowed 档的拖动上限 = RIGHT_MIN**（Task 0023 · 终审 P1-A c 面）。
+     *
+     * 本函数自己的承诺是「拖动上限 = 该列的真实可视上限」，而 `layout()` 在 narrowed 档
+     * 只给 220（`right = min(RIGHT_MIN, rightBudget)`）—— 两处不同源时：
+     *   vp=700：这里 236 / layout 220 → 拖到 236 存进 stored，**layout 只认 220，写进去看不见**。
+     * 实测四视口（stored=500）：1280 816/500 · 900 436/436 · 800 336/336 · **700 236/220**；
+     * vp=800 恰好相等，所以只看 800/900 发现不了。
+     * 同源后：窄档拖到 220 就停（与渲染一致），宽档仍随视口。
+     * 机器检查：`test/ui-layout.test.mjs` 的 S1-R7（三档 × 逐档上限 == layout().right 的可达区间）。
+     */
+    if (viewport < RIGHT_DOCKED_MIN) return Math.max(RIGHT_LIMITS[0], Math.min(RIGHT_MIN, viewport - rail - MIN_CHAT));
     return Math.max(RIGHT_LIMITS[0], viewport - rail - MIN_CHAT);
   }
   if (key === "c4t") {

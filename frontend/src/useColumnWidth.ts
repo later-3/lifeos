@@ -90,6 +90,32 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
      */
     const base: WidthsExt = { ...widths };
     let draft: WidthsExt = { ...base };
+    /**
+     * **渲染宽 vs 存储值：两套坐标系，必须以渲染宽为准**（Task 0023 · 终审 P1-A b 面）。
+     *
+     * `dragCascade` 已经改成「以渲染宽为基准」算补丁（a 面），但拖动期间这里原来做两件事都用了
+     * **存储值**（`draft`）：
+     *   ① `paint()` 写 `draft[name]` 到 DOM；
+     *   ② `stop()` 比较 `prev[name] !== draft[name]` 决定要不要提交。
+     * 于是窄窗里出现"视觉零变化、stored 却变了"：vp=900 拖 -10px → draft 被预算钳到 436（和渲染一样），
+     * 但 stored 从 500 变成 436 → **拉回 1280 也回不去 500**（永久少 64px）。
+     * 实测（reviewer 数）：vp=900 拖前渲染 436 / 提交后 stored 436 / 该 stored 在 1280 渲染 436。
+     *
+     * 现在统一到「渲染宽」这一套：屏幕画 `renderedOf(draft)`，提交判 `renderedOf(draft)` 是否变化。
+     * - 视觉没变（被钳住）→ **不提交**，用户宽度原封不动；
+     * - 视觉变了 → 提交，且提交的是能让渲染变成这个样子所需的 stored（窄窗钳制后 stored 会收敛，
+     *   这是"拖动即提交"的既有语义，与 c1/c2/c5 一致）。
+     */
+    const renderedOf = (source: WidthsExt): Record<keyof WidthsExt, number> => {
+      const box = layout({
+        viewport, widths: source, requested: input.folded, panelOpen: input.panelOpen,
+        historyOpen: input.historyOpen === true, reviewOpen: input.reviewOpen === true,
+        reviewRatio: input.reviewRatio, rightOpen: input.rightOpen === true, rightWidth: source.right,
+      });
+      return { c1: box.c1, c2: box.c2, c3: box.c3, c4: box.panel, c4t: box.tree, c5: box.history, right: box.right };
+    };
+    /** 按下那一刻各列的**渲染宽**（提交判定与"有没有视觉变化"的基准）。 */
+    const atStart = renderedOf(base);
     const targets = new Map<keyof WidthsExt, HTMLElement>();
     const targetOf = (name: keyof WidthsExt): HTMLElement | undefined => {
       const cached = targets.get(name);
@@ -103,9 +129,11 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
     let dirty: Array<keyof WidthsExt> = [];
     const paint = () => {
       frame = 0;
+      const rendered = renderedOf(draft);
       for (const name of dirty) {
         const element = targetOf(name);
-        if (element !== undefined) element.style.width = `${draft[name]}px`;
+        // 画的是**渲染宽**（不是 draft 的存储值）：窄窗里两者不同，画错就会出现"数据没变但界面变"
+        if (element !== undefined) element.style.width = `${rendered[name]}px`;
       }
     };
 
@@ -133,12 +161,22 @@ export function useColumnWidth(input: { folded: Folded; panelOpen: boolean; hist
        * 现在保留 inline（它的值就是最后一次拖到的真实宽度，判断上仍与 React 一致），
        * 状态有变化时 React 重渲染会直接覆写 inline；无变化时也停留在正确的值。
        */
-      // 一次性提交：所有被改动的列（嵌套拖动现在只可能是一个键，但保持通用）
+      /*
+       * 一次性提交，**判据是"渲染宽变没变"**（不是"存储值变没变"）—— P1-A b 面的修法。
+       * `atStart` 是按下那一刻的渲染宽；松手后重算一次，只把**屏幕上真的变了**的列写回状态。
+       * 因此"拖了但被预算钳住（视觉零变化）"不会再静默改写用户存的宽度。
+       */
       setWidths((prev) => {
-        let changed = false;
         const next: WidthsExt = { ...prev };
+        const renderedNow = renderedOf(next);
+        // prev 与 draft 的渲染差异：先看 draft 相对按下时有没有变化，再落到 prev 上
+        const renderedDraft = renderedOf({ ...prev, ...draft });
+        let changed = false;
         for (const name of Object.keys(draft) as Array<keyof WidthsExt>) {
-          if (prev[name] !== draft[name]) { next[name] = draft[name]; changed = true; }
+          if (renderedDraft[name] === atStart[name]) continue;        // 视觉没变 → 不提交
+          if (renderedNow[name] === renderedDraft[name]) continue;    // 已经就是这个样子 → 不必写
+          next[name] = draft[name];
+          changed = true;
         }
         return changed ? next : prev;
       });

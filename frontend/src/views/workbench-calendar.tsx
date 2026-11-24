@@ -79,7 +79,17 @@ export function WorkbenchCalendar({ year, month, days, today, loading, onPrevMon
           <div className="mt-2 grid shrink-0 grid-cols-7 gap-0.5 text-center text-micro text-ink-500" aria-hidden="true">
             {WEEKDAYS.map((weekday) => <span key={weekday}>{weekday}</span>)}
           </div>
-          <div className="mt-1 grid shrink-0 grid-cols-7 gap-0.5" role="grid" aria-label={`${year} 年 ${month + 1} 月活动日历`}>
+          {/*
+            月历网格 = **一组开关按钮**（有内容的那些格是 `aria-pressed` 的 button），不是 ARIA grid。
+            用 `role="grid"` 时 axe 报 `aria-required-children` **critical**：grid 的必须子元素是
+            `row`（行）→ 行里再是 `gridcell`，而这里直接放的是格子，也没有行容器。
+            改成 `role="group"`：它要求"一组相关控件 + 一个可访问名"，正是这里的语义，
+            且不再承诺行/格子结构（读屏会把每格当独立按钮念）。
+            （Task 0023 · 终审 P1-B；实测 axe `aria-required-children` critical 1 处 → 0。）
+          */}
+          <div className="mt-1 grid shrink-0 grid-cols-7 gap-0.5" role="group"
+            data-testid="workbench-calendar-grid"
+            aria-label={`${year} 年 ${month + 1} 月活动日历（有内容的日子可点开当日列表）`}>
             {cells.map((cell, index) => {
               // date 先落 const 再进闭包：TS 的属性窄化不进函数体（const 变量的窄化才进）
               const date = cell.date;
