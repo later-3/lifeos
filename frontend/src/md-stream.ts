@@ -77,24 +77,49 @@ function maskFences(text: string): string {
   return out.join("\n");
 }
 
-/** 该位置是否被反斜杠转义（前面有奇数个 `\`）。 */
-function isEscaped(text: string, index: number): boolean {
+/**
+ * 可被"按下标逐个读"的文本形态。
+ *
+ * ## 为什么需要这个联合类型（Task 0036 的死循环根因）
+ *
+ * 同一个函数里可能同时持有两种"文本"：
+ * - `text`（`string`）：下标是 **UTF-16 码元**，一个 emoji 占 **2** 个位置；
+ * - `[...text]`（码点数组）：下标是 **码点**，一个 emoji 占 **1** 个位置。
+ *
+ * **两套下标的数值不相等**。2026-11-24 的线上事故就是这么来的：
+ * `blankPairedCode` 在 `chars`（码点）上迭代，却把同一个 `i` 传给按 `text`（码元）索引的
+ * `runLength` —— 一个 emoji 让后续所有位置错开 1，`runLength` 读到非反引号返回 `0`，
+ * 于是 `i += 0` 原地不动 → **主线程满核死循环**（三次真事故、每次烧到 11 小时）。
+ *
+ * 所以：**一个函数只用一种索引源**。要跨两种形态，就必须把索引源显式传进来。
+ */
+type Indexable = string | readonly string[];
+
+/** 该位置是否被反斜杠转义（前面有奇数个 `\`）。索引源必须与调用方一致。 */
+function isEscaped(source: Indexable, index: number): boolean {
   let count = 0;
-  for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) count += 1;
+  for (let i = index - 1; i >= 0 && source[i] === "\\"; i -= 1) count += 1;
   return count % 2 === 1;
 }
 
-/** 从 i 起读一段连续同字符，返回长度。 */
-function runLength(text: string, i: number, char: string): number {
+/** 从 i 起读一段连续同字符，返回长度。索引源必须与调用方一致。 */
+function runLength(source: Indexable, i: number, char: string): number {
   let n = 0;
-  while (text[i + n] === char) n += 1;
+  while (source[i + n] === char) n += 1;
   return n;
 }
 
-/** 找**未闭合**的行内码起点（-1 = 没有）。三连及以上当围栏，跳过。 */
+/**
+ * 找**未闭合**的行内码起点（-1 = 没有）。三连及以上当围栏，跳过。
+ *
+ * 索引源是 `text`（码元），全程一致 —— 它没有 `blankPairedCode` 那个混用问题。
+ * 但仍加一条护栏（`i` 没变大就强制 +1）：这类"原地打转"的缺陷一旦发生就是满核，
+ * 代价太高，不值得只靠"我看过、是安全的"来保证。
+ */
 function unmatchedCodeStart(text: string): number {
   let i = 0;
   while (i < text.length) {
+    const before = i;
     if (text[i] !== "`" || isEscaped(text, i)) { i += 1; continue; }
     const run = runLength(text, i, "`");
     if (run >= 3) { i += run; continue; }
@@ -111,32 +136,58 @@ function unmatchedCodeStart(text: string): number {
     }
     if (!closed) return i;
     i = j;
+    if (i <= before) i = before + 1;
   }
   return -1;
 }
 
-/** 把**已配对**的行内码内容抹成空格（保留定界符与长度、保留换行）。 */
+/**
+ * 把**已配对**的行内码内容抹成空格（保留定界符与长度、保留换行）。
+ *
+ * ## ⚠️ 这里曾经是线上死循环（Task 0036，2026-11-24）
+ *
+ * 旧实现：`const chars = [...text]`（码点）却在循环体里调 `runLength(text, i, "`")`（码元）。
+ * 一个 emoji（代理对）让 `text[i]` 与 `chars[i]` 错开 1 位，于是：
+ *   `chars[i] === "`"` 成立（判的是码点数组）→ 但 `runLength(text, i, "`")` 读到的是别处的字符 → 返回 **0**
+ *   → `if (closed < 0) { i += run; }` 变成 **`i += 0`** → `while` 原地打转 → 主线程满核。
+ *
+ * 复现：`closeIncompleteMarkdown("😀 abc \`code\` def")` 永不返回；
+ * 去掉 emoji 只要 1ms。
+ *
+ * ## 修法（两道）
+ *
+ * 1. **单一索引源**：本函数只碰 `chars`（码点数组），`isEscaped` / `runLength` 都传 `chars`；
+ * 2. **不前进就强制前进**：任何分支只要 `i` 没变大，就 `i += 1`。
+ *    这样即便将来又引入别的边界情况，最坏也只是"这一格没抹成空格"，**不会**满核。
+ *    这是防"死循环"这一类缺陷的通用护栏，不是针对本次输入的补丁。
+ */
 function blankPairedCode(text: string): string {
+  /* 唯一的索引源：码点数组（emoji 占 1 个元素，与 `[...text].length` 一致） */
   const chars = [...text];
   let i = 0;
   while (i < chars.length) {
-    if (chars[i] !== "`" || isEscaped(text, i)) { i += 1; continue; }
-    const run = runLength(text, i, "`");
+    const before = i;
+    /* ⚠️ 下面三处必须传 `chars` 而不是 `text` —— 传 text 就是 2026-11-24 那个死循环 */
+    if (chars[i] !== "`" || isEscaped(chars, i)) { i += 1; continue; }
+    const run = runLength(chars, i, "`");
     if (run >= 3) { i += run; continue; }
     let j = i + run;
     let closed = -1;
     while (j < chars.length) {
-      if (chars[j] === "`" && !isEscaped(text, j)) {
-        const closeRun = runLength(text, j, "`");
+      if (chars[j] === "`" && !isEscaped(chars, j)) {
+        const closeRun = runLength(chars, j, "`");
         if (closeRun === run) { closed = j; break; }
         j += closeRun;
         continue;
       }
       j += 1;
     }
-    if (closed < 0) { i += run; continue; }
+    /* 这里也要保住"前进"语义：run 可能是 0（当前字符不是反引号时的理论分支） */
+    if (closed < 0) { i += Math.max(run, 1); continue; }
     for (let k = i + run; k < closed; k += 1) if (chars[k] !== "\n") chars[k] = " ";
     i = closed + run;
+    /* 护栏：上面任何分支算出来的 i 都没比进来时大 → 强制前进一格，绝不让循环原地打转 */
+    if (i <= before) i = before + 1;
   }
   return chars.join("");
 }
