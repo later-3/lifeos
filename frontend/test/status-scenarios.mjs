@@ -46,13 +46,18 @@ const browser = await chromium.launch({
  * 起一个完全打桩的页面：接口返回固定数据，SSE 由测试脚本手动推帧。
  * 返回 { page, push(event), close() } —— push 用来模拟服务端推送。
  */
-async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
+async function openApp({ rows = [row("sess-1")], agent = AGENT, clock = false } = {}) {
   /** 重取时返回的数据（测试可以改它，模拟"服务端真相变了"）。 */
   let currentRows = rows;
+  /** 服务端的运行集合（`/api/runtime`）：Task 0037 的槽位对账用它纠正残留。 */
+  let runtimeRunning = [];
   const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
+  /* 场景 14 要触发 30s 的运行态对账：安装假时钟后可以 `fastForward`，不必真等。
+     必须在 goto 之前安装，否则 App 的 `setInterval` 已经注册到真实时钟上。 */
+  if (clock) await page.clock.install();
 
   // ① 所有 REST 接口打桩
   // 用一个**统一的函数式 route**按 URL 精确分发 —— 多条通配 route 的匹配顺序不可靠
@@ -86,7 +91,7 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
     return json({});
   });
   await page.route("**/api/profile", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ name: "me" }) }));
-  await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: [], draining: false }) }));
+  await page.route("**/api/runtime", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ running: runtimeRunning, draining: false }) }));
   await page.route("**/api/events/focus", (r) => r.fulfill({ status: 200, body: "{}", contentType: "application/json" }));
 
   // ② 事件通道：注入假的 WebSocket，测试脚本手动推帧。
@@ -115,6 +120,8 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
 
   /** 改"服务端此刻的真相"，之后再触发 refresh-groups 就能看到差别。 */
   const setRows = (next) => { currentRows = next; };
+  /** 改服务端的运行集合（`/api/runtime`）。 */
+  const setRuntime = (next) => { runtimeRunning = next; };
   /** 等一次重取完成（refresh-groups 是异步 fetch，不是同步渲染）。 */
   const waitRefresh = async () => {
     let seen = 0;
@@ -128,7 +135,7 @@ async function openApp({ rows = [row("sess-1")], agent = AGENT } = {}) {
     }
     return false;
   };
-  return { page, push, snapshot, setRows, waitRefresh, errors, close: async () => { await ctx.close(); } };
+  return { page, push, snapshot, setRows, setRuntime, waitRefresh, errors, close: async () => { await ctx.close(); } };
 }
 
 /** 读面板上所有会变的点。 */
@@ -366,6 +373,58 @@ const nums = (badges) => {
   check("12b 重取说 idle 后：绿数字必须消失（不能留下没有绿点的数字）",
     nums(after.agentBadges).unreadDone === 0, JSON.stringify(nums(after.agentBadges)));
   check("12b 行上也确实没有绿点", !after.rowDots.some((d) => d.title.startsWith("完成未读")), JSON.stringify(after.rowDots));
+  await app.close();
+}
+
+// —— 场景 13：**别的 Agent** 的终止补丁 {running:null, unread:null} → 呼吸数字必须消失 ——
+//
+// Task 0037 的用户现象：「这里都没有会话在运行了，为什么还有呼吸的 1 呢？」
+//
+// 服务端 `pushTerminal()` 强制给终止补丁加 `running: null`（`src/row-patch.ts:132`），
+// 而"用户就停在这个会话上/被用户打断"时还会带 `unread: null`（`src/agent-host.ts:1061`）。
+// 前端原来是一条 else-if 链：`unread: null` 那支先命中 → `clearUnreadSlot()`，
+// 它对 running 槽位直接 return（2026-11-05 的保护），于是同一条补丁里的 `running: null` 被吞掉。
+//
+// 当前 Agent 靠 `done` → `reloadGroups()` → `syncSlotsFromRows()` 自愈；
+// **别的 Agent 不重取**（`refresh-groups` 有 `agentId === 当前` 的条件），所以永久残留。
+// 这条用例就是那个"永久残留"：必须靠补丁本身说清楚。
+{
+  const app = await openApp({ rows: [row("sess-1")] });   // 当前停在生活助手
+  await app.snapshot({});
+  await app.push("row", { agentId: OTHER.id, sessionId: "other-1", projectId: "workspace", type: "row", patch: { running: { since: new Date().toISOString(), phase: "waiting" } } });
+  check("13 别的 Agent 开跑 → 有呼吸 1", nums((await readPanels(app.page)).agentBadges).running === 1);
+
+  // 它结束了（服务端认为用户就停在那条会话上 / 被用户打断）→ {running:null, unread:null}
+  await app.push("row", { agentId: OTHER.id, sessionId: "other-1", projectId: "workspace", type: "row", patch: { running: null, unread: null } });
+  const after = await readPanels(app.page);
+  check("13 终止补丁 {running:null, unread:null} 后呼吸数字消失（别的 Agent 不重取，只能靠补丁表达）",
+    nums(after.agentBadges).running === 0, JSON.stringify(nums(after.agentBadges)));
+  check("13 也没有变成未读数字（终止补丁说 unread:null）",
+    nums(after.agentBadges).unreadDone === 0 && nums(after.agentBadges).unreadError === 0, JSON.stringify(nums(after.agentBadges)));
+  check("13 无 JS 错误", app.errors.length === 0, app.errors.slice(0, 1).join());
+  await app.close();
+}
+
+// —— 场景 14：运行态对账（`/api/runtime`）也要清掉残留的呼吸数字 ——
+//
+// 槽位只有两条维护路径：补丁推送与列表重取（只对当前 Agent）。两者都可能漏：
+// 补丁被后台节流/乱序守卫丢、或者页面在那个时刻不可见。服务端持有真相，
+// 所以 30s 的 `/api/runtime` 对账必须同时纠正徽标槽位，否则呼吸 1 会挂到刷新为止。
+//
+// 用假时钟推进 31s 触发对账，不等真实时间（与 ui-contract 的"状态徽标"用例同一手法）。
+{
+  const app = await openApp({ rows: [row("sess-1")], clock: true });
+  // 本地认为在跑（补丁到了）……
+  await app.push("row", { agentId: AGENT.id, sessionId: "sess-1", projectId: "workspace", type: "row", patch: { running: { since: new Date().toISOString() } } });
+  check("14 本地先认为在跑", nums((await readPanels(app.page)).agentBadges).running === 1);
+  // ……但服务端说没有在跑的（`done` 事件漏了/被丢了）
+  app.setRuntime([]);
+  await app.page.clock.fastForward(31_000);
+  await app.page.waitForTimeout(500);
+  const after = await readPanels(app.page);
+  check("14 对账后残留的呼吸数字被清掉（服务端说没有会话在跑）",
+    nums(after.agentBadges).running === 0, JSON.stringify(nums(after.agentBadges)));
+  check("14 会话行的呼吸点也清了", !after.rowDots.some((d) => d.title === "生成中"), JSON.stringify(after.rowDots.map((d) => d.title)));
   await app.close();
 }
 

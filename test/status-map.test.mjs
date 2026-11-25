@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deriveStatus } from "../frontend/src/api/status-map.ts";
+import { nextSlotEntry, slotOfActivity } from "../frontend/src/api/session-slots.ts";
 
 /** 造一条会话行：只关心四态。 */
 const s = (state, agentId = "a", projectId) => ({
@@ -111,32 +112,19 @@ test("T70 聚合层不做 99 上限（截断是显示层的事）", async () => 
 //
 // 现在规则：`{ unread: null }` 只清"未读"，**在跑的保持不动**。
 
-/** 迷你版状态机（与 App.tsx 的 setSlot / clearUnreadSlot 同一规则）。 */
+/**
+ * 迷你槽位状态机 —— **实现来自 `api/session-slots.ts`**（Task 0037）。
+ *
+ * 2026-11-24 之前这里手拄了一份 else-if 链（"与 App.tsx 同一规则"），它恰好把
+ * `{running:null, unread:null}` 判错 —— 手拄的第二份实现不会跟着真实现变，
+ * 于是测试全绿、用户却看到永久的呼吸 1。现在只写一层薄封装，断言跑的就是真正在用的函数。
+ */
 const makeSlots = () => {
   const map = new Map();
-  const setSlot = (sessionId, agentId, projectId, slot) => {
-    if (slot === undefined) { map.delete(sessionId); return; }
-    const current = map.get(sessionId);
-    // projectId 只增不减
-    const effective = projectId ?? current?.projectId;
-    map.set(sessionId, { agentId, ...(effective !== undefined ? { projectId: effective } : {}), slot });
-  };
-  const clearUnreadSlot = (sessionId) => {
-    const current = map.get(sessionId);
-    if (current === undefined) return;
-    if (current.slot === "running") return;   // 在跑的不受"已读"影响
-    map.delete(sessionId);
-  };
   const apply = (sessionId, agentId, projectId, patch) => {
-    if ("unread" in patch && patch.unread !== null && patch.unread !== undefined) {
-      setSlot(sessionId, agentId, projectId, patch.failure != null ? "unreadError" : "unreadDone");
-    } else if ("unread" in patch && patch.unread === null) {
-      clearUnreadSlot(sessionId);
-    } else if ("running" in patch && patch.running !== null && patch.running !== undefined) {
-      setSlot(sessionId, agentId, projectId, "running");
-    } else if ("running" in patch && patch.running === null) {
-      setSlot(sessionId, agentId, projectId, undefined);
-    }
+    const next = nextSlotEntry(map.get(sessionId), agentId, projectId, patch);
+    if (next === undefined) map.delete(sessionId);
+    else map.set(sessionId, next);
   };
   return { map, apply };
 };
@@ -218,12 +206,11 @@ test("T73 停在别的会话上时，这个会话的未读仍然算数", () => {
 //   ① 服务端：`onSession` 为真时补丁发 `unread: null`，不发未读；
 //   ② 前端：`reloadGroups` 用重取回来的行**校正**槽位（任何竞态都能自愈）。
 
-/** 迷你版：重取后按行校正槽位（与 App.tsx 的 reloadGroups 同一规则）。 */
+/** 迷你版：重取后按行校正槽位（实现来自 `api/session-slots.ts`，不另写一份）。 */
 const reconcile = (slots, rows, agentId) => {
   const next = new Map(slots);
   for (const row of rows) {
-    const state = row.activity.state;
-    const want = state === "running" ? "running" : state === "unread" ? "unreadDone" : state === "failure" ? "unreadError" : undefined;
+    const want = slotOfActivity(row.activity);
     if (want === undefined) { next.delete(row.sessionId); continue; }
     next.set(row.sessionId, { agentId, projectId: "p1", slot: want });
   }
