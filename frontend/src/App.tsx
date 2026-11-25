@@ -65,6 +65,7 @@ import { MobileNav, type Level } from "./views/mobile-nav";
 import { MobileHeaderActions, MOBILE_HEADER_ACTIONS } from "./mobile-header-actions";
 import { useAppHeight, useEdgeBack, useIsMobile } from "./use-mobile";
 import { nextActionOfMessages, resendPlan, turnOutcomeOfMessages } from "./api/resend";
+import { conclusionHostOf, foldDecisionOf, isCardMessage } from "./api/turn-fold";
 import { failureLabel, fixHint, type FailureKind } from "./api/failure-text";
 import type { TurnStep } from "./api/working";
 import { applyStreamEvent, blocksOfStream, createStreamState, finalTextOfStream, seedStreamState, textOfBlocks, type Phase, type StreamEvent } from "./api/stream-blocks";
@@ -2289,6 +2290,10 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
           logger.warn("run", "对账失败（不影响会话内容显示）", failureLogOf(result.failure));
           return;
         }
+        /*
+         * 对账端点回的是**最近一轮**的结局，且此处服务端已说不在跑（上面的 running 分支进不来），
+         * 所以 busy=false：提示与「重新发送」按钮同时在场或同时不在。
+         */
         const notice = turnNoticeOf({ outcome: outcomeOfTurn(result.value.turn), busy: false });
         if (notice !== undefined) setTurnStatus(notice);
       })();
@@ -4267,6 +4272,9 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
    * 也不会被清（`applyFocusedTurn` 只改 busy）。于是出现用户报的现象：提示条还写着"可以点重新发送"，
    * 按钮已经被 busy 抑掉。现在提示由 `resend` 同一个判定得出（同一个 `turnOutcomeOf` + 同一个 `busy`），
    * 从结构上不可能与按钮不一致。`turnStatus` 仍保留，用於非回合类状态文案（对账成功/中断等）。
+   *
+   * Task 0040：生成中现在**一句结论都不写**（`turnNoticeOf` 在 `busy` 时返回 `undefined`）——
+   * 那一刻 `outcome` 不可信（本轮尾段停在 `toolUse`，与"被中断"同值），详见 `turn-notice.ts` 头注。
    */
   const outcomeNotice = turnNoticeOf({ outcome: turnOutcomeOfMessages(messages), busy });
   /**
@@ -4674,9 +4682,15 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                 const annoGroups = groupAnnotationsByReply(anno.annotations, messages, latestReplyId, visibleLastReplyByUserMessageId);
                 // ResponseBar 的过程区展开态（本 session 用户点过则听用户的，否则按 live 定）
                 const responsePref = responsePrefs[sessionId ?? ""] ?? readResponsePref(sessionId);
-                // 会话级指标挂哪一条：最后一条 assistant（全列表唯一，避免重复）
-                let lastAssistantIndex = -1;
-                messages.forEach((m, i) => { if (m.role === "assistant") lastAssistantIndex = i; });
+                /*
+                 * 回合结论的**唯一挂点**（Task 0040）：一轮恰好一个宿主。
+                 *
+                 * 旧写法是"跟着进行中/最新那条走"：`messageLive（轮级）|| index === lastAssistantIndex`。
+                 * 前半句是轮的属性、却乘到了每一条消息上；后半句又另行指定一个宿主 ——
+                 * 两者同时成立时就会挂两处，而折叠失效时前半句会把整轮变成 N 个宿主。
+                 * 现在只有一个函数回答这个问题，渲染循环里不再做第二遍判断。
+                 */
+                const conclusionHost = conclusionHostOf(messages);
                 const rendered = messages.map((message, index) => {
                   /*
                    * 压缩卡（P7-S9b）：位置在消息流最前面，而渲染窗口只保留最后 50 条 ——
@@ -4693,7 +4707,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                   const plan = resend?.index === index ? resend : undefined;
                   const isUser = message.role === "user";
                   // 该轮的全部回复（用户消息之后、下一条用户消息之前）
-                  const replies = spanByIndex.get(index)?.replyIndexes ?? [];
+                  const thisSpan = spanByIndex.get(index);
+                  const replies = thisSpan?.replyIndexes ?? [];
                   const replyMessages = replies.map((i) => messages[i]).filter((m): m is Message => m !== undefined);
 
                   // 过程折叠只处理助手侧，且只在"有过程"时生效（0 工具 0 思考 = 纯聊天，不折）
@@ -4702,17 +4717,30 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                   let mergedBlocks: Block[] | undefined;
                   /** 与 `mergedBlocks` 一一对应的原点（Task 0028 · P1）：取思考正文时用，保证 (entryId, blockIndex) 同源。 */
                   let mergedOrigins: Array<ThinkingOrigin | undefined> | undefined;
-                  const isFirstReply = replies.length > 0 && replies[0] === index;
                   /** 本轮是否还在生成（轮级；多段回复时挂在第一段上的过程条也要跟着展开）。 */
                   const replyLive = replyMessages.some((m) => m.streaming === true);
                   /*
                    * 压缩卡不能当过程条的宿主（P7-S9b）：它常是**隐式轮**（userIndex = -1）的第一条回复，
                    * 而它后面到第一条用户消息之间的 assistant 段会被整段折进它——卡片没有 ResponseBar，
                    * 折进去的消息就彻底消失了（实测：320 条消息的会话只剩 3 条可见）。
+                   *
+                   * Task 0040：改成「宿主往后挪」而不是「整轮不折」。旧写法 `firstReplyIsCard → 跳过折叠`
+                   * 在「窗口整段落在一轮内部 + 服务端补回压缩卡」时会让 200 段全部单独渲染，
+                   * 用户看到「思考过程 + 工具块 + 中断提示」重复 200 遍。现在宿主由 `foldDecisionOf` 统一算，
+                   * 卡片既不隐藏、也不当宿主。
                    */
-                  const firstReplyIsCard = (replyMessages[0]?.blocks ?? []).some((block) => block.type === "compaction");
-                  if (!isUser && isFirstReply && !firstReplyIsCard) {
-                    const allBlocks = replyMessages.flatMap((m) => m.blocks);
+                  const foldHere = thisSpan === undefined ? { kind: "none", reason: "no-reply" } as const : foldDecisionOf(messages, thisSpan);
+                  if (!isUser && foldHere.kind === "folded" && foldHere.hostIndex === index) {
+                    /*
+                     * 参与合并的回复 **不含压缩卡**（Task 0040）：卡片是"从这里往前被压缩过"的**标记**，
+                     * 不是这一轮的内容。它已经在循环开头按 `cardBlock` 单独渲染过，再进合并块就会画两遍
+                     * （实测：`evidence/probe-render-live.mjs` 的 `cards` 从 1 变 2）。
+                     *
+                     * 三处必须同时用这份列表：`allBlocks`（统计）/ `textIndexes`（正文下标）/ `originsOf`（合并块）。
+                     * 只改一处就会错位：下标算在含卡片的数组上、合并块却剔除了卡片 → 正文被当成过程块。
+                     */
+                    const contentReplies = replyMessages.filter((message) => !isCardMessage(message));
+                    const allBlocks = contentReplies.flatMap((m) => m.blocks);
                     // 时长（Task 0015 · P4）：**墙钟**，与 SessionBar 的累计口径、以及「当前回合」
                     // 进行中那个秒数是同一个函数（`turnWallMsOf`）算出来的。
                     // 以前这里用 Σassistant.durationMs（纯模型时间），跑完会比跑的时候小，
@@ -4747,7 +4775,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                       if (replyLive) {
                         // 流式：全部 text 留在正文（过程区只剩思考/工具）
                         let cursor = 0;
-                        for (const m of replyMessages) {
+                        for (const m of contentReplies) {
                           m.blocks.forEach((block, bi) => {
                             if (block.type === "text" && block.text.trim() !== "") textIndexes.push(cursor + bi);
                           });
@@ -4756,7 +4784,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                       } else {
                         let cursor = 0;
                         let lastText = -1;
-                        for (const m of replyMessages) {
+                        for (const m of contentReplies) {
                           m.blocks.forEach((block, bi) => {
                             if (block.type === "text" && block.text.trim() !== "") lastText = cursor + bi;
                           });
@@ -4769,12 +4797,12 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                       {
                         // 合并块与原点**同一次循环**产出：这样 blocks[i] 与 origins[i] 必然是同一条 entry 里的同一个块
                         //（Task 0028 · P1；分成两次算就是 D3 的成因）。
-                        const merged = originsOf(replyMessages);
+                        const merged = originsOf(contentReplies);
                         mergedBlocks = merged.blocks;
                         mergedOrigins = merged.origins;
                       }
-                      // 标记：其余回复消息已被过程条收进去，不再单独渲染
-                      for (const i of replies) if (i !== index) folded.add(i);
+                      // 标记：其余回复消息已被过程条收进去，不再单独渲染（压缩卡永远不在其中：它要留在原位）
+                      for (const i of foldHere.hidden) folded.add(i);
                     }
                   }
                   // 头像与名字（Task 0014 · D8′）：user 消息看后端给的 `speaker`——
@@ -4815,13 +4843,11 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                    * 不再挂在回复上——两处都显示同一份数字就是重复。
                    */
                   const isThisStreaming = message.streaming === true;
-                  /**
-                   * 这一轮是否还在跑（**轮级**，不是"这条消息在跑"）。
+                  /** 这一轮是否还在生成（**轮级**，不是"这条消息在跑"）。
                    *
-                   * 为什么分开：一轮可能有多个 assistant 段，过程块只挂在**第一段**上（`isFirstReply`），
-                   * 而流式标志常在后来的段上。用"这条在流式"判断，会让挂着过程的 bar 在生成期间
-                   * 一直是折叠的（实测：工具跑起来了，bar 还显示"查看过程"）。
-                   * 老 ProcessBar 用的就是轮级 live（`process.live`），这里保持一致。
+                   * 只用于**属于这一轮的那个控件**（过程区展开、等待过渡）；
+                   * **不得**用它决定"结论要不要挂在这条上"——轮级的真值乘到每条消息上，
+                   * 会让一句回合结论被打印 N 次（Task 0040：实测 200 次）。
                    */
                   const messageLive = isThisStreaming || replyLive;
                   /** 过程区**当前是否展开**（渲染与点击共用这一个值，Task 0015 · P2）：
@@ -4837,8 +4863,8 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                         //  就还是显示在 session bar"。
                         // 所以 step / phase / activeTool / retry / 秒数全部只由 SessionBar 的「当前回合」显示，
                         // 这里只在**完成后**给出过程摘要（stats，见 process）。
-                        // 回合结论文案（对账成功/中断原因等）：跟着进行中/最新那条走
-                        ...((messageLive || index === lastAssistantIndex) && renderStatus !== undefined ? { status: renderStatus } : {}),
+                        // 回合结论文案（对账成功/中断原因等）：只挂在一轮的那个宿主上（Task 0040）
+                        ...(index === conclusionHost && renderStatus !== undefined ? { status: renderStatus } : {}),
                         // 过程区受控展开（per-session 持久；规则唯一来源 processOpenOf）
                         processOpen: messageProcessOpen,
                         onToggleProcess: () => toggleResponseProcess(messageProcessOpen),
