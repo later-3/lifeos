@@ -29,7 +29,7 @@
     "test:ui": "node frontend/test/ui-contract.mjs",
     "test:ui:update": "node frontend/test/ui-contract.mjs --update-baseline",
     "audit:ui": "node scripts/audit-ui.mjs",
-    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm lint:icons && pnpm check:size && pnpm test && pnpm test:ui && pnpm test:layer && pnpm test:boot && pnpm test:visual && pnpm test:mobile && pnpm test:quick && pnpm test:stream && pnpm test:pwa && pnpm test:parity",
+    "verify": "pnpm typecheck && pnpm lint:tokens && pnpm lint:icons && pnpm check:size && pnpm test && pnpm test:ui && pnpm test:layer && pnpm test:boot && pnpm test:visual && pnpm test:mobile && pnpm test:quick && pnpm test:stream && pnpm test:pwa && pnpm test:parity && pnpm test:conclusion",
     "test:mobile": "node frontend/test/mobile-contract.mjs",
     "test:jump": "node frontend/test/jump-to-latest.mjs",
     "test:draft": "node frontend/test/new-session-draft.mjs",
@@ -45,6 +45,7 @@
     "test:design": "node --experimental-strip-types --test test/design-system.test.mjs test/boot-theme.test.mjs",
     "test:md": "node frontend/test/md-render-contract.mjs",
     "test:stream": "node frontend/test/stream-stability.mjs",
+    "test:conclusion": "node frontend/test/turn-conclusion.mjs",
     "test:visual": "node scripts/visual-matrix.mjs",
     "test:visual:update": "node scripts/visual-matrix.mjs --update",
     "media:seed": "node --experimental-strip-types scripts/media-seed.mjs",
@@ -63,7 +64,7 @@
     "test:layer": "node frontend/test/layer-paint.mjs",
     "test:boot": "node frontend/test/boot-frames.mjs",
     "probe:frontend": "node scripts/frontend-probes.mjs",
-    "test:quick": "node frontend/test/new-session-draft.mjs && node frontend/test/jump-to-latest.mjs && node frontend/test/md-render-contract.mjs && node frontend/test/composer-scope.mjs && node frontend/test/layer-paint.mjs"
+    "test:quick": "node frontend/test/new-session-draft.mjs && node frontend/test/jump-to-latest.mjs && node frontend/test/md-render-contract.mjs && node frontend/test/composer-scope.mjs && node frontend/test/layer-paint.mjs && node frontend/test/turn-conclusion.mjs"
   },
   "type": "module",
   "devDependencies": {
