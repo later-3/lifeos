@@ -6,8 +6,9 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { resolveHome } from "./home.ts";
 import { log } from "./logging.ts";
+import { existingUserId, userProjectDirOf } from "./profile.ts";
 import { entityId, sanitizeSegment, uniqueId } from "./segments.ts";
-import { ensureSharedLayer } from "./project-skeleton.ts";
+import { ensureSharedLayer, ensureUserProjectLayer } from "./project-skeleton.ts";
 
 export type GlobalProject = { schemaVersion: 1; id: string; name: string; path?: string; icon?: string };
 
@@ -127,7 +128,33 @@ export async function registerGlobalProject(path: string, preferredName?: string
   const id = uniqueId(base, taken);
   const project: GlobalProject = { schemaVersion: 1, id, name: displayName || id, path: target };
   await ensureSharedLayer(join(registryRoot(), id), project);
+  // 用户侧同步补齐（Task 0035 · P14：用户给 Agent 添加的项目，用户自己也有一份，§4.2.1）。
+  // 放在**全局注册**而不是 Agent 绑定：用户拿到的是全局项目；绑定是另一件事
+  // （同一项目可以多个 Agent 绑、也可以没人绑）。同一路径的幂等返回（上面那个 for）不回补——
+  // 那种情况目录通常已经在；真缺了由 `home:check` 报出来，不在这里做隐式修复。
+  await ensureUserProjectLayerSafely(resolveHome(), id);
   return project;
+}
+
+/**
+ * 用户侧补齐（`users/<uid>/projects/<pid>/`），**失败不阻断注册、但不静默**。
+ *
+ * 为什么失败不阻断：注册项目是 Agent 侧的主流程，用户层是"顺带的结构"；
+ * 一个异常的用户目录不该让所有 Agent 都加不了项目。
+ * 为什么不静默（backend 2.9）：失败要在日志里看得见，且 `home:check` 会把"缺目录"报出来——
+ * 两条出口都不依赖人记得。
+ */
+async function ensureUserProjectLayerSafely(home: string, pid: string): Promise<void> {
+  try {
+    // 只给**真的存在**的用户建：没实体时不建（否则造出没有 user.json 的假用户目录）
+    const uid = await existingUserId(home);
+    if (uid === undefined) return;
+    await ensureUserProjectLayer(userProjectDirOf(home, uid, pid));
+  } catch (error) {
+    void log.warn("registry", "ensureUserProjectLayer", "用户层项目目录补齐失败（不影响注册，home:check 会报）", {
+      details: { pid, message: error instanceof Error ? error.message : String(error) },
+    });
+  }
 }
 
 /** 读全局项目；兼容旧调用（没有就按 path 注册）。 */

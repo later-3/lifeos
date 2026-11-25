@@ -20,8 +20,20 @@ import { promisify } from "node:util";
 import { resolveHome } from "./home.ts";
 import { applyWorktreeIdentity } from "./worktree-identity.ts";
 import { worktreeProfileOf } from "./worktree-profile.ts";
+import { existingUserId } from "./profile.ts";
 
 const run = promisify(execFile);
+
+/**
+ * 取当前用户 id，**取不到就返回 undefined**（不报错）。
+ *
+ * 为什么允许拿不到：用户实体是运行时建立的（`writeProfile` 派生 id）。新装家目录在用户
+ * 第一次改档案前根本没有 `users/<uid>/user.json` —— 那时“用户层还不存在”是正常情形，
+ * 不该让建工作区失败。拿不到就不放行用户层（工作区里没有那一层，与现状一致）。
+ */
+async function safeCurrentUserId(home: string): Promise<string | undefined> {
+  return existingUserId(home).catch(() => undefined);
+}
 
 /** 两个工作区的目录名（协议 §3.7）。 */
 export const HOME_DIR = "home";
@@ -155,9 +167,13 @@ export async function createHomeWorktree(input: {
   await git(home, ["worktree", "add", "--no-checkout", path, "-b", branch, base]);
   try {
     // 收窄：只检出本 Task（Task 0004 · P2）。不传 taskDirName 时保持旧形态（存量工作区）。
+    // `userId` 从 `profile.ts` 的 `existingUserId(home)` 取（**唯一来源**，Task 0035）；
+    // 取不到（用户实体还没建）就不传 —— 那是“用户层还不存在”的正常情形，不是错误。
+    const userId = await safeCurrentUserId(home);
     const profile = worktreeProfileOf({
       agentId: input.agentId,
       boundProjects: input.boundProjects,
+      ...(userId !== undefined ? { userId } : {}),
       ...(input.taskDirName !== undefined
         ? { taskDirName: input.taskDirName, projectId: input.projectId }
         : {}),

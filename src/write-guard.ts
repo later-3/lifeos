@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { resolveHome } from "./home.ts";
+import { existingUserId } from "./profile.ts";
 import { taskDocRootOf } from "./task-doc-path.ts";
 import { HOME_DIR, isRegisteredWorktree, REPO_DIR } from "./task-worktree.ts";
 import { worktreeMountOf } from "./worktree-mount.ts";
@@ -96,21 +97,58 @@ async function fakeWorktreeOf(home: string, scope: GuardScope, taskId: string | 
  * | `agents/<owner>/projects/<ownerPid>/tasks/<ownerDir>/…` | ✅ | 本 Task 自己的镜像 |
  * | `agents/<owner>/projects/<ownerPid>/tasks/<别的 dir>/…` | ❌ | 给别的 Task 造文件（本 Task 的工作区不含它） |
  * | `agents/<别的 agent>/…` | ❌ | 别的 Agent 的身份/任务不在本工作区 |
- * | `projects/<共享>/…`、`interaction-harness/…`、`users/…` | ✅ | 共享层与根上的协议/用户层 |
+ * | `projects/<共享>/…`、`interaction-harness/…` | ✅ | 共享层与根上的协议层 |
+ * | `users/<uid>/`、`users/<uid>/projects/<本 pid>/…` | ✅ | 用户实体本身 + 本 Task 那个项目的用户空间（协议 §4.2.1） |
+ * | `users/<uid>/projects/<别的 pid>/…` | ❌ | 本 Task 的工作区不含别的项目的用户空间（写进去 git 也不 stage） |
+ * | `users/<别的 uid>/…` | ❌ | 一个家目录一个使用者；别的 uid 不在本工作区 |
  *
  * owner 从**挂载点路径本身**反推（`<taskDir>/home` 的 taskDir 就是 `agents/<a>/projects/<p>/tasks/<dir>`），
  * 不读 marker、不查仓：这样对 4 个只有 `.git` 的存量工作区同样成立。
  */
-export function worktreeScopeOf(target: string): { mount: string; reason?: string } | { mount: undefined } {
+export type HomeScopeOptions = {
+  /**
+   * 当前使用者的 uid（协议 §4.2.1 · Task 0035）。
+   *
+   * **唯一来源**是调用方从 `profile.ts` 的 `existingUserId(home)` 取（**建**只看真存在的实体；
+   * `currentUserId` 是读路径的派生兜底，不用于范围判定）；本函数纯函数、**不读盘**。
+   * 不传 = 不做"别的 uid"这层判定（存量调用点与不认识用户层的场景，行为与改动前一致）。
+   */
+  userId?: string;
+};
+
+export function worktreeScopeOf(target: string, options: HomeScopeOptions = {}): { mount: string; reason?: string } | { mount: undefined } {
   const mount = worktreeMountOf(target);
   if (mount === undefined) return { mount: undefined };
   if (mount.kind !== HOME_DIR) return { mount: mount.path };       // repo/ 与历史 worktree/ 是完整检出
 
-  const owner = ownerOfHomeMount(mount.path);
-  if (owner === undefined) return { mount: mount.path };            // 路径形状不认识：不额外限制
+  const paths = ownerOfHomeMount(mount.path);
+  if (paths === undefined) return { mount: mount.path };           // 路径形状不认识：不额外限制
+  const owner = { ...paths, userId: options.userId };
 
   const rel = target.slice(mount.path.length).split(sep).filter((part) => part !== "");
   if (rel.length === 0) return { mount: mount.path };
+
+  if (rel[0] === "users") {
+    // 用户层（协议 §4.2.1 · Task 0035）：与 `agents/` 同形的范围判定。
+    //
+    // 为什么需要：`** /tasks/*/home/` 在 `.gitignore` 里 → 走到判据 ④（"git 看不见"）被放行，
+    // 于是"在 A 的 fork 里写 B 项目的用户空间"会**成功**但 git 不 stage —— 正是下面
+    // `scopeReasonOf` 说的"看起来写进去了，合并后却是旧值"（architect 2026-11-24 实测）。
+    const uid = rel[1];
+    if (uid === undefined) return { mount: mount.path };
+    if (owner.userId !== undefined && uid !== owner.userId) {
+      return { mount: mount.path, reason: `这里只检出用户「${owner.userId}」的空间，不含「${uid}」` };
+    }
+    // users/<uid>/projects/<pid>/…
+    if (rel[2] === "projects") {
+      const pid = rel[3];
+      // 本 Task 所在的那个 pid + workspace（用户层默认项目）放行；其余一律拒。
+      if (pid !== undefined && pid !== owner.projectId && pid !== "workspace") {
+        return { mount: mount.path, reason: `本 Task 的工作区只检出「${owner.projectId}」的用户空间，不含「${pid}」` };
+      }
+    }
+    return { mount: mount.path };
+  }
 
   if (rel[0] === "agents") {
     const agent = rel[1];
@@ -141,7 +179,12 @@ function scopeReasonOf(target: string, reason: string): string {
     + `看起来写成功了，合并后却是旧值。要改别的 Task，请在那个 Task 里做。`;
 }
 
-/** 从 `<taskDir>/home` 反推 owner（`agents/<a>/projects/<p>/tasks/<dir>`）。形状不认识 → undefined。 */
+/**
+ * 从 `<taskDir>/home` 反推 owner（`agents/<a>/projects/<p>/tasks/<dir>`）。形状不认识 → undefined。
+ *
+ * `userId` 不在这里反推（路径里没有它）：由调用方从 `profile.existingUserId(home)` 取后
+ * 经 `HomeScopeOptions` 传入。**纯函数不读盘**（与 `worktree-profile.ts` 同一条纪律）。
+ */
 function ownerOfHomeMount(mount: string): { agentId: string; projectId: string; dirName: string } | undefined {
   const parts = dirname(mount).split(sep);
   const n = parts.length;
@@ -275,8 +318,11 @@ export async function taskDocContextOf(home: string, scope: GuardScope, taskId: 
  */
 export async function decideWrite(input: {
   home: string; scope: GuardScope; taskId: string | undefined; target: string;
+  /** 当前使用者的 uid（协议 §4.2.1 · Task 0035）：只用于"别的 uid / 别的 pid 的用户空间"判定。
+   *  由调用方从 `existingUserId(home)` 取；不传则跳过这一层（与改动前行为一致）。 */
+  userId?: string;
 }): Promise<WriteVerdict> {
-  const { home, scope, taskId, target } = input;
+  const { home, scope, taskId, target, userId } = input;
 
   // ① 当前 Task 的文档根（有工作区 = 工作区那份；默认 Task / 旧 Task = 主区 Task 目录）
   if (taskId !== undefined) {
@@ -333,7 +379,7 @@ export async function decideWrite(input: {
     //   ① `<B>/home/…/tasks/<B>/x.md`（B 的真工作区）→ 放行：改动进 B 的分支，B 的检视看得见（G8）；
     //   ② `<A>/home/…/tasks/<B>/x.md`（A 的 fork 里给 B 造主区文档）→ 拒：不进任何检视源，
     //      且 `git add -A` 会因 sparse 拒绝 → 用户以为写进去了，其实丢了。
-    const scoped = worktreeScopeOf(target);
+    const scoped = worktreeScopeOf(target, { ...(userId !== undefined ? { userId } : {}) });
     if (scoped.mount !== undefined && scoped.reason !== undefined) {
       return { allow: false, reason: `${scopeReasonOf(target, scoped.reason)}` };
     }
@@ -485,6 +531,9 @@ export type BashVerdict = { allow: true } | { allow: false; reason: string };
  */
 export async function decideBash(input: {
   home: string; scope: GuardScope; taskId: string | undefined; command: string; cwd: string; depth?: number;
+  /** 当前用户 uid（协议 §4.2.1）。**与 `decideWrite` 同形**：不传则跳过"别的 uid"那半条判定。
+   *  少了它，`cat > users/other/x` 这类 bash 写不会被拒，而范围表宣称两条都拒（2026-11-24 复核 P2-1）。 */
+  userId?: string;
 }): Promise<BashVerdict> {
   const depth = input.depth ?? 0;
   if (depth > 3) return { allow: true };        // 递归读脚本的上限：不无限展开
@@ -566,7 +615,10 @@ export async function decideBash(input: {
     for (const raw of targets) {
       if (raw === "" || raw.includes("$") || raw.startsWith("-")) continue;
       const target = resolveTarget(raw, cwd, input.home);
-      const verdict = await decideWrite({ home: input.home, scope: input.scope, taskId: input.taskId, target });
+      const verdict = await decideWrite({
+        home: input.home, scope: input.scope, taskId: input.taskId, target,
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+      });
       if (!verdict.allow) {
         return {
           allow: false,
@@ -593,8 +645,21 @@ export const BASH_TOOLS: ReadonlySet<string> = new Set(["bash", "powershell"]);
 /**
  * 挂到会话上的写入守卫。`getTaskId` 每次调用现读（会话中途可切 Task，创建时取一次会永久滞后）。
  */
+/**
+ * 取当前用户 uid，**取不到返回 undefined**（不报错）。
+ * 新装家目录在用户第一次改档案前没有 `users/<uid>/user.json` —— 那时"用户层不存在"是正常情形。
+ */
+async function getCurrentUserIdSafely(): Promise<string | undefined> {
+  return existingUserId(resolveHome()).catch(() => undefined);
+}
+
 export function createLifeOsWriteGuardExtension(input: {
   agentId: string; projectId: string; getTaskId: () => string | undefined;
+  /**
+   * 取当前用户 uid（协议 §4.2.1）。由调用方注入，默认走 `profile.existingUserId`。
+   * 注入点存在是为了测试能固定 uid，且**纯逻辑不读盘**这条纪律仍然成立。
+   */
+  getUserId?: () => Promise<string | undefined>;
 }): RawExtension {
   const scope: GuardScope = { agentId: input.agentId, projectId: input.projectId };
   return {
@@ -611,7 +676,8 @@ export function createLifeOsWriteGuardExtension(input: {
           const raw = typed.input?.path;
           if (typeof raw !== "string" || raw.trim() === "") return;   // 参数不合法交给工具自己报
           const target = resolveTarget(raw, ctx.cwd, home);
-          const verdict = await decideWrite({ home, scope, taskId, target });
+          const userId = await (input.getUserId ?? getCurrentUserIdSafely)();
+          const verdict = await decideWrite({ home, scope, taskId, target, ...(userId !== undefined ? { userId } : {}) });
           if (!verdict.allow) return { block: true, reason: verdict.reason };
           return;
         }
@@ -619,7 +685,8 @@ export function createLifeOsWriteGuardExtension(input: {
         if (BASH_TOOLS.has(toolName)) {
           const command = typed.input?.command;
           if (typeof command !== "string" || command.trim() === "") return;
-          const verdict = await decideBash({ home, scope, taskId, command, cwd: ctx.cwd });
+          const userId = await (input.getUserId ?? getCurrentUserIdSafely)();
+          const verdict = await decideBash({ home, scope, taskId, command, cwd: ctx.cwd, ...(userId !== undefined ? { userId } : {}) });
           if (!verdict.allow) return { block: true, reason: verdict.reason };
         }
       });

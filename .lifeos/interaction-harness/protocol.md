@@ -332,12 +332,33 @@ Agent 本身是 `agents/<id>/` 根目录下的配置与能力，**不属于协�
 |---|---|---|
 | 共享 workspace | `~/.lifeos/projects/workspace/` | 所有 Agent |
 | 共享 project | `~/.lifeos/projects/<pid>/` | 绑定该项目的所有 Agent |
+| **用户层** | `~/.lifeos/users/<uid>/` | **使用者本人**（不是 Agent，见 §4.2.1） |
+| **用户 × project** | `~/.lifeos/users/<uid>/projects/<pid>/` | 只属于该用户（与 Agent × project 同构） |
 | Agent × project | `~/.lifeos/agents/<id>/projects/<pid>/` | 只属于该 Agent（默认项目即 `workspace`，§4.4） |
 | Task | Agent × project 下的 `tasks/<NNNN>-<标题>/` | 属于该 Agent × project |
 | 会话 | Agent × project 下的 `sessions/` | 属于该 Agent × project |
 | 轮次 | 会话内的一次运行 | 属于该会话 |
 
 会话与轮次是对话记录，不携带规范，只携带指针（§3.10）。
+
+### 4.2.1 用户层（用户 = 特殊的使用者，不是 Agent）
+
+用户是**使用者本人**，不是 Agent：有自己的项目空间，但**没有对话能力**。
+
+- **位置**：`~/.lifeos/users/<uid>/`；一个家目录一个使用者（与 §3.7 的"单用户"约定同一语义）。
+- **与全局项目同构**：用户给 Agent 添加的每一个全局项目（`projects/<pid>/project.json`），
+  用户侧都有对应的一份 `users/<uid>/projects/<pid>/`。**`workspace` 也是其中之一**
+  （它本身就是全局项目，`project.json` 的 `id = workspace`）。
+- **没有 `sessions/`**：用户层**不提供**对话能力（不可协商）。用户与 Agent 的对话只发生在
+  `agents/<id>/projects/<pid>/sessions/`。
+- **只有四类内容（全部有现场消费方）**：`knowledge/`（成文笔记）、`daily/`（日记——用户层没有 Task，
+  这类内容落在层上）、`todo/`（用户自己的待办）、`tools/`（用户的工具登记）。
+- **刻意没有**：`tasks/`、`task-types/`（Task 属于 Agent × project，§3.7）；`memory/`
+  （用户记忆的物理位置仍是 `memory/user/<uid>/`，§3.11——再放一份就是第二处事实源）；
+  `specs/`、`cases/`、`flywheel.md`、`concept-space.md`（它们的作用是"被装配 / 被加载"，
+  而用户层**不参与** §4.3 的装配——放一份没人读的正是架构规范的陷阱）。
+- **单数语义**：`users/` 下只有一个目录。需要 uid 的代码**必须**从 `src/profile.ts` 的
+  `currentUserId` / `existingUserId` 两个导出取（见 §5.1 的注），**不得**在别处扫 `users/` 目录再取第一个来"碰运气"。
 
 **作用域**就是"谁必须遵守"：上表中的每一层，都是它下面内容的作用域。
 
@@ -359,6 +380,11 @@ Agent 本身
 - **冲突不自动覆盖**：停下，指出冲突的层，由用户裁决或修改原文件。
 - **顺序只决定阅读次序**，不决定谁覆盖谁。
 - **每个加载的文件记录来源路径**；没有来源的内容不能当成规范。
+- **用户层不参与本节加载顺序**（§4.2.1）：用户层不提供规范，也没有 `specs/`、`cases/`、
+  `flywheel.md`、`concept-space.md` 可加载。它的内容是使用者自己的记录（笔记 / 日记 / 待办 / 工具登记），
+  不是"谁必须遵守"的东西。
+- **作用域例外**：上一句是「上表中的每一层都是它下面内容的作用域」的**唯一例外**——用户层在 §4.2 表里，
+  但**不在**本节的加载顺序里；它自己的记录归属自己（用户），不构成对 Agent 的约束。
 
 ### 4.4 workspace（默认项目）
 
@@ -389,6 +415,31 @@ Agent 本身
   sessions/          会话（只在 Agent × project 层有）
   tasks/             任务（只在 Agent × project 层有）
 ```
+
+**用户层的结构**（`users/<uid>/`，§4.2.1；**不是**协作层的完整拷贝）：
+
+```text
+users/<uid>/
+  user.json          用户实体（id / name / avatar / createdAt；唯一来源）
+  avatar-<rev>.<ext> 头像（有就落在这一层，不是子目录）
+  AGENTS.md          说明文件（§5.2）
+  projects/<pid>/    每个全局项目一份（**含 `workspace`**）
+    AGENTS.md
+    knowledge/       成文笔记
+    daily/           日记（用户层没有 Task，这类内容落在层上）
+    todo/            用户自己的待办
+    tools/           用户的工具登记
+```
+
+- **只有这四类内容**：`knowledge/`、`daily/`、`todo/`、`tools/`；
+- **没有** `sessions/`（不提供对话能力）、`tasks/`、`task-types/`（Task 属于 Agent × project）；
+- **没有** `memory/`（用户记忆仍在 `memory/user/<uid>/`，§3.11）、`specs/`、`cases/`、
+  `flywheel.md`、`concept-space.md`（用户层不参与 §4.3 装配，放一份没人读的是陷阱）；
+- **`userId` 的唯一来源**：`src/profile.ts` 的**两个导出**——
+  `currentUserId(home)`（**读**：实体不存在时按系统名派生一个 id，读路径的兜底）与
+  `existingUserId(home)`（**建**：`users/<uid>/user.json` 真的在才给，否则 `undefined`）。
+  任何需要 uid 的调用方**必须**从这两个之一取，**不得**在别处 `readdir(users/)`。
+  **建结构只用 `existingUserId`**：拿派生 id 去建目录会造出没有 `user.json` 的假用户。
 
 **Task 的结构**（同样的骨架，文件由类型决定）：
 
