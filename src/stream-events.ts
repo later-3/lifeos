@@ -32,7 +32,32 @@ export type StreamEvent =
    * Pi CLI 用它说 "Retry failed after N attempts: <原因>"（interactive-mode.ts:3768），
    * 我们此前丢掉这两个字段，于是失败时无法告诉用户"已经自动试过几次"。
    */
-  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string };
+  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string }
+  /**
+   * 上下文压缩（Task 0041 · P2）。
+   *
+   * 为什么需要它：Pi 会发 `compaction_start` / `compaction_end`（`agent-session.d.ts:62-82`），
+   * 但我们此前**完全没接**——压缩对用户是不可见的：界面只看到“回复卡住”或“被截断”。
+   * 实测代价（01-background §2）：一个会话因为该压不压，连续 6 轮回复被截断，用户完全不知道原因。
+   *
+   * `phase: "start"` 时只有 `reason`；`"end"` 时带结果（`ok` / `aborted` / `errorMessage`）。
+   * `reason` 直接用 Pi 的类型：`manual`（用户 /compact）/ `threshold`（达阈值）/ `overflow`（溢出恢复）。
+   */
+  | {
+    type: "compaction";
+    phase: "start" | "end";
+    reason: "manual" | "threshold" | "overflow";
+    /** 仅 start 有：这次是不是因为溢出（= 前面已经出过问题） */
+    overflow?: boolean;
+    /** 仅 end 有：是否成功 */
+    ok?: boolean;
+    /** 仅 end 有：被用户 / 系统打断 */
+    aborted?: boolean;
+    /** 仅 end 且失败时有：可读的失败原因 */
+    errorMessage?: string;
+    /** 仅 end 且成功时有：压缩前的 token 数（用于界面说“从 X 降到 Y”） */
+    tokensBefore?: number;
+  };
 
 /** 工具结果里的图片上限：单张字节数与张数（实测 read 出来的图片 13KB–382KB，见 image-input.md）。 */
 export const MAX_TOOL_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -97,6 +122,10 @@ type PiEvent = {
   result?: unknown;
   isError?: unknown;
   durationMs?: unknown;
+  // 压缩事件额外需要的字段（agent-session.d.ts:62-82）；reason/errorMessage 上面已有
+  aborted?: unknown;
+  willRetry?: unknown;
+  reason?: unknown;
 };
 
 /** 一条 assistant message 的稳定键（Pi 给 timestamp；同一轮内唯一）。 */
@@ -173,5 +202,43 @@ export function toStreamEvent(event: unknown): StreamEvent | undefined {
     };
   }
 
+  if (input.type === "compaction_start" || input.type === "compaction_end") {
+    const reason = compactionReasonOf(input.reason);
+    if (reason === undefined) return undefined;
+    if (input.type === "compaction_start") {
+      return { type: "compaction", phase: "start", reason, ...(reason === "overflow" ? { overflow: true } : {}) };
+    }
+    // end：Pi 的契约是 `result` 有值 = 成功；否则看 aborted  / errorMessage
+    // （agent-session.d.ts:75-81）。失败时 errorMessage 可能缺（比如被 abort），
+    // 所以“失败”的判定是 `result === undefined && aborted !== true`。
+    const aborted = input.aborted === true;
+    const hasResult = input.result !== undefined && input.result !== null;
+    const ok = hasResult && !aborted;
+    const errorMessage = typeof input.errorMessage === "string" && input.errorMessage.trim() !== ""
+      ? input.errorMessage.trim()
+      : undefined;
+    const tokensBefore = hasResult ? tokensBeforeOf(input.result) : undefined;
+    return {
+      type: "compaction",
+      phase: "end",
+      reason,
+      ok,
+      aborted,
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
+      ...(tokensBefore !== undefined ? { tokensBefore } : {}),
+    };
+  }
+
   return undefined;
+}
+
+/** Pi 的压缩 retry 分类（agent-session.d.ts:64）；未知值不猜。 */
+function compactionReasonOf(raw: unknown): "manual" | "threshold" | "overflow" | undefined {
+  return raw === "manual" || raw === "threshold" || raw === "overflow" ? raw : undefined;
+}
+
+/** `CompactionResult.tokensBefore`（compaction.d.ts）—— 只在成功时有意义。 */
+function tokensBeforeOf(result: unknown): number | undefined {
+  const value = (result as { tokensBefore?: unknown } | null)?.tokensBefore;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }

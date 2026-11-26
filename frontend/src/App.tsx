@@ -73,6 +73,7 @@ import { originsOf, type ThinkingOrigin } from "./api/thinking-origin";
 import { fetchJsonWithTimeout, failureLogOf, failureTextOf, withTimeout, type LoadFailure, type LoadResult } from "./api/fetch-timeout";
 import { createEventChannel } from "./api/event-channel";
 import { withThinkingSlot } from "./api/thinking-queue";
+import { applyCompactionEvent, compactionLabelOf, IDLE_COMPACTION, reasonTextOf, type CompactionState } from "./api/compaction-state";
 import { TurnInspector } from "./views/SessionHistory";
 import { PeerPanel, type PeerTarget } from "./views/PeerPanel";
 import { NavRail } from "./design/rail";
@@ -750,6 +751,11 @@ export default function App() {
   const streamRef = useRef(createStreamState());   // 本轮块槽位（思考/文本/工具按 contentIndex 归并）
   const [phase, setPhase] = useState<Phase>("waiting");
   const [retry, setRetry] = useState<{ attempt: number; maxAttempts: number; delayMs: number; message: string; startedAt: number } | undefined>();
+  /**
+   * 上下文压缩状态（Task 0041 · P2）。三态纯函数派生（`api/compaction-state.ts`）。
+   * 只在“正在压缩 / 刚失败”时常显；成功后清回 idle（结果在历史的 CompactionCard 里）。
+   */
+  const [compaction, setCompaction] = useState<CompactionState>(IDLE_COMPACTION);
   /**
    * 最近一轮失败前，Pi 自动重试了几次（Task 0007 · A1）。
    * 来源是 `auto_retry_end` 的 `attempt`（Pi CLI 同款：`Retry failed after N attempts`）。
@@ -2219,6 +2225,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     setPhase("waiting");
     setRetry(undefined);
     setRetriedTimes(undefined);   // 换会话/开草稿：上一轮的重试次数不再适用于新会话
+    setCompaction(IDLE_COMPACTION);   // 压缩状态也是**会话级**（frontend/code.md 2.12）：切走即清，不把 A 的失败带到 B
     setTurnStatus(undefined);
     setActiveTool(undefined);
     activeTurnIdRef.current = null;
@@ -2760,6 +2767,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
           setRetry(undefined);
           return;
         }
+        if (payload.type === "compaction") return applyCompaction(payload);
         applyStreamMessage(payload);
         return;
       case "refresh-groups":
@@ -2878,6 +2886,20 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     busyRef.current = true;
     busySessionRef.current = current.current;
     setBusy(true);
+  }
+
+  /**
+   * 上下文压缩（Task 0041 · P2）：状态条的唯一入口。
+   *
+   * 为什么要它：此前压缩对用户完全不可见（Pi 发了 compaction_start/end，我们没接）——
+   * 实测有一个会话因为该压不压，连续 6 轮回复被截断，而用户只看到“达到输出上限”。
+   *
+   * 只做一件事：把事件交给纯函数派生状态；**不改 messages / 不碰流式状态机**
+   * （压缩不产生消息，成功后的结果由服务端落的 compaction entry 在历史里呈现）。
+   */
+  function applyCompaction(payload: AgentEvent): void {
+    lastEventAtRef.current = Date.now();
+    setCompaction((previous) => applyCompactionEvent(previous, payload as never));
   }
 
   /** 焦点会话的终态：收尾生成态、按需重载消息。非焦点的终态已由路由转成完成提示。 */
@@ -3295,6 +3317,7 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
     setPhase("waiting");
     setRetry(undefined);
     setRetriedTimes(undefined);   // 新回合：重新计数（上一轮试了几次与本轮无关）
+    setCompaction(IDLE_COMPACTION);   // 新回合：上一次的压缩失败提示不再适用
     setTurnStatus(undefined);
     setActiveTool(undefined);
     lastEventAtRef.current = Date.now();   // 发送即重置心跳：否则"页面静置>60s 后发送"会被误判成丢轮
@@ -4964,6 +4987,40 @@ const THINKING_LOAD_TIMEOUT_MS = 10_000;
                 "这个能不能就直接在 session bar 里面呢？就跟之前在 turnstatusbar 里面一样，
                  而 Response bar 里面的还不能取消，相当于是在 session bar 里面添加！"
                 所以 `turn` 只在生成中传（空闲时整段不渲染）；ResponseBar 那边一行不改。 */}
+            {/*
+              压缩状态条（Task 0041 · P2）。三态纯函数派生（`api/compaction-state.ts`）。
+
+              为什么放这里：它与 tailError / 排队区同属“输入区之上的一条即时提示”
+              （`frontend-spec` §5：“输入区是一个对象”）。
+
+              三态语义（`frontend/code.md` 2.32）：
+                · idle      → 不渲染（用 early return 判，不用 CSS 遮）
+                · running   → 中性提示，告诉用户“正在压缩，为什么”
+                · failed    → 失败色 + 原因（原因来自 Pi 的 errorMessage；缺失时有兜底文案）
+
+              不做的：不提供“取消压缩”按钮（Pi 的 `abortCompaction` 有，但实测压缩次数极少、
+              且用户主动取消会让上下文继续贴着上限 → 更容易溢出）；失败时也不自动重试
+              （Task 0041 `02-design.md` §5：概率不支持，做了反而引入新状态）。
+            */}
+            {compaction.kind !== "idle" && (
+              <div
+                data-testid="compaction-status"
+                role="status"
+                aria-live="polite"
+                className={`mb-1 flex items-start gap-2 rounded-panel px-3 py-2 text-micro ring-1 ${compaction.kind === "failed"
+                  ? "bg-danger-soft text-danger ring-danger/30"
+                  : "bg-running-soft text-ink-700 ring-line"}`}
+              >
+                <span className="shrink-0 font-medium">
+                  {compaction.kind === "running" ? "压缩上下文" : "压缩失败"}
+                </span>
+                <span className="min-w-0 flex-1">
+                  {compaction.kind === "running"
+                    ? reasonTextOf(compaction.reason)
+                    : compaction.message}
+                </span>
+              </div>
+            )}
             <div data-testid="composer-dock" className={`${isMobile ? "hidden" : ""} px-1 pb-1`}>
               <SessionBar totals={sessionTotals}
                 {...(meta?.context !== undefined ? { context: meta.context } : {})}

@@ -221,4 +221,12 @@ export const CHANNEL_EVENT_NAMES = [
   "message_start", "message_end", "delta", "thinking", "thinking_end",
   "tool_call", "tool_start", "tool_update", "tool_result", "retrying", "retry_end",
   "review_open",
+  /**
+   * 上下文压缩（Task 0041 · P2）。
+   *
+   * 必须列在这里：SSE 兼容路径靠这张清单 `addEventListener`，**漏一个事件名 =
+   * 那条事件在 sse 下静默丢失**（`test/event-channel.test.mjs` T28-18c 会从服务端源码
+   * 反向校验这张表，漏了就变红）。
+   */
+  "compaction",
 ] as const;

@@ -1488,12 +1488,24 @@ export async function queueSessionInput(
 /** 压缩上下文（Pi `compact()`：会先 abort 当前 run）。 */
 export async function compactSession(agentId: string, sessionId: string): Promise<{ ok: true; summary: string } | { ok: false; message: string }> {
   const state = stateOf(agentId).sessions.get(sessionId);
-  if (state === undefined) return { ok: false, message: "找不到这个会话" };
+  if (state === undefined) {
+    // 失败留痕（Task 0041 · P3）：以前这里只有一句返回值，事后查不到“为什么没压成功”。
+    void log.warn("agent-host", "compactSession", "压缩失败：会话不在内存态", { sessionId, agentId });
+    return { ok: false, message: "找不到这个会话" };
+  }
   try {
     const result = await state.session.compact();
     return { ok: true, summary: result.summary };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    const message = error instanceof Error ? error.message : String(error);
+    // 失败必须可观察（backend/code.md 2.9）：
+    //   · 实测代价（01-background §2）：一个会话因为压缩没发生 / 压不动，连续 6 轮回复被截断，
+    //     而日志里**一条都没有**——事后完全无法定位。
+    //   · 只写事实与 ID，不写摘要正文 / 凭据（backend/code.md 2.10）。
+    void log.warn("agent-host", "compactSession", "压缩失败", {
+      sessionId, agentId, details: { message },
+    });
+    return { ok: false, message };
   }
 }
 
