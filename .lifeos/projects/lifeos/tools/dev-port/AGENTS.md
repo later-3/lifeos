@@ -26,11 +26,10 @@ W="$HOME/.lifeos/agents/<agentId>/projects/<projectId>/tasks/<NNNN-标题>/evide
 # 1) worktree 建在该 Task 的 evidence/ 下（协议 §3.7/§12）
 git -C /Users/xulater/Code/lifeos worktree add "$W" -b dev/$T-<短名>
 
-# 2) 新 worktree 里没有依赖和子模块：先补齐，否则后端起不来
-#    pi/ 是固定 commit 的 submodule；node_modules 是安装产物（不在 git 里）
+# 2) 新 worktree 里没有依赖：先补齐，否则后端起不来
+#    Pi 是 npm 依赖（2026-11-25 起，不再是 submodule）；node_modules 是安装产物（不在 git 里）
 cd "$W"
-git submodule update --init            # 拉 pi/（约 449MB，慢）
-pnpm install --prefer-offline          # 装依赖（约 616MB）
+pnpm install --prefer-offline          # 装依赖（含 @earendil-works/pi-*，约 616MB）
 #    演练/离线时可以先软链主仓的，确认能跑再补装：
 #    ln -s /Users/xulater/Code/lifeos/node_modules node_modules
 
@@ -94,57 +93,40 @@ node scripts/dev-port.mjs release --task 0032      # 登记表里唯一匹配时
 - 号段耗尽时**显式报错**，不返回保留号也不越界；
 - `list --prune` 清掉"已没有进程在听"的幽灵条目；`release` 只删登记，不杀进程（杀进程用 `pnpm stop --port=`）。
 
-## 常见失败：`pi` submodule 拉不下来（新 worktree 起不来）
+## 常见失败：新 worktree 里后端起不来（`Cannot find module`）
 
 **症状**：新 worktree 里 `src/agent-host.ts` 报
 `Cannot find module '@earendil-works/pi-coding-agent'`，或后端启动即崩。
 
-**为什么**：`git worktree add` **只检出主仓的树，不初始化 submodule**。新 worktree 的 `pi/` 是一个空目录，
-而 `src/**` 里所有 `@earendil-works/pi-*` 都指向 `pi/packages/*/dist/index.js`。实测（2026-11-16，Task 0017）：
+**为什么**：`git worktree add` **只检出主仓的树，不装依赖** —— `node_modules` 在 `.gitignore` 里，
+新 worktree 里根本没有它。Pi 从 2026-11-25 起是 **npm 依赖**（`@earendil-works/pi-{ai,agent-core,coding-agent}@1.6.0`），
+与其他依赖一样来自 `pnpm install`，**没有 submodule 这一步了**。
 
 ```
 git worktree add /tmp/test HEAD
-ls /tmp/test/pi            →  空目录
-git submodule status       →  -90d863f7… pi        ← 前面的 `-` = 未初始化
+ls /tmp/test/node_modules      →  不存在
 ```
 
-缺的不止源码，一共三样（都是 pi 的 `.gitignore` 内产物，不在任何 commit 里）：
+**正常解法**：
 
-| 缺什么 | 大小 | 为什么不在 |
-|---|---|---|
-| `pi/` 源码（submodule 内容） | 449 M | submodule 是独立仓，worktree 不拉 |
-| `pi/node_modules` | 352 M | `pi/.gitignore:1` |
-| `pi/packages/*/dist` | 26 M | `pi/.gitignore:8`（构建产物） |
+```bash
+cd "$W"
+pnpm install --prefer-offline          # 约 616MB
+```
 
-**正常解法**：`git submodule update --init`（约 449 M，慢）。
-
-**拉不下来时**（代理/网络中断，实测报 `fatal: early EOF` / `fetch-pack: invalid index-pack output`）：
-**复用主区已有的对象库**，几秒完成，且 commit 与主区完全一致：
+**快一点**（只验证、不长期开发）：软链主区的依赖。它们都在 `.gitignore` 里，不是源码。
 
 ```bash
 W="<本 Task 的 worktree>"
-REF=/Users/xulater/Code/lifeos          # 主区
-cd "$W"
-# 1) 只复制对象索引，不复制 blob（248M 对象库 → 几十 KB）
-git clone --shared "$REF/.git/modules/pi" pi
-git -C pi checkout "$(git -C "$REF/pi" rev-parse HEAD)"    # 与主区同一 commit
-# 2) 依赖与构建产物软链到主区（都是 gitignore 内产物，不是源码）
-ln -sfn "$REF/pi/node_modules" pi/node_modules
-for p in ai agent coding-agent tui chord telemetry codemode mcp durable env; do
-  [ -d "$REF/pi/packages/$p/dist" ] && ln -sfn "$REF/pi/packages/$p/dist" "pi/packages/$p/dist"
-  [ -d "$REF/pi/packages/$p/node_modules" ] && ln -sfn "$REF/pi/packages/$p/node_modules" "pi/packages/$p/node_modules"
-done
-# 3) 主仓依赖照装（这一步正常走 pnpm install）
-pnpm install --prefer-offline
+ln -sfn /Users/xulater/Code/lifeos/node_modules "$W/node_modules"
 ```
 
-**注意**：`--shared` 创建的 pi 是**独立克隆**（`.git` 指向主区对象库），所以 `pi` 在 worktree 里是
-未跟踪目录。合并前确认 **没有把 `pi/` 加进索引**（`git status` 里它应该是 `?? pi/` 之外的正常状态；
-如果误 `git add` 了，`git reset HEAD pi` 并删掉 `pi/.git`）。Task 0017 实测踩过一次
-（`git add -A` 把 pi 加进了暂存区）。
+**注意**：软链的 `node_modules` 是**未跟踪**的。合并前确认 `git status` 里没有它；
+不要用 `git add -A`（会把软链记成 `120000` / 把 `pi` 之类记进去 —— 2026-11-25 实测踩过，
+现在 `archiveIfDirty` 的后置守卫会拦，但别依赖它）。
 
-**别做**：`git checkout -- pi`、`rm -rf pi` 之后再 `git submodule update`（可能又撞网络）。
-主区的 `pi/` 是**用户的资产**，不是你的工作区（`development-harness.md` §7.1b 的命令白名单）。
+**别做**：`rm -rf node_modules` 之后指望 `git checkout` 能恢复；`node_modules` 从来不在 git 里
+（`development-harness.md` §7.1b 的命令白名单就是这么来的 —— 主区的 `node_modules` 是用户的资产）。
 
 ## 兜底：supervisor 启动自检
 

@@ -34,7 +34,7 @@
 ## 工程原则（摘要；详细条文归 `.lifeos/projects/lifeos/specs/code/`）
 
 - TypeScript 保持严格类型，不用 `any` 规避设计问题；不忽略输入校验、路径边界、并发与持久化错误。
-- **以 Pi SDK 为底座**：复用它的公开接口与默认数据结构，不重复实现 Session、Agent、Tool；修改 `pi/` 前完整阅读并遵守 `pi/AGENTS.md`；`pi/` 是固定 Commit 的 Submodule。
+- **以 Pi SDK 为底座**：复用它的公开接口与默认数据结构，不重复实现 Session、Agent、Tool；用 Pi 的新能力先读类型声明 `node_modules/@earendil-works/*/dist/*.d.ts`（34 个）与包内文档 `node_modules/@earendil-works/pi-coding-agent/docs/`（42 篇）；Pi 以 **npm 依赖**引入（`@earendil-works/pi-{ai,agent-core,coding-agent}@1.6.0`），不是 submodule，也没有 fork。
 - 运行数据写入必须具备原子性或明确的冲突保护；不把凭据、Cookie、Token、模型密钥或正式数据提交进 Git。
 - **只放现在要用的目录与文件**；不为设想中的需求预建空壳；目录含义由该目录的 `AGENTS.md` 说明。
 - 保留用户已有改动；不使用 `git reset --hard`、`git clean -fd`、`git checkout .` 等破坏工作区的命令；只暂存当前任务明确修改的文件，不使用 `git add .`。

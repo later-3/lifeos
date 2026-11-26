@@ -22,8 +22,9 @@
 
 ### 2.3 Pi SDK 复用白名单：先找 SDK 公开接口再自写
 
-- 规则：会话（SessionManager）、模型（ModelRuntime）、设置（SettingsManager）与事件名沿用 Pi；不自研会话/模型/事件命名；用 Pi 新能力先读 `pi/AGENTS.md` 与对应包文档。
-- 依据：底座约束（`knowledge/architecture/directory-structure.md`/`foundation.md` + 底座目录 `pi/`）；用户拍板（方案 E：Pi 的 tools/rules 原样回填）。
+- 规则：会话（SessionManager）、模型（ModelRuntime）、设置（SettingsManager）与事件名沿用 Pi；不自研会话/模型/事件命名；用 Pi 新能力先读类型声明 `node_modules/@earendil-works/*/dist/*.d.ts`（与运行时同版本）与 `node_modules/@earendil-works/pi-coding-agent/docs/`（42 篇包内文档）。
+- 依据：底座约束（`knowledge/architecture/directory-structure.md`/`foundation.md`）；用户拍板（方案 E：Pi 的 tools/rules 原样回填）。
+- 2026-11-25 更新：Pi 由 submodule 改为 **npm 依赖 1.6.0**（`b662503`），依据是 fork 无定制、上游 API 全兼容、npm 包自带 `dist/providers/data`（43 JSON，消除网络依赖）。查 API 一律指向已安装包的 `dist/*.d.ts` —— 它与运行时**同版本**，比源码仓更不会说谎。
 
 ### 2.4 装配每轮重读会话指针；Task 切换只影响下一轮
 

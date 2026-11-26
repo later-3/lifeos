@@ -10,11 +10,12 @@ frontend/   Vite + React SPA（纯静态产物，不含业务事实）
    │  HTTP/JSON + SSE
 src/        后端：Node 进程，HTTP + 事件流（Hono）
    │
-pi/         Pi SDK（子模块，固定 commit；Agent 运行时）
+node_modules/@earendil-works/
+            Pi SDK（npm 依赖 1.6.0；Agent 运行时）
 ```
 
 - 后端是**唯一事实源**；前端刷新即从后端重取，不依赖内存状态。
-- 同仓布局：`src/`（后端）· `frontend/`（SPA）· `docs/` · `.lifeos/`（家目录模板）· `pi/`（子模块）。
+- 同仓布局：`src/`（后端）· `frontend/`（SPA）· `docs/` · `.lifeos/`（家目录模板）。Pi SDK 不在仓里，是 **npm 依赖**（`@earendil-works/pi-{ai,agent-core,coding-agent}@1.6.0`）；2026-11-25 之前是 submodule `pi/`，现已移除。
 
 ## 2 Agent 运行时
 
@@ -106,7 +107,7 @@ install-receipt.json    安装收据
 
 ## 8 验收
 
-- 行为级：`pi/packages/evals`（Pi 自带，按需使用）。
+- 行为级：Pi 的 evals（不在 npm 包里；需要时到上游仓 `pi/packages/evals` 按需拉，见 `~/.lifeos/reference/pi-upstream-src`）。
 - 真链路：浏览器 + `curl`，每一步给出命令与数字；前端另有四道闸（token / primitive / UI 契约 / 截图基线），见 [`frontend-spec.md`](../../specs/frontend-development/frontend-spec.md) §9。
 
 ## 9 明确不做
