@@ -333,3 +333,46 @@ test("T5b 深层子检出已有 commit 时也不记成 gitlink（后置守卫，
     .filter((line) => line.startsWith("160000") || line.startsWith("120000"));
   assert.deepEqual(malformed, [], `家目录仓索引里不该有 gitlink(160000)，实际：${JSON.stringify(malformed)}`);
 });
+
+/*
+ * T5c：「历史里已经有一条 gitlink」不该阻断未来的存档（reviewer 第 3 轮 P1 回归）。
+ *
+ * 第一版守卫读**全量索引**（`ls-files -s | grep 160000`），于是只要 HEAD 里有一条历史遗留的 gitlink，
+ * 守卫就每次都命中；而 `git reset` 对**已提交**的条目是 no-op ⇒ 存档**永久失效**。
+ * 真实家目录就是这个状态（`040dc4d` 带入 1 条），当时有 10 条脏改动全部进不了基线。
+ *
+ * 夹具：先让仓里**真的带着一条 gitlink**（造子仓 + add 它），再写脏文件建 Task。
+ * 断言两件：① 建 Task 成功；② 该存档的**确实进了基线**（历史里那条 gitlink 不阻断它）。
+ * 活性：把守卫改回读全量索引 → ② 立刻红（存档被跳过）。
+ */
+test("T5c 历史遗留的 gitlink 不阻断新的存档（守卫只看本次暂存的路径）", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+
+  // 在基线里造一条历史遗留的 gitlink（等价于真实家目录 040dc4d 那条）
+  const legacy = join(home, "agents", "lifeosagent", "projects", "workspace", "legacy-checkout");
+  await mkdir(legacy, { recursive: true });
+  await git(legacy, ["init", "-q", "-b", "main"]);
+  await writeFile(join(legacy, "a.md"), "子仓\n");
+  await git(legacy, ["add", "-A"]);
+  await git(legacy, ["commit", "-q", "-m", "sub"]);
+  // 强行 add 成 gitlink（`git add` 通常拒绝对内嵌仓这么做，所以用 update-index）
+  await git(home, ["update-index", "--add", "--cacheinfo", `160000,${(await git(legacy, ["rev-parse", "HEAD"])).trim()},agents/lifeosagent/projects/workspace/legacy-checkout`]);
+  await git(home, ["commit", "-q", "-m", "带一条历史 gitlink"]);
+  const before = (await git(home, ["ls-files", "-s"])).split("\n").filter((l) => l.startsWith("160000"));
+  assert.equal(before.length, 1, `夹具自检：HEAD 里应先有 1 条 160000，实际 ${before.length}`);
+
+  // 主区脏（脏在收窄工作区会检出的路径里）
+  const dirtyPath = join(home, "agents", "lifeosagent", "projects", "workspace", "cases", "存档标记c.md");
+  await mkdir(join(home, "agents", "lifeosagent", "projects", "workspace", "cases"), { recursive: true });
+  await writeFile(dirtyPath, "应该进基线\n");
+
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const created = await createTask(ctx, { title: "存档守卫c", category: "G", type: "general" });
+  assert.ok(!("code" in created), `建 Task 不该失败：${JSON.stringify(created)}`);
+
+  const head = (await git(home, ["rev-parse", "HEAD"])).trim();
+  const inHistory = (await git(home, ["ls-tree", "-r", "--name-only", head]))
+    .split("\n").filter((f) => f.endsWith("存档标记c.md"));
+  assert.equal(inHistory.length, 1, `历史里有 gitlink 不该阻断存档，实际基线里没有它（HEAD=${head.slice(0, 7)}）`);
+});

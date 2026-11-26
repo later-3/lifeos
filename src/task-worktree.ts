@@ -173,25 +173,35 @@ async function archiveIfDirty(repo: string): Promise<{ archived: boolean; archiv
   await git(repo, ["add", "-A", "--ignore-errors", "--", ".", ...excludes]).catch(() => "");
 
   /*
-   * **后置守卫：查索引事实，不看名字与深度**（reviewer 4.1）。
+   * **后置守卫：查「本次进暂存区的路径」的 mode，不看名字、不看深度、不看全量索引**（reviewer 4.1 + 第 3 轮 P1）。
    *
-   * 为什么必须这一道：`subCheckoutsOf` 只看**顶层**，而真实家目录里子检出能到 8 层
-   * （实测 105 个 .git）—— 有个 Task 下的 `repo-baseline` 就不在 .gitignore 的
-   * `tasks/<N>/repo` / `home` / `worktree` 这套名单里，于是它作为 gitlink（160000）被写进了家目录仓历史
-   * （`040dc4d`，2026-11-25 实测）。靠名字/深度去枚举必然继续漂（architecture 2.21）；
-   * `ls-files -s` 是**索引事实**，换名字、换深度都拦得住，且同时堵住 todo #50 的软链形态（120000）。
+   * 为什么需要这一道：`subCheckoutsOf` 只看**顶层**，而真实家目录里子检出能到 8 层
+   * —— 某个 Task 下的 `repo-baseline` 就不在 .gitignore 的
+   * `tasks/<N>/repo` / `home` / `worktree` 这套名单里，于是它作为 gitlink（160000）
+   * 被写进了家目录仓历史（`040dc4d`，2026-11-25 实测）。靠名字/深度枚举必然继续漂（architecture 2.21）；
+   * `ls-files -s` 的 mode 是索引事实，换名字、换深度都拦得住，且同时堵住 todo #50 的软链形态（120000）。
+   *
+   * 为什么**不能**读全量索引（第一版这么写，是个现在就在生效的回归）：
+   * 历史里已有的 gitlink 会让守卫每次都命中，而 `git reset` 对**已提交**的条目是 no-op
+   * ⇒ 存档**永久失效**：真实家目录里 10 条脏改动全不进基线，报的原因还指向错误的地方。
+   * 职责边界：**别再把新的带进去**是守卫的事；**历史里已有的**由 `git rm --cached` 清（用户动作）。
    */
-  const malformed = await malformedIndexEntries(repo);
+  const staged0 = (await git(repo, ["diff", "--cached", "--name-only"])).trim();
+  if (staged0 === "") return { archived: false };
+
+  const malformed = await malformedAmong(repo, staged0.split("\n"));
   if (malformed.length > 0) {
+    // 只撤出畸形的那几条，**剩下的照常提交**（不是整批放弃）。
     await git(repo, ["reset", "-q", "--", ...malformed]).catch(() => "");
+  }
+  const staged = (await git(repo, ["diff", "--cached", "--name-only"])).trim();
+  if (staged === "") {
     return {
       archived: false,
-      archiveSkipped: `索引里有 ${malformed.length} 条畸形条目（子检出/软链），已撤出、未提交：${malformed.slice(0, 3).join(", ")}${malformed.length > 3 ? " …" : ""}`,
+      archiveSkipped: `本次改动全是畸形条目（子检出/软链），已撤出、未提交：${malformed.slice(0, 3).join(", ")}${malformed.length > 3 ? " …" : ""}`,
     };
   }
 
-  const staged = (await git(repo, ["diff", "--cached", "--name-only"]).catch(() => "")).trim();
-  if (staged === "") return { archived: false };
   try {
     await git(repo, [
       "-c", "user.name=Life OS", "-c", "user.email=lifeos@localhost",
@@ -208,19 +218,24 @@ async function archiveIfDirty(repo: string): Promise<{ archived: boolean; archiv
 }
 
 /**
- * 索引里有没有**不该进这个仓**的条目：gitlink（160000，别人的检出）与软链（120000）。
+ * 给定的这批路径里，哪些在索引里是 **gitlink（160000）或软链（120000）**。
  *
- * 判据用 `ls-files -s` 的 mode 列 —— 索引事实，与路径名和目录深度无关。
- * 返回条目**路径**（撤出用），不是整行。
+ * 判据用 `ls-files -s` 的 mode 列 —— 索引事实，与路径名和目录深度无关；
+ * 同时堵住 todo #50 的软链形态。只查**传进来的路径**，不扫全量索引（见调用点的职责边界）。
+ *
+ * `core.quotePath=false` 是必须的：否则中文路径在输出里是八进制转义（`"\346\234..."`），
+ * 与 `diff --cached` 给的原始路径永远对不上，等于守卫静默失效。
  */
-async function malformedIndexEntries(repo: string): Promise<string[]> {
+async function malformedAmong(repo: string, paths: string[]): Promise<string[]> {
+  const want = new Set(paths.filter((p) => p !== ""));
+  if (want.size === 0) return [];
   const raw = await git(repo, ["ls-files", "-s"]).catch(() => "");
   const out: string[] = [];
   for (const line of raw.split("\n")) {
     if (line === "") continue;
     const [meta, ...rest] = line.split("\t");
     const path = rest.join("\t");
-    if (path === "" || meta === undefined) continue;
+    if (path === "" || meta === undefined || !want.has(path)) continue;
     const [mode] = meta.split(" ");
     if (mode === "160000" || mode === "120000") out.push(path);
   }
