@@ -72,10 +72,16 @@ test("工具执行 start/update 映射 running；end 才映射结果", () => {
   );
 });
 
-test("不关心的事件一律 undefined（生命周期/压缩/队列都不该变成界面事件）", () => {
+test("不关心的事件一律 undefined（生命周期/队列不该变成界面事件）", () => {
+  /*
+   * 注意：**`compaction_start/end` 在 Task 0041 · P2 之后不再是"不关心"** ——
+   * 它们现在会映射成 `{ type: "compaction", phase, reason, ... }`，
+   * 因为压缩必须对用户可见（实测代价见 Task 0041 `01-background.md` §2：
+   * 一个会话因该压不压连续 6 轮被截断，而用户完全不知道是压缩问题）。
+   * 它们自己的映射断言在 `test/compaction-events.test.mjs`。
+   */
   for (const event of [
     { type: "agent_start" }, { type: "agent_end", messages: [] }, { type: "turn_start" },
-    { type: "compaction_start", reason: "threshold" },
     { type: "bash_execution_update", delta: "…" }, { type: "message_start", message: {} },
     { type: "message_update" }, { type: "message_update", assistantMessageEvent: { type: "done" } },
     {}, undefined, null,

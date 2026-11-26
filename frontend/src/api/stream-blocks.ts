@@ -19,7 +19,14 @@ export type StreamEvent =
   | { type: "tool_update"; id: string }
   | { type: "tool_result"; id: string; isError: boolean; text: string; truncated: boolean; durationMs?: number; images?: Array<{ data: string; mimeType: string }> }
   | { type: "retrying"; attempt: number; maxAttempts: number; delayMs: number; message: string }
-  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string };
+  | { type: "retry_end"; success: boolean; attempt?: number; finalError?: string }
+  /**
+   * 上下文压缩（Task 0041 · P2）。与后端 `src/stream-events.ts` 的同名事件一一对应。
+   *
+   * 形状定义在 `api/compaction-state.ts`（那里才是它的消费者），这里只把它纳入流事件的联合，
+   * 让 `AgentEvent` 能收窄到这个类型。
+   */
+  | { type: "compaction"; phase: "start" | "end"; reason: "manual" | "threshold" | "overflow"; overflow?: boolean; ok?: boolean; aborted?: boolean; errorMessage?: string; tokensBefore?: number };
 
 /** 界面上的"正在干什么"阶段（工作指示文案由 Message.tsx 决定）。 */
 export type Phase = "waiting" | "thinking" | "tool" | "text";
