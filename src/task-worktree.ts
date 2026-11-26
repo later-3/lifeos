@@ -62,6 +62,11 @@ export type WorktreeResult = {
   /** 建之前主区是不是脏的（脏就会自动存档一次）。 */
   archived?: boolean;
   /**
+   * 存档没成功的原因（降级继续：工作区照建，基线可能旧）。
+   * 有值 = 主区里那些改动**没有**进基线，交付时要说明。
+   */
+  archiveSkipped?: string;
+  /**
    * 提交身份没写进去的原因（协议 §3.7「提交与署名」）。
    * 有值 = 这个工作区里的提交会落成用户的全局身份，Agent 必须显式传 `-c`。
    */
@@ -118,21 +123,63 @@ async function baseRefOf(repo: string): Promise<string> {
 }
 
 /**
+ * 直接子目录里带着 `.git` 的，是**独立检出**（内容仓 `content/`、`reference/` 里的外部克隆…），
+ * 一律不作为家目录仓的内容参与 `git add -A`。
+ *
+ * 为什么按结构事实、不写死名字（architecture 2.21 同一条道理）：
+ * - 写死 `content` → 下一个子检出（`reference/` 里 `git init` 而不 commit 的克隆）再炸一次；
+ * - 结构判据换名字照样拦得住，且不需要有人记得来改名单。
+ *
+ * 为什么要排除而不是只兜底（2026-11-24 实测，reviewer `phases/S2ab-archive-fix.md`）：
+ * - 子仓 **0 commit** 时 `git add -A` 是**整体 fatal**（`'content/' does not have a commit checked out`），
+ *   **一条都不入暂存区** —— 此时「catch 住继续 commit」= 存档静默丢失，不是"跳过一个子仓"；
+ * - 子仓**有 commit** 时 `git add -A` 成功，但会把内容记成 `160000` gitlink 写进协议仓历史，
+ *   且事后 `status` 只留 `? content`，看不出发生过什么。`--ignore-errors` 单独用堵不住这一支。
+ */
+async function subCheckoutsOf(repo: string): Promise<string[]> {
+  const entries = await readdir(repo, { withFileTypes: true }).catch(() => []);
+  const found: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    if (await stat(join(repo, entry.name, ".git")).then(() => true, () => false)) found.push(entry.name);
+  }
+  return found;
+}
+
+/**
  * 建工作区前把主区存档（脏就本地提交一次）。
  *
  * 为什么必须：`git worktree add` **只从 commit 检出**——主区里还没提交的文档，
  * 在工作区里就是不存在。不存档就会让 Agent 拿到一份“少了几份文件”的家目录，而且不报错。
  * 提交是本地存档（不推送、不合并），与“合并只由用户触发”不冲突。
+ *
+ * **失败不阻断建工作区**（2026-11-24，C333）：这一条是「新建 Task」链路上的**唯一存档步骤**，
+ * 而它的调用方 `createTaskWorktrees` 一路没有 catch。子检出导致 `git add -A` fatal 时，
+ * 用户点「新建 Task」会失败并收到 `'content/' does not have a commit checked out` ——
+ * 与建 Task 毫无语义关联，用户不可能猜到要删 `~/.lifeos/content/.git`。
+ * 所以：**尽力存档；存不下就把原因带回去**（降级继续，基线旧是协议允许的，整条断不可接受）。
  */
-async function archiveIfDirty(repo: string): Promise<boolean> {
+async function archiveIfDirty(repo: string): Promise<{ archived: boolean; archiveSkipped?: string }> {
   const status = (await git(repo, ["status", "--porcelain"])).trim();
-  if (status === "") return false;
-  await git(repo, ["add", "-A"]);
-  await git(repo, [
-    "-c", "user.name=Life OS", "-c", "user.email=lifeos@localhost",
-    "commit", "-q", "-m", "chore: 建 Task 工作区前存档（自动）",
-  ]);
-  return true;
+  if (status === "") return { archived: false };
+  const subCheckouts = await subCheckoutsOf(repo);
+  const excludes = subCheckouts.map((name) => `:!${name}`);
+  try {
+    // `--ignore-errors` 是**兜底**（pathspec 之外还有别的子检出形态时不让整批失败）；
+    // 排除才是**主手段**——两者缺一，A 链或 B 链总有一条漏。
+    await git(repo, ["add", "-A", "--ignore-errors", "--", ".", ...excludes]);
+    await git(repo, [
+      "-c", "user.name=Life OS", "-c", "user.email=lifeos@localhost",
+      "commit", "-q", "-m", "chore: 建 Task 工作区前存档（自动）",
+    ]);
+    return { archived: true };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.split("\n")[0] ?? "" : String(error);
+    return {
+      archived: false,
+      archiveSkipped: `主区存档未完成（工作区照建，基线可能旧）：${detail.slice(0, 200)}`,
+    };
+  }
 }
 
 async function writeMarker(worktreePath: string, marker: WorktreeMarker): Promise<void> {
@@ -163,7 +210,7 @@ export async function createHomeWorktree(input: {
   // 裸 `task/0004` 会让两个 Agent 的 0004 撞在同一个分支上。
   const branch = `task/${input.agentId}/${input.projectId}/${input.taskId}`;
   const base = await baseRefOf(home);
-  const archived = await archiveIfDirty(home);
+  const archiving = await archiveIfDirty(home);
   await git(home, ["worktree", "add", "--no-checkout", path, "-b", branch, base]);
   try {
     // 收窄：只检出本 Task（Task 0004 · P2）。不传 taskDirName 时保持旧形态（存量工作区）。
@@ -184,7 +231,12 @@ export async function createHomeWorktree(input: {
       kind: "home", taskId: input.taskId, agentId: input.agentId,
       baseBranch: base, branch, createdAt: new Date().toISOString(),
     });
-    return { path, archived, ...await identitySkipOf(path, input.agentId) };
+    return {
+      path,
+      archived: archiving.archived,
+      ...(archiving.archiveSkipped !== undefined ? { archiveSkipped: archiving.archiveSkipped } : {}),
+      ...await identitySkipOf(path, input.agentId),
+    };
   } catch (error) {
     await removeWorktree(home, path).catch(() => undefined);
     throw error;
@@ -250,6 +302,8 @@ export async function createTaskWorktrees(input: {
   });
   if (home.path !== undefined) created.home = home.path;
   if (home.skipped !== undefined) skipped.push(home.skipped);
+  // 存档没完成也要报出来（工作区已照建，但基线里少了主区那些改动）——不静默降级。
+  if (home.archiveSkipped !== undefined) skipped.push(home.archiveSkipped);
   if (home.identitySkipped !== undefined) skipped.push(home.identitySkipped);
 
   if (input.projectPath !== undefined && input.projectPath !== "") {

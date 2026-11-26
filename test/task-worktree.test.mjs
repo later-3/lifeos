@@ -237,3 +237,49 @@ test("P2-fallback taskDocRootOf 必须命中工作区（不是静默回落主区
   // 用结果反证：主区那份确实不存在（不是"两处都有"）
   assert.equal(await exists(join(task.path, "task.md")), false, "主区不该有 task.md：有它就意味着回落路径也可能为真");
 });
+
+/*
+ * 存档步骤（`archiveIfDirty`）不能成为「建 Task」的单点故障（2026-11-25 · C333）。
+ *
+ * 现场：内容仓 `content/` 是独立 git 仓（S2 · Task 0038）。它 `git init` 之后**还没 commit**
+ * 时，家目录仓的 `git add -A` **整体 fatal**（`'content/' does not have a commit checked out`），
+ * 一条都不入暂存区。而存档是建 Task 链路上的**唯一存档步骤**，往上一路无 catch
+ * ⇒ 用户点「新建 Task」失败，收到一句与建 Task 毫无关系的 git 报错。
+ *
+ * 这条用例锁两件事：
+ *   ① 子检出 0 commit 时，**建 Task 仍然成功**（降级继续，不是整条断）；
+ *   ② 该存档的文档真的进了基线，且 `content/` **没有**被记成 gitlink（`160000`）。
+ * 活性：把 `archiveIfDirty` 里的 pathspec 排除去掉 → ① 立刻红（T5 报 createTask 失败）。
+ */
+test("T5 子检出（content/）未 commit 时建 Task 不失败，且不把子仓记成 gitlink", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+
+  // 造一个"有 .git 但 0 commit"的内容仓（S2 首次发内容之前的真实形态）
+  const content = join(home, "content");
+  await mkdir(content, { recursive: true });
+  await git(content, ["init", "-q", "-b", "main"]);
+  await writeFile(join(content, "a.md"), "子仓内容\n");
+
+  /*
+   * 主区脏，而且要脏在**收窄工作区会检出的路径里**（`agents/` 下）：
+   * 根目录的文件不会进 sparse 检出，拿它断言会得到"没存档"的假红（本用例第一版就踩了这个）。
+   */
+  const dirtyPath = join(home, "agents", "lifeosagent", "projects", "workspace", "cases", "存档标记.md");
+  await mkdir(join(home, "agents", "lifeosagent", "projects", "workspace", "cases"), { recursive: true });
+  await writeFile(dirtyPath, "应该进基线\n");
+
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const created = await createTask(ctx, { title: "存档守卫", category: "G", type: "general" });
+  assert.ok(!("code" in created), `建 Task 不该失败：${JSON.stringify(created)}`);
+
+  // ② 该存档的**真的在基线 commit 里**（用 git 事实断言，不看工作区检出范围）
+  const baseHead = (await git(home, ["log", "-1", "--format=%H"])).trim();
+  const inHistory = (await git(home, ["ls-tree", "-r", "--name-only", baseHead]))
+    .split("\n").filter((f) => f.endsWith("存档标记.md"));
+  assert.equal(inHistory.length, 1, `该存档的必须进基线，实际：${JSON.stringify(inHistory)}`);
+
+  // ② content 没有被记成 gitlink / 内容
+  const lsFiles = (await git(home, ["ls-files", "-s"])).split("\n").filter((line) => line.includes("content"));
+  assert.deepEqual(lsFiles, [], `content/ 不该进家目录仓，实际：${JSON.stringify(lsFiles)}`);
+});
