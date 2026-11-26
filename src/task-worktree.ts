@@ -162,12 +162,37 @@ async function subCheckoutsOf(repo: string): Promise<string[]> {
 async function archiveIfDirty(repo: string): Promise<{ archived: boolean; archiveSkipped?: string }> {
   const status = (await git(repo, ["status", "--porcelain"])).trim();
   if (status === "") return { archived: false };
-  const subCheckouts = await subCheckoutsOf(repo);
-  const excludes = subCheckouts.map((name) => `:!${name}`);
+  const excludes = (await subCheckoutsOf(repo)).map((name) => `:!${name}`);
+
+  /*
+   * **不靠 `git add` 的退出码决定要不要提交**（reviewer 2026-11-25 实测）：
+   * `--ignore-errors` 让 add「把能加的加进暂存区，但退出码仍非零」——
+   * 靠 catch 判断就等于「add 部分成功、然后放弃提交」，还留下**暂存区脏但没提交**的新状态，
+   * 下次进来再失败一遍。所以：add 的错误吞掉不看，**看暂存区有没有东西**再决定 commit。
+   */
+  await git(repo, ["add", "-A", "--ignore-errors", "--", ".", ...excludes]).catch(() => "");
+
+  /*
+   * **后置守卫：查索引事实，不看名字与深度**（reviewer 4.1）。
+   *
+   * 为什么必须这一道：`subCheckoutsOf` 只看**顶层**，而真实家目录里子检出能到 8 层
+   * （实测 105 个 .git）—— 有个 Task 下的 `repo-baseline` 就不在 .gitignore 的
+   * `tasks/<N>/repo` / `home` / `worktree` 这套名单里，于是它作为 gitlink（160000）被写进了家目录仓历史
+   * （`040dc4d`，2026-11-25 实测）。靠名字/深度去枚举必然继续漂（architecture 2.21）；
+   * `ls-files -s` 是**索引事实**，换名字、换深度都拦得住，且同时堵住 todo #50 的软链形态（120000）。
+   */
+  const malformed = await malformedIndexEntries(repo);
+  if (malformed.length > 0) {
+    await git(repo, ["reset", "-q", "--", ...malformed]).catch(() => "");
+    return {
+      archived: false,
+      archiveSkipped: `索引里有 ${malformed.length} 条畸形条目（子检出/软链），已撤出、未提交：${malformed.slice(0, 3).join(", ")}${malformed.length > 3 ? " …" : ""}`,
+    };
+  }
+
+  const staged = (await git(repo, ["diff", "--cached", "--name-only"]).catch(() => "")).trim();
+  if (staged === "") return { archived: false };
   try {
-    // `--ignore-errors` 是**兜底**（pathspec 之外还有别的子检出形态时不让整批失败）；
-    // 排除才是**主手段**——两者缺一，A 链或 B 链总有一条漏。
-    await git(repo, ["add", "-A", "--ignore-errors", "--", ".", ...excludes]);
     await git(repo, [
       "-c", "user.name=Life OS", "-c", "user.email=lifeos@localhost",
       "commit", "-q", "-m", "chore: 建 Task 工作区前存档（自动）",
@@ -180,6 +205,26 @@ async function archiveIfDirty(repo: string): Promise<{ archived: boolean; archiv
       archiveSkipped: `主区存档未完成（工作区照建，基线可能旧）：${detail.slice(0, 200)}`,
     };
   }
+}
+
+/**
+ * 索引里有没有**不该进这个仓**的条目：gitlink（160000，别人的检出）与软链（120000）。
+ *
+ * 判据用 `ls-files -s` 的 mode 列 —— 索引事实，与路径名和目录深度无关。
+ * 返回条目**路径**（撤出用），不是整行。
+ */
+async function malformedIndexEntries(repo: string): Promise<string[]> {
+  const raw = await git(repo, ["ls-files", "-s"]).catch(() => "");
+  const out: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (line === "") continue;
+    const [meta, ...rest] = line.split("\t");
+    const path = rest.join("\t");
+    if (path === "" || meta === undefined) continue;
+    const [mode] = meta.split(" ");
+    if (mode === "160000" || mode === "120000") out.push(path);
+  }
+  return out;
 }
 
 async function writeMarker(worktreePath: string, marker: WorktreeMarker): Promise<void> {

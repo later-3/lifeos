@@ -279,7 +279,57 @@ test("T5 子检出（content/）未 commit 时建 Task 不失败，且不把子�
     .split("\n").filter((f) => f.endsWith("存档标记.md"));
   assert.equal(inHistory.length, 1, `该存档的必须进基线，实际：${JSON.stringify(inHistory)}`);
 
-  // ② content 没有被记成 gitlink / 内容
-  const lsFiles = (await git(home, ["ls-files", "-s"])).split("\n").filter((line) => line.includes("content"));
-  assert.deepEqual(lsFiles, [], `content/ 不该进家目录仓，实际：${JSON.stringify(lsFiles)}`);
+  /*
+   * ② 索引里**一条畸形条目都不能有**（reviewer P2-2：这条断言必须独立，不能靠 pathspec 顺手兜住）。
+   *
+   * 判据是 `ls-files -s` 的 mode 列，**不看路径名** —— 第一版用 `line.includes("content")` 是名字判据，
+   * 而真实家目录里有 `agents/.../knowledge/content-platform-search-tools.md` 这种正常文件，
+   * 名字判据会把它误判成违规（也会漏掉改了名字的子检出）。
+   * 任何 `160000`（gitlink）或 `120000`（软链）都算失败。
+   */
+  const malformed = (await git(home, ["ls-files", "-s"]))
+    .split("\n")
+    .filter((line) => line.startsWith("160000") || line.startsWith("120000"));
+  assert.deepEqual(malformed, [], `家目录仓索引里不该有 gitlink(160000)/软链(120000)，实际：${JSON.stringify(malformed)}`);
+});
+
+/*
+ * T5b：子检出**已有 commit** 的形态（链条 B）。
+ *
+ * 与 T5 分开的原因：T5 的"0 commit"形态靠 `git add` 直接 fatal 也能被兜住（reproducible 但证明力弱），
+ * 而"有 commit"的形态 `git add` 是**成功**的 —— 只有后置守卫（查 `ls-files -s` 的 160000）拦得住。
+ * 两条分开，守卫失效时才能看出是哪一支漏了。
+ *
+ * 现场（reviewer 2026-11-25 实测）：家目录 main 里**已经有一条** `160000`，
+ * 来自 `040dc4d`（自动存档）——`agents/<a>/projects/<p>/tasks/<NNNN>/repo-baseline` 作为 gitlink 写了进去。
+ */
+test("T5b 深层子检出已有 commit 时也不记成 gitlink（后置守卫，pathspec 挡不住的那一支）", async () => {
+  const { home } = await installedGitHome();
+  process.env.LIFEOS_HOME = home;
+
+  /*
+   * **必须放在深层**：`subCheckoutsOf` 只看顶层，`content/` 在顶层会被 pathspec 排除，
+   * 于是用例测的是"pathspec 有效"而不是"后置守卫有效"（第一版就踩了这个，把守卫删掉它照样绿）。
+   * 真实现场也是深层：`agents/<a>/projects/<p>/tasks/<NNNN>/repo-baseline`（reviewer 实测 040dc4d）。
+   */
+  const content = join(home, "agents", "lifeosagent", "projects", "workspace", "repo-baseline");
+  await mkdir(content, { recursive: true });
+  await git(content, ["init", "-q", "-b", "main"]);
+  await writeFile(join(content, "a.md"), "子仓内容\n");
+  await git(content, ["add", "-A"]);
+  await git(content, ["commit", "-q", "-m", "sub init"]);
+
+  // 主区脏（脏在收窄工作区会检出的路径里）
+  const dirtyPath = join(home, "agents", "lifeosagent", "projects", "workspace", "cases", "存档标记b.md");
+  await mkdir(join(home, "agents", "lifeosagent", "projects", "workspace", "cases"), { recursive: true });
+  await writeFile(dirtyPath, "应该进基线\n");
+
+  const ctx = { agentId: "lifeosagent", projectId: "workspace" };
+  const created = await createTask(ctx, { title: "存档守卫b", category: "G", type: "general" });
+  assert.ok(!("code" in created), `建 Task 不该失败：${JSON.stringify(created)}`);
+
+  const malformed = (await git(home, ["ls-files", "-s"]))
+    .split("\n")
+    .filter((line) => line.startsWith("160000") || line.startsWith("120000"));
+  assert.deepEqual(malformed, [], `家目录仓索引里不该有 gitlink(160000)，实际：${JSON.stringify(malformed)}`);
 });
